@@ -105,6 +105,57 @@ export type RuntimeProviderPool = {
   lowPriorityAgingSeconds: number;
 };
 
+export type RuntimeEffectiveProviderTarget = {
+  provider: RuntimeProviderName;
+  id: string;
+  label: string;
+  source: "route" | "provider_pool";
+  model: string | null;
+  endpoint: string | null;
+  providerPoolId?: string;
+  localLlmModelId?: string;
+  deploymentSlot?: number;
+};
+
+export type RuntimeEffectiveRouteTargets = {
+  source: "none" | "route" | "provider_pool";
+  providerPoolId?: string;
+  targets: RuntimeEffectiveProviderTarget[];
+};
+
+export type RuntimeSettingsEffectiveTargets = {
+  providerPools: Record<string, RuntimeEffectiveProviderTarget[]>;
+  taskRouting: {
+    findCandidate: {
+      source: RuntimeEffectiveRouteTargets;
+      vibe: RuntimeEffectiveRouteTargets;
+    };
+    webSourceResearch: RuntimeEffectiveRouteTargets;
+    episodeDistiller: RuntimeEffectiveRouteTargets;
+    coverEvidence: {
+      sourceSupport: RuntimeEffectiveRouteTargets;
+      externalEvidence: RuntimeEffectiveRouteTargets;
+      mcpEvidence: RuntimeEffectiveRouteTargets;
+    };
+    deadZoneMergeReview: RuntimeEffectiveRouteTargets;
+    finalizeDistille: RuntimeEffectiveRouteTargets;
+    mergeActivationFinalize: RuntimeEffectiveRouteTargets;
+    agenticCompile: RuntimeEffectiveRouteTargets;
+  };
+};
+
+export type RuntimeSettingsDiagnostic = {
+  severity: "warning" | "error";
+  code: string;
+  path: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+export type RuntimeSettingsDiagnostics = {
+  providerPools: RuntimeSettingsDiagnostic[];
+};
+
 export const distillationPriorityTargetKindValues = [
   "knowledge_candidate",
   "web_ingest",
@@ -237,6 +288,8 @@ export type RuntimeSettingsEditable = {
 };
 
 export type RuntimeSettingsView = RuntimeSettingsEditable & {
+  effectiveTargets: RuntimeSettingsEffectiveTargets;
+  diagnostics: RuntimeSettingsDiagnostics;
   providers: RuntimeSettingsEditable["providers"] & {
     openai: RuntimeSettingsEditable["providers"]["openai"] & {
       apiKeySecret: RuntimeSecretStatus;

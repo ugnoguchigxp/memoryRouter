@@ -75,7 +75,7 @@ export function createCodexProvider(
               : msg.role === "user"
                 ? "User"
                 : "Assistant";
-          return `[${roleLabel}]\n${msg.content}`;
+          return `[${roleLabel}]\n${msg.content ?? ""}`;
         })
         .join("\n\n");
 

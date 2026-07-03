@@ -357,14 +357,71 @@ describe("agentic-llm service tests", () => {
       reachable: true,
       generationChecked: true,
       generationReachable: false,
-      generationError: "The operation was aborted.",
+      localLlmSmokes: [
+        { name: "simple_chat", ok: false, error: "The operation was aborted." },
+        { name: "json_only", ok: false, error: "The operation was aborted." },
+        { name: "tool_result_history", ok: false, error: "The operation was aborted." },
+      ],
     });
-    expect(local.chat).toHaveBeenCalledWith({
+    expect(health[0]?.generationError).toContain("simple_chat: The operation was aborted.");
+    expect(local.chat).toHaveBeenCalledTimes(3);
+    expect(local.chat).toHaveBeenNthCalledWith(1, {
       model: "qwen3",
       messages: [{ role: "user", content: "Reply with OK only." }],
       maxTokens: 8,
       temperature: 0,
     });
+    expect(local.chat).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        model: "qwen3",
+        responseFormat: "json",
+        messages: expect.arrayContaining([
+          expect.objectContaining({ role: "assistant", tool_calls: expect.any(Array) }),
+          expect.objectContaining({ role: "tool", tool_call_id: "tool-call-smoke-1" }),
+        ]),
+      }),
+    );
+  });
+
+  test("checkLlmProviderHealthMatrix verifies Local LLM chat, JSON, and tool-history smokes", async () => {
+    groupedConfig.localLlm.models = [
+      {
+        name: "Qwen",
+        apiBaseUrl: "http://127.0.0.1:11434",
+        apiPath: "/v1/chat/completions",
+        apiKey: "qwen-key",
+        model: "qwen3",
+      },
+    ];
+    const local = mockProvider("local-llm", true, true);
+    local.chat
+      .mockResolvedValueOnce({ content: "OK" })
+      .mockResolvedValueOnce({ content: '{"ok":true}' })
+      .mockResolvedValueOnce({ content: '{"fact":"queue_events_checked"}' });
+    vi.mocked(createLocalLlmProvider).mockReturnValue(local as any);
+
+    const health = await checkLlmProviderHealthMatrix(2000, {
+      selectedProvider: "local-llm",
+      routeOrder: ["local-llm"],
+      verifyLocalLlmGeneration: true,
+    });
+
+    expect(health).toHaveLength(1);
+    expect(health[0]).toMatchObject({
+      id: "local-llm:1",
+      configured: true,
+      reachable: true,
+      generationChecked: true,
+      generationReachable: true,
+      localLlmSmokes: [
+        { name: "simple_chat", ok: true, preview: "OK" },
+        { name: "json_only", ok: true, preview: '{"ok":true}' },
+        { name: "tool_result_history", ok: true, preview: '{"fact":"queue_events_checked"}' },
+      ],
+    });
+    expect(health[0]?.generationError).toBeUndefined();
+    expect(local.chat).toHaveBeenCalledTimes(3);
   });
 
   describe("checkAgenticLlmHealth fallback logic", () => {

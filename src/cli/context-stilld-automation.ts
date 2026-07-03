@@ -107,6 +107,32 @@ function ensureContextStilldBinary(): string {
   return binary;
 }
 
+function isDisabledFlag(value: string): boolean {
+  return value === "0" || value.toLowerCase() === "false";
+}
+
+function resolveResidentMcpFlag(): string {
+  const value = process.env.CONTEXT_STILL_RESIDENT_MCP ?? "1";
+  if (isDisabledFlag(value) && process.env.CONTEXT_STILL_ALLOW_RESIDENT_MCP_DISABLED !== "1") {
+    throw new Error(
+      [
+        "Refusing to install resident LaunchAgent with CONTEXT_STILL_RESIDENT_MCP disabled.",
+        "Reboot persistence without MCP breaks agent integration.",
+        "Set CONTEXT_STILL_ALLOW_RESIDENT_MCP_DISABLED=1 only for an intentional MCP-disabled install.",
+      ].join(" "),
+    );
+  }
+  return value;
+}
+
+function readInstalledResidentMcpFlag(plistPath: string): string | null {
+  if (!existsSync(plistPath)) return null;
+  const content = readFileSync(plistPath, "utf8");
+  return (
+    /<key>CONTEXT_STILL_RESIDENT_MCP<\/key>\s*<string>([^<]+)<\/string>/.exec(content)?.[1] ?? null
+  );
+}
+
 function renderPlist(): string {
   const template = readFileSync(path.resolve(plistDir, plist), "utf8");
   const appDataDir =
@@ -131,7 +157,7 @@ function renderPlist(): string {
     .replaceAll("{{APP_DATA_DIR}}", appDataDir)
     .replaceAll("{{DB_BACKEND}}", process.env.CONTEXT_STILL_DB_BACKEND ?? "sqlite")
     .replaceAll("{{SQLITE_CORE_PATH}}", sqliteCorePath)
-    .replaceAll("{{RESIDENT_MCP}}", process.env.CONTEXT_STILL_RESIDENT_MCP ?? "1")
+    .replaceAll("{{RESIDENT_MCP}}", resolveResidentMcpFlag())
     .replaceAll("{{RESIDENT_QUEUE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE ?? "1")
     .replaceAll(
       "{{RESIDENT_QUEUE_MODE}}",
@@ -227,6 +253,16 @@ function status(): void {
     } catch {
       console.log(`${label}: installed but not loaded`);
     }
+  }
+
+  const residentMcp = readInstalledResidentMcpFlag(target);
+  if (residentMcp && isDisabledFlag(residentMcp)) {
+    console.log(
+      [
+        "warning: installed LaunchAgent has CONTEXT_STILL_RESIDENT_MCP disabled.",
+        "Reinstall with `bun run automation:context-stilld -- install` and reload with `bun run automation:context-stilld -- load` to restore reboot-persistent MCP.",
+      ].join(" "),
+    );
   }
 
   for (const legacyLabel of [

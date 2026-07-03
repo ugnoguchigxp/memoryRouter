@@ -8,6 +8,7 @@ import {
 import {
   type SecretValueEntry,
   applyRuntimeSettingsToProcess,
+  buildRuntimeSettingsView,
 } from "../src/modules/settings/settings.runtime-cache.js";
 import type {
   RuntimeSecretKey,
@@ -56,6 +57,10 @@ function emptySecrets(): Partial<Record<RuntimeSecretKey, SecretValueEntry | nul
     braveApiKey: null,
     exaApiKey: null,
   };
+}
+
+function emptySecretStatus() {
+  return { configured: false, source: "none" as const, maskedValue: null, updatedAt: null };
 }
 
 describe("settings runtime cache", () => {
@@ -610,6 +615,131 @@ describe("settings runtime cache", () => {
       fallback: [],
     });
     expect(normalized.taskRouting.episodeDistiller.providerPoolId).toBeUndefined();
+  });
+
+  test("exposes provider pool targets as the effective runtime target", () => {
+    settings.providers["local-llm"] = {
+      enabled: true,
+      apiBaseUrl: "http://127.0.0.1:44448",
+      apiPath: "/v1/chat/completions",
+      model: "ornith-1.0-9b-4bit",
+      models: [
+        {
+          id: "ornith",
+          name: "Ornith",
+          apiBaseUrl: "http://127.0.0.1:44448",
+          apiPath: "/v1/chat/completions",
+          model: "ornith-1.0-9b-4bit",
+        },
+        {
+          id: "qwen",
+          name: "Qwen 27B",
+          apiBaseUrl: "http://192.168.0.61:50043/v1",
+          apiPath: "/v1/chat/completions",
+          model: "qwen-27b",
+        },
+      ],
+    };
+    settings.providerPools = [
+      {
+        id: "local-llm-default",
+        label: "Qwen Pool",
+        targets: [{ provider: "local-llm", localLlmModelId: "qwen" }],
+        maxConcurrent: 1,
+        staleLeaseSeconds: 660,
+        enabled: true,
+        lowPriorityAgingSeconds: 1800,
+      },
+    ];
+    settings.taskRouting.findCandidate.source = {
+      provider: "local-llm",
+      model: "ornith-1.0-9b-4bit",
+      localLlmModel: "ornith-1.0-9b-4bit",
+      providerPoolId: "local-llm-default",
+      fallback: [],
+    };
+
+    const view = buildRuntimeSettingsView(settings, {
+      openaiApiKey: emptySecretStatus(),
+      azureOpenAiApiKey: emptySecretStatus(),
+      localLlmApiKey: emptySecretStatus(),
+      braveApiKey: emptySecretStatus(),
+      exaApiKey: emptySecretStatus(),
+      bedrockCredential: emptySecretStatus(),
+    });
+
+    expect(view.taskRouting.findCandidate.source.localLlmModel).toBe("ornith-1.0-9b-4bit");
+    expect(view.effectiveTargets.taskRouting.findCandidate.source).toMatchObject({
+      source: "provider_pool",
+      providerPoolId: "local-llm-default",
+      targets: [
+        {
+          provider: "local-llm",
+          label: "Qwen 27B",
+          model: "qwen-27b",
+          endpoint: "http://192.168.0.61:50043/v1",
+          localLlmModelId: "qwen",
+        },
+      ],
+    });
+  });
+
+  test("reports provider pool diagnostics without blocking the settings view", () => {
+    settings.providerPools = [
+      {
+        id: "disabled-pool",
+        label: "Disabled Pool",
+        targets: [{ provider: "local-llm", localLlmModelId: "missing-local-model" }],
+        maxConcurrent: 1,
+        staleLeaseSeconds: 660,
+        enabled: false,
+        lowPriorityAgingSeconds: 1800,
+      },
+    ];
+    settings.taskRouting.episodeDistiller = {
+      provider: "local-llm",
+      model: "local-primary",
+      localLlmModel: "local-primary",
+      providerPoolId: "disabled-pool",
+      fallback: [],
+    };
+    settings.taskRouting.finalizeDistille = {
+      provider: "local-llm",
+      model: "local-primary",
+      localLlmModel: "local-primary",
+      providerPoolId: "missing-pool",
+      fallback: [],
+    };
+
+    const view = buildRuntimeSettingsView(settings, {
+      openaiApiKey: emptySecretStatus(),
+      azureOpenAiApiKey: emptySecretStatus(),
+      localLlmApiKey: emptySecretStatus(),
+      braveApiKey: emptySecretStatus(),
+      exaApiKey: emptySecretStatus(),
+      bedrockCredential: emptySecretStatus(),
+    });
+
+    expect(view.diagnostics.providerPools).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          severity: "error",
+          code: "provider_pool_disabled",
+          path: "taskRouting.episodeDistiller.providerPoolId",
+        }),
+        expect.objectContaining({
+          severity: "error",
+          code: "provider_pool_missing",
+          path: "taskRouting.finalizeDistille.providerPoolId",
+        }),
+        expect.objectContaining({
+          severity: "error",
+          code: "provider_pool_target_unresolved",
+          path: "providerPools.disabled-pool.targets.0",
+        }),
+      ]),
+    );
+    expect(view.taskRouting.finalizeDistille.providerPoolId).toBe("missing-pool");
   });
 
   test("normalizes provider pool settings into a read-after-write stable document", () => {

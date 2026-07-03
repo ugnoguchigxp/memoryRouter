@@ -16,6 +16,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { ArrowDown, ArrowUp, Plus, RotateCcw, Save, Stethoscope, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  type RuntimeEffectiveRouteTargets,
   type RuntimeProviderHealth,
   type RuntimeProviderName,
   type RuntimeProviderPool,
@@ -24,6 +25,7 @@ import {
   type RuntimeSearchProvider,
   type RuntimeSecretKey,
   type RuntimeSecretStatus,
+  type RuntimeSettingsDiagnostic,
   type RuntimeSettingsEditable,
   type RuntimeSettingsRoute,
   type RuntimeSettingsView,
@@ -1077,12 +1079,14 @@ function RouteEditor({
   description,
   settings,
   route,
+  effectiveTargets,
   onChange,
 }: {
   label: string;
   description: string;
   settings: RuntimeSettingsEditable;
   route: RuntimeSettingsRoute;
+  effectiveTargets?: RuntimeEffectiveRouteTargets;
   onChange: (next: RuntimeSettingsRoute) => void;
 }) {
   const endpointOptions = routeEndpointOptions(settings);
@@ -1099,6 +1103,18 @@ function RouteEditor({
     ? poolOptions.find((pool) => pool.id === route.providerPoolId)
     : undefined;
   const selectedTargetOption = targetOptionByValue.get(primaryTargetValue);
+  const effectiveTargetList =
+    effectiveTargets && effectiveTargets.providerPoolId === route.providerPoolId
+      ? effectiveTargets.targets
+      : [];
+  const effectiveTargetValues =
+    effectiveTargetList.length > 0
+      ? effectiveTargetList.map((target) => target.label)
+      : selectedPool
+        ? selectedPool.targets.map((target) => providerPoolTargetLabel(settings, target))
+        : selectedTargetOption
+          ? [selectedTargetOption.label]
+          : [];
   const fallbackOptionsFor = (index: 0 | 1): RouteEndpointOption[] => {
     const currentValue = selectedFallbackValues[index];
     const blockedProviders = new Set<RuntimeProviderName>([
@@ -1113,14 +1129,11 @@ function RouteEditor({
     );
   };
   const routeChain = [
-    ...(selectedTargetOption || !selectedPool
-      ? [
-          {
-            label: "Target",
-            value: selectedTargetOption?.label ?? "not configured",
-          },
-        ]
-      : []),
+    {
+      label: "Effective Target",
+      value:
+        effectiveTargetValues.length > 0 ? effectiveTargetValues.join(" / ") : "not configured",
+    },
     ...selectedFallbackValues.filter(Boolean).map((value, index) => ({
       label: `Fallback ${index + 1}`,
       value: endpointOptionByValue.get(value)?.label ?? "not configured",
@@ -1227,6 +1240,31 @@ function RouteEditor({
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ProviderPoolDiagnostics({ items }: { items: RuntimeSettingsDiagnostic[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="settings-route-row" aria-label="provider pool diagnostics">
+      <div className="settings-route-header">
+        <div className="settings-route-label">Provider Pool Diagnostics</div>
+        <p className="settings-route-description">
+          Resolve these warnings before relying on queue-backed Local LLM routing.
+        </p>
+      </div>
+      <div className="settings-route-chain">
+        {items.map((item) => (
+          <span
+            key={`${item.code}:${item.path}:${item.message}`}
+            className="settings-route-chain-item"
+          >
+            <strong>{item.severity === "error" ? "Error" : "Warning"}</strong>
+            {item.message}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3037,6 +3075,7 @@ export function SettingsPage() {
                   </p>
                 </CardHeader>
                 <CardContent className="settings-routes">
+                  <ProviderPoolDiagnostics items={sourceView?.diagnostics?.providerPools ?? []} />
                   {renderLocalLlmProviderPoolControls()}
                 </CardContent>
               </Card>
@@ -3067,6 +3106,9 @@ export function SettingsPage() {
                       description="Candidate extraction from source and vibe-memory targets."
                       settings={draft}
                       route={draft.taskRouting.findCandidate.source}
+                      effectiveTargets={
+                        sourceView?.effectiveTargets?.taskRouting.findCandidate.source
+                      }
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3086,6 +3128,7 @@ export function SettingsPage() {
                       description="URL fetch and web-source markdown generation."
                       settings={draft}
                       route={draft.taskRouting.webSourceResearch}
+                      effectiveTargets={sourceView?.effectiveTargets?.taskRouting.webSourceResearch}
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3101,6 +3144,7 @@ export function SettingsPage() {
                       description="Episode card generation from completed compile and vibe-memory runs."
                       settings={draft}
                       route={draft.taskRouting.episodeDistiller}
+                      effectiveTargets={sourceView?.effectiveTargets?.taskRouting.episodeDistiller}
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3116,6 +3160,9 @@ export function SettingsPage() {
                       description="Shared route for source support, external evidence, and MCP evidence."
                       settings={draft}
                       route={draft.taskRouting.coverEvidence.externalEvidence}
+                      effectiveTargets={
+                        sourceView?.effectiveTargets?.taskRouting.coverEvidence.externalEvidence
+                      }
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3135,6 +3182,9 @@ export function SettingsPage() {
                       description="Queued DeadZone merge verification and cleanup."
                       settings={draft}
                       route={draft.taskRouting.deadZoneMergeReview}
+                      effectiveTargets={
+                        sourceView?.effectiveTargets?.taskRouting.deadZoneMergeReview
+                      }
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3150,6 +3200,7 @@ export function SettingsPage() {
                       description="Final candidate-to-knowledge generation."
                       settings={draft}
                       route={draft.taskRouting.finalizeDistille}
+                      effectiveTargets={sourceView?.effectiveTargets?.taskRouting.finalizeDistille}
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3165,6 +3216,9 @@ export function SettingsPage() {
                       description="Final activation pass for accepted merge candidates."
                       settings={draft}
                       route={draft.taskRouting.mergeActivationFinalize}
+                      effectiveTargets={
+                        sourceView?.effectiveTargets?.taskRouting.mergeActivationFinalize
+                      }
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,
@@ -3186,6 +3240,7 @@ export function SettingsPage() {
                         fallback: draft.taskRouting.agenticCompile.fallback,
                         azureDeploymentSlots: draft.taskRouting.agenticCompile.azureDeploymentSlots,
                       }}
+                      effectiveTargets={sourceView?.effectiveTargets?.taskRouting.agenticCompile}
                       onChange={(next) =>
                         patchDraft((current) => ({
                           ...current,

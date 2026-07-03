@@ -97,7 +97,7 @@ export function parseToolCalls(value: unknown): DistillationToolCall[] {
     return [
       {
         id: typeof call.id === "string" && call.id.trim() ? call.id : `tool-call-${index + 1}`,
-        type: call.type === "function" ? "function" : undefined,
+        type: "function",
         function: {
           name,
           arguments: args,
@@ -135,7 +135,7 @@ function normalizeToolCallLike(
 
   return {
     id: typeof call.id === "string" && call.id.trim() ? call.id : `tool-call-content-${index + 1}`,
-    type: call.type === "function" ? "function" : undefined,
+    type: "function",
     function: {
       name,
       arguments: argumentsText,
@@ -249,6 +249,7 @@ function recoverToolCallFromMalformedContent(rawContent: string): DistillationTo
   return [
     {
       id: "tool-call-content-1",
+      type: "function",
       function: {
         name,
         arguments: JSON.stringify(args),
@@ -285,6 +286,7 @@ function recoverDelimitedToolCall(rawContent: string): DistillationToolCall | nu
               };
         return {
           id: "tool-call-content-1",
+          type: "function",
           function: {
             name: "search_web",
             arguments: JSON.stringify(args),
@@ -300,6 +302,7 @@ function recoverDelimitedToolCall(rawContent: string): DistillationToolCall | nu
     const selection = indexListMatch[1].replace(/\s+/g, "");
     return {
       id: "tool-call-content-1",
+      type: "function",
       function: {
         name: "fetch_content",
         arguments: JSON.stringify({ url: selection }),
@@ -311,6 +314,7 @@ function recoverDelimitedToolCall(rawContent: string): DistillationToolCall | nu
   if (normalized.includes("fetch_content") && urlMatch?.[0]) {
     return {
       id: "tool-call-content-1",
+      type: "function",
       function: {
         name: "fetch_content",
         arguments: JSON.stringify({ url: urlMatch[0] }),
@@ -330,6 +334,7 @@ function recoverDelimitedToolCall(rawContent: string): DistillationToolCall | nu
 
   return {
     id: "tool-call-content-1",
+    type: "function",
     function: {
       name: "search_web",
       arguments: JSON.stringify({ query }),

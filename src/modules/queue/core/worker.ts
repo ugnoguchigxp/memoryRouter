@@ -38,6 +38,8 @@ import { processDeadZoneMergeReviewJob } from "../../landscape/deadzone-merge-re
 import { processMergeActivationFinalizeJob } from "../../landscape/merge-activation-finalize.worker.js";
 import { LlmProviderHttpError } from "../../llm/provider-http-error.js";
 import { runWithProviderLeaseRouteContext } from "../../settings/provider-lease-route-context.js";
+import { getRuntimeSettingsSnapshot } from "../../settings/settings.service.js";
+import type { RuntimeProviderPoolTarget } from "../../settings/settings.types.js";
 import { researchWebSourceToMarkdown } from "../../sources/web/source-research.service.js";
 import { claimNextQueueJob } from "./claim.js";
 import { isQueuePaused } from "./control.js";
@@ -118,6 +120,72 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function providerPoolTargetId(target: RuntimeProviderPoolTarget): string {
+  if (target.provider === "local-llm") return target.localLlmModelId;
+  if (target.provider === "azure-openai") return String(target.deploymentSlot);
+  return target.targetId;
+}
+
+function inferProviderPoolTarget(targetId: string): RuntimeProviderPoolTarget | null {
+  if (/^\d+$/.test(targetId)) {
+    return { provider: "azure-openai", deploymentSlot: Number(targetId) };
+  }
+  if (targetId === "openai" || targetId === "bedrock" || targetId === "codex") {
+    return { provider: targetId, targetId };
+  }
+  return { provider: "local-llm", localLlmModelId: targetId };
+}
+
+function providerLeaseTargetEventMetadata(
+  lease: ProviderLease | undefined,
+): Record<string, unknown> {
+  if (!lease) return {};
+  const resolved: Record<string, unknown> = {
+    providerPoolId: lease.poolId,
+    providerTargetId: lease.targetId,
+  };
+
+  try {
+    const settings = getRuntimeSettingsSnapshot();
+    const pool = settings.providerPools.find((item) => item.id === lease.poolId);
+    const target =
+      pool?.targets.find((item) => providerPoolTargetId(item) === lease.targetId) ??
+      inferProviderPoolTarget(lease.targetId);
+    if (!target) return { resolvedProviderTarget: resolved };
+
+    resolved.provider = target.provider;
+    if (target.provider === "local-llm") {
+      const model = settings.providers["local-llm"].models.find(
+        (item) => item.id === target.localLlmModelId,
+      );
+      resolved.localLlmModelId = target.localLlmModelId;
+      resolved.label = model?.name.trim() || model?.model.trim() || target.localLlmModelId;
+      if (model?.model.trim()) resolved.model = model.model.trim();
+      if (model?.apiBaseUrl.trim()) resolved.endpoint = model.apiBaseUrl.trim();
+    } else if (target.provider === "azure-openai") {
+      const deployment = settings.providers["azure-openai"].deployments[target.deploymentSlot - 1];
+      resolved.deploymentSlot = target.deploymentSlot;
+      resolved.label =
+        deployment?.name.trim() ||
+        deployment?.model.trim() ||
+        `Azure deployment ${target.deploymentSlot}`;
+      if (deployment?.model.trim()) resolved.model = deployment.model.trim();
+      if (deployment?.apiBaseUrl.trim()) resolved.endpoint = deployment.apiBaseUrl.trim();
+    } else {
+      const provider = settings.providers[target.provider];
+      resolved.label = target.provider;
+      if ("model" in provider && provider.model.trim()) resolved.model = provider.model.trim();
+      if ("apiBaseUrl" in provider && provider.apiBaseUrl.trim()) {
+        resolved.endpoint = provider.apiBaseUrl.trim();
+      }
+    }
+  } catch {
+    // Keep the lease identity even if runtime settings are not loaded.
+  }
+
+  return { resolvedProviderTarget: resolved };
 }
 
 function parseJsonArray(value: unknown): unknown[] {
@@ -1955,6 +2023,7 @@ export async function runQueueWorkerOnce(params: {
           reason,
           retryAfterSeconds: providerRetryAfterSeconds,
           status: error instanceof LlmProviderHttpError ? error.status : 503,
+          ...providerLeaseTargetEventMetadata(params.providerLease),
         },
       });
       return {
@@ -2061,6 +2130,7 @@ export async function runQueueWorkerOnce(params: {
       message: "worker failed",
       metadata: {
         error: message,
+        ...providerLeaseTargetEventMetadata(params.providerLease),
       },
     });
     return {

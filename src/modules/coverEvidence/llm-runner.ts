@@ -663,6 +663,7 @@ function makeToolCall(
 ): DistillationToolCall {
   return {
     id: `external-${name}-${Date.now()}`,
+    type: "function",
     function: {
       name,
       arguments: JSON.stringify(args),

@@ -33,6 +33,16 @@ export type LlmProviderHealthStatus = LlmHealthStatus & {
   generationChecked?: boolean;
   generationReachable?: boolean;
   generationError?: string;
+  localLlmSmokes?: LocalLlmSmokeStatus[];
+};
+
+export type LocalLlmSmokeName = "simple_chat" | "json_only" | "tool_result_history";
+
+export type LocalLlmSmokeStatus = {
+  name: LocalLlmSmokeName;
+  ok: boolean;
+  error?: string;
+  preview?: string;
 };
 
 type LlmProviderHealthEntry = {
@@ -177,6 +187,126 @@ function withUsageLogging(provider: LlmProvider, source: string): LlmProvider {
   };
 }
 
+function previewContent(value: string | null | undefined): string | undefined {
+  const trimmed = value?.replace(/\s+/g, " ").trim();
+  if (!trimmed) return undefined;
+  return trimmed.length > 120 ? `${trimmed.slice(0, 117)}...` : trimmed;
+}
+
+function parseJsonObject(content: string): Record<string, unknown> {
+  const trimmed = content.trim();
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("response was not a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+async function runLocalLlmSmoke(
+  name: LocalLlmSmokeName,
+  execute: () => Promise<string>,
+  validate: (content: string) => void,
+): Promise<LocalLlmSmokeStatus> {
+  try {
+    const content = await execute();
+    validate(content);
+    return { name, ok: true, preview: previewContent(content) };
+  } catch (error) {
+    return {
+      name,
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function runLocalLlmSmokeChecks(
+  provider: LlmProvider,
+  model: string,
+): Promise<LocalLlmSmokeStatus[]> {
+  return [
+    await runLocalLlmSmoke(
+      "simple_chat",
+      async () =>
+        (
+          await provider.chat({
+            model,
+            messages: [{ role: "user", content: "Reply with OK only." }],
+            maxTokens: 8,
+            temperature: 0,
+          })
+        ).content,
+      (content) => {
+        if (content.trim().toUpperCase() !== "OK") {
+          throw new Error(`expected OK, got ${previewContent(content) ?? "empty content"}`);
+        }
+      },
+    ),
+    await runLocalLlmSmoke(
+      "json_only",
+      async () =>
+        (
+          await provider.chat({
+            model,
+            messages: [
+              { role: "system", content: "Return JSON only." },
+              { role: "user", content: 'Return {"ok":true} exactly.' },
+            ],
+            maxTokens: 32,
+            temperature: 0,
+            responseFormat: "json",
+          })
+        ).content,
+      (content) => {
+        const parsed = parseJsonObject(content);
+        if (parsed.ok !== true) {
+          throw new Error("JSON response did not contain ok=true");
+        }
+      },
+    ),
+    await runLocalLlmSmoke(
+      "tool_result_history",
+      async () =>
+        (
+          await provider.chat({
+            model,
+            messages: [
+              { role: "system", content: "Return JSON only." },
+              { role: "user", content: "Use the tool result to answer." },
+              {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "tool-call-smoke-1",
+                    type: "function",
+                    function: { name: "memory_reader", arguments: "{}" },
+                  },
+                ],
+              },
+              {
+                role: "tool",
+                tool_call_id: "tool-call-smoke-1",
+                name: "memory_reader",
+                content: '{"fact":"queue_events_checked"}',
+              },
+              { role: "user", content: 'Return {"fact":"queue_events_checked"} exactly.' },
+            ],
+            maxTokens: 64,
+            temperature: 0,
+            responseFormat: "json",
+          })
+        ).content,
+      (content) => {
+        const parsed = parseJsonObject(content);
+        if (parsed.fact !== "queue_events_checked") {
+          throw new Error("JSON response did not preserve the tool result fact");
+        }
+      },
+    ),
+  ];
+}
+
 export function getAgenticLlmProviders(
   providerSetting: AgenticCompileProvider = groupedConfig.agenticCompile.provider,
   timeoutMs = groupedConfig.agenticCompile.timeoutMs,
@@ -305,27 +435,20 @@ export async function checkLlmProviderHealthMatrix(
           entry.model === options.selectedLocalLlmModel);
       const generationStatus: Pick<
         LlmProviderHealthStatus,
-        "generationChecked" | "generationReachable" | "generationError"
+        "generationChecked" | "generationReachable" | "generationError" | "localLlmSmokes"
       > = {};
       const reachable = status.reachable;
       const error = status.error;
       if (options.verifyLocalLlmGeneration && entry.providerName === "local-llm" && reachable) {
         generationStatus.generationChecked = true;
-        try {
-          const response = await entry.provider.chat({
-            model: entry.model ?? status.model,
-            messages: [{ role: "user", content: "Reply with OK only." }],
-            maxTokens: 8,
-            temperature: 0,
-          });
-          generationStatus.generationReachable = Boolean(response.content.trim());
-          if (!generationStatus.generationReachable) {
-            generationStatus.generationError = "Local LLM generation check returned empty content";
-          }
-        } catch (generationError) {
-          generationStatus.generationError =
-            generationError instanceof Error ? generationError.message : String(generationError);
-          generationStatus.generationReachable = false;
+        const smokes = await runLocalLlmSmokeChecks(entry.provider, entry.model ?? status.model);
+        const failedSmokes = smokes.filter((smoke) => !smoke.ok);
+        generationStatus.localLlmSmokes = smokes;
+        generationStatus.generationReachable = failedSmokes.length === 0;
+        if (failedSmokes.length > 0) {
+          generationStatus.generationError = failedSmokes
+            .map((smoke) => `${smoke.name}: ${smoke.error ?? "failed"}`)
+            .join("; ");
         }
       }
       return {

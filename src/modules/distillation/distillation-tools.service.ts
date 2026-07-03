@@ -32,7 +32,7 @@ export type DistillationToolDefinition = {
 
 export type DistillationToolCall = {
   id: string;
-  type?: "function";
+  type: "function";
   function: {
     name: string;
     arguments: string;

@@ -169,6 +169,16 @@ const llmProviderHealthSchema = z.object({
   generationChecked: z.boolean().optional(),
   generationReachable: z.boolean().optional(),
   generationError: z.string().optional(),
+  localLlmSmokes: z
+    .array(
+      z.object({
+        name: z.enum(["simple_chat", "json_only", "tool_result_history"]),
+        ok: z.boolean(),
+        error: z.string().optional(),
+        preview: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 
 export const doctorReportSchema = z.object({

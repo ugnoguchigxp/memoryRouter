@@ -1,6 +1,16 @@
 export type LlmChatMessage = {
-  role: "system" | "user" | "assistant";
-  content: string;
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  name?: string;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id: string;
+    type?: "function";
+    function: {
+      name: string;
+      arguments: string;
+    };
+  }>;
 };
 
 export type LlmChatRequest = {

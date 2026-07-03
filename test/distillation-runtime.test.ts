@@ -432,6 +432,24 @@ describe("distillation runtime", () => {
       expect(result[0].function.arguments).toBe('{"a":1}');
     });
 
+    test("parseToolCalls fills missing function tool type", () => {
+      const raw = [
+        {
+          id: "call_1",
+          function: { name: "test_tool", arguments: '{"a":1}' },
+        },
+      ];
+
+      const result = parseToolCalls(raw);
+
+      expect(result).toHaveLength(1);
+      expect(result[0]).toMatchObject({
+        id: "call_1",
+        type: "function",
+        function: { name: "test_tool", arguments: '{"a":1}' },
+      });
+    });
+
     test("parseOpenAiStyleResponse maps choices to chat response", () => {
       const raw = {
         choices: [{ message: { content: "hello", tool_calls: [] }, finish_reason: "stop" }],
@@ -458,6 +476,7 @@ describe("distillation runtime", () => {
       expect(result.content).toBeNull();
       expect(result.toolCalls).toHaveLength(1);
       expect(result.toolCalls[0]).toMatchObject({
+        type: "function",
         function: {
           name: "search_web",
           arguments: '{"query":"memory router"}',

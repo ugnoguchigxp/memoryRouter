@@ -4,10 +4,17 @@ import { projectEnvKey } from "../../project-identity.js";
 import { bootstrap, cloneDefaultSettings, secretRowKeys } from "./settings.defaults.js";
 import type { SettingsRow } from "./settings.repository.js";
 import type {
+  RuntimeEffectiveProviderTarget,
+  RuntimeEffectiveRouteTargets,
+  RuntimeProviderPoolTarget,
   RuntimeSecretKey,
   RuntimeSecretSource,
   RuntimeSecretStatus,
+  RuntimeSettingsDiagnostic,
+  RuntimeSettingsDiagnostics,
   RuntimeSettingsEditable,
+  RuntimeSettingsEffectiveTargets,
+  RuntimeSettingsRoute,
   RuntimeSettingsView,
 } from "./settings.types.js";
 
@@ -63,6 +70,376 @@ function azureOpenAiSecretKey(index: number): RuntimeSecretKey {
 function localLlmSecretKey(index: number): RuntimeSecretKey {
   if (index === 0) return "localLlmApiKey";
   return `localLlmApiKey${index + 1}`;
+}
+
+function localLlmTargetId(
+  model: RuntimeSettingsEditable["providers"]["local-llm"]["models"][number],
+): string {
+  return model.id?.trim() || model.name.trim() || model.model.trim();
+}
+
+function findLocalLlmModel(
+  settings: RuntimeSettingsEditable,
+  value: string | undefined,
+): RuntimeSettingsEditable["providers"]["local-llm"]["models"][number] | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  return settings.providers["local-llm"].models.find(
+    (model) =>
+      model.id?.trim() === trimmed ||
+      model.name.trim() === trimmed ||
+      model.model.trim() === trimmed,
+  );
+}
+
+function localLlmRouteTargetValue(route: RuntimeSettingsRoute): string | undefined {
+  const raw = route.localLlmModel?.trim() || route.model?.trim();
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object") {
+      const record = parsed as Record<string, unknown>;
+      for (const key of ["localLlmModelId", "id", "name", "model"]) {
+        const value = record[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    }
+  } catch {
+    // Plain model names are the common case.
+  }
+  return raw;
+}
+
+function targetLabelForProviderPoolTarget(
+  settings: RuntimeSettingsEditable,
+  target: RuntimeProviderPoolTarget,
+): string {
+  if (target.provider === "local-llm") {
+    const model = findLocalLlmModel(settings, target.localLlmModelId);
+    return model?.name.trim() || model?.model.trim() || target.localLlmModelId;
+  }
+  if (target.provider === "azure-openai") {
+    const deployment = settings.providers["azure-openai"].deployments[target.deploymentSlot - 1];
+    return (
+      deployment?.name.trim() ||
+      deployment?.model.trim() ||
+      `Azure deployment ${target.deploymentSlot}`
+    );
+  }
+  return target.targetId;
+}
+
+function resolveProviderPoolTarget(
+  settings: RuntimeSettingsEditable,
+  target: RuntimeProviderPoolTarget,
+  providerPoolId: string,
+): RuntimeEffectiveProviderTarget {
+  if (target.provider === "local-llm") {
+    const model = findLocalLlmModel(settings, target.localLlmModelId);
+    return {
+      provider: "local-llm",
+      id: `provider-pool:${providerPoolId}:local-llm:${target.localLlmModelId}`,
+      label: targetLabelForProviderPoolTarget(settings, target),
+      source: "provider_pool",
+      model: model?.model.trim() || null,
+      endpoint: model?.apiBaseUrl.trim() || null,
+      providerPoolId,
+      localLlmModelId: target.localLlmModelId,
+    };
+  }
+  if (target.provider === "azure-openai") {
+    const deployment = settings.providers["azure-openai"].deployments[target.deploymentSlot - 1];
+    return {
+      provider: "azure-openai",
+      id: `provider-pool:${providerPoolId}:azure-openai:${target.deploymentSlot}`,
+      label: targetLabelForProviderPoolTarget(settings, target),
+      source: "provider_pool",
+      model: deployment?.model.trim() || null,
+      endpoint: deployment?.apiBaseUrl.trim() || null,
+      providerPoolId,
+      deploymentSlot: target.deploymentSlot,
+    };
+  }
+  return {
+    provider: target.provider,
+    id: `provider-pool:${providerPoolId}:${target.provider}:${target.targetId}`,
+    label: target.targetId,
+    source: "provider_pool",
+    model: target.targetId,
+    endpoint: null,
+    providerPoolId,
+  };
+}
+
+function resolveDirectRouteTarget(
+  settings: RuntimeSettingsEditable,
+  route: RuntimeSettingsRoute,
+): RuntimeEffectiveProviderTarget[] {
+  if (route.provider === "auto") return [];
+  if (route.provider === "local-llm") {
+    const value = localLlmRouteTargetValue(route);
+    const model = findLocalLlmModel(settings, value) ?? settings.providers["local-llm"].models[0];
+    return [
+      {
+        provider: "local-llm",
+        id: `route:local-llm:${localLlmTargetId(model) || value || "default"}`,
+        label: model?.name.trim() || model?.model.trim() || value || "Local LLM",
+        source: "route",
+        model: model?.model.trim() || value || null,
+        endpoint:
+          model?.apiBaseUrl.trim() || settings.providers["local-llm"].apiBaseUrl.trim() || null,
+        ...(model?.id?.trim() ? { localLlmModelId: model.id.trim() } : {}),
+      },
+    ];
+  }
+  if (route.provider === "azure-openai") {
+    const slots =
+      route.azureDeploymentSlots?.filter((slot) => Number.isInteger(slot) && slot >= 1) ?? [];
+    const slotList = slots.length > 0 ? slots : [1];
+    return slotList.map((slot) => {
+      const deployment = settings.providers["azure-openai"].deployments[slot - 1];
+      return {
+        provider: "azure-openai" as const,
+        id: `route:azure-openai:${slot}`,
+        label: deployment?.name.trim() || deployment?.model.trim() || `Azure deployment ${slot}`,
+        source: "route" as const,
+        model: deployment?.model.trim() || settings.providers["azure-openai"].model.trim() || null,
+        endpoint:
+          deployment?.apiBaseUrl.trim() ||
+          settings.providers["azure-openai"].apiBaseUrl.trim() ||
+          null,
+        deploymentSlot: slot,
+      };
+    });
+  }
+  const provider = settings.providers[route.provider];
+  const model = "model" in provider ? provider.model.trim() : route.model?.trim();
+  const endpoint = "apiBaseUrl" in provider ? provider.apiBaseUrl.trim() : null;
+  return [
+    {
+      provider: route.provider,
+      id: `route:${route.provider}:${model || route.provider}`,
+      label: model || route.provider,
+      source: "route",
+      model: model || null,
+      endpoint: endpoint || null,
+    },
+  ];
+}
+
+function resolveEffectiveRouteTargets(
+  settings: RuntimeSettingsEditable,
+  route: RuntimeSettingsRoute,
+): RuntimeEffectiveRouteTargets {
+  if (route.providerPoolId?.trim()) {
+    const providerPoolId = route.providerPoolId.trim();
+    const pool = settings.providerPools.find((item) => item.id === providerPoolId);
+    return {
+      source: "provider_pool",
+      providerPoolId,
+      targets:
+        pool?.targets.map((target) =>
+          resolveProviderPoolTarget(settings, target, providerPoolId),
+        ) ?? [],
+    };
+  }
+  const targets = resolveDirectRouteTarget(settings, route);
+  return {
+    source: targets.length > 0 ? "route" : "none",
+    targets,
+  };
+}
+
+function buildRuntimeEffectiveTargets(
+  settings: RuntimeSettingsEditable,
+): RuntimeSettingsEffectiveTargets {
+  const providerPools: Record<string, RuntimeEffectiveProviderTarget[]> = {};
+  for (const pool of settings.providerPools) {
+    providerPools[pool.id] = pool.targets.map((target) =>
+      resolveProviderPoolTarget(settings, target, pool.id),
+    );
+  }
+  return {
+    providerPools,
+    taskRouting: {
+      findCandidate: {
+        source: resolveEffectiveRouteTargets(settings, settings.taskRouting.findCandidate.source),
+        vibe: resolveEffectiveRouteTargets(settings, settings.taskRouting.findCandidate.vibe),
+      },
+      webSourceResearch: resolveEffectiveRouteTargets(
+        settings,
+        settings.taskRouting.webSourceResearch,
+      ),
+      episodeDistiller: resolveEffectiveRouteTargets(
+        settings,
+        settings.taskRouting.episodeDistiller,
+      ),
+      coverEvidence: {
+        sourceSupport: resolveEffectiveRouteTargets(
+          settings,
+          settings.taskRouting.coverEvidence.sourceSupport,
+        ),
+        externalEvidence: resolveEffectiveRouteTargets(
+          settings,
+          settings.taskRouting.coverEvidence.externalEvidence,
+        ),
+        mcpEvidence: resolveEffectiveRouteTargets(
+          settings,
+          settings.taskRouting.coverEvidence.mcpEvidence,
+        ),
+      },
+      deadZoneMergeReview: resolveEffectiveRouteTargets(
+        settings,
+        settings.taskRouting.deadZoneMergeReview,
+      ),
+      finalizeDistille: resolveEffectiveRouteTargets(
+        settings,
+        settings.taskRouting.finalizeDistille,
+      ),
+      mergeActivationFinalize: resolveEffectiveRouteTargets(
+        settings,
+        settings.taskRouting.mergeActivationFinalize,
+      ),
+      agenticCompile: resolveEffectiveRouteTargets(settings, {
+        provider: settings.taskRouting.agenticCompile.provider,
+        model: settings.taskRouting.agenticCompile.model,
+        localLlmModel: settings.taskRouting.agenticCompile.localLlmModel,
+        fallback: settings.taskRouting.agenticCompile.fallback,
+        azureDeploymentSlots: settings.taskRouting.agenticCompile.azureDeploymentSlots,
+      }),
+    },
+  };
+}
+
+type RuntimeRouteDiagnosticEntry = {
+  path: string;
+  route: RuntimeSettingsRoute;
+};
+
+function routeDiagnosticEntries(settings: RuntimeSettingsEditable): RuntimeRouteDiagnosticEntry[] {
+  return [
+    { path: "taskRouting.findCandidate.source", route: settings.taskRouting.findCandidate.source },
+    { path: "taskRouting.findCandidate.vibe", route: settings.taskRouting.findCandidate.vibe },
+    { path: "taskRouting.webSourceResearch", route: settings.taskRouting.webSourceResearch },
+    { path: "taskRouting.episodeDistiller", route: settings.taskRouting.episodeDistiller },
+    {
+      path: "taskRouting.coverEvidence.sourceSupport",
+      route: settings.taskRouting.coverEvidence.sourceSupport,
+    },
+    {
+      path: "taskRouting.coverEvidence.externalEvidence",
+      route: settings.taskRouting.coverEvidence.externalEvidence,
+    },
+    {
+      path: "taskRouting.coverEvidence.mcpEvidence",
+      route: settings.taskRouting.coverEvidence.mcpEvidence,
+    },
+    { path: "taskRouting.deadZoneMergeReview", route: settings.taskRouting.deadZoneMergeReview },
+    { path: "taskRouting.finalizeDistille", route: settings.taskRouting.finalizeDistille },
+    {
+      path: "taskRouting.mergeActivationFinalize",
+      route: settings.taskRouting.mergeActivationFinalize,
+    },
+  ];
+}
+
+function isProviderEnabled(
+  settings: RuntimeSettingsEditable,
+  provider: RuntimeProviderPoolTarget["provider"],
+): boolean {
+  return settings.providers[provider].enabled;
+}
+
+function unresolvedProviderPoolTarget(
+  settings: RuntimeSettingsEditable,
+  target: RuntimeProviderPoolTarget,
+): string | null {
+  if (target.provider === "local-llm") {
+    const model = findLocalLlmModel(settings, target.localLlmModelId);
+    if (!model) return `Local LLM model ${target.localLlmModelId} is not configured`;
+    if (!model.apiBaseUrl.trim() || !model.model.trim()) {
+      return `Local LLM model ${target.localLlmModelId} is missing endpoint or model`;
+    }
+    return null;
+  }
+  if (target.provider === "azure-openai") {
+    const deployment = settings.providers["azure-openai"].deployments[target.deploymentSlot - 1];
+    if (!deployment)
+      return `Azure OpenAI deployment slot ${target.deploymentSlot} is not configured`;
+    if (!deployment.apiBaseUrl.trim() || !deployment.model.trim()) {
+      return `Azure OpenAI deployment slot ${target.deploymentSlot} is missing endpoint or model`;
+    }
+    return null;
+  }
+  return target.targetId.trim() ? null : `${target.provider} target id is empty`;
+}
+
+function buildRuntimeDiagnostics(settings: RuntimeSettingsEditable): RuntimeSettingsDiagnostics {
+  const diagnostics: RuntimeSettingsDiagnostic[] = [];
+  const poolsById = new Map(settings.providerPools.map((pool) => [pool.id, pool]));
+  const emittedPoolTargetWarnings = new Set<string>();
+
+  for (const entry of routeDiagnosticEntries(settings)) {
+    const providerPoolId = entry.route.providerPoolId?.trim();
+    if (!providerPoolId) continue;
+    const pool = poolsById.get(providerPoolId);
+    if (!pool) {
+      diagnostics.push({
+        severity: "error",
+        code: "provider_pool_missing",
+        path: `${entry.path}.providerPoolId`,
+        message: `${entry.path} references provider pool "${providerPoolId}", but the pool is not configured.`,
+        details: { providerPoolId },
+      });
+      continue;
+    }
+    if (!pool.enabled) {
+      diagnostics.push({
+        severity: "error",
+        code: "provider_pool_disabled",
+        path: `${entry.path}.providerPoolId`,
+        message: `${entry.path} references provider pool "${providerPoolId}", but the pool is disabled.`,
+        details: { providerPoolId },
+      });
+    }
+    if (pool.targets.length === 0) {
+      diagnostics.push({
+        severity: "error",
+        code: "provider_pool_empty",
+        path: `providerPools.${providerPoolId}.targets`,
+        message: `Provider pool "${providerPoolId}" has no targets for ${entry.path}.`,
+        details: { providerPoolId },
+      });
+    }
+  }
+
+  for (const pool of settings.providerPools) {
+    for (const [index, target] of pool.targets.entries()) {
+      const warningKey = `${pool.id}:${index}`;
+      const unresolved = unresolvedProviderPoolTarget(settings, target);
+      if (unresolved && !emittedPoolTargetWarnings.has(warningKey)) {
+        diagnostics.push({
+          severity: "error",
+          code: "provider_pool_target_unresolved",
+          path: `providerPools.${pool.id}.targets.${index}`,
+          message: `Provider pool "${pool.id}" target cannot be resolved: ${unresolved}.`,
+          details: { providerPoolId: pool.id, target },
+        });
+        emittedPoolTargetWarnings.add(warningKey);
+      }
+      if (!isProviderEnabled(settings, target.provider)) {
+        diagnostics.push({
+          severity: "warning",
+          code: "provider_pool_target_provider_disabled",
+          path: `providerPools.${pool.id}.targets.${index}`,
+          message: `Provider pool "${pool.id}" targets ${target.provider}, but that provider is disabled.`,
+          details: { providerPoolId: pool.id, target },
+        });
+      }
+    }
+  }
+
+  return { providerPools: diagnostics };
 }
 
 export function buildSecretMap(
@@ -290,6 +667,8 @@ export function buildRuntimeSettingsView(
 ): RuntimeSettingsView {
   return {
     ...settings,
+    effectiveTargets: buildRuntimeEffectiveTargets(settings),
+    diagnostics: buildRuntimeDiagnostics(settings),
     providers: {
       ...settings.providers,
       openai: { ...settings.providers.openai, apiKeySecret: secretStatuses.openaiApiKey },

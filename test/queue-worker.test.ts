@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   markFindingCodexEscalationAccepted: vi.fn(),
   runFindCandidate: vi.fn(),
   runFinalizeDistille: vi.fn(),
+  heartbeatProviderLease: vi.fn(),
+  releaseProviderLease: vi.fn(),
   processMergeActivationFinalizeJob: vi.fn(),
   researchWebSourceToMarkdown: vi.fn(),
   isQueuePaused: vi.fn(),
@@ -47,6 +49,11 @@ vi.mock("../src/modules/queue/core/claim.js", () => ({
 
 vi.mock("../src/modules/queue/core/events.js", () => ({
   appendQueueEvent: mocks.appendQueueEvent,
+}));
+
+vi.mock("../src/modules/queue/core/provider-lease.js", () => ({
+  heartbeatProviderLease: mocks.heartbeatProviderLease,
+  releaseProviderLease: mocks.releaseProviderLease,
 }));
 
 vi.mock("../src/modules/coverEvidence/domain.js", () => ({
@@ -117,6 +124,8 @@ function updateChain(table: unknown) {
 describe("runQueueWorkerOnce", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.heartbeatProviderLease.mockResolvedValue(undefined);
+    mocks.releaseProviderLease.mockResolvedValue(undefined);
     mocks.selectRows = [];
     mocks.insertCalls = [];
     mocks.updateCalls = [];
@@ -675,6 +684,14 @@ describe("runQueueWorkerOnce", () => {
     const result = await runQueueWorkerOnce({
       queueName: "coveringEvidence",
       workerId: "worker-1",
+      providerLease: {
+        id: "lease-worker-unavailable-1",
+        poolId: "local-llm-default",
+        targetId: "local-primary",
+        queueName: "coveringEvidence",
+        queueJobId: "cover-job-1",
+        workerId: "worker-1",
+      },
     });
 
     expect(result.ok).toBe(false);
@@ -695,6 +712,10 @@ describe("runQueueWorkerOnce", () => {
         message: "job kept waiting because worker dependency is unavailable",
       }),
     );
+    const workerUnavailableEvent = mocks.appendQueueEvent.mock.calls.find(
+      (call) => call[0]?.eventType === "retried",
+    )?.[0] as { metadata?: Record<string, unknown> } | undefined;
+    expect(workerUnavailableEvent?.metadata ?? {}).not.toHaveProperty("resolvedProviderTarget");
   });
 
   test("keeps finding candidate jobs waiting when the worker dependency is unavailable", async () => {
@@ -770,6 +791,14 @@ describe("runQueueWorkerOnce", () => {
     const result = await runQueueWorkerOnce({
       queueName: "findingCandidate",
       workerId: "worker-1",
+      providerLease: {
+        id: "lease-1",
+        poolId: "local-llm-default",
+        targetId: "local-primary",
+        queueName: "findingCandidate",
+        queueJobId: "finding-job-1",
+        workerId: "worker-1",
+      },
     });
 
     expect(result.ok).toBe(false);
@@ -790,6 +819,12 @@ describe("runQueueWorkerOnce", () => {
         metadata: expect.objectContaining({
           retryAfterSeconds: 30,
           status: 503,
+          resolvedProviderTarget: expect.objectContaining({
+            providerPoolId: "local-llm-default",
+            providerTargetId: "local-primary",
+            provider: "local-llm",
+            localLlmModelId: "local-primary",
+          }),
         }),
       }),
     );
@@ -1063,6 +1098,14 @@ describe("runQueueWorkerOnce", () => {
     const result = await runQueueWorkerOnce({
       queueName: "findingCandidate",
       workerId: "worker-1",
+      providerLease: {
+        id: "lease-failed-1",
+        poolId: "local-llm-default",
+        targetId: "local-primary",
+        queueName: "findingCandidate",
+        queueJobId: "finding-job-1",
+        workerId: "worker-1",
+      },
     });
 
     expect(result.ok).toBe(false);
@@ -1074,6 +1117,22 @@ describe("runQueueWorkerOnce", () => {
           status: "failed",
           attemptCount: 1,
           lastOutcomeKind: "failed",
+        }),
+      }),
+    );
+    expect(mocks.appendQueueEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queueName: "findingCandidate",
+        queueJobId: "finding-job-1",
+        eventType: "failed",
+        metadata: expect.objectContaining({
+          error: "some api error",
+          resolvedProviderTarget: expect.objectContaining({
+            providerPoolId: "local-llm-default",
+            providerTargetId: "local-primary",
+            provider: "local-llm",
+            localLlmModelId: "local-primary",
+          }),
         }),
       }),
     );

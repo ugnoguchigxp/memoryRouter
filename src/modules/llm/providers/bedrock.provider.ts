@@ -86,13 +86,13 @@ export function createBedrockProvider(options: BedrockProviderOptions = {}): Llm
       try {
         const system = request.messages
           .filter((message) => message.role === "system")
-          .map((message) => ({ text: message.content }));
+          .map((message) => ({ text: message.content ?? "" }));
 
         const messages = request.messages
           .filter((message) => message.role !== "system")
           .map((message) => ({
             role: asBedrockRole(message.role),
-            content: [{ text: message.content }],
+            content: [{ text: message.content ?? "" }],
           }));
 
         if (messages.length === 0) {

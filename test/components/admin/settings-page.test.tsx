@@ -70,6 +70,36 @@ function secretStatus(configured: boolean) {
 }
 
 function buildSettingsView(): RuntimeSettingsView {
+  const openAiTarget = {
+    source: "route" as const,
+    targets: [
+      {
+        provider: "openai" as const,
+        id: "route:openai:gpt-5-4-mini",
+        label: "gpt-5-4-mini",
+        source: "route" as const,
+        model: "gpt-5-4-mini",
+        endpoint: "https://api.openai.com/v1",
+      },
+    ],
+  };
+  const localPoolTarget = {
+    source: "provider_pool" as const,
+    providerPoolId: "local-llm-default",
+    targets: [
+      {
+        provider: "local-llm" as const,
+        id: "provider-pool:local-llm-default:local-llm:local-primary",
+        label: "Primary",
+        source: "provider_pool" as const,
+        model: "gemma-4-e4b-it",
+        endpoint: "http://127.0.0.1:44448",
+        providerPoolId: "local-llm-default",
+        localLlmModelId: "local-primary",
+      },
+    ],
+  };
+
   return {
     general: {
       distillationPriority: {
@@ -87,6 +117,31 @@ function buildSettingsView(): RuntimeSettingsView {
         lowPriorityAgingSeconds: 1800,
       },
     ],
+    effectiveTargets: {
+      providerPools: {
+        "local-llm-default": localPoolTarget.targets,
+      },
+      taskRouting: {
+        findCandidate: {
+          source: openAiTarget,
+          vibe: openAiTarget,
+        },
+        webSourceResearch: localPoolTarget,
+        episodeDistiller: localPoolTarget,
+        coverEvidence: {
+          sourceSupport: localPoolTarget,
+          externalEvidence: localPoolTarget,
+          mcpEvidence: localPoolTarget,
+        },
+        finalizeDistille: localPoolTarget,
+        mergeActivationFinalize: localPoolTarget,
+        deadZoneMergeReview: localPoolTarget,
+        agenticCompile: openAiTarget,
+      },
+    },
+    diagnostics: {
+      providerPools: [],
+    },
     providers: {
       openai: {
         enabled: true,
@@ -1081,6 +1136,51 @@ describe("SettingsPage", () => {
     expect(
       payload.settings.providers["local-llm"].models.map((model: { id?: string }) => model.id),
     ).toEqual(["local-primary", "local-qwen", "local-reasoner"]);
+  });
+
+  it("shows provider pool diagnostics as non-blocking warnings", async () => {
+    const settings = buildSettingsView();
+    settings.diagnostics.providerPools = [
+      {
+        severity: "error",
+        code: "provider_pool_missing",
+        path: "taskRouting.episodeDistiller.providerPoolId",
+        message:
+          'taskRouting.episodeDistiller references provider pool "missing-pool", but the pool is not configured.',
+        details: { providerPoolId: "missing-pool" },
+      },
+    ];
+    repositoryMocks.fetchRuntimeSettings.mockResolvedValue({
+      ...buildSnapshot(),
+      settings,
+      effective: settings,
+    });
+    routerState.pathname = "/setting/llmpool";
+    renderPage();
+
+    expect(await screen.findByLabelText("provider pool diagnostics")).toBeInTheDocument();
+    expect(screen.getByText("Provider Pool Diagnostics")).toBeInTheDocument();
+    expect(screen.getByText(/missing-pool/)).toBeInTheDocument();
+  });
+
+  it("keeps LLM Pool rendering when runtime diagnostics are absent", async () => {
+    const settings = buildSettingsView() as Omit<
+      RuntimeSettingsView,
+      "diagnostics" | "effectiveTargets"
+    > &
+      Partial<Pick<RuntimeSettingsView, "diagnostics" | "effectiveTargets">>;
+    settings.diagnostics = undefined;
+    settings.effectiveTargets = undefined;
+    repositoryMocks.fetchRuntimeSettings.mockResolvedValue({
+      ...buildSnapshot(),
+      settings: settings as RuntimeSettingsView,
+      effective: settings as RuntimeSettingsView,
+    });
+    routerState.pathname = "/setting/llmpool";
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "LLM Pool" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("provider pool diagnostics")).not.toBeInTheDocument();
   });
 
   it("shows an empty state on LLM Pool when no complete Local LLM endpoint exists", async () => {

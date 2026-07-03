@@ -353,6 +353,12 @@ export type DoctorReport = {
       generationChecked?: boolean;
       generationReachable?: boolean;
       generationError?: string;
+      localLlmSmokes?: Array<{
+        name: "simple_chat" | "json_only" | "tool_result_history";
+        ok: boolean;
+        error?: string;
+        preview?: string;
+      }>;
     }>;
   };
   runs: {
@@ -2251,6 +2257,36 @@ export type RuntimeProviderPool = {
   lowPriorityAgingSeconds: number;
 };
 
+export type RuntimeEffectiveProviderTarget = {
+  provider: RuntimeProviderName;
+  id: string;
+  label: string;
+  source: "route" | "provider_pool";
+  model: string | null;
+  endpoint: string | null;
+  providerPoolId?: string;
+  localLlmModelId?: string;
+  deploymentSlot?: number;
+};
+
+export type RuntimeEffectiveRouteTargets = {
+  source: "none" | "route" | "provider_pool";
+  providerPoolId?: string;
+  targets: RuntimeEffectiveProviderTarget[];
+};
+
+export type RuntimeSettingsDiagnostic = {
+  severity: "warning" | "error";
+  code: string;
+  path: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+export type RuntimeSettingsDiagnostics = {
+  providerPools: RuntimeSettingsDiagnostic[];
+};
+
 export type DistillationPriorityTargetKind =
   | "knowledge_candidate"
   | "web_ingest"
@@ -2380,6 +2416,27 @@ export type RuntimeSettingsEditable = {
 };
 
 export type RuntimeSettingsView = RuntimeSettingsEditable & {
+  effectiveTargets: {
+    providerPools: Record<string, RuntimeEffectiveProviderTarget[]>;
+    taskRouting: {
+      findCandidate: {
+        source: RuntimeEffectiveRouteTargets;
+        vibe: RuntimeEffectiveRouteTargets;
+      };
+      webSourceResearch: RuntimeEffectiveRouteTargets;
+      episodeDistiller: RuntimeEffectiveRouteTargets;
+      coverEvidence: {
+        sourceSupport: RuntimeEffectiveRouteTargets;
+        externalEvidence: RuntimeEffectiveRouteTargets;
+        mcpEvidence: RuntimeEffectiveRouteTargets;
+      };
+      deadZoneMergeReview: RuntimeEffectiveRouteTargets;
+      finalizeDistille: RuntimeEffectiveRouteTargets;
+      mergeActivationFinalize: RuntimeEffectiveRouteTargets;
+      agenticCompile: RuntimeEffectiveRouteTargets;
+    };
+  };
+  diagnostics: RuntimeSettingsDiagnostics;
   providers: RuntimeSettingsEditable["providers"] & {
     openai: RuntimeSettingsEditable["providers"]["openai"] & {
       apiKeySecret: RuntimeSecretStatus;

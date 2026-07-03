@@ -104,6 +104,19 @@ function llmHealthClass(provider: { configured: boolean; reachable: boolean }): 
   return "text-amber-600";
 }
 
+function localLlmSmokeLabel(name: string): string {
+  switch (name) {
+    case "simple_chat":
+      return "chat";
+    case "json_only":
+      return "json";
+    case "tool_result_history":
+      return "tool history";
+    default:
+      return name;
+  }
+}
+
 function launchAgentLabel(agent: { loaded: boolean; installed: boolean }): string {
   if (agent.loaded) return "loaded";
   if (agent.installed) return "installed";
@@ -551,6 +564,23 @@ function AiServiceToolsDomain({ data }: { data: DoctorAiServiceToolsDomain }) {
                         : `route #${provider.routeOrder + 1}`}
                     </span>
                   </div>
+                  {provider.localLlmSmokes?.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {provider.localLlmSmokes.map((smoke) => (
+                        <span
+                          key={`${provider.id}:${smoke.name}`}
+                          className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${
+                            smoke.ok
+                              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                              : "border-red-200 bg-red-50 text-red-700"
+                          }`}
+                          title={smoke.error ?? smoke.preview ?? smoke.name}
+                        >
+                          {localLlmSmokeLabel(smoke.name)}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>
