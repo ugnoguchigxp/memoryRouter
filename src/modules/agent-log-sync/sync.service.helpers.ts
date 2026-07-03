@@ -19,6 +19,7 @@ const BACKGROUND_TASK_STATUS_RE = /(^|\n)Task:\s*[^\s]+\/task-\d+/i;
 const BACKGROUND_TASK_LOG_PATH_RE = /(^|\n)Log:\s*.*task-\d+\.log/i;
 const CODEX_INTERNAL_PROVIDER_PROMPT_RE =
   /^\[System Instructions\]\n[\s\S]*\n\n\[Instructions\]\nBased on the instructions and history above, generate the final response\./;
+const NIGHTWORKERS_RUNTIME_CONTRACT_MARKER = "[NightWorkers Runtime Contract]";
 const diffExtractionToolNames = new Set([
   "replace_file_content",
   "write_to_file",
@@ -72,6 +73,66 @@ function normalizedSet(values: string[]): Set<string> {
 function metadataString(metadata: Record<string, unknown>, key: string): string | undefined {
   const value = metadata[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function extractRuntimeContractField(contract: string, field: string): string | undefined {
+  const escapedField = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = contract.match(new RegExp(`^\\s*${escapedField}\\s*:\\s*(.+?)\\s*$`, "m"));
+  return match?.[1]?.trim() || undefined;
+}
+
+function nightWorkersRuntimeContractInfo(content: string): {
+  before: string;
+  executionMode: string;
+  taskId?: string;
+  runId?: string;
+} | null {
+  const markerIndex = content.indexOf(NIGHTWORKERS_RUNTIME_CONTRACT_MARKER);
+  if (markerIndex < 0) return null;
+
+  const before = content.slice(0, markerIndex).trim();
+  const contract = content.slice(markerIndex);
+  const executionMode = extractRuntimeContractField(contract, "executionMode");
+  if (executionMode !== "implementation") return null;
+
+  return {
+    before,
+    executionMode,
+    taskId: extractRuntimeContractField(contract, "taskId"),
+    runId: extractRuntimeContractField(contract, "runId"),
+  };
+}
+
+export function hasTargetedNightWorkersRuntimeContract(content: string): boolean {
+  return Boolean(nightWorkersRuntimeContractInfo(content));
+}
+
+export function sanitizeNightWorkersRuntimeContractMessage(
+  message: ChatMessage,
+): ChatMessage | null {
+  if (message.metadata.sourceId !== "codex_logs") return message;
+
+  const contractInfo = nightWorkersRuntimeContractInfo(message.content);
+  if (!contractInfo) return message;
+  if (!contractInfo.before) return null;
+
+  return {
+    ...message,
+    content: contractInfo.before,
+    metadata: {
+      ...message.metadata,
+      nightWorkersRuntimeContractStripped: true,
+      nightWorkersRuntimeContractExecutionMode: contractInfo.executionMode,
+      ...(contractInfo.taskId ? { nightWorkersTaskId: contractInfo.taskId } : {}),
+      ...(contractInfo.runId ? { nightWorkersRunId: contractInfo.runId } : {}),
+    },
+  };
+}
+
+export function sanitizeNightWorkersRuntimeContractChunk(chunk: ChatMessage[]): ChatMessage[] {
+  return chunk
+    .map(sanitizeNightWorkersRuntimeContractMessage)
+    .filter((message): message is ChatMessage => Boolean(message));
 }
 
 export function isExcludedAgentLogMetadata(metadata: Record<string, unknown>): boolean {
@@ -359,6 +420,7 @@ export function getCheckpointDate(maxObservedMtimeMs: number, since?: Date): Dat
 export function mergeMessageMetadata(
   source: AgentLogSourceDescriptor,
   messages: ChatMessage[],
+  options: { rawMessageCount?: number } = {},
 ): Record<string, unknown> {
   const firstMetadata = messages.find((message) => message.metadata)?.metadata ?? {};
   const toolCalls = collectToolCallSummaries(messages);
@@ -372,6 +434,15 @@ export function mergeMessageMetadata(
         .filter((file): file is string => typeof file === "string" && file.length > 0),
     ),
   );
+  const strippedMessages = messages.filter(
+    (message) => message.metadata.nightWorkersRuntimeContractStripped === true,
+  );
+  const runtimeContractTaskId = firstMetadataString(messages, "nightWorkersTaskId");
+  const runtimeContractRunId = firstMetadataString(messages, "nightWorkersRunId");
+  const runtimeContractExecutionMode = firstMetadataString(
+    messages,
+    "nightWorkersRuntimeContractExecutionMode",
+  );
 
   return {
     ...redactSecretRecord(firstMetadata),
@@ -383,7 +454,17 @@ export function mergeMessageMetadata(
     projectRoot,
     sessionStartedAt,
     sessionTitle: buildSessionTitle(source, messages),
+    ...(options.rawMessageCount !== undefined ? { rawMessageCount: options.rawMessageCount } : {}),
     messageCount: messages.length,
+    ...(strippedMessages.length > 0
+      ? {
+          nightWorkersRuntimeContractStripped: true,
+          nightWorkersRuntimeContractStrippedCount: strippedMessages.length,
+          nightWorkersRuntimeContractExecutionMode: runtimeContractExecutionMode,
+          ...(runtimeContractTaskId ? { nightWorkersTaskId: runtimeContractTaskId } : {}),
+          ...(runtimeContractRunId ? { nightWorkersRunId: runtimeContractRunId } : {}),
+        }
+      : {}),
     toolCallCount: toolCalls.length,
     toolCalls: toolCalls.slice(0, 100),
     toolCallsTruncated: toolCalls.length > 100,

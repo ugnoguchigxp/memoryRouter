@@ -15,6 +15,15 @@ use super::types::{
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 const DISTILLATION_VERSION: &str = "select-distillation-target-v1";
+const NIGHTWORKERS_RUNTIME_CONTRACT_MARKER: &str = "[NightWorkers Runtime Contract]";
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct NightWorkersRuntimeContractInfo {
+    before: String,
+    execution_mode: String,
+    task_id: Option<String>,
+    run_id: Option<String>,
+}
 
 pub(crate) fn open_database<E: EnvProvider>(env: &E) -> Result<Connection, CliError> {
     let paths = resolve_paths(env);
@@ -64,16 +73,23 @@ pub(crate) fn store_source_result(
     for (memory_session_id, messages) in grouped {
         let chunks = chunk_messages(&messages, 120, 12_000);
         for (chunk_index, chunk) in chunks.iter().enumerate() {
-            let readable = build_readable_transcript(chunk);
+            let sanitized_chunk = sanitize_nightworkers_runtime_contract_chunk(chunk);
+            if sanitized_chunk.is_empty() {
+                continue;
+            }
+            let readable = build_readable_transcript(&sanitized_chunk);
             if readable.trim().len() <= min_distillable_chars {
                 continue;
             }
-            let raw = build_transcript(chunk);
+            let raw = build_transcript(&sanitized_chunk);
             let content = if readable.trim().is_empty() {
                 raw
             } else {
                 readable
             };
+            if has_targeted_nightworkers_runtime_contract(&content) {
+                continue;
+            }
             let dedupe_key = format!("{source_id}:{memory_session_id}:{chunk_index}");
             let existing: Option<String> = tx
                 .query_row(
@@ -89,7 +105,13 @@ pub(crate) fn store_source_result(
 
             let memory_id = next_id("vibe-memory");
             let now = now_timestamp();
-            let metadata = build_memory_metadata(source, chunk, chunk_index, &dedupe_key);
+            let metadata = build_memory_metadata(
+                source,
+                &sanitized_chunk,
+                chunk.len(),
+                chunk_index,
+                &dedupe_key,
+            );
             tx.execute(
                 "
                 insert into vibe_memories (
@@ -227,6 +249,7 @@ fn append_queue_event(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn enqueue_finding_candidate_if_eligible(
     tx: &rusqlite::Transaction<'_>,
     memory_id: &str,
@@ -500,8 +523,27 @@ fn progress_only(content: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
+    use super::super::types::AgentLogSourceId;
     use super::*;
+
+    fn nightworkers_runtime_contract_prompt(prefix: &str, execution_mode: &str) -> String {
+        [
+            prefix,
+            "",
+            NIGHTWORKERS_RUNTIME_CONTRACT_MARKER,
+            "taskId: task-impl-1",
+            "runId: run-impl-1",
+            "repoRoot: /Users/y.noguchi/Code/example",
+            &format!("executionMode: {execution_mode}"),
+            "NightWorkers MCP:",
+            "- MCP server name: nightworkers",
+            "Minimal implementation behavior:",
+            "- Use nightworkers.todo_list as the single Todo control tool.",
+        ]
+        .join("\n")
+    }
 
     #[test]
     fn agent_log_sync_rejects_progress_only_finding_eligibility() {
@@ -509,6 +551,160 @@ mod tests {
         let metadata = json!({"roles":["assistant"]});
 
         assert!(evaluate_finding_eligibility(content, &metadata).is_none());
+    }
+
+    #[test]
+    fn sanitizes_nightworkers_implementation_runtime_contract_message() {
+        let message = ChatMessage {
+            role: "user",
+            content: nightworkers_runtime_contract_prompt("実装依頼を残します。", "implementation"),
+            metadata: json!({"sourceId":"codex_logs","sessionId":"nightworkers-session"}),
+        };
+
+        let sanitized = sanitize_nightworkers_runtime_contract_message(&message).unwrap();
+
+        assert_eq!(sanitized.content, "実装依頼を残します。");
+        assert!(!sanitized
+            .content
+            .contains(NIGHTWORKERS_RUNTIME_CONTRACT_MARKER));
+        assert_eq!(
+            metadata_string(
+                &sanitized.metadata,
+                "nightWorkersRuntimeContractExecutionMode"
+            )
+            .as_deref(),
+            Some("implementation")
+        );
+        assert_eq!(
+            metadata_string(&sanitized.metadata, "nightWorkersTaskId").as_deref(),
+            Some("task-impl-1")
+        );
+        assert_eq!(
+            metadata_string(&sanitized.metadata, "nightWorkersRunId").as_deref(),
+            Some("run-impl-1")
+        );
+    }
+
+    #[test]
+    fn keeps_non_implementation_runtime_contract_message_unchanged() {
+        let message = ChatMessage {
+            role: "user",
+            content: nightworkers_runtime_contract_prompt("計画だけ確認します。", "planning"),
+            metadata: json!({"sourceId":"codex_logs","sessionId":"nightworkers-session"}),
+        };
+
+        let sanitized = sanitize_nightworkers_runtime_contract_message(&message).unwrap();
+
+        assert_eq!(sanitized.content, message.content);
+        assert!(sanitized
+            .content
+            .contains(NIGHTWORKERS_RUNTIME_CONTRACT_MARKER));
+    }
+
+    #[test]
+    fn sanitizes_runtime_contract_fields_with_label_spacing() {
+        let message = ChatMessage {
+            role: "user",
+            content: nightworkers_runtime_contract_prompt(
+                "空白つき field の実装依頼です。",
+                "implementation",
+            )
+            .replace("taskId:", " taskId :")
+            .replace("runId:", " runId :")
+            .replace("executionMode:", " executionMode :"),
+            metadata: json!({"sourceId":"codex_logs","sessionId":"nightworkers-session"}),
+        };
+
+        let sanitized = sanitize_nightworkers_runtime_contract_message(&message).unwrap();
+
+        assert_eq!(sanitized.content, "空白つき field の実装依頼です。");
+        assert_eq!(
+            metadata_string(
+                &sanitized.metadata,
+                "nightWorkersRuntimeContractExecutionMode"
+            )
+            .as_deref(),
+            Some("implementation")
+        );
+        assert_eq!(
+            metadata_string(&sanitized.metadata, "nightWorkersTaskId").as_deref(),
+            Some("task-impl-1")
+        );
+        assert_eq!(
+            metadata_string(&sanitized.metadata, "nightWorkersRunId").as_deref(),
+            Some("run-impl-1")
+        );
+    }
+
+    #[test]
+    fn drops_runtime_contract_only_implementation_message() {
+        let message = ChatMessage {
+            role: "user",
+            content: nightworkers_runtime_contract_prompt("", "implementation")
+                .trim()
+                .to_string(),
+            metadata: json!({"sourceId":"codex_logs","sessionId":"nightworkers-session"}),
+        };
+
+        assert!(sanitize_nightworkers_runtime_contract_message(&message).is_none());
+    }
+
+    #[test]
+    fn build_memory_metadata_preserves_raw_message_count_after_sanitizing() {
+        let raw_chunk = vec![
+            ChatMessage {
+                role: "user",
+                content: nightworkers_runtime_contract_prompt("実装依頼です。", "implementation"),
+                metadata: json!({
+                    "sourceId":"codex_logs",
+                    "sessionId":"nightworkers-session",
+                    "projectName":"nightWorkers"
+                }),
+            },
+            ChatMessage {
+                role: "assistant",
+                content: "修正して検証しました。".to_string(),
+                metadata: json!({
+                    "sourceId":"codex_logs",
+                    "sessionId":"nightworkers-session",
+                    "projectName":"nightWorkers"
+                }),
+            },
+        ];
+        let sanitized = sanitize_nightworkers_runtime_contract_chunk(&raw_chunk);
+        let source = AgentLogSource {
+            id: AgentLogSourceId::Codex,
+            roots: Vec::new(),
+            initial_lookback_hours: 0,
+        };
+        let metadata = build_memory_metadata(&source, &sanitized, raw_chunk.len(), 0, "dedupe-1");
+
+        assert_eq!(
+            metadata.get("rawMessageCount").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            metadata.get("messageCount").and_then(Value::as_u64),
+            Some(2)
+        );
+        assert_eq!(
+            metadata
+                .get("nightWorkersRuntimeContractStripped")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            metadata
+                .get("nightWorkersRuntimeContractStrippedCount")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            metadata
+                .get("nightWorkersRuntimeContractExecutionMode")
+                .and_then(Value::as_str),
+            Some("implementation")
+        );
     }
 
     #[test]
@@ -591,9 +787,95 @@ fn build_readable_transcript(messages: &[ChatMessage]) -> String {
         .join("\n\n")
 }
 
+fn extract_runtime_contract_field(contract: &str, field: &str) -> Option<String> {
+    contract.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim() == field {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        None
+    })
+}
+
+fn nightworkers_runtime_contract_info(content: &str) -> Option<NightWorkersRuntimeContractInfo> {
+    let marker_index = content.find(NIGHTWORKERS_RUNTIME_CONTRACT_MARKER)?;
+    let before = content[..marker_index].trim().to_string();
+    let contract = &content[marker_index..];
+    let execution_mode = extract_runtime_contract_field(contract, "executionMode")?;
+    if execution_mode != "implementation" {
+        return None;
+    }
+    Some(NightWorkersRuntimeContractInfo {
+        before,
+        execution_mode,
+        task_id: extract_runtime_contract_field(contract, "taskId"),
+        run_id: extract_runtime_contract_field(contract, "runId"),
+    })
+}
+
+fn has_targeted_nightworkers_runtime_contract(content: &str) -> bool {
+    nightworkers_runtime_contract_info(content).is_some()
+}
+
+fn set_metadata_value(metadata: &mut Value, key: &str, value: Value) {
+    if !metadata.is_object() {
+        *metadata = json!({});
+    }
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert(key.to_string(), value);
+    }
+}
+
+fn sanitize_nightworkers_runtime_contract_message(message: &ChatMessage) -> Option<ChatMessage> {
+    if metadata_string(&message.metadata, "sourceId").as_deref() != Some("codex_logs") {
+        return Some(message.clone());
+    }
+    let Some(contract_info) = nightworkers_runtime_contract_info(&message.content) else {
+        return Some(message.clone());
+    };
+    if contract_info.before.is_empty() {
+        return None;
+    }
+
+    let mut sanitized = message.clone();
+    sanitized.content = contract_info.before;
+    set_metadata_value(
+        &mut sanitized.metadata,
+        "nightWorkersRuntimeContractStripped",
+        json!(true),
+    );
+    set_metadata_value(
+        &mut sanitized.metadata,
+        "nightWorkersRuntimeContractExecutionMode",
+        json!(contract_info.execution_mode),
+    );
+    if let Some(task_id) = contract_info.task_id {
+        set_metadata_value(
+            &mut sanitized.metadata,
+            "nightWorkersTaskId",
+            json!(task_id),
+        );
+    }
+    if let Some(run_id) = contract_info.run_id {
+        set_metadata_value(&mut sanitized.metadata, "nightWorkersRunId", json!(run_id));
+    }
+    Some(sanitized)
+}
+
+fn sanitize_nightworkers_runtime_contract_chunk(chunk: &[ChatMessage]) -> Vec<ChatMessage> {
+    chunk
+        .iter()
+        .filter_map(sanitize_nightworkers_runtime_contract_message)
+        .collect()
+}
+
 fn build_memory_metadata(
     source: &AgentLogSource,
     messages: &[ChatMessage],
+    raw_message_count: usize,
     chunk_index: usize,
     dedupe_key: &str,
 ) -> Value {
@@ -606,7 +888,29 @@ fn build_memory_metadata(
     let cwd = messages
         .iter()
         .find_map(|message| metadata_string(&message.metadata, "cwd"));
-    json!({
+    let stripped_count = messages
+        .iter()
+        .filter(|message| {
+            message
+                .metadata
+                .get("nightWorkersRuntimeContractStripped")
+                .and_then(Value::as_bool)
+                == Some(true)
+        })
+        .count();
+    let execution_mode = messages.iter().find_map(|message| {
+        metadata_string(
+            &message.metadata,
+            "nightWorkersRuntimeContractExecutionMode",
+        )
+    });
+    let task_id = messages
+        .iter()
+        .find_map(|message| metadata_string(&message.metadata, "nightWorkersTaskId"));
+    let run_id = messages
+        .iter()
+        .find_map(|message| metadata_string(&message.metadata, "nightWorkersRunId"));
+    let mut metadata = json!({
         "source": source.id.label(),
         "sourceId": source.id.id(),
         "sources": [source.id.label()],
@@ -615,12 +919,39 @@ fn build_memory_metadata(
         "cwd": cwd,
         "chunkIndex": chunk_index,
         "dedupeKey": dedupe_key,
+        "rawMessageCount": raw_message_count,
         "messageCount": messages.len(),
         "roles": messages.iter().map(|message| message.role).collect::<Vec<_>>(),
         "kind": "agent_log_chunk",
         "memoryPipeline": "raw_for_distillation",
         "rustAgentLogSync": true
-    })
+    });
+    if stripped_count > 0 {
+        set_metadata_value(
+            &mut metadata,
+            "nightWorkersRuntimeContractStripped",
+            json!(true),
+        );
+        set_metadata_value(
+            &mut metadata,
+            "nightWorkersRuntimeContractStrippedCount",
+            json!(stripped_count),
+        );
+        if let Some(execution_mode) = execution_mode {
+            set_metadata_value(
+                &mut metadata,
+                "nightWorkersRuntimeContractExecutionMode",
+                json!(execution_mode),
+            );
+        }
+        if let Some(task_id) = task_id {
+            set_metadata_value(&mut metadata, "nightWorkersTaskId", json!(task_id));
+        }
+        if let Some(run_id) = run_id {
+            set_metadata_value(&mut metadata, "nightWorkersRunId", json!(run_id));
+        }
+    }
+    metadata
 }
 
 fn ensure_schema(connection: &Connection) -> Result<(), CliError> {

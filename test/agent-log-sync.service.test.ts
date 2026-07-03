@@ -15,6 +15,12 @@ import {
   shouldDeleteLegacyAntigravityVibeMemories,
   syncAllAgentLogs,
 } from "../src/modules/agent-log-sync/sync.service.js";
+import {
+  hasTargetedNightWorkersRuntimeContract,
+  mergeMessageMetadata,
+  sanitizeNightWorkersRuntimeContractChunk,
+  sanitizeNightWorkersRuntimeContractMessage,
+} from "../src/modules/agent-log-sync/sync.service.helpers.js";
 
 vi.mock("../src/modules/agent-log-sync/ingest.service.js");
 vi.mock("../src/db/client.js", () => {
@@ -38,6 +44,22 @@ vi.mock("../src/db/client.js", () => {
     },
   };
 });
+
+function nightWorkersRuntimeContractPrompt(prefix = "実装タスク履歴を残してください。") {
+  return [
+    prefix,
+    "",
+    "[NightWorkers Runtime Contract]",
+    "taskId: task-impl-1",
+    "runId: run-impl-1",
+    "repoRoot: /Users/y.noguchi/Code/example",
+    "executionMode: implementation",
+    "NightWorkers MCP:",
+    "- MCP server name: nightworkers",
+    "Minimal implementation behavior:",
+    "- Use nightworkers.todo_list as the single Todo control tool.",
+  ].join("\n");
+}
 
 describe("Agent Log Sync Service", () => {
   beforeEach(() => {
@@ -98,7 +120,11 @@ describe("Agent Log Sync Service", () => {
           "Check this diff:\ndiff --git a/file.ts b/file.ts\n--- a/file.ts\n+++ b/file.ts\n@@ -1 +1 @@\n-old\n+new",
         metadata: { messageKind: "chat" },
       },
-      { role: "assistant", content: "Got it.", metadata: { messageKind: "chat" } },
+      {
+        role: "assistant",
+        content: "Got it.",
+        metadata: { messageKind: "chat" },
+      },
     ] as any;
 
     const transcript = buildReadableTranscript(messages);
@@ -267,14 +293,192 @@ describe("Agent Log Sync Service", () => {
     expect(summary.sources.find((source) => source.id === "codex_logs")?.messages).toBe(1);
   });
 
+  test("syncAllAgentLogs stores NightWorkers implementation history without Runtime Contract", async () => {
+    vi.mocked(ingestCodexLogs).mockResolvedValue({
+      ok: true,
+      messages: [
+        {
+          role: "user",
+          content: nightWorkersRuntimeContractPrompt(
+            "実装依頼: 保存前 sanitizer を追加してください。",
+          ),
+          metadata: {
+            sourceId: "codex_logs",
+            projectName: "nightWorkers",
+            sessionId: "nightworkers-impl-session",
+          },
+        },
+        {
+          role: "assistant",
+          content: "sanitize 処理を追加し、テストを実行しました。",
+          metadata: {
+            sourceId: "codex_logs",
+            projectName: "nightWorkers",
+            sessionId: "nightworkers-impl-session",
+          },
+        },
+      ],
+      cursor: {},
+      maxObservedMtimeMs: 2000,
+      checkedFiles: 1,
+      errors: [],
+      warnings: [],
+    } as any);
+
+    const chain = db.insert({} as any) as any;
+    chain.returning
+      .mockResolvedValueOnce([{ id: "memory-nightworkers" }])
+      .mockResolvedValueOnce([]);
+
+    const summary = await syncAllAgentLogs();
+
+    expect(summary.imported).toBe(1);
+    const memoryInsert = chain.values.mock.calls.find(([value]: [Record<string, unknown>]) =>
+      Object.prototype.hasOwnProperty.call(value, "content"),
+    )?.[0] as { content: string; metadata: Record<string, unknown> } | undefined;
+
+    expect(memoryInsert).toBeDefined();
+    expect(memoryInsert?.content).toContain("実装依頼: 保存前 sanitizer を追加してください。");
+    expect(memoryInsert?.content).toContain("sanitize 処理を追加し、テストを実行しました。");
+    expect(memoryInsert?.content).not.toContain("[NightWorkers Runtime Contract]");
+    expect(memoryInsert?.metadata).toMatchObject({
+      rawMessageCount: 2,
+      messageCount: 2,
+      nightWorkersRuntimeContractStripped: true,
+      nightWorkersRuntimeContractStrippedCount: 1,
+      nightWorkersRuntimeContractExecutionMode: "implementation",
+      nightWorkersTaskId: "task-impl-1",
+      nightWorkersRunId: "run-impl-1",
+    });
+  });
+
   test("buildReadableTranscript excludes tool calls", () => {
     const messages = [
-      { role: "assistant", content: "calling tool", metadata: { messageKind: "tool_call" } },
-      { role: "assistant", content: "Result", metadata: { messageKind: "chat" } },
+      {
+        role: "assistant",
+        content: "calling tool",
+        metadata: { messageKind: "tool_call" },
+      },
+      {
+        role: "assistant",
+        content: "Result",
+        metadata: { messageKind: "chat" },
+      },
     ] as any;
     const transcript = buildReadableTranscript(messages);
     expect(transcript).not.toContain("calling tool");
     expect(transcript).toContain("ASSISTANT: Result");
+  });
+
+  test("sanitizes only NightWorkers implementation Runtime Contract while keeping task history", () => {
+    const message = {
+      role: "user" as const,
+      content: nightWorkersRuntimeContractPrompt("ユーザー依頼: API のバグを直してください。"),
+      metadata: { sourceId: "codex_logs", sessionId: "nightworkers-session" },
+    };
+
+    expect(hasTargetedNightWorkersRuntimeContract(message.content)).toBe(true);
+
+    const sanitized = sanitizeNightWorkersRuntimeContractMessage(message);
+
+    expect(sanitized).not.toBeNull();
+    expect(sanitized?.content).toBe("ユーザー依頼: API のバグを直してください。");
+    expect(sanitized?.content).not.toContain("[NightWorkers Runtime Contract]");
+    expect(sanitized?.metadata).toMatchObject({
+      nightWorkersRuntimeContractStripped: true,
+      nightWorkersRuntimeContractExecutionMode: "implementation",
+      nightWorkersTaskId: "task-impl-1",
+      nightWorkersRunId: "run-impl-1",
+    });
+  });
+
+  test("does not sanitize non-implementation NightWorkers Runtime Contract lanes", () => {
+    const message = {
+      role: "user" as const,
+      content: nightWorkersRuntimeContractPrompt("計画だけ確認してください。").replace(
+        "executionMode: implementation",
+        "executionMode: planning",
+      ),
+      metadata: { sourceId: "codex_logs", sessionId: "nightworkers-session" },
+    };
+
+    expect(hasTargetedNightWorkersRuntimeContract(message.content)).toBe(false);
+    expect(sanitizeNightWorkersRuntimeContractMessage(message)).toEqual(message);
+  });
+
+  test("sanitizes Runtime Contract fields with label spacing", () => {
+    const message = {
+      role: "user" as const,
+      content: nightWorkersRuntimeContractPrompt("空白つき field の実装依頼です。")
+        .replace("taskId:", " taskId :")
+        .replace("runId:", " runId :")
+        .replace("executionMode:", " executionMode :"),
+      metadata: { sourceId: "codex_logs", sessionId: "nightworkers-session" },
+    };
+
+    const sanitized = sanitizeNightWorkersRuntimeContractMessage(message);
+
+    expect(sanitized?.content).toBe("空白つき field の実装依頼です。");
+    expect(sanitized?.metadata).toMatchObject({
+      nightWorkersRuntimeContractExecutionMode: "implementation",
+      nightWorkersTaskId: "task-impl-1",
+      nightWorkersRunId: "run-impl-1",
+    });
+  });
+
+  test("drops contract-only implementation Runtime Contract messages", () => {
+    const message = {
+      role: "user" as const,
+      content: nightWorkersRuntimeContractPrompt("").trim(),
+      metadata: { sourceId: "codex_logs", sessionId: "nightworkers-session" },
+    };
+
+    expect(sanitizeNightWorkersRuntimeContractMessage(message)).toBeNull();
+  });
+
+  test("sanitizes after chunking so raw chunk identity can be preserved", () => {
+    const messages = [
+      {
+        role: "user" as const,
+        content: nightWorkersRuntimeContractPrompt("重要な実装依頼です。"),
+        metadata: {
+          sourceId: "codex_logs",
+          sessionId: "nightworkers-session",
+          projectName: "nightWorkers",
+        },
+      },
+      {
+        role: "assistant" as const,
+        content: "修正して verify しました。",
+        metadata: {
+          sourceId: "codex_logs",
+          sessionId: "nightworkers-session",
+          projectName: "nightWorkers",
+        },
+      },
+    ];
+    const rawChunks = chunkMessages(messages, 2, nightWorkersRuntimeContractPrompt().length + 1000);
+
+    expect(rawChunks).toHaveLength(1);
+
+    const sanitizedChunk = sanitizeNightWorkersRuntimeContractChunk(rawChunks[0]);
+    const metadata = mergeMessageMetadata({ id: "codex_logs", label: "Codex" }, sanitizedChunk, {
+      rawMessageCount: rawChunks[0].length,
+    });
+
+    expect(sanitizedChunk).toHaveLength(2);
+    expect(metadata).toMatchObject({
+      rawMessageCount: 2,
+      messageCount: 2,
+      nightWorkersRuntimeContractStripped: true,
+      nightWorkersRuntimeContractStrippedCount: 1,
+      nightWorkersRuntimeContractExecutionMode: "implementation",
+      nightWorkersTaskId: "task-impl-1",
+      nightWorkersRunId: "run-impl-1",
+    });
+    expect(buildReadableTranscript(sanitizedChunk)).not.toContain(
+      "[NightWorkers Runtime Contract]",
+    );
   });
 
   test("identifies Antigravity background task log messages as non-distillable", () => {

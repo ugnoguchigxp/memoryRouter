@@ -36,11 +36,13 @@ import {
   extractUnifiedDiffsFromText,
   filterDistillableAgentLogMessages,
   getCheckpointDate,
+  hasTargetedNightWorkersRuntimeContract,
   isCodexInternalProviderPromptMessage,
   isExcludedAgentLogMetadata,
   isNonDistillableAgentTaskLogMessage,
   isToolCallMessage,
   mergeMessageMetadata,
+  sanitizeNightWorkersRuntimeContractChunk,
 } from "./sync.service.helpers.js";
 
 type AgentLogSource = {
@@ -86,7 +88,11 @@ export type AgentLogSyncSummary = {
 
 const sources: AgentLogSource[] = [
   { id: "codex_logs", label: "Codex", ingest: ingestCodexLogs },
-  { id: "antigravity_logs", label: "Antigravity", ingest: ingestAntigravityLogs },
+  {
+    id: "antigravity_logs",
+    label: "Antigravity",
+    ingest: ingestAntigravityLogs,
+  },
   { id: "claude_logs", label: "Claude", ingest: ingestClaudeLogs },
 ];
 
@@ -233,6 +239,7 @@ async function syncAllAgentLogsSqlite(params: {
 
     let insertedMemories = 0;
     let insertedDiffs = 0;
+    let runtimeContractLeakSkipped = 0;
     const enqueuedEpisodeJobs: Array<{ id: string; sourceKey: string }> = [];
 
     sqlite.db.query("BEGIN IMMEDIATE").run();
@@ -246,12 +253,19 @@ async function syncAllAgentLogsSqlite(params: {
       for (const [memorySessionId, sessionMessages] of messagesBySession.entries()) {
         const chunks = chunkMessages(sessionMessages);
         for (const [chunkIndex, chunk] of chunks.entries()) {
-          const rawContent = buildTranscript(chunk);
-          const readableContent = buildReadableTranscript(chunk);
+          const sanitizedChunk = sanitizeNightWorkersRuntimeContractChunk(chunk);
+          if (sanitizedChunk.length === 0) continue;
+          const rawContent = buildTranscript(sanitizedChunk);
+          const readableContent = buildReadableTranscript(sanitizedChunk);
           const diff = extractUnifiedDiffsFromText(rawContent);
-          const toolCallDiffs = extractAgentDiffsFromToolCalls(chunk);
-          const diffEntries = normalizeAgentDiffEntries({ diff, agentDiffs: toolCallDiffs });
-          const hiddenToolCallCount = chunk.filter((message) => isToolCallMessage(message)).length;
+          const toolCallDiffs = extractAgentDiffsFromToolCalls(sanitizedChunk);
+          const diffEntries = normalizeAgentDiffEntries({
+            diff,
+            agentDiffs: toolCallDiffs,
+          });
+          const hiddenToolCallCount = sanitizedChunk.filter((message) =>
+            isToolCallMessage(message),
+          ).length;
           if (!readableContent.trim() && diffEntries.length === 0 && hiddenToolCallCount === 0) {
             continue;
           }
@@ -260,9 +274,19 @@ async function syncAllAgentLogsSqlite(params: {
             (diffEntries.length > 0 ? "Agent diff recorded." : "Tool usage recorded.");
           if (isBelowMinDistillableChars(readableContent)) continue;
           const redactedContent = redactSecrets(content);
-          const dedupeKey = buildDedupeKey({ sourceId: source.id, memorySessionId, chunkIndex });
+          if (hasTargetedNightWorkersRuntimeContract(redactedContent)) {
+            runtimeContractLeakSkipped += 1;
+            continue;
+          }
+          const dedupeKey = buildDedupeKey({
+            sourceId: source.id,
+            memorySessionId,
+            chunkIndex,
+          });
           const memoryMetadata = redactSecretRecord({
-            ...mergeMessageMetadata(source, chunk),
+            ...mergeMessageMetadata(source, sanitizedChunk, {
+              rawMessageCount: chunk.length,
+            }),
             chunkIndex,
             dedupeKey,
             hiddenToolCallCount,
@@ -449,7 +473,13 @@ async function syncAllAgentLogsSqlite(params: {
       messages: messages.length,
       insertedMemories,
       insertedDiffs,
-      warnings: ingestResult.warnings,
+      warnings:
+        runtimeContractLeakSkipped > 0
+          ? [
+              ...ingestResult.warnings,
+              `Skipped ${runtimeContractLeakSkipped} NightWorkers Runtime Contract leak chunk(s).`,
+            ]
+          : ingestResult.warnings,
       errors: [],
       lastSyncedAt: checkpointDate.toISOString(),
     });
@@ -486,7 +516,10 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
       claude_logs: settings.advanced.claudeLogSyncEnabled,
     };
     if (resolveDatabaseBackendConfig().kind === "sqlite") {
-      const sqliteSummary = await syncAllAgentLogsSqlite({ summary, enabledBySourceId });
+      const sqliteSummary = await syncAllAgentLogsSqlite({
+        summary,
+        enabledBySourceId,
+      });
       const cleanup = await cleanupExpiredAuditLogsSafe({ trigger: "sync" });
       await recordAuditLogSafe({
         eventType: auditEventTypes.syncRunFinished,
@@ -590,6 +623,7 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
 
       let insertedMemories = 0;
       let insertedDiffs = 0;
+      let runtimeContractLeakSkipped = 0;
       const enqueuedEpisodeJobs: Array<{ id: string; sourceKey: string }> = [];
 
       await db.transaction(async (tx) => {
@@ -605,16 +639,18 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
           const chunks = chunkMessages(sessionMessages);
 
           for (const [chunkIndex, chunk] of chunks.entries()) {
-            const rawContent = buildTranscript(chunk);
-            const readableContent = buildReadableTranscript(chunk);
+            const sanitizedChunk = sanitizeNightWorkersRuntimeContractChunk(chunk);
+            if (sanitizedChunk.length === 0) continue;
+            const rawContent = buildTranscript(sanitizedChunk);
+            const readableContent = buildReadableTranscript(sanitizedChunk);
             const diff = extractUnifiedDiffsFromText(rawContent);
-            const toolCallDiffs = extractAgentDiffsFromToolCalls(chunk);
+            const toolCallDiffs = extractAgentDiffsFromToolCalls(sanitizedChunk);
             const diffEntries = normalizeAgentDiffEntries({
               diff,
               agentDiffs: toolCallDiffs,
             });
 
-            const hiddenToolCallCount = chunk.filter((message) =>
+            const hiddenToolCallCount = sanitizedChunk.filter((message) =>
               isToolCallMessage(message),
             ).length;
             if (!readableContent.trim() && diffEntries.length === 0 && hiddenToolCallCount === 0) {
@@ -627,13 +663,19 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
               continue;
             }
             const redactedContent = redactSecrets(content);
+            if (hasTargetedNightWorkersRuntimeContract(redactedContent)) {
+              runtimeContractLeakSkipped += 1;
+              continue;
+            }
             const dedupeKey = buildDedupeKey({
               sourceId: source.id,
               memorySessionId,
               chunkIndex,
             });
             const memoryMetadata = redactSecretRecord({
-              ...mergeMessageMetadata(source, chunk),
+              ...mergeMessageMetadata(source, sanitizedChunk, {
+                rawMessageCount: chunk.length,
+              }),
               chunkIndex,
               dedupeKey,
               hiddenToolCallCount,
@@ -705,7 +747,10 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
               })
               .returning({ id: episodeDistillerQueue.id });
             if (episodeJob) {
-              enqueuedEpisodeJobs.push({ id: episodeJob.id, sourceKey: inserted.id });
+              enqueuedEpisodeJobs.push({
+                id: episodeJob.id,
+                sourceKey: inserted.id,
+              });
             }
 
             if (diffEntries.length === 0) continue;
@@ -781,7 +826,13 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
         messages: messages.length,
         insertedMemories,
         insertedDiffs,
-        warnings: ingestResult.warnings,
+        warnings:
+          runtimeContractLeakSkipped > 0
+            ? [
+                ...ingestResult.warnings,
+                `Skipped ${runtimeContractLeakSkipped} NightWorkers Runtime Contract leak chunk(s).`,
+              ]
+            : ingestResult.warnings,
         errors: [],
         lastSyncedAt: checkpointDate.toISOString(),
       });

@@ -1,3 +1,5 @@
+#![allow(clippy::format_in_format_args)]
+
 use rusqlite::{params, Connection};
 use serde_json::Value;
 use std::sync::{Mutex, OnceLock};
@@ -100,6 +102,117 @@ fn rust_agent_log_sync_imports_codex_jsonl_into_sqlite() {
         })
         .unwrap();
     assert_eq!(episode_queue_count, 1);
+
+    std::fs::remove_dir_all(&app_dir).unwrap();
+}
+
+#[test]
+fn rust_agent_log_sync_strips_nightworkers_runtime_contract_before_storage() {
+    let _guard = test_lock();
+    let app_dir = temp_app_dir();
+    let codex_dir = app_dir.join("codex-sessions");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    let sqlite_path = app_dir.join("core.sqlite");
+    let session_path = codex_dir.join("session.jsonl");
+    let user_prompt = [
+        "実装依頼: Runtime Contract を保存前に除去してください。",
+        "",
+        "[NightWorkers Runtime Contract]",
+        "taskId: task-impl-1",
+        "runId: run-impl-1",
+        "repoRoot: /Users/y.noguchi/Code/example",
+        "executionMode: implementation",
+        "NightWorkers MCP:",
+        "- MCP server name: nightworkers",
+        "Minimal implementation behavior:",
+        "- Use nightworkers.todo_list as the single Todo control tool.",
+    ]
+    .join("\n");
+    let user_text = serde_json::to_string(&user_prompt).unwrap();
+    let assistant_text = serde_json::to_string("sanitize 処理を追加し、検証しました。").unwrap();
+    std::fs::write(
+        &session_path,
+        format!(
+            "{}\n{}\n{}\n",
+            r#"{"type":"session_meta","payload":{"id":"nightworkers-session","cwd":"/tmp/nightWorkers","timestamp":"2026-06-22T00:00:00.000Z"}}"#,
+            format!(
+                r#"{{"type":"response_item","timestamp":"2026-06-22T00:00:01.000Z","payload":{{"type":"message","role":"user","content":[{{"type":"input_text","text":{user_text}}}]}}}}"#
+            ),
+            format!(
+                r#"{{"type":"response_item","timestamp":"2026-06-22T00:00:02.000Z","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":{assistant_text}}}]}}}}"#
+            )
+        ),
+    )
+    .unwrap();
+    let env = MapEnv::from_pairs(vec![
+        ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+        (
+            "CONTEXT_STILL_SQLITE_CORE_PATH",
+            sqlite_path.to_str().unwrap(),
+        ),
+        ("AGENT_LOG_MIN_DISTILLABLE_CHARS", "20"),
+        ("CODEX_SESSION_DIR", codex_dir.to_str().unwrap()),
+        (
+            "CODEX_ARCHIVED_SESSION_DIR",
+            app_dir.join("missing").to_str().unwrap(),
+        ),
+        (
+            "ANTIGRAVITY_LOG_DIR",
+            app_dir.join("missing").to_str().unwrap(),
+        ),
+        ("CLAUDE_LOG_DIRS", ""),
+    ]);
+
+    let summary = run_sync(&env).unwrap();
+
+    assert_eq!(summary.imported, 1);
+    let connection = Connection::open(&sqlite_path).unwrap();
+    let content: String = connection
+        .query_row("select content from vibe_memories limit 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(content.contains("実装依頼: Runtime Contract を保存前に除去してください。"));
+    assert!(content.contains("sanitize 処理を追加し、検証しました。"));
+    assert!(!content.contains("[NightWorkers Runtime Contract]"));
+    let fts_content: String = connection
+        .query_row("select content from vibe_memories_fts limit 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(!fts_content.contains("[NightWorkers Runtime Contract]"));
+    let metadata: String = connection
+        .query_row("select metadata from vibe_memories limit 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let metadata: Value = serde_json::from_str(&metadata).unwrap();
+    assert_eq!(
+        metadata
+            .get("nightWorkersRuntimeContractStripped")
+            .and_then(Value::as_bool),
+        Some(true)
+    );
+    assert_eq!(
+        metadata
+            .get("nightWorkersRuntimeContractStrippedCount")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    assert_eq!(
+        metadata
+            .get("nightWorkersRuntimeContractExecutionMode")
+            .and_then(Value::as_str),
+        Some("implementation")
+    );
+    assert_eq!(
+        metadata.get("nightWorkersTaskId").and_then(Value::as_str),
+        Some("task-impl-1")
+    );
+    assert_eq!(
+        metadata.get("nightWorkersRunId").and_then(Value::as_str),
+        Some("run-impl-1")
+    );
 
     std::fs::remove_dir_all(&app_dir).unwrap();
 }
