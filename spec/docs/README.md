@@ -12,6 +12,7 @@
 | [Decision Signal Integration 実装計画](decision-signal-integration-implementation-plan.md) | `context_decision` を 90 点以上の品質へ引き上げるため、compile、graph、community、landscape、attractor 指標を統合する実装計画 |
 | [Desktop Readiness And Doctor States](desktop-readiness-and-doctor-states.md) | Tauri shell 実装前に固定する desktop data path、first-run state、doctor 表示、desktop readiness smoke の設計メモ |
 | [EpisodeCard 品質改善 実装計画](episode-card-quality-improvement-implementation-plan.md) | `episodeDistiller` の保存マッピング、canonical schema、スコア校正、既存データ補正により EpisodeCard の読みやすさとフィールド責務を改善する実装計画 |
+| [Knowledge / Episode Maintenance Threshold Concept](knowledge-episode-maintenance-threshold-concept.md) | knowledge / Episode の蓄積量が十分な場合だけ有効化する、機械学習・統計的メンテナンス機能の概念と件数境界 |
 | [EpisodeDistiller 逐次生成 実装計画](episode-distiller-incremental-generation-implementation-plan.md) | `episodeDistiller` を job 末尾一括保存から segment ごとの逐次生成・即時保存へ移行し、出力時刻ベースの監視、再開、重複抑止を実装する計画 |
 | Episode Distiller Queue 実装計画 (未配置) | `vibe memory` を共通ソースに、`findCandidate` の knowledge 候補抽出と `episodeDistiller` の複数 Episode 生成を分離する実装計画 |
 | [FindCandidate Vibe Memory Filtered Input 実装計画](findcandidate-vibe-memory-filtered-input-plan.md) | `findCandidate` から chunk 化と chunk 依存抽出を廃止し、deterministic な filtered vibe memory 入力へ切り替える実装計画 |
