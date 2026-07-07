@@ -253,19 +253,15 @@ const INITIAL_INSTRUCTIONS_JA: &str = concat!(
     "- `context_decision` が `reject` を返した場合は、その判断を停止条件として扱い、実装・変更・PR作成などの対象アクションを継続しない。必要な報告や確認待ちに切り替える。\n",
     "- `context_decision` に従った作業が完了し、結果が分かったら `context_decision_feedback` を保存する。成功/失敗/ユーザー上書き/回帰検出などの outcome は、完了直後または pre-commit 時点で分かる範囲で記録する。\n",
     "- ユーザーに情報を提示する際、それが本当に有用であるかを厳格に評価し、不確実な情報やノイズでコンテキストを圧迫しない。\n",
-    "- 作業中に再利用可能なルールや手順（手続き）を確立した場合は、プロジェクト依存の記述を除いて汎用化し、`register_candidates` で登録する。\n",
-    "- candidate 登録時は、単なる作業記録ではなく、他の文脈でも再利用できる知識として体裁を整える。\n",
-    "- candidate 登録時の title / body / avoid / prefer の自然文は日本語で書く。識別子、API名、コマンド、URL、エラーメッセージは原文を保持してよい。\n",
-    "- 手続き候補は SKILL.md 相当の形式が必須であり、`Use when:` / `Workflow:` / `Verification:` / `Avoid:` の見出しをこの順に含めないと登録できない。\n",
     "- 完了報告の前に、`context_compile` の実行回数と `compile_eval` の実行回数を自己申告する。また、各 runId ごとに `compile_eval` を1件以上保存する。ただし、`context_compile` が `No Content` を返した runId には保存しない。\n\n",
-    "## MCPツール種別\n",
+    "## 主要MCPツール\n",
+    "- `initial_instructions`: プロジェクト作業開始時に一度だけ、運用ルールと主要フローを読む。\n",
     "- `context_compile`: 作業前の最小コンテキスト生成（主導線）。\n",
+    "- `compile_eval`: `No Content` 以外の `context_compile` の作業後評価を保存。\n",
     "- `context_decision`: ブロッカー由来の判断が必要な時に、ユーザーへ質問する前の実行/修正/拒否/巻き戻し等を判断。`reject` は停止条件として扱う。\n",
     "- `context_decision_feedback`: `context_decision` 後の作業結果を Good/Bad または system/AI outcome として保存。\n",
-    "- `register_candidates`: 複数 candidate の一括登録。\n",
-    "- `compile_eval`: `No Content` 以外の `context_compile` の作業後評価を保存。\n",
-    "- `search_memory` / `fetch_memory`: 過去会話・差分の参照（補助）。\n",
-    "- `doctor`: DB / embedding / automation / run health の診断。"
+    "\n",
+    "その他の公開ツールは補助機能。通常フローでは主要ツールを優先し、補助ツールは明確に必要な場合だけ使う。"
 );
 
 const INITIAL_INSTRUCTIONS_EN: &str = concat!(
@@ -278,17 +274,13 @@ const INITIAL_INSTRUCTIONS_EN: &str = concat!(
     "- If `context_decision` returns `reject`, treat it as a stop condition and do not continue the target action, such as implementation, file changes, or PR creation. Switch to reporting or waiting for confirmation.\n",
     "- After work based on a `context_decision` is complete and the outcome is known, record `context_decision_feedback`. Record success, failure, user override, regression, or still-unknown outcome as soon as it is known, including at pre-commit time when appropriate.\n",
     "- Strictly evaluate if the presented information to the user is truly useful and specific to avoid context pollution.\n",
-    "- If reusable rules, guidelines, or procedures are established, remove project-specific wording, generalize them, and register them using `register_candidates`.\n",
-    "- When registering candidates, shape them as reusable knowledge rather than a task log.\n",
-    "- When registering candidates, write title / body / avoid / prefer natural language in Japanese. Preserve identifiers, API names, commands, URLs, and error messages as-is.\n",
-    "- Procedure candidates must use a SKILL.md-like shape and cannot be registered unless the body includes `Use when:` / `Workflow:` / `Verification:` / `Avoid:` headings in that order.\n",
     "- Before announcing completion, self-report the count of `context_compile` and `compile_eval` executions. Record at least one `compile_eval` for each runId in the session, except when `context_compile` returned `No Content`.\n\n",
-    "## MCP Tool Reference\n",
+    "## Primary MCP Tools\n",
+    "- `initial_instructions`: Read operating rules and the primary flow once at the start of project work.\n",
     "- `context_compile`: Generates the baseline minimal context before working.\n",
+    "- `compile_eval`: Saves post-task evaluation metrics for `context_compile` runs that returned content.\n",
     "- `context_decision`: Resolves blocker-derived proceed/revise/reject/rollback/discard/escalate judgments before asking the user. Treat `reject` as a stop condition.\n",
     "- `context_decision_feedback`: Records Good/Bad or system/AI outcome feedback after work based on a decision completes.\n",
-    "- `register_candidates`: Batch registers multiple candidates.\n",
-    "- `compile_eval`: Saves post-task evaluation metrics for `context_compile` runs that returned content.\n",
-    "- `search_memory` / `fetch_memory`: Reference past conversations or diff history.\n",
-    "- `doctor`: Diagnostic checkup for DB, embedding, and automation health."
+    "\n",
+    "Other exposed tools are supplemental. Prefer the primary tools in normal workflows and use supplemental tools only when clearly needed."
 );

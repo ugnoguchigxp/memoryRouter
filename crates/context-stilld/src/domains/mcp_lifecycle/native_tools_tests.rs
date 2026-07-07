@@ -75,10 +75,20 @@ fn test_handle_native_dispatch_initial_instructions_returns_text() {
     let content = res["content"].as_array().unwrap();
     assert_eq!(content.len(), 1);
     assert_eq!(content[0]["type"].as_str().unwrap(), "text");
-    assert!(content[0]["text"]
-        .as_str()
-        .unwrap()
-        .contains("## 常用ルール"));
+    let text = content[0]["text"].as_str().unwrap();
+    assert!(text.contains("## 常用ルール") || text.contains("## Operational Rules"));
+    assert!(text.contains("## 主要MCPツール") || text.contains("## Primary MCP Tools"));
+    assert!(text.contains("initial_instructions"));
+    assert!(text.contains("context_compile"));
+    assert!(text.contains("compile_eval"));
+    assert!(text.contains("context_decision"));
+    assert!(text.contains("context_decision_feedback"));
+    assert!(
+        text.contains("その他の公開ツールは補助機能")
+            || text.contains("Other exposed tools are supplemental")
+    );
+    assert!(!text.contains("`register_candidates`"));
+    assert!(!text.contains("SKILL.md 相当"));
 }
 
 #[test]
