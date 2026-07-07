@@ -3,7 +3,7 @@
 context-still exposes a compact MCP surface for coding agents. The tools are designed around this repeatable workflow:
 
 ```text
-initial_instructions -> context_compile -> context_decision as a pre-question gate when a blocker-derived decision would stop progress -> work or stop on reject -> context_decision_feedback when the decision outcome is known -> compile_eval -> register_candidates
+initial_instructions -> context_compile -> context_decision as a pre-question gate when a blocker-derived decision would stop progress -> work or stop on reject -> context_decision_feedback when the decision outcome is known -> compile_eval
 ```
 
 ## Client Registration
@@ -23,7 +23,7 @@ Register the daemon-owned streamable HTTP endpoint in MCP clients:
 
 Use `bun run setup:mcp-config` to update Codex and Antigravity configs. Command-based context-still MCP registration has been removed and must not be restored.
 
-## Tool Inventory
+## Primary Tool Inventory
 
 | Tool                        | Primary use                                                                                           |
 | --------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -32,11 +32,18 @@ Use `bun run setup:mcp-config` to update Codex and Antigravity configs. Command-
 | `compile_eval`              | Record post-task usefulness scores for compiled context                                               |
 | `context_decision`          | Decide execute/revise/reject/rollback/discard/escalate from Knowledge evidence before asking the user |
 | `context_decision_feedback` | Record Good/Bad or system/AI outcome feedback for a decision                                          |
-| `search_knowledge`          | Inspect raw knowledge candidates and retrieval behavior                                               |
-| `register_candidates`       | Register positive or negative rule/procedure candidates in one call                                    |
-| `search_memory`             | Search past sessions and diffs                                                                        |
-| `fetch_memory`              | Fetch one memory item                                                                                 |
-| `doctor`                    | Diagnose DB, embedding, sync, queue, provider, decision, and compile health                           |
+
+## Supplemental Tool Inventory
+
+These tools remain exposed for focused inspection, diagnostics, and explicit knowledge maintenance, but they are not part of the normal primary workflow.
+
+| Tool                    | Supplemental use                                                             |
+| ----------------------- | ---------------------------------------------------------------------------- |
+| `search_knowledge`      | Inspect raw knowledge candidates and retrieval behavior                       |
+| `register_candidates`   | Register positive or negative rule/procedure candidates in one call           |
+| `search_memory`         | Search past sessions and diffs                                                |
+| `fetch_memory`          | Fetch one memory item                                                         |
+| `doctor`                | Diagnose DB, embedding, sync, queue, provider, decision, and compile health   |
 
 Deprecated hidden aliases remain for compatibility but are not listed:
 
@@ -52,8 +59,8 @@ Deprecated hidden aliases remain for compatibility but are not listed:
 5. If `context_decision` returns `reject`, stop the target action and report or wait for confirmation instead of continuing implementation, file changes, or PR creation.
 6. Call `context_decision_feedback` after work based on a decision completes, including at pre-commit time when the outcome is known.
 7. Call `compile_eval` for the compile run used during the task.
-8. Call `register_candidates` for durable lessons discovered during the task.
-9. Call `doctor` if compile output is weak, stale, degraded, or failed.
+
+Supplemental tools can be used when clearly needed, for example `doctor` for runtime health diagnostics, `search_memory` / `fetch_memory` for past-session lookup, `search_knowledge` for retrieval debugging, or `register_candidates` for explicit durable knowledge maintenance.
 
 ## Tool Contracts
 
@@ -66,7 +73,7 @@ Input: none.
 Output:
 
 - Common rules.
-- MCP tool categories.
+- Primary MCP tool categories.
 - Hook/compile evaluation reminders.
 
 Use once at project-session start. Do not call before every small subtask unless the session context has been lost.

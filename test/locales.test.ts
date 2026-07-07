@@ -20,35 +20,42 @@ describe("locale helpers", () => {
     expect(buildInitialInstructionsText("en")).toContain("## Operational Rules");
   });
 
-  test("initial instructions prefer generalized bulk candidate registration", () => {
+  test("initial instructions emphasize primary tools over supplemental tools", () => {
     const ja = buildInitialInstructionsText("ja");
     const en = buildInitialInstructionsText("en");
 
     for (const text of [ja, en]) {
+      expect(text).toContain("initial_instructions");
+      expect(text).toContain("context_compile");
+      expect(text).toContain("compile_eval");
       expect(text).toContain("context_decision");
       expect(text).toContain("context_decision_feedback");
-      expect(text).toContain("register_candidates");
-      expect(text).toContain("Use when:");
-      expect(text).toContain("Workflow:");
-      expect(text).toContain("Verification:");
-      expect(text).toContain("Avoid:");
+      expect(text).not.toContain("`register_candidates`");
       expect(text).not.toContain("`register_candidate`");
       expect(text).not.toContain("`session_memo`");
+      expect(text).not.toContain("Use when:");
+      expect(text).not.toContain("Workflow:");
+      expect(text).not.toContain("Verification:");
+      expect(text).not.toContain("Avoid:");
     }
 
+    expect(ja).toContain("## 主要MCPツール");
     expect(ja).toContain("ブロッカー由来");
     expect(ja).toContain("pre-question gate");
     expect(ja).toContain("`reject` を返した場合");
     expect(ja).toContain("pre-commit");
-    expect(ja).toContain("プロジェクト依存の記述を除いて");
-    expect(ja).toContain("title / body / avoid / prefer の自然文は日本語");
-    expect(ja).toContain("SKILL.md 相当");
+    expect(ja).toContain("その他の公開ツールは補助機能");
+    expect(ja).not.toContain("プロジェクト依存の記述を除いて");
+    expect(ja).not.toContain("title / body / avoid / prefer の自然文は日本語");
+    expect(ja).not.toContain("SKILL.md 相当");
+    expect(en).toContain("## Primary MCP Tools");
     expect(en).toContain("blocker-derived");
     expect(en).toContain("pre-question gate");
     expect(en).toContain("returns `reject`");
     expect(en).toContain("pre-commit");
-    expect(en).toContain("remove project-specific wording");
-    expect(en).toContain("title / body / avoid / prefer natural language in Japanese");
-    expect(en).toContain("SKILL.md-like shape");
+    expect(en).toContain("Other exposed tools are supplemental");
+    expect(en).not.toContain("remove project-specific wording");
+    expect(en).not.toContain("title / body / avoid / prefer natural language in Japanese");
+    expect(en).not.toContain("SKILL.md-like shape");
   });
 });

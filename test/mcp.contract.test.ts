@@ -160,17 +160,20 @@ describeDb("mcp contract", () => {
     const response = await initialInstructionsTool.handler();
     const text = response.content[0]?.text ?? "";
     expect(text).toContain("## 常用ルール");
-    expect(text).toContain("## MCPツール種別");
+    expect(text).toContain("## 主要MCPツール");
+    expect(text).toContain("initial_instructions");
     expect(text).toContain("context_compile");
-    expect(text).toContain("register_candidates");
+    expect(text).toContain("context_decision");
+    expect(text).toContain("context_decision_feedback");
     expect(text).not.toContain("`register_candidate`");
+    expect(text).not.toContain("`register_candidates`");
     expect(text).not.toContain("`session_memo`");
     expect(text).toContain("compile_eval");
     expect(text).toContain("各 runId ごと");
-    expect(text).toContain("Use when:");
-    expect(text).toContain("SKILL.md 相当");
-    expect(text).toContain("title / body / avoid / prefer の自然文は日本語");
-    expect(text).toContain("プロジェクト依存の記述を除いて");
+    expect(text).toContain("その他の公開ツールは補助機能");
+    expect(text).not.toContain("SKILL.md 相当");
+    expect(text).not.toContain("title / body / avoid / prefer の自然文は日本語");
+    expect(text).not.toContain("プロジェクト依存の記述を除いて");
     expect(text).toContain("design.md");
   });
 

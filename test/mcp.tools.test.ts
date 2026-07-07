@@ -706,7 +706,9 @@ describe("MCP Tools Handlers", () => {
       process.env.MEMORY_ROUTER_LANG = undefined;
       const response = await initialInstructionsTool.handler();
       expect(response.content[0].text).toContain("## 常用ルール");
-      expect(response.content[0].text).toContain("プロジェクト依存の記述を除いて汎用化");
+      expect(response.content[0].text).toContain("## 主要MCPツール");
+      expect(response.content[0].text).toContain("その他の公開ツールは補助機能");
+      expect(response.content[0].text).not.toContain("`register_candidates`");
       expect(response.content[0].text).not.toContain("hooksLLM");
     });
 
@@ -714,7 +716,9 @@ describe("MCP Tools Handlers", () => {
       process.env.MEMORY_ROUTER_LANG = "en";
       const response = await initialInstructionsTool.handler();
       expect(response.content[0].text).toContain("## Operational Rules");
-      expect(response.content[0].text).toContain("remove project-specific wording");
+      expect(response.content[0].text).toContain("## Primary MCP Tools");
+      expect(response.content[0].text).toContain("Other exposed tools are supplemental");
+      expect(response.content[0].text).not.toContain("`register_candidates`");
       expect(response.content[0].text).not.toContain("hooksLLM");
     });
 
