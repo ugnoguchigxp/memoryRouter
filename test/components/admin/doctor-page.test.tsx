@@ -91,6 +91,11 @@ const baseReport = {
         endpoint: "http://127.0.0.1:11434",
         selected: false,
         routeOrder: 1,
+        localLlmSmokes: [
+          { name: "simple_chat", ok: true, preview: "OK" },
+          { name: "json_only", ok: true, preview: '{"ok":true}' },
+          { name: "tool_result_history", ok: true, preview: '{"fact":"queue_events_checked"}' },
+        ],
       },
       {
         id: "local-llm:2",
@@ -436,6 +441,7 @@ describe("DoctorPage", () => {
     expect(screen.getByText("Azure OpenAI #2")).toBeInTheDocument();
     expect(screen.getByText("Local LLM")).toBeInTheDocument();
     expect(screen.getByText("Local LLM: Gemma")).toBeInTheDocument();
+    expect(screen.queryByText("tool history")).not.toBeInTheDocument();
     expect(screen.queryByText("OpenAI")).not.toBeInTheDocument();
     expect(screen.queryByText("Bedrock")).not.toBeInTheDocument();
     expect(screen.getByText("Finished Targets")).toBeInTheDocument();

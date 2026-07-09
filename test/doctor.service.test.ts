@@ -606,6 +606,8 @@ describe("Doctor Service", () => {
 
     await runDoctorAiServiceTools();
 
+    const providerHealthCall = vi.mocked(checkLlmProviderHealthMatrix).mock.calls.at(-1);
+    expect(providerHealthCall?.[1]).not.toHaveProperty("verifyLocalLlmGeneration");
     expect(checkLlmProviderHealthMatrix).toHaveBeenCalledWith(
       5000,
       expect.objectContaining({

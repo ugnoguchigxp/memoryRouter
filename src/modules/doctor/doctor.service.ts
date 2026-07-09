@@ -76,7 +76,6 @@ async function inspectAgenticLlmWithProviderHealth(
       agenticLlm.provider === "local-llm"
         ? (agenticRouting.localLlmModel ?? agenticLlm.model)
         : undefined,
-    verifyLocalLlmGeneration: true,
   });
   return {
     ...agenticLlm,
