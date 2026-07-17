@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { sql } from "drizzle-orm";
 import { groupedConfig } from "../../../config.js";
@@ -139,19 +141,23 @@ function inspectRustSqliteVectorHealth(
 ): { available: boolean; durationMs: number } | null {
   const timer = startMetricTimer();
   try {
-    const output = execFileSync(
-      "cargo",
-      ["run", "-q", "-p", "context-stilld", "--", "vector", "health", "--json"],
-      {
-        cwd: process.cwd(),
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          CONTEXT_STILL_SQLITE_CORE_PATH: sqlitePath,
-        },
-        timeout: 30_000,
-      },
+    const localBinary = path.resolve(
+      process.cwd(),
+      process.platform === "win32"
+        ? "target/debug/context-stilld.exe"
+        : "target/debug/context-stilld",
     );
+    const binary =
+      process.env.CONTEXT_STILLD_BIN ?? (existsSync(localBinary) ? localBinary : "context-stilld");
+    const output = execFileSync(binary, ["vector", "health", "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CONTEXT_STILL_SQLITE_CORE_PATH: sqlitePath,
+      },
+      timeout: 30_000,
+    });
     const parsed = JSON.parse(output) as RustVectorHealth;
     return { available: parsed.vecUsable === true, durationMs: timer.elapsedMs() };
   } catch {

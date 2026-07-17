@@ -9,12 +9,31 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use super::native_common::{
-    now_iso, open_database, pseudo_uuid, request_session_id, score_text, single_line, string_arg,
-    string_array_arg, table_exists, tool_error,
+    now_iso, pseudo_uuid, request_session_id, score_text, single_line, string_arg,
+    string_array_arg, table_exists, tool_error, with_writer,
 };
 use super::native_tools::NativeToolContext;
 
 pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Value {
+    let owned_params = params.clone();
+    let owned_context = context.clone();
+    match with_writer(context, "mcp.context_compile", move |connection| {
+        Ok(context_compile_on_connection(
+            &owned_params,
+            &owned_context,
+            connection,
+        ))
+    }) {
+        Ok(value) => value,
+        Err(error) => tool_error(&error),
+    }
+}
+
+fn context_compile_on_connection(
+    params: &Value,
+    context: &NativeToolContext,
+    connection: &mut Connection,
+) -> Value {
     let started = Instant::now();
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
         return tool_error("context_compile arguments must be an object");
@@ -27,20 +46,16 @@ pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Va
     let technologies = string_array_arg(args, "technologies");
     let change_types = string_array_arg(args, "changeTypes");
     let domains = string_array_arg(args, "domains");
-    let connection = match open_database(context) {
-        Ok(connection) => connection,
-        Err(error) => return tool_error(&error),
-    };
-    if !table_exists(&connection, "context_compile_runs") {
+    if !table_exists(connection, "context_compile_runs") {
         return tool_error("context_compile_runs table is not available");
     }
 
     let search_text = search_text(&goal, &technologies, &change_types, &domains);
-    let knowledge = search_knowledge_items(&connection, &search_text, 8);
-    let episodes = search_episode_cards(&connection, &search_text, 3);
+    let knowledge = search_knowledge_items(connection, &search_text, 8);
+    let episodes = search_episode_cards(connection, &search_text, 3);
     let run_id = pseudo_uuid();
-    let mut degraded_reasons = degraded_reasons(&connection);
-    let composed = compose_context_response(&connection, &goal, &knowledge, &episodes);
+    let mut degraded_reasons = degraded_reasons(connection);
+    let composed = compose_context_response(connection, &goal, &knowledge, &episodes);
     if let Some(reason) = composed.error.as_ref() {
         degraded_reasons.push(reason.clone());
     }
@@ -88,8 +103,12 @@ pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Va
         "domains": domains
     });
     let repo_path = context.project_root.to_string_lossy();
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => return tool_error(&format!("failed to start compile transaction: {error}")),
+    };
     if let Err(error) = insert_compile_run(CompileRunInsert {
-        connection: &connection,
+        connection: &transaction,
         run_id: &run_id,
         goal: &goal,
         session_id: session_id.as_deref(),
@@ -101,14 +120,14 @@ pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Va
     }) {
         return tool_error(&error);
     }
-    if let Err(error) = insert_compile_items(&connection, &run_id, &knowledge, &episodes) {
+    if let Err(error) = insert_compile_items(&transaction, &run_id, &knowledge, &episodes) {
         return tool_error(&error);
     }
-    if let Err(error) = insert_candidate_traces(&connection, &run_id, &knowledge) {
+    if let Err(error) = insert_candidate_traces(&transaction, &run_id, &knowledge) {
         return tool_error(&error);
     }
     if let Err(error) = insert_knowledge_usage_events(
-        &connection,
+        &transaction,
         &run_id,
         &knowledge,
         &composed.used_knowledge,
@@ -117,13 +136,16 @@ pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Va
         return tool_error(&error);
     }
     if let Err(error) = insert_episode_retrieval_feedback(
-        &connection,
+        &transaction,
         &run_id,
         &episodes,
         &composed.used_episodes,
         composed.agentic_used,
     ) {
         return tool_error(&error);
+    }
+    if let Err(error) = transaction.commit() {
+        return tool_error(&format!("failed to commit compile transaction: {error}"));
     }
     if markdown == "No Content" {
         return json!({"content":[{"type":"text","text":"No Content"}]});

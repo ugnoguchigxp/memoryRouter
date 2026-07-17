@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use super::native_common::{
     content_json, now_iso, open_database, parse_json_or_empty, pseudo_uuid, score_text, string_arg,
-    table_exists, tool_error, usize_arg,
+    table_exists, tool_error, usize_arg, with_writer,
 };
 use super::native_tools::NativeToolContext;
 
@@ -153,6 +153,23 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
 }
 
 pub(crate) fn context_decision_feedback(params: &Value, context: &NativeToolContext) -> Value {
+    let owned_params = params.clone();
+    match with_writer(
+        context,
+        "mcp.context_decision_feedback",
+        move |connection| {
+            Ok(context_decision_feedback_on_connection(
+                &owned_params,
+                connection,
+            ))
+        },
+    ) {
+        Ok(value) => value,
+        Err(error) => tool_error(&error),
+    }
+}
+
+fn context_decision_feedback_on_connection(params: &Value, connection: &mut Connection) -> Value {
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
         return tool_error("context_decision_feedback arguments must be an object");
     };
@@ -161,11 +178,7 @@ pub(crate) fn context_decision_feedback(params: &Value, context: &NativeToolCont
         None => return tool_error("decisionId is required"),
     };
     let source = string_arg(args, "source").unwrap_or_else(|| "ai".to_string());
-    let connection = match open_database(context) {
-        Ok(connection) => connection,
-        Err(error) => return tool_error(&error),
-    };
-    if !table_exists(&connection, "context_decision_runs") {
+    if !table_exists(connection, "context_decision_runs") {
         return tool_error("context_decision_runs table is not available");
     }
     let exists = connection
@@ -209,7 +222,7 @@ pub(crate) fn context_decision_feedback(params: &Value, context: &NativeToolCont
     let outcome = string_arg(args, "outcome").unwrap_or_else(|| "still_unknown".to_string());
     let reason = string_arg(args, "reason").unwrap_or_else(|| "No reason supplied.".to_string());
     let metadata = args.get("metadata").cloned().unwrap_or_else(|| json!({}));
-    let affected = selected_support_knowledge_ids(&connection, &decision_id);
+    let affected = selected_support_knowledge_ids(connection, &decision_id);
     if let Err(error) = connection.execute(
         r#"
         insert into context_decision_feedback (
@@ -247,6 +260,16 @@ pub(crate) fn context_decision_feedback(params: &Value, context: &NativeToolCont
 }
 
 pub(crate) fn register_candidates(params: &Value, context: &NativeToolContext) -> Value {
+    let owned_params = params.clone();
+    match with_writer(context, "mcp.register_candidates", move |connection| {
+        Ok(register_candidates_on_connection(&owned_params, connection))
+    }) {
+        Ok(value) => value,
+        Err(error) => tool_error(&error),
+    }
+}
+
+fn register_candidates_on_connection(params: &Value, connection: &mut Connection) -> Value {
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
         return tool_error("register_candidates arguments must be an object");
     };
@@ -256,11 +279,7 @@ pub(crate) fn register_candidates(params: &Value, context: &NativeToolContext) -
     if items.is_empty() || items.len() > 10 {
         return tool_error("items must contain 1-10 candidates");
     }
-    let mut connection = match open_database(context) {
-        Ok(connection) => connection,
-        Err(error) => return tool_error(&error),
-    };
-    if !table_exists(&connection, "knowledge_items") {
+    if !table_exists(connection, "knowledge_items") {
         return tool_error("knowledge_items table is not available");
     }
     let tx = match connection.transaction() {

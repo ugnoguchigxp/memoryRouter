@@ -3,7 +3,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
-use std::thread::{self, JoinHandle};
+#[cfg(test)]
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::Client;
@@ -282,40 +284,62 @@ struct HeartbeatGuard {
 
 impl HeartbeatGuard {
     fn start(connection: &Connection, job_id: &str, worker_id: &str) -> Result<Self, CliError> {
+        #[cfg(not(test))]
+        let _ = (job_id, worker_id);
         let Some(db_path) = main_database_path(connection)? else {
             return Ok(Self {
                 stop: Arc::new(AtomicBool::new(true)),
                 handle: None,
             });
         };
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = Arc::clone(&stop);
-        let job_id = job_id.to_string();
-        let worker_id = worker_id.to_string();
-        let handle = thread::spawn(move || {
-            while !thread_stop.load(Ordering::SeqCst) {
-                for _ in 0..20 {
+        // The resident executor itself runs on the single SQLite writer thread. Starting a
+        // second heartbeat connection here would violate that ownership, while enqueueing a
+        // heartbeat back to the same blocked writer would deadlock on guard drop. The executor
+        // result transaction refreshes/releases the lease when the provider call returns.
+        if crate::domains::sqlite_writer::global_writer_for_path(std::path::Path::new(&db_path))
+            .is_ok()
+        {
+            return Ok(Self {
+                stop: Arc::new(AtomicBool::new(true)),
+                handle: None,
+            });
+        }
+        #[cfg(not(test))]
+        return Ok(Self {
+            stop: Arc::new(AtomicBool::new(true)),
+            handle: None,
+        });
+        #[cfg(test)]
+        {
+            let stop = Arc::new(AtomicBool::new(false));
+            let thread_stop = Arc::clone(&stop);
+            let job_id = job_id.to_string();
+            let worker_id = worker_id.to_string();
+            let handle = thread::spawn(move || {
+                while !thread_stop.load(Ordering::SeqCst) {
+                    for _ in 0..20 {
+                        if thread_stop.load(Ordering::SeqCst) {
+                            return;
+                        }
+                        thread::sleep(Duration::from_secs(1));
+                    }
                     if thread_stop.load(Ordering::SeqCst) {
                         return;
                     }
-                    thread::sleep(Duration::from_secs(1));
-                }
-                if thread_stop.load(Ordering::SeqCst) {
-                    return;
-                }
-                if let Ok(connection) = Connection::open(&db_path) {
-                    let _ = connection.execute(
-                        "
+                    // sqlite-writer-guard: test-only-direct-open
+                    if let Ok(connection) = Connection::open(&db_path) {
+                        let _ = connection.execute(
+                            "
                         update episode_distiller_queue
                         set heartbeat_at = CURRENT_TIMESTAMP,
                             updated_at = CURRENT_TIMESTAMP
                         where id = ?1
                           and status = 'running'
                         ",
-                        [&job_id],
-                    );
-                    let _ = connection.execute(
-                        "
+                            [&job_id],
+                        );
+                        let _ = connection.execute(
+                            "
                         update llm_provider_leases
                         set heartbeat_at = CURRENT_TIMESTAMP,
                             expires_at = datetime(CURRENT_TIMESTAMP, '+120 seconds'),
@@ -325,15 +349,16 @@ impl HeartbeatGuard {
                           and worker_id = ?2
                           and status = 'active'
                         ",
-                        (&job_id, &worker_id),
-                    );
+                            (&job_id, &worker_id),
+                        );
+                    }
                 }
-            }
-        });
-        Ok(Self {
-            stop,
-            handle: Some(handle),
-        })
+            });
+            Ok(Self {
+                stop,
+                handle: Some(handle),
+            })
+        }
     }
 }
 

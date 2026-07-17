@@ -11,7 +11,7 @@ use crate::domains::{
     agent_log_sync,
     bootstrap::service::resolve_paths,
     daemon::repository::{self, ProcessState},
-    mcp_lifecycle, queue_lifecycle,
+    mcp_lifecycle, queue_lifecycle, sqlite_writer,
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 
@@ -44,15 +44,31 @@ struct SurfaceOwnership {
 
 struct ResidentRuntimeState {
     owned_surfaces: SurfaceOwnership,
+    sqlite_writer: Option<sqlite_writer::SqliteWriterRuntime>,
     mcp_endpoint: Option<mcp_lifecycle::service::InProcessMcpEndpoint>,
     queue_last_checked_at: Option<Instant>,
     agent_log_sync_last_checked_at: Option<Instant>,
 }
 
 impl ResidentRuntimeState {
-    fn new<E: EnvProvider>(env: &E) -> Self {
-        Self {
+    fn new<E: EnvProvider>(env: &E) -> Result<Self, CliError> {
+        let paths = resolve_paths(env);
+        let queue_capacity = env_u64_default(env, "CONTEXT_STILL_SQLITE_WRITER_QUEUE_CAPACITY", 256)
+            .min(65_536) as usize;
+        let vector_dimension =
+            env_u64_default(env, "CONTEXT_STILL_EMBEDDING_DIMENSION", 384).min(65_536) as usize;
+        let writer = sqlite_writer::SqliteWriterRuntime::start(
+            &paths.sqlite_core_path,
+            queue_capacity,
+            vector_dimension,
+        )
+        .map_err(|error| CliError::runtime(format!("failed to start SQLite writer: {error}")))?;
+        sqlite_writer::install_global_writer(writer.handle()).map_err(|error| {
+            CliError::runtime(format!("failed to install resident SQLite writer: {error}"))
+        })?;
+        Ok(Self {
             owned_surfaces: SurfaceOwnership::default(),
+            sqlite_writer: Some(writer),
             mcp_endpoint: None,
             queue_last_checked_at: if env_flag_default(env, "CONTEXT_STILL_QUEUE_RUN_AT_LOAD", true)
             {
@@ -69,7 +85,52 @@ impl ResidentRuntimeState {
             } else {
                 Some(Instant::now())
             },
+        })
+    }
+
+    fn writer_report(&self) -> ManagedSurfaceReport {
+        let status = self
+            .sqlite_writer
+            .as_ref()
+            .map(|writer| writer.handle().status());
+        ManagedSurfaceReport {
+            name: "sqlite-writer",
+            enabled: true,
+            status: if status.as_ref().is_some_and(|status| status.ready) {
+                "running".to_string()
+            } else {
+                "failed".to_string()
+            },
+            pid: status.as_ref().map(|status| status.pid),
+            message: status
+                .map(|status| {
+                    format!(
+                        "single SQLite writer ready path={} schemaVersion={} queue={}/{}",
+                        status.sqlite_path,
+                        status.schema_version,
+                        status.queue_depth,
+                        status.queue_capacity
+                    )
+                })
+                .unwrap_or_else(|| "single SQLite writer is unavailable".to_string()),
         }
+    }
+
+    fn shutdown_writer(&mut self) -> Result<(), CliError> {
+        let Some(writer) = self.sqlite_writer.take() else {
+            return Ok(());
+        };
+        let path = writer.handle().status().sqlite_path;
+        sqlite_writer::clear_global_writer(std::path::Path::new(&path));
+        writer
+            .shutdown()
+            .map_err(|error| CliError::runtime(format!("failed to stop SQLite writer: {error}")))
+    }
+}
+
+impl Drop for ResidentRuntimeState {
+    fn drop(&mut self) {
+        let _ = self.shutdown_writer();
     }
 }
 
@@ -89,13 +150,14 @@ pub fn run<E: EnvProvider, S: ProcessSupervisor>(
     once: bool,
 ) -> Result<ResidentRunReport, CliError> {
     write_resident_state(env, "running")?;
-    let mut runtime_state = ResidentRuntimeState::new(env);
+    let mut runtime_state = ResidentRuntimeState::new(env)?;
     let mut surfaces = ensure_surfaces(env, supervisor, &mut runtime_state)?;
     let pid = std::process::id();
 
     if once {
         let mut shutdown_surfaces = stop_owned_surfaces(env, supervisor, &mut runtime_state)?;
         surfaces.append(&mut shutdown_surfaces);
+        runtime_state.shutdown_writer()?;
         write_resident_state(env, "exited")?;
         return Ok(ResidentRunReport {
             action: "run".to_string(),
@@ -126,6 +188,7 @@ pub fn run<E: EnvProvider, S: ProcessSupervisor>(
 
     let mut shutdown_surfaces = stop_owned_surfaces(env, supervisor, &mut runtime_state)?;
     surfaces.append(&mut shutdown_surfaces);
+    runtime_state.shutdown_writer()?;
     write_resident_state(env, "stopped")?;
 
     Ok(ResidentRunReport {
@@ -142,7 +205,7 @@ fn ensure_surfaces<E: EnvProvider, S: ProcessSupervisor>(
     supervisor: &S,
     state: &mut ResidentRuntimeState,
 ) -> Result<Vec<ManagedSurfaceReport>, CliError> {
-    let mut reports = Vec::new();
+    let mut reports = vec![state.writer_report()];
     if !env_flag_default(env, "CONTEXT_STILL_RESIDENT_MCP", true) {
         reports.push(disabled_surface("mcp-server"));
     } else if state
@@ -337,7 +400,7 @@ fn rust_only_queue_report(status: String, maintenance_message: String) -> Manage
 
 fn reconcile_agent_log_sync<E: EnvProvider, S: ProcessSupervisor>(
     env: &E,
-    supervisor: &S,
+    _supervisor: &S,
     state: &mut ResidentRuntimeState,
 ) -> Result<ManagedSurfaceReport, CliError> {
     let interval = Duration::from_secs(env_u64_default(
@@ -359,16 +422,29 @@ fn reconcile_agent_log_sync<E: EnvProvider, S: ProcessSupervisor>(
     }
 
     state.agent_log_sync_last_checked_at = Some(Instant::now());
-    let report = agent_log_sync::service::run_and_wait_report(
-        env,
-        supervisor,
-        Duration::from_millis(env_u64_default(
-            env,
-            "CONTEXT_STILL_AGENT_LOG_SYNC_TIMEOUT_MS",
-            300_000,
-        )),
-    )?;
-    Ok(surface_report("agent-log-sync", true, report))
+    match agent_log_sync::service::run_sync(env) {
+        Ok(summary) => Ok(ManagedSurfaceReport {
+            name: "agent-log-sync",
+            enabled: true,
+            status: if summary.ok {
+                "exited".to_string()
+            } else {
+                "degraded".to_string()
+            },
+            pid: Some(std::process::id()),
+            message: format!(
+                "agent-log-sync completed in resident Writer; imported={} diffs={}",
+                summary.imported, summary.inserted_diffs
+            ),
+        }),
+        Err(error) => Ok(ManagedSurfaceReport {
+            name: "agent-log-sync",
+            enabled: true,
+            status: "failed".to_string(),
+            pid: Some(std::process::id()),
+            message: format!("agent-log-sync failed in resident Writer: {error}"),
+        }),
+    }
 }
 
 fn env_u64_default<E: EnvProvider>(env: &E, key: &str, default: u64) -> u64 {

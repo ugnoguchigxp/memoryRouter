@@ -5,8 +5,8 @@ use crate::domains::doctor;
 use crate::shared::process::OsSupervisor;
 
 use super::native_common::{
-    collect_scores, content_json, int_arg, latest_run_id, now_iso, open_database, pseudo_uuid,
-    string_arg, table_exists, tool_error, HandlerEnv,
+    collect_scores, content_json, int_arg, latest_run_id, now_iso, pseudo_uuid, string_arg,
+    table_exists, tool_error, with_writer, HandlerEnv,
 };
 use super::native_compile;
 use super::native_decision;
@@ -22,18 +22,24 @@ pub(crate) fn doctor(context: &NativeToolContext) -> Value {
 }
 
 pub(crate) fn compile_eval(params: &Value, context: &NativeToolContext) -> Value {
+    let owned_params = params.clone();
+    match with_writer(context, "mcp.compile_eval", move |connection| {
+        Ok(compile_eval_on_connection(&owned_params, connection))
+    }) {
+        Ok(value) => value,
+        Err(error) => tool_error(&error),
+    }
+}
+
+fn compile_eval_on_connection(params: &Value, connection: &mut rusqlite::Connection) -> Value {
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
         return tool_error("compile_eval arguments must be an object");
     };
-    let connection = match open_database(context) {
-        Ok(connection) => connection,
-        Err(error) => return tool_error(&error),
-    };
-    if !table_exists(&connection, "context_compile_evals") {
+    if !table_exists(connection, "context_compile_evals") {
         return tool_error("context_compile_evals table is not available");
     }
 
-    let run_id = match string_arg(args, "runId").or_else(|| latest_run_id(params, &connection)) {
+    let run_id = match string_arg(args, "runId").or_else(|| latest_run_id(params, connection)) {
         Some(run_id) => run_id,
         None => {
             return tool_error(

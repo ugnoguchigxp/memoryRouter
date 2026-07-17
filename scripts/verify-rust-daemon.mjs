@@ -2,6 +2,10 @@ import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 const tasks = [
+  {
+    label: "sqlite writer ownership",
+    command: ["bun", "scripts/verify-sqlite-writer-ownership.mjs"],
+  },
   { label: "cargo fmt", command: ["cargo", "fmt", "--check"] },
   {
     label: "cargo clippy",

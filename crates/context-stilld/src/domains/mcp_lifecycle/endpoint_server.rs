@@ -33,6 +33,7 @@ pub struct RunningEndpoint {
     running: Arc<AtomicBool>,
     join_handle: Option<JoinHandle<()>>,
     endpoint_path: PathBuf,
+    writer_token_path: PathBuf,
 }
 
 impl RunningEndpoint {
@@ -48,6 +49,7 @@ impl RunningEndpoint {
             let _ = handle.join();
         }
         let _ = std::fs::remove_file(&self.endpoint_path);
+        let _ = std::fs::remove_file(&self.writer_token_path);
     }
 }
 
@@ -83,15 +85,22 @@ pub fn serve<E: EnvProvider>(env: &E) -> Result<(), CliError> {
 pub fn start_in_process<E: EnvProvider>(env: &E) -> Result<RunningEndpoint, CliError> {
     let paths = resolve_paths(env);
     let endpoint = endpoint_config(env)?;
-    let dispatch = Arc::new(dispatch_config(env));
     std::fs::create_dir_all(&paths.run_dir)
         .map_err(|error| CliError::io(format!("failed to create MCP run dir: {error}")))?;
 
     let endpoint_path = paths.run_dir.join("mcp-endpoint.json");
+    let writer_token_path = paths.run_dir.join("sqlite-writer.token");
+    let writer_token = create_writer_token(&writer_token_path, &paths.sqlite_core_path)?;
+    let dispatch = Arc::new(dispatch_config(env, writer_token));
     let sessions_path = paths.run_dir.join("mcp-sessions.json");
     let state = new_state(sessions_path.clone(), SessionPruneConfig::from_env(env));
     persist_sessions(&state)?;
-    persist_endpoint(&endpoint_path, &endpoint, &sessions_path)?;
+    persist_endpoint(
+        &endpoint_path,
+        &endpoint,
+        &sessions_path,
+        &writer_token_path,
+    )?;
 
     let listener = TcpListener::bind((endpoint.host.as_str(), endpoint.port))
         .map_err(|error| CliError::io(format!("failed to bind MCP endpoint: {error}")))?;
@@ -102,15 +111,18 @@ pub fn start_in_process<E: EnvProvider>(env: &E) -> Result<RunningEndpoint, CliE
     let running = Arc::new(AtomicBool::new(true));
     let thread_running = Arc::clone(&running);
     let thread_endpoint_path = endpoint_path.clone();
+    let thread_writer_token_path = writer_token_path.clone();
     let join_handle = thread::spawn(move || {
         accept_loop(listener, state, dispatch, thread_running);
         let _ = std::fs::remove_file(thread_endpoint_path);
+        let _ = std::fs::remove_file(thread_writer_token_path);
     });
 
     Ok(RunningEndpoint {
         running,
         join_handle: Some(join_handle),
         endpoint_path,
+        writer_token_path,
     })
 }
 
@@ -138,7 +150,7 @@ fn accept_loop(
     }
 }
 
-fn dispatch_config<E: EnvProvider>(env: &E) -> DispatchConfig {
+fn dispatch_config<E: EnvProvider>(env: &E, writer_token: String) -> DispatchConfig {
     let paths = resolve_paths(env);
     DispatchConfig {
         project_root: env
@@ -148,6 +160,7 @@ fn dispatch_config<E: EnvProvider>(env: &E) -> DispatchConfig {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             }),
         sqlite_core_path: paths.sqlite_core_path,
+        writer_token,
     }
 }
 
@@ -171,6 +184,7 @@ fn persist_endpoint(
     path: &std::path::Path,
     endpoint: &EndpointConfig,
     sessions_path: &std::path::Path,
+    writer_token_path: &std::path::Path,
 ) -> Result<(), CliError> {
     let value = json!({
         "server": "context-still",
@@ -181,6 +195,8 @@ fn persist_endpoint(
         "workerId": format!("rust-mcp-worker-{}", std::process::id()),
         "startedAt": now_timestamp(),
         "sessionStatePath": sessions_path.to_string_lossy(),
+        "writerUrl": endpoint.url.replace("/mcp", "/writer/query"),
+        "writerTokenPath": writer_token_path.to_string_lossy(),
     });
     std::fs::write(
         path,
@@ -189,16 +205,44 @@ fn persist_endpoint(
     .map_err(|error| CliError::io(format!("failed to write MCP endpoint metadata: {error}")))
 }
 
+fn create_writer_token(
+    path: &std::path::Path,
+    _sqlite_path: &std::path::Path,
+) -> Result<String, CliError> {
+    let mut entropy = [0_u8; 32];
+    getrandom::fill(&mut entropy).map_err(|error| {
+        CliError::io(format!("failed to generate SQLite writer token: {error}"))
+    })?;
+    let token = entropy
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    std::fs::write(path, format!("{token}\n"))
+        .map_err(|error| CliError::io(format!("failed to write SQLite writer token: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| CliError::io(format!("failed to protect SQLite writer token: {error}")),
+        )?;
+    }
+    Ok(token)
+}
+
 fn handle_stream(
     mut stream: TcpStream,
     state: SharedServerState,
     dispatch: Arc<DispatchConfig>,
 ) -> Result<(), CliError> {
+    let peer_is_loopback = stream
+        .peer_addr()
+        .map(|address| address.ip().is_loopback())
+        .unwrap_or(false);
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|error| CliError::io(format!("failed to set MCP read timeout: {error}")))?;
     let request = read_request(&mut stream)?;
-    let response = handle_request(request, state, dispatch);
+    let response = handle_request(request, state, dispatch, peer_is_loopback);
     stream
         .write_all(response.as_bytes())
         .map_err(|error| CliError::io(format!("failed to write MCP response: {error}")))?;
@@ -247,6 +291,11 @@ fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, CliError> {
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
+    if content_length > 16 * 1024 * 1024 {
+        return Err(CliError::invalid_arguments(
+            "HTTP request body exceeds 16 MiB",
+        ));
+    }
     let body_start = header_end + 4;
     while buffer.len().saturating_sub(body_start) < content_length {
         let read = stream
@@ -278,7 +327,18 @@ fn handle_request(
     request: HttpRequest,
     state: SharedServerState,
     dispatch: Arc<DispatchConfig>,
+    peer_is_loopback: bool,
 ) -> String {
+    if request.path == "/writer/health" || request.path == "/writer/query" {
+        if !peer_is_loopback {
+            return json_response(
+                403,
+                json!({"ok": false, "error": "writer_loopback_only"}),
+                &[],
+            );
+        }
+        return handle_writer_request(request, &dispatch);
+    }
     if request.path == "/mcp/health" && request.method == "GET" {
         prune_sessions(&state, false);
         let active_session_count = active_session_count(&state);
@@ -320,6 +380,68 @@ fn handle_request(
             &[("Allow", "GET, POST, DELETE".to_string())],
         ),
     }
+}
+
+fn handle_writer_request(request: HttpRequest, dispatch: &DispatchConfig) -> String {
+    let supplied_token = request
+        .headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !constant_time_eq(supplied_token.as_bytes(), dispatch.writer_token.as_bytes()) {
+        return json_response(
+            401,
+            json!({"ok": false, "error": "writer_unauthorized"}),
+            &[],
+        );
+    }
+    if request.path == "/writer/health" && request.method == "GET" {
+        return match crate::domains::sqlite_writer::global_writer_for_path(
+            &dispatch.sqlite_core_path,
+        ) {
+            Ok(writer) => json_response(200, json!({"ok": true, "writer": writer.status()}), &[]),
+            Err(error) => json_response(503, json!({"ok": false, "error": error}), &[]),
+        };
+    }
+    if request.path != "/writer/query" || request.method != "POST" {
+        return json_response(
+            405,
+            json!({"ok": false, "error": "method_not_allowed"}),
+            &[("Allow", "POST".to_string())],
+        );
+    }
+    let writer_request = match serde_json::from_str::<
+        crate::domains::sqlite_writer::protocol::SqliteWriterRequest,
+    >(&request.body)
+    {
+        Ok(request) => request,
+        Err(error) => {
+            return json_response(
+                400,
+                json!({"ok": false, "error": format!("invalid writer request: {error}")}),
+                &[],
+            )
+        }
+    };
+    match crate::domains::sqlite_writer::protocol::execute_request(
+        &dispatch.sqlite_core_path,
+        writer_request,
+    ) {
+        Ok(response) => json_response(200, json!(response), &[]),
+        Err(error) => json_response(500, json!({"ok": false, "error": error}), &[]),
+    }
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
 }
 
 fn handle_mcp_post(
@@ -487,9 +609,12 @@ fn json_response(status: u16, value: Value, headers: &[(&str, String)]) -> Strin
         200 => "OK",
         202 => "Accepted",
         400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "OK",
     };
     let mut response = format!(

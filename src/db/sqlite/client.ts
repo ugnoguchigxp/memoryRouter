@@ -1,9 +1,10 @@
+import type { Database as NativeBunSqliteDatabase } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import type { Database as NativeBunSqliteDatabase } from "bun:sqlite";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { groupedConfig } from "../../config.js";
 import { createSqliteCoreSchemaSql } from "./core-schema.js";
+import { RemoteWriterSqliteClient } from "./remote-client.js";
 import * as schema from "./schema.js";
 
 type BunSqliteDatabase = {
@@ -16,6 +17,7 @@ type BunSqliteDatabase = {
     all(...params: P): T[];
     get(...params: P): T | null;
     run(...params: P): { changes: number; lastInsertRowid: number | bigint };
+    values(...params: P): unknown[][];
   };
   loadExtension?(file: string, entrypoint?: string): void;
   close(): void;
@@ -47,6 +49,25 @@ export async function openSqliteCoreDatabase(input: {
   vectorDimension?: number;
   loadVectorExtension?: boolean;
 }): Promise<SqliteCoreDatabase> {
+  if (!isDirectWriteTestRuntime()) {
+    const sqlite = await import("bun:sqlite");
+    const readOnly = new sqlite.Database(input.path, {
+      readonly: true,
+      strict: true,
+    }) as unknown as NativeBunSqliteDatabase;
+    const db = new RemoteWriterSqliteClient(readOnly, input.path) as unknown as BunSqliteDatabase;
+    return {
+      db,
+      orm: createSqliteDrizzle(db),
+      path: input.path,
+      vector: {
+        available: false,
+        extensionPath: null,
+        reason: "sqlite-vec writes are owned by the resident Rust writer",
+      },
+    };
+  }
+
   await mkdir(path.dirname(input.path), { recursive: true });
   const sqlite = await import("bun:sqlite");
   const db = new sqlite.Database(input.path, { create: true }) as BunSqliteDatabase;
@@ -68,6 +89,14 @@ export async function openSqliteCoreDatabase(input: {
   }
 
   return { db, orm: createSqliteDrizzle(db), path: input.path, vector };
+}
+
+function isDirectWriteTestRuntime(): boolean {
+  return (
+    process.env.NODE_ENV === "test" ||
+    process.env.VITEST === "true" ||
+    process.env.VITEST_WORKER_ID !== undefined
+  );
 }
 
 function hasColumn(db: BunSqliteDatabase, tableName: string, columnName: string): boolean {

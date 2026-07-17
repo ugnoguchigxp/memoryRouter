@@ -7,6 +7,9 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::json;
 
 use crate::domains::mcp_lifecycle::endpoint_server::{start_in_process, RunningEndpoint};
+use crate::domains::sqlite_writer::{
+    clear_global_writer, install_global_writer, SqliteWriterRuntime,
+};
 use crate::shared::config::MapEnv;
 
 fn get_free_port() -> u16 {
@@ -56,8 +59,9 @@ fn create_temp_dir() -> PathBuf {
 
 struct TestServer {
     endpoint: Option<RunningEndpoint>,
+    writer: Option<SqliteWriterRuntime>,
     url: String,
-    _temp_dir: PathBuf,
+    temp_dir: PathBuf,
 }
 
 impl TestServer {
@@ -65,14 +69,26 @@ impl TestServer {
         let port = get_free_port();
         let temp_dir = create_temp_dir();
         let env = make_test_env(port, temp_dir.clone());
+        let sqlite_path = temp_dir.join("test.sqlite");
+        let writer = SqliteWriterRuntime::start(&sqlite_path, 16, 8)
+            .expect("Failed to start test SQLite writer");
+        install_global_writer(writer.handle()).expect("Failed to install test SQLite writer");
         let endpoint = start_in_process(&env).expect("Failed to start endpoint");
         let url = format!("http://127.0.0.1:{}", port);
         wait_for_health(&url);
         Self {
             endpoint: Some(endpoint),
+            writer: Some(writer),
             url,
-            _temp_dir: temp_dir,
+            temp_dir,
         }
+    }
+
+    fn writer_token(&self) -> String {
+        std::fs::read_to_string(self.temp_dir.join("run/sqlite-writer.token"))
+            .expect("Failed to read writer token")
+            .trim()
+            .to_string()
     }
 }
 
@@ -100,7 +116,36 @@ impl Drop for TestServer {
         if let Some(ep) = self.endpoint.take() {
             ep.stop();
         }
+        clear_global_writer(&self.temp_dir.join("test.sqlite"));
+        if let Some(writer) = self.writer.take() {
+            writer
+                .shutdown()
+                .expect("Failed to stop test SQLite writer");
+        }
     }
+}
+
+#[test]
+fn test_writer_endpoint_requires_token_and_reports_status() {
+    let server = TestServer::start();
+    let client = reqwest::blocking::Client::new();
+
+    let unauthorized = client
+        .get(format!("{}/writer/health", server.url))
+        .send()
+        .expect("Failed to send unauthorized writer request");
+    assert_eq!(unauthorized.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let authorized = client
+        .get(format!("{}/writer/health", server.url))
+        .bearer_auth(server.writer_token())
+        .send()
+        .expect("Failed to send authorized writer request");
+    assert_eq!(authorized.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = authorized.json().expect("Failed to parse writer health");
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["writer"]["ready"], true);
+    assert_eq!(body["writer"]["pid"], std::process::id());
 }
 
 #[test]

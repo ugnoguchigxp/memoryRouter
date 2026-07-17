@@ -45,6 +45,7 @@ function sleep(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+let managedPid = null;
 try {
   const start = parseJson(cargo("mcp", "start", "--json"), "mcp start");
   if (!["started", "already_running"].includes(start.status)) {
@@ -78,6 +79,7 @@ try {
   if (!["running", "degraded"].includes(status.status)) {
     throw new Error(`MCP status should be running/degraded before stop: ${JSON.stringify(status)}`);
   }
+  managedPid = status.pid;
 
   console.log(
     JSON.stringify(
@@ -94,7 +96,9 @@ try {
     ),
   );
 } finally {
-  try {
-    cargo("mcp", "stop", "--json");
-  } catch {}
+  if (Number.isInteger(managedPid) && managedPid > 1 && managedPid !== process.pid) {
+    try {
+      process.kill(managedPid, "SIGTERM");
+    } catch {}
+  }
 }

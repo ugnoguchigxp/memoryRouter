@@ -10,4 +10,5 @@ pub mod process_lifecycle;
 pub mod queue_lifecycle;
 pub mod resident_runtime;
 pub mod runtime_sidecars;
+pub mod sqlite_writer;
 pub mod vector_index;

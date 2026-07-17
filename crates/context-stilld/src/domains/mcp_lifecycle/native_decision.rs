@@ -2,12 +2,31 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use super::native_common::{
-    content_json, now_iso, open_database, pseudo_uuid, request_session_id, score_text, single_line,
-    string_arg, table_exists, tool_error,
+    content_json, now_iso, pseudo_uuid, request_session_id, score_text, single_line, string_arg,
+    table_exists, tool_error, with_writer,
 };
 use super::native_tools::NativeToolContext;
 
 pub(crate) fn context_decision(params: &Value, context: &NativeToolContext) -> Value {
+    let owned_params = params.clone();
+    let owned_context = context.clone();
+    match with_writer(context, "mcp.context_decision", move |connection| {
+        Ok(context_decision_on_connection(
+            &owned_params,
+            &owned_context,
+            connection,
+        ))
+    }) {
+        Ok(value) => value,
+        Err(error) => tool_error(&error),
+    }
+}
+
+fn context_decision_on_connection(
+    params: &Value,
+    _context: &NativeToolContext,
+    connection: &mut Connection,
+) -> Value {
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
         return tool_error("context_decision arguments must be an object");
     };
@@ -21,16 +40,12 @@ pub(crate) fn context_decision(params: &Value, context: &NativeToolContext) -> V
         .cloned()
         .unwrap_or_else(|| json!({}));
     let metadata = args.get("metadata").cloned().unwrap_or_else(|| json!({}));
-    let connection = match open_database(context) {
-        Ok(connection) => connection,
-        Err(error) => return tool_error(&error),
-    };
-    if !table_exists(&connection, "context_decision_runs") {
+    if !table_exists(connection, "context_decision_runs") {
         return tool_error("context_decision_runs table is not available");
     }
 
     let query = decision_query(&decision_point, &retrieval_hints);
-    let knowledge = search_decision_knowledge(&connection, &query, 8);
+    let knowledge = search_decision_knowledge(connection, &query, 8);
     let support = knowledge
         .iter()
         .filter(|item| item.polarity != "negative")
@@ -47,7 +62,7 @@ pub(crate) fn context_decision(params: &Value, context: &NativeToolContext) -> V
         || counter
             .iter()
             .any(|item| has_hard_stop_language(&format!("{}\n{}", item.title, item.body)));
-    let no_knowledge_table = !table_exists(&connection, "knowledge_items");
+    let no_knowledge_table = !table_exists(connection, "knowledge_items");
     let (decision, selected_action, rejected_actions, confidence, status) = if hard_stop {
         (
             "reject",
@@ -84,8 +99,12 @@ pub(crate) fn context_decision(params: &Value, context: &NativeToolContext) -> V
         &decision_point,
     );
     let run_id = pseudo_uuid();
+    let transaction = match connection.transaction() {
+        Ok(transaction) => transaction,
+        Err(error) => return tool_error(&format!("failed to start decision transaction: {error}")),
+    };
     if let Err(error) = insert_decision_run(
-        &connection,
+        &transaction,
         &run_id,
         session_id.as_deref(),
         &decision_point,
@@ -101,11 +120,11 @@ pub(crate) fn context_decision(params: &Value, context: &NativeToolContext) -> V
     ) {
         return tool_error(&error);
     }
-    if let Err(error) = insert_evidence(&connection, &run_id, &support, &counter) {
+    if let Err(error) = insert_evidence(&transaction, &run_id, &support, &counter) {
         return tool_error(&error);
     }
     let _ = insert_coverage_trace(
-        &connection,
+        &transaction,
         &run_id,
         &query,
         knowledge.len(),
@@ -117,6 +136,9 @@ pub(crate) fn context_decision(params: &Value, context: &NativeToolContext) -> V
             "rust_native_text_search"
         },
     );
+    if let Err(error) = transaction.commit() {
+        return tool_error(&format!("failed to commit decision transaction: {error}"));
+    }
     content_json(json!({
         "decisionId": run_id,
         "decision": decision,

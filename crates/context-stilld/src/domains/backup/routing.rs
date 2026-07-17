@@ -22,5 +22,13 @@ pub fn handle_command<E: EnvProvider, S: ProcessSupervisor>(
                 Ok(report.to_text())
             }
         }
+        BackupAction::Create => {
+            let report = super::service::create(env)?;
+            if json {
+                Ok(report.to_json())
+            } else {
+                Ok(report.to_text())
+            }
+        }
     }
 }

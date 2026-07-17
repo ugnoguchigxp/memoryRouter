@@ -1,7 +1,9 @@
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::Serialize;
 
-use crate::domains::{bootstrap::service::resolve_paths, daemon::repository::ProcessState};
+use crate::domains::{
+    bootstrap::service::resolve_paths, daemon::repository::ProcessState, sqlite_writer,
+};
 use crate::shared::{config::EnvProvider, errors::CliError, process};
 
 use super::claim::stale_recovery_sql;
@@ -40,14 +42,20 @@ pub fn run_maintenance_once_report<E: EnvProvider>(
         });
     }
 
-    let connection = Connection::open_with_flags(
-        &paths.sqlite_core_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(|error| CliError::io(format!("failed to open SQLite core database: {error}")))?;
     let stale_seconds = env_u64_default(env, "CONTEXT_STILL_QUEUE_STALE_SECONDS", 120).max(30);
-    let recovered_provider_leases = recover_stale_provider_leases(&connection, stale_seconds)?;
-    let recovered_queue_jobs = recover_stale_queue_jobs(&connection, stale_seconds)?;
+    let (recovered_provider_leases, recovered_queue_jobs) = sqlite_writer::execute_for_path(
+        &paths.sqlite_core_path,
+        "queue.maintenance",
+        move |connection| {
+            let recovered_provider_leases =
+                recover_stale_provider_leases(connection, stale_seconds)
+                    .map_err(|error| error.to_string())?;
+            let recovered_queue_jobs = recover_stale_queue_jobs(connection, stale_seconds)
+                .map_err(|error| error.to_string())?;
+            Ok((recovered_provider_leases, recovered_queue_jobs))
+        },
+    )
+    .map_err(|error| CliError::io(format!("SQLite writer maintenance failed: {error}")))?;
     let message = format!(
         "queue-supervisor Rust maintenance completed; recoveredProviderLeases={recovered_provider_leases} recoveredQueueJobs={recovered_queue_jobs}"
     );

@@ -206,21 +206,23 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
         assert_eq!(report["action"], "run");
         assert_eq!(report["status"], "exited");
-        assert_eq!(report["surfaces"].as_array().unwrap().len(), 4);
-        assert_eq!(report["surfaces"][0]["name"], "mcp-server");
+        assert_eq!(report["surfaces"].as_array().unwrap().len(), 5);
+        assert_eq!(report["surfaces"][0]["name"], "sqlite-writer");
         assert_eq!(report["surfaces"][0]["status"], "running");
-        assert_eq!(report["surfaces"][1]["name"], "queue-supervisor");
-        assert_eq!(report["surfaces"][1]["status"], "missing_sqlite");
-        assert_eq!(report["surfaces"][2]["name"], "agent-log-sync");
-        assert_eq!(report["surfaces"][2]["status"], "scheduled");
-        assert_eq!(report["surfaces"][3]["name"], "mcp-server");
-        assert_eq!(report["surfaces"][3]["status"], "stopped");
+        assert_eq!(report["surfaces"][1]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][1]["status"], "running");
+        assert_eq!(report["surfaces"][2]["name"], "queue-supervisor");
+        assert_eq!(report["surfaces"][2]["status"], "executor_unconfigured");
+        assert_eq!(report["surfaces"][3]["name"], "agent-log-sync");
+        assert_eq!(report["surfaces"][3]["status"], "scheduled");
+        assert_eq!(report["surfaces"][4]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][4]["status"], "stopped");
 
         let status_json = crate::run(["status", "--json"], &env, &supervisor).unwrap();
         let status: serde_json::Value = serde_json::from_str(&status_json).unwrap();
         assert_eq!(status["residentSupervisor"], "exited");
         assert_eq!(status["mcpServer"], "stopped");
-        assert_eq!(status["queueSupervisor"], "stopped");
+        assert_eq!(status["queueSupervisor"], "executor_unconfigured");
 
         std::fs::remove_dir_all(&app_dir).unwrap();
     }
@@ -252,15 +254,17 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
 
         assert_eq!(report["status"], "exited");
-        assert_eq!(report["surfaces"].as_array().unwrap().len(), 4);
-        assert_eq!(report["surfaces"][0]["name"], "mcp-server");
+        assert_eq!(report["surfaces"].as_array().unwrap().len(), 5);
+        assert_eq!(report["surfaces"][0]["name"], "sqlite-writer");
         assert_eq!(report["surfaces"][0]["status"], "running");
-        assert_eq!(report["surfaces"][1]["name"], "queue-supervisor");
-        assert_eq!(report["surfaces"][1]["status"], "missing_sqlite");
-        assert_eq!(report["surfaces"][2]["name"], "agent-log-sync");
-        assert_eq!(report["surfaces"][2]["status"], "scheduled");
-        assert_eq!(report["surfaces"][3]["name"], "mcp-server");
-        assert_eq!(report["surfaces"][3]["status"], "stopped");
+        assert_eq!(report["surfaces"][1]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][1]["status"], "running");
+        assert_eq!(report["surfaces"][2]["name"], "queue-supervisor");
+        assert_eq!(report["surfaces"][2]["status"], "executor_unconfigured");
+        assert_eq!(report["surfaces"][3]["name"], "agent-log-sync");
+        assert_eq!(report["surfaces"][3]["status"], "scheduled");
+        assert_eq!(report["surfaces"][4]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][4]["status"], "stopped");
         assert!(!supervisor
             .spawned
             .lock()

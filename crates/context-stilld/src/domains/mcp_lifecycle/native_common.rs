@@ -34,8 +34,23 @@ impl crate::shared::config::EnvProvider for HandlerEnv {
 }
 
 pub(super) fn open_database(context: &NativeToolContext) -> Result<Connection, String> {
-    Connection::open(&context.sqlite_core_path)
-        .map_err(|error| format!("failed to open sqlite core db: {error}"))
+    Connection::open_with_flags(
+        &context.sqlite_core_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|error| format!("failed to open sqlite core db: {error}"))
+}
+
+pub(super) fn with_writer<T, F>(
+    context: &NativeToolContext,
+    operation: &'static str,
+    job: F,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+{
+    crate::domains::sqlite_writer::execute_for_path(&context.sqlite_core_path, operation, job)
 }
 
 pub(super) fn table_exists(connection: &Connection, table: &str) -> bool {

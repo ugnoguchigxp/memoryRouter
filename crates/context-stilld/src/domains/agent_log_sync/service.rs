@@ -8,6 +8,7 @@ use crate::domains::{
     bootstrap::service::resolve_paths,
     daemon::repository::{self, ProcessState},
     process_lifecycle::service::{self, LifecycleReport, ManagedProcessSpec},
+    sqlite_writer,
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 use rusqlite::{params, OptionalExtension};
@@ -17,7 +18,7 @@ use serde_json::{json, Value};
 use super::{
     ingest::{ingest_codex_paths, ingest_source},
     roots::build_sources,
-    store::{open_database, read_cursor, store_source_result},
+    store::{read_cursor, store_source_result},
     types::{
         AgentLogSourceId, AgentLogSourceSyncSummary, AgentLogSyncSummary, IngestCursor,
         IngestCursorEntry,
@@ -192,7 +193,12 @@ pub fn status_report<E: EnvProvider, S: ProcessSupervisor>(
 
 pub(crate) fn run_sync<E: EnvProvider>(env: &E) -> Result<AgentLogSyncSummary, CliError> {
     let started_at = service::now_timestamp();
-    let mut connection = open_database(env)?;
+    let paths = resolve_paths(env);
+    let sources = build_sources(env);
+    let min_distillable_chars = env
+        .var("AGENT_LOG_MIN_DISTILLABLE_CHARS")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2000);
     let mut summary = AgentLogSyncSummary {
         ok: true,
         started_at: started_at.clone(),
@@ -201,13 +207,20 @@ pub(crate) fn run_sync<E: EnvProvider>(env: &E) -> Result<AgentLogSyncSummary, C
         inserted_diffs: 0,
         sources: Vec::new(),
     };
-    let min_distillable_chars = env
-        .var("AGENT_LOG_MIN_DISTILLABLE_CHARS")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(2000);
+    for source in sources {
+        let source_id = source.id.id().to_string();
+        let cursor = sqlite_writer::execute_for_path(
+            &paths.sqlite_core_path,
+            "agent_log_sync.read_cursor",
+            move |connection| {
+                #[cfg(test)]
+                super::store::ensure_test_schema(connection).map_err(|error| error.to_string())?;
+                read_cursor(connection, &source_id).map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| CliError::io(format!("SQLite writer cursor read failed: {error}")))?;
 
-    for source in build_sources(env) {
-        let cursor = read_cursor(&connection, source.id.id())?;
+        // Filesystem discovery and parsing intentionally happen outside the Writer thread.
         let ingest = ingest_source(&source, cursor).map_err(CliError::runtime)?;
         if !ingest.ok {
             summary.ok = false;
@@ -231,12 +244,22 @@ pub(crate) fn run_sync<E: EnvProvider>(env: &E) -> Result<AgentLogSyncSummary, C
         let message_count = ingest.messages.len();
         let warnings = ingest.warnings.clone();
         let skipped = ingest.skipped;
-        let stored = store_source_result(&mut connection, &source, ingest, min_distillable_chars)?;
+        let summary_id = source.id.id().to_string();
+        let summary_label = source.id.label().to_string();
+        let stored = sqlite_writer::execute_for_path(
+            &paths.sqlite_core_path,
+            "agent_log_sync.persist_source",
+            move |connection| {
+                store_source_result(connection, &source, ingest, min_distillable_chars)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| CliError::io(format!("SQLite writer source persist failed: {error}")))?;
         summary.imported += stored.inserted_memories;
         summary.inserted_diffs += stored.inserted_diffs;
         summary.sources.push(AgentLogSourceSyncSummary {
-            id: source.id.id().to_string(),
-            label: source.id.label().to_string(),
+            id: summary_id,
+            label: summary_label,
             ok: true,
             skipped,
             checked_files,
@@ -257,8 +280,12 @@ pub fn backfill_codex_historical_report<E: EnvProvider>(
     env: &E,
     options: CodexHistoricalBackfillOptions,
 ) -> Result<CodexHistoricalBackfillReport, CliError> {
-    let mut connection = open_database(env)?;
+    let paths = resolve_paths(env);
     let mut sources = build_sources(env);
+    let min_distillable_chars = env
+        .var("AGENT_LOG_MIN_DISTILLABLE_CHARS")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2000);
     let Some(source) = sources
         .drain(..)
         .find(|source| source.id == AgentLogSourceId::Codex)
@@ -266,9 +293,26 @@ pub fn backfill_codex_historical_report<E: EnvProvider>(
         return Err(CliError::runtime("Codex log source is not configured"));
     };
 
-    let main_cursor = read_cursor(&connection, source.id.id())?;
-    let processed_cursor = read_cursor(&connection, CODEX_HISTORICAL_BACKFILL_STATE_ID)?;
-    let cutoff_ms = historical_cutoff_ms(&connection, source.initial_lookback_hours)?;
+    let initial_lookback_hours = source.initial_lookback_hours;
+    let (main_cursor, processed_cursor, cutoff_ms) = sqlite_writer::execute_for_path(
+        &paths.sqlite_core_path,
+        "agent_log_sync.backfill_snapshot",
+        move |connection| {
+            #[cfg(test)]
+            super::store::ensure_test_schema(connection).map_err(|error| error.to_string())?;
+            Ok((
+                read_cursor(connection, AgentLogSourceId::Codex.id())
+                    .map_err(|error| error.to_string())?,
+                read_cursor(connection, CODEX_HISTORICAL_BACKFILL_STATE_ID)
+                    .map_err(|error| error.to_string())?,
+                historical_cutoff_ms(connection, initial_lookback_hours)
+                    .map_err(|error| error.to_string())?,
+            ))
+        },
+    )
+    .map_err(|error| CliError::io(format!("SQLite writer backfill snapshot failed: {error}")))?;
+
+    // Directory traversal, stat calls, and JSONL parsing stay outside the Writer thread.
     let files = list_jsonl_files(&source.roots)?;
     let processed_paths = processed_cursor
         .keys()
@@ -360,14 +404,6 @@ pub fn backfill_codex_historical_report<E: EnvProvider>(
         )));
     }
 
-    let min_distillable_chars = env
-        .var("AGENT_LOG_MIN_DISTILLABLE_CHARS")
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(2000);
-    let stored = store_source_result(&mut connection, &source, ingest, min_distillable_chars)?;
-    report.imported = stored.inserted_memories;
-    report.inserted_diffs = stored.inserted_diffs;
-
     let mut next_processed_cursor = processed_cursor;
     for file in &selected {
         next_processed_cursor.insert(
@@ -378,18 +414,36 @@ pub fn backfill_codex_historical_report<E: EnvProvider>(
             },
         );
     }
-    write_backfill_state(
-        &connection,
-        &next_processed_cursor,
-        &json!({
-            "sourceId": source.id.id(),
-            "formatVersion": "rust-1.0",
-            "lastSelectedFiles": selected_files,
-            "lastSelectedBytes": selected_bytes,
-            "lastImported": report.imported,
-            "lastRunMode": report.mode
-        }),
-    )?;
+    let report_mode = report.mode.clone();
+    let stored = sqlite_writer::execute_for_path(
+        &paths.sqlite_core_path,
+        "agent_log_sync.backfill_persist",
+        move |connection| {
+            let stored = store_source_result(connection, &source, ingest, min_distillable_chars)
+                .map_err(|error| error.to_string())?;
+            write_backfill_state(
+                connection,
+                &next_processed_cursor,
+                &json!({
+                    "sourceId": AgentLogSourceId::Codex.id(),
+                    "formatVersion": "rust-1.0",
+                    "lastSelectedFiles": selected_files,
+                    "lastSelectedBytes": selected_bytes,
+                    "lastImported": stored.inserted_memories,
+                    "lastRunMode": report_mode
+                }),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(stored)
+        },
+    )
+    .map_err(|error| {
+        CliError::io(format!(
+            "SQLite writer Codex backfill persist failed: {error}"
+        ))
+    })?;
+    report.imported = stored.inserted_memories;
+    report.inserted_diffs = stored.inserted_diffs;
     Ok(report)
 }
 

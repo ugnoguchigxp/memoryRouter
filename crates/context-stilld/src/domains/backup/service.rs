@@ -1,10 +1,7 @@
 use serde::Serialize;
 
-use crate::domains::{
-    admin_api_lifecycle, agent_log_sync, bootstrap::service::resolve_paths,
-    daemon::service::status_with_supervisor, queue_lifecycle,
-};
-use crate::shared::{config::EnvProvider, process, process::ProcessSupervisor};
+use crate::domains::{bootstrap::service::resolve_paths, sqlite_writer};
+use crate::shared::{config::EnvProvider, errors::CliError, process, process::ProcessSupervisor};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -14,7 +11,17 @@ pub struct BackupPreflight {
     pub backup_dir: String,
     pub active_managed_writers: Vec<&'static str>,
     pub active_managed_writer_details: Vec<ActiveManagedWriter>,
+    pub writer_lock_held: bool,
     pub delegated_backup_command: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupCreateReport {
+    pub status: &'static str,
+    pub source: String,
+    pub output: String,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -28,42 +35,20 @@ pub struct ActiveManagedWriter {
 
 pub fn preflight<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) -> BackupPreflight {
     let paths = resolve_paths(env);
-    let runtime = status_with_supervisor(env, supervisor);
+    let _ = supervisor;
     let mut active_managed_writers = Vec::new();
     let mut active_managed_writer_details = Vec::new();
+    let writer_lock_held = sqlite_writer::is_writer_lock_held(&paths.sqlite_core_path)
+        .unwrap_or(paths.sqlite_core_path.exists());
 
-    if runtime.queue_supervisor != "stopped" {
-        active_managed_writers.push("queue-supervisor");
-        if let Ok(report) = queue_lifecycle::service::status_report(env, supervisor) {
-            active_managed_writer_details.push(ActiveManagedWriter {
-                name: "queue-supervisor",
-                status: report.status,
-                pid: report.pid,
-                log_path: report.log_path,
-            });
-        }
-    }
-    if runtime.agent_log_sync != "stopped" {
-        active_managed_writers.push("agent-log-sync");
-        if let Ok(report) = agent_log_sync::service::status_report(env, supervisor) {
-            active_managed_writer_details.push(ActiveManagedWriter {
-                name: "agent-log-sync",
-                status: report.status,
-                pid: report.pid,
-                log_path: report.log_path,
-            });
-        }
-    }
-    if runtime.hono_admin_api != "stopped" {
-        active_managed_writers.push("admin-api");
-        if let Ok(report) = admin_api_lifecycle::service::status_report(env, supervisor) {
-            active_managed_writer_details.push(ActiveManagedWriter {
-                name: "admin-api",
-                status: report.status,
-                pid: report.pid,
-                log_path: report.log_path,
-            });
-        }
+    if writer_lock_held {
+        active_managed_writers.push("sqlite-writer");
+        active_managed_writer_details.push(ActiveManagedWriter {
+            name: "sqlite-writer",
+            status: "locked".to_string(),
+            pid: None,
+            log_path: None,
+        });
     }
 
     let status = if !paths.sqlite_core_path.exists() {
@@ -80,9 +65,26 @@ pub fn preflight<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) 
         backup_dir: process::path_to_string(&paths.backup_dir),
         active_managed_writers,
         active_managed_writer_details,
-        delegated_backup_command:
-            "CONTEXT_STILL_DB_BACKEND=sqlite bun run src/cli/sqlite-backup.ts",
+        writer_lock_held,
+        delegated_backup_command: "cargo run -q -p context-stilld -- backup create",
     }
+}
+
+pub fn create<E: EnvProvider>(env: &E) -> Result<BackupCreateReport, CliError> {
+    let paths = resolve_paths(env);
+    let filename = format!(
+        "core-{}.sqlite",
+        crate::domains::process_lifecycle::service::now_timestamp().replace([':', '.'], "-")
+    );
+    let output = paths.backup_dir.join(filename);
+    let bytes = sqlite_writer::create_offline_backup(&paths.sqlite_core_path, &output)
+        .map_err(CliError::runtime)?;
+    Ok(BackupCreateReport {
+        status: "created",
+        source: process::path_to_string(&paths.sqlite_core_path),
+        output: process::path_to_string(&output),
+        bytes,
+    })
 }
 
 impl BackupPreflight {
@@ -99,8 +101,22 @@ impl BackupPreflight {
                 "activeManagedWriters={}",
                 self.active_managed_writers.join(",")
             ),
+            format!("writerLockHeld={}", self.writer_lock_held),
             format!("delegatedBackupCommand={}", self.delegated_backup_command),
         ]
         .join("\n")
+    }
+}
+
+impl BackupCreateReport {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    pub fn to_text(&self) -> String {
+        format!(
+            "SQLite backup written: {} ({} bytes)",
+            self.output, self.bytes
+        )
     }
 }

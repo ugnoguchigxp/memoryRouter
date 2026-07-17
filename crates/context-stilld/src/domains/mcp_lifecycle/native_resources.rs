@@ -440,6 +440,8 @@ mod tests {
     #[test]
     fn read_resource_no_table_returns_empty() {
         let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        drop(connection);
         let context = make_context(&db_path);
         // Table context_compile_runs does not exist
         let val = read_resource(&json!({"uri": "context-still://packs/list"}), &context);

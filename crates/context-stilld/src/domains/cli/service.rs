@@ -15,7 +15,7 @@ pub fn help_text() -> String {
         "  context-stilld runtime sidecars|assert-rust-only [--json]",
         "  context-stilld vector health|smoke [--json]",
         "  context-stilld doctor [summary] [--json]",
-        "  context-stilld backup preflight [--json]",
+        "  context-stilld backup preflight|create [--json]",
         "  context-stilld --version",
         "",
         "Rust owns resident lifecycle boundaries and migrates daemon runtime surfaces toward Rust-native implementations.",

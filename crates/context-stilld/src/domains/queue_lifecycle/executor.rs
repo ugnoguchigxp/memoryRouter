@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::domains::{
     bootstrap::service::resolve_paths, daemon::repository::ProcessState,
-    process_lifecycle::service as process_lifecycle_service,
+    process_lifecycle::service as process_lifecycle_service, sqlite_writer,
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process};
 
@@ -73,22 +73,48 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         return Ok(report);
     }
 
-    let mut connection = Connection::open_with_flags(
+    let config = ExecutorTickConfig {
+        max_claims: env_u64_default(env, "CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS", 1).max(1),
+        queue_stale_seconds: env_u64_default(env, "CONTEXT_STILL_QUEUE_STALE_SECONDS", 120)
+            .clamp(30, 120),
+        llm_timeout_seconds: env_u64_default(env, "CONTEXT_STILL_RUST_LLM_TIMEOUT_SECONDS", 600),
+        local_llm_api_key: env.var("LOCAL_LLM_API_KEY"),
+    };
+    let run_dir = paths.run_dir.clone();
+    sqlite_writer::execute_for_path(
         &paths.sqlite_core_path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        "queue.executor_tick",
+        move |connection| {
+            run_executor_tick_with_connection(connection, sqlite_core_path, run_dir, config)
+                .map_err(|error| error.to_string())
+        },
     )
-    .map_err(|error| CliError::io(format!("failed to open SQLite core database: {error}")))?;
+    .map_err(|error| CliError::io(format!("SQLite writer executor tick failed: {error}")))
+}
 
-    let Some(settings) = load_settings_document(&connection)? else {
+struct ExecutorTickConfig {
+    max_claims: u64,
+    queue_stale_seconds: u64,
+    llm_timeout_seconds: u64,
+    local_llm_api_key: Option<String>,
+}
+
+fn run_executor_tick_with_connection(
+    connection: &mut Connection,
+    sqlite_core_path: String,
+    run_dir: std::path::PathBuf,
+    config: ExecutorTickConfig,
+) -> Result<QueueExecutorTickReport, CliError> {
+    let Some(settings) = load_settings_document(connection)? else {
         let report = idle_report(
             sqlite_core_path,
             "executor_unconfigured",
             "queue executor skipped; runtime settings are missing",
         );
-        write_executor_state(&paths.run_dir, &report)?;
+        write_executor_state(&run_dir, &report)?;
         return Ok(report);
     };
-    let paused_queues = load_paused_queues(&connection)?;
+    let paused_queues = load_paused_queues(connection)?;
     let pools = provider_pools(&settings);
     if pools.is_empty() {
         let report = idle_report(
@@ -96,20 +122,17 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             "executor_unconfigured",
             "queue executor skipped; no enabled provider pools are configured",
         );
-        write_executor_state(&paths.run_dir, &report)?;
+        write_executor_state(&run_dir, &report)?;
         return Ok(report);
     }
 
-    let max_claims = env_u64_default(env, "CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS", 1).max(1);
-    let queue_stale_seconds =
-        env_u64_default(env, "CONTEXT_STILL_QUEUE_STALE_SECONDS", 120).clamp(30, 120);
     let mut claimed = 0;
     let mut completed = 0;
     let mut failed = 0;
     let mut unsupported = 0;
 
     for pool in pools {
-        if claimed >= max_claims {
+        if claimed >= config.max_claims {
             break;
         }
         let priority_queues =
@@ -124,12 +147,12 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         );
         let lease_id = format!("rust-lease-{}", unique_suffix());
         let Some(job) = claim_next_job_with_provider_lease_for_connection(
-            &mut connection,
+            connection,
             &pool,
             &priority_queues,
             &worker_id,
             &lease_id,
-            queue_stale_seconds,
+            config.queue_stale_seconds,
         )?
         else {
             continue;
@@ -137,7 +160,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         claimed += 1;
 
         append_queue_event_for_connection(
-            &connection,
+            connection,
             &format!("rust-queue-event-{}", unique_suffix()),
             &job.queue_name,
             &job.id,
@@ -148,30 +171,30 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                 worker_id
             )),
         )?;
-        heartbeat_queue_job_for_connection(&connection, &job.queue_name, &job.id)?;
-        heartbeat_provider_lease_for_connection(&connection, &job.provider_lease.id)?;
+        heartbeat_queue_job_for_connection(connection, &job.queue_name, &job.id)?;
+        heartbeat_provider_lease_for_connection(connection, &job.provider_lease.id)?;
 
         if job.queue_name == "episodeDistiller" {
             let target = local_llm_target_config(&settings, &job.provider_lease.target_id)?;
             let secret_key = local_llm_target_secret_key(&settings, &job.provider_lease.target_id)?;
-            let api_key = load_secret_value(&connection, &secret_key).or_else(|| {
+            let api_key = load_secret_value(connection, &secret_key).or_else(|| {
                 if secret_key == "localLlmApiKey" {
-                    env.var("LOCAL_LLM_API_KEY")
+                    config.local_llm_api_key.clone()
                 } else {
                     None
                 }
             });
             match run_episode_distiller_job_for_connection(
-                &connection,
+                connection,
                 &job.id,
                 &job.provider_lease.worker_id,
                 &target,
                 api_key.as_deref(),
-                env_u64_default(env, "CONTEXT_STILL_RUST_LLM_TIMEOUT_SECONDS", 600),
+                config.llm_timeout_seconds,
             )? {
                 EpisodeExecutionStatus::Completed | EpisodeExecutionStatus::Skipped => {
                     release_provider_lease_for_connection(
-                        &connection,
+                        connection,
                         &job.provider_lease.id,
                         "worker_finished",
                     )?;
@@ -179,7 +202,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                 }
                 EpisodeExecutionStatus::Failed => {
                     release_provider_lease_for_connection(
-                        &connection,
+                        connection,
                         &job.provider_lease.id,
                         "worker_failed",
                     )?;
@@ -187,7 +210,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                 }
                 EpisodeExecutionStatus::Retrying => {
                     release_provider_lease_for_connection(
-                        &connection,
+                        connection,
                         &job.provider_lease.id,
                         "provider_unavailable_retry",
                     )?;
@@ -202,13 +225,13 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             job.queue_name
         );
         keep_queue_job_waiting_for_worker_for_connection(
-            &connection,
+            connection,
             &job.queue_name,
             &job.id,
             &reason,
         )?;
         append_queue_event_for_connection(
-            &connection,
+            connection,
             &format!("rust-queue-event-{}", unique_suffix()),
             &job.queue_name,
             &job.id,
@@ -220,7 +243,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             )),
         )?;
         release_provider_lease_for_connection(
-            &connection,
+            connection,
             &job.provider_lease.id,
             "unsupported_executor",
         )?;
@@ -250,7 +273,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             "queue executor tick completed; claimed={claimed} completed={completed} failed={failed} unsupported={unsupported}"
         ),
     };
-    write_executor_state(&paths.run_dir, &report)?;
+    write_executor_state(&run_dir, &report)?;
     Ok(report)
 }
 

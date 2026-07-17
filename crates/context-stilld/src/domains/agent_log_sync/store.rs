@@ -5,9 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
-use crate::domains::bootstrap::service::resolve_paths;
 use crate::domains::process_lifecycle::service::now_timestamp;
-use crate::shared::{config::EnvProvider, errors::CliError};
+use crate::shared::errors::CliError;
 
 use super::types::{
     AgentLogSource, ChatMessage, IngestCursor, IngestCursorEntry, IngestResult, StoreSourceResult,
@@ -23,18 +22,6 @@ struct NightWorkersRuntimeContractInfo {
     execution_mode: String,
     task_id: Option<String>,
     run_id: Option<String>,
-}
-
-pub(crate) fn open_database<E: EnvProvider>(env: &E) -> Result<Connection, CliError> {
-    let paths = resolve_paths(env);
-    if let Some(parent) = paths.sqlite_core_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| CliError::io(format!("failed to create sqlite dir: {error}")))?;
-    }
-    let connection = Connection::open(&paths.sqlite_core_path)
-        .map_err(|error| CliError::io(format!("failed to open sqlite core db: {error}")))?;
-    ensure_schema(&connection)?;
-    Ok(connection)
 }
 
 pub(crate) fn read_cursor(
@@ -954,7 +941,8 @@ fn build_memory_metadata(
     metadata
 }
 
-fn ensure_schema(connection: &Connection) -> Result<(), CliError> {
+#[cfg(test)]
+pub(crate) fn ensure_test_schema(connection: &Connection) -> Result<(), CliError> {
     connection
         .execute_batch(include_str!("schema_agent_log_sync.sql"))
         .map_err(sql_error)

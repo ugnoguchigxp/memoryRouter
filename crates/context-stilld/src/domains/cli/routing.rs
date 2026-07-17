@@ -67,6 +67,7 @@ pub enum DoctorAction {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum BackupAction {
     Preflight { require_idle: bool },
+    Create,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -326,16 +327,25 @@ where
         }
         "backup" => {
             let action_str = required_action(&mut args, "backup", "preflight")?;
-            if action_str != "preflight" {
-                return Err(CliError::invalid_arguments(format!(
-                    "unknown backup action: {action_str}"
-                )));
-            }
             let options = parse_backup_options(args)?;
-            Ok(CliCommand::Backup {
-                action: BackupAction::Preflight {
+            let action = match action_str.as_str() {
+                "preflight" => BackupAction::Preflight {
                     require_idle: options.require_idle,
                 },
+                "create" if !options.require_idle => BackupAction::Create,
+                "create" => {
+                    return Err(CliError::invalid_arguments(
+                        "--require-idle is only valid for backup preflight",
+                    ))
+                }
+                _ => {
+                    return Err(CliError::invalid_arguments(format!(
+                        "unknown backup action: {action_str}"
+                    )))
+                }
+            };
+            Ok(CliCommand::Backup {
+                action,
                 json: options.json,
             })
         }

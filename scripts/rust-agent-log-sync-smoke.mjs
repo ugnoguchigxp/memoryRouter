@@ -11,6 +11,9 @@ const env = {
   CONTEXT_STILL_PROJECT_ROOT: root,
   CONTEXT_STILL_DB_BACKEND: "sqlite",
   CONTEXT_STILL_SQLITE_CORE_PATH: path.join(appDataDir, "agent-log-sync-smoke.sqlite"),
+  CONTEXT_STILL_MCP_PORT: "0",
+  CONTEXT_STILL_RESIDENT_QUEUE: "0",
+  CONTEXT_STILL_AGENT_LOG_SYNC_RUN_AT_LOAD: "1",
 };
 
 function run(args) {
@@ -40,14 +43,12 @@ function parseJson(text, label) {
   }
 }
 
-const report = parseJson(
-  cargo("agent-log-sync", "run", "--wait", "--timeout-ms=30000", "--json"),
-  "agent-log-sync run --wait",
-);
-if (report.status !== "exited") {
-  throw new Error(`agent-log-sync run should exit cleanly: ${JSON.stringify(report)}`);
+const report = parseJson(cargo("run", "--once", "--json"), "resident run once");
+const syncSurface = report.surfaces?.find((surface) => surface.name === "agent-log-sync");
+if (!syncSurface || syncSurface.status !== "exited") {
+  throw new Error(`resident agent-log-sync should exit cleanly: ${JSON.stringify(report)}`);
 }
-if (report.exitCode !== 0) {
-  throw new Error(`agent-log-sync exitCode should be 0: ${JSON.stringify(report)}`);
+if (!syncSurface.message?.includes("resident Writer")) {
+  throw new Error(`agent-log-sync did not use resident Writer: ${JSON.stringify(syncSurface)}`);
 }
 console.log(JSON.stringify({ ok: true, pid: report.pid, appDataDir }, null, 2));
