@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 const tasks = [
+  { label: "system-context:check", script: "system-context:check" },
+  { label: "system-context:boundary", script: "system-context:boundary" },
   { label: "typecheck", script: "typecheck" },
   { label: "lint", script: "lint" },
   { label: "format:check", script: "format:check" },

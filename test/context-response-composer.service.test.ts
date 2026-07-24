@@ -399,11 +399,15 @@ describe("context response composer", () => {
     );
     expect(mockProvider.chat).toHaveBeenCalledTimes(2);
     const chatRequest = mockProvider.chat.mock.calls[1]?.[0];
+    const plannerRequest = mockProvider.chat.mock.calls[0]?.[0];
     const systemPrompt = chatRequest?.messages?.[0]?.content ?? "";
     const markdownTargetTokens = Number(systemPrompt.match(/本文は (\d+) トークン/u)?.[1]);
     expect(systemPrompt).toContain("JSON は必ず完結");
+    expect(systemPrompt).toContain('<S11TNEXT_DELIMITED_CONTEXT variable="headingRule">');
     expect(markdownTargetTokens).toBeGreaterThan(0);
     expect(chatRequest?.maxTokens).toBeGreaterThan(markdownTargetTokens);
+    expect(plannerRequest?.systemContexts?.[0]?.key).toBe("contextCompiler.plan");
+    expect(chatRequest?.systemContexts?.[0]?.key).toBe("contextCompiler.compose");
   });
 
   test("treats negative guardrails as negative evidence in composer SystemContext", async () => {

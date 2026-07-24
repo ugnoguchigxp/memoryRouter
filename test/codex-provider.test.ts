@@ -59,9 +59,16 @@ describe("codex provider", () => {
         responseFormat: "json",
       });
 
-      expect(response).toEqual({
+      expect(response).toMatchObject({
         content: '{"ok":true}',
         finishReason: "stop",
+        systemContexts: [
+          expect.objectContaining({
+            key: "provider.codex.finalResponse",
+            resolvedLocale: "ja-JP",
+            renderedHash: expect.stringMatching(/^sha256:/),
+          }),
+        ],
         usage: {
           promptTokens: 11,
           completionTokens: 7,
@@ -87,6 +94,9 @@ describe("codex provider", () => {
       const [prompt, runOptions] = codexSdkMocks.run.mock.calls[0] ?? [];
       expect(prompt).toContain("[System Instructions]\nReturn JSON for this task.");
       expect(prompt).toContain("[User]\nping");
+      expect(prompt).toContain(
+        "[Instructions]\nBased on the instructions and history above, generate the final response.",
+      );
       expect(runOptions).toEqual({ signal: expect.any(AbortSignal) });
       expect(runOptions).not.toHaveProperty("outputSchema");
     } finally {

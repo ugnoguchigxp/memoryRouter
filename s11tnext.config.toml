@@ -1,0 +1,59 @@
+source_dir = "contexts"
+out_dir = ".s11tnext"
+
+[authoring]
+source_locale = "ja-JP"
+
+[governance]
+require_owner = true
+
+[keyspaces.shared]
+owner = "platform"
+
+[keyspaces.contextCompiler]
+owner = "context-compiler"
+
+[keyspaces.contextDecision]
+owner = "context-decision"
+
+[keyspaces.provider]
+owner = "llm-platform"
+
+[keyspaces.sourceResearch]
+owner = "source-research"
+
+[keyspaces.landscape]
+owner = "landscape"
+
+[keyspaces.coverEvidence]
+owner = "cover-evidence"
+
+[keyspaces.episodeDistiller]
+owner = "episode-distiller"
+
+[keyspaces.findCandidate]
+owner = "find-candidate"
+
+[release_profiles.development]
+required_locales = ["ja-JP", "en-US"]
+
+[release_profiles.production]
+required_locales = ["ja-JP", "en-US"]
+
+[variable_profiles.untrustedText]
+type = "string"
+trust = "untrusted"
+placement = "delimited-context"
+encoding = "json-string"
+
+[variable_profiles.trustedText]
+type = "string"
+trust = "trusted"
+placement = "inline"
+encoding = "raw"
+
+[variable_profiles.trustedNumber]
+type = "number"
+trust = "trusted"
+placement = "inline"
+encoding = "json-value"

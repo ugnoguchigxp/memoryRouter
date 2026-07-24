@@ -11,6 +11,10 @@ import {
   hasProcedureWorkflowSignal,
   hasSkillLikeProcedureBody,
 } from "../distillation/procedure-quality.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 import type { CoverEvidenceCandidate, CoverEvidenceToolEvent } from "./types.js";
 
 type ProcedureNotRepairableReason =
@@ -117,20 +121,6 @@ function parseRepairOutput(raw: string): { title: string; body: string } | null 
   return null;
 }
 
-function repairSystemPrompt(): string {
-  return [
-    "source evidence だけを使って、再利用可能な procedure candidate を修復してください。",
-    "title と body を持つ strict JSON を返してください。",
-    "日本語で運用されている文脈では title と body の自然文を必ず日本語で書いてください。入力が英語でも、識別子、API名、コマンド、エラー名、固定見出し以外の説明文は日本語へ言い換えてください。",
-    "コード、コマンド、API名、エラー名、固定見出し（Use when:, Workflow:, Verification:, Avoid:）は原文のまま残して構いません。",
-    "body は Markdown で、見出しを Use when:, Workflow:, Verification:, Avoid: の順に必ず含めてください。",
-    "Use when / Workflow / Verification / Avoid の各セクション本文は日本語で書いてください。",
-    "Workflow には具体的な番号付き手順を2つ以上入れてください。",
-    "source evidence で支えられないコマンド、ファイル、事実、検証手順、禁止事項を追加しないでください。",
-    "必要な section を source evidence から構成できない場合は、空の JSON object を返してください。",
-  ].join("\n");
-}
-
 function repairUserPrompt(params: { title: string; body: string; sourceEvidence: string }): string {
   return [
     `Candidate title:\n${params.title}`,
@@ -160,14 +150,16 @@ export async function repairProcedureCandidate(
   });
 
   try {
+    const systemContext = renderSystemContext("coverEvidence.procedureRepair", {});
     const completion = await runDistillationCompletion(
       {
         model: input.model,
         maxTokens: 2048,
         messages: [
-          { role: "system", content: repairSystemPrompt() },
+          systemContextMessage(systemContext),
           { role: "user", content: repairUserPrompt(input) },
         ],
+        systemContexts: [systemContext.manifest],
       },
       {
         providerSetting: input.provider,

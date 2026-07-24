@@ -12,6 +12,11 @@ import {
   ensureRuntimeSettingsLoaded,
   getRuntimeSettingsSnapshot,
 } from "../settings/settings.service.js";
+import {
+  englishSystemContextBinding,
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 import type { FindCandidateResult } from "./domain.js";
 import { evaluateVibeFindingEligibility } from "./vibe-finding-eligibility.js";
 import {
@@ -120,35 +125,24 @@ function truncate(value: string, maxChars: number): string {
   return `${value.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
-function buildCodexEscalationMessages(params: {
+function buildCodexEscalationUserMessage(params: {
   sourceKey: string;
   sourceUri: string;
   content: string;
   primaryReason: string;
   primaryDiagnostics?: StorageCandidateParseDiagnostics;
 }) {
-  return [
-    {
-      role: "system" as const,
-      content: [
-        "You are a second-pass reviewer for contextStill findingCandidate jobs.",
-        "Extract only durable reusable knowledge candidates from the provided agent transcript.",
-        'Return JSON only: {"candidates":[{"type":"rule|procedure","polarity":"positive|negative","title":"...","content":"..."}]}',
-        "Do not include neutral observations. Negative procedure candidates are invalid.",
-      ].join("\n"),
-    },
-    {
-      role: "user" as const,
-      content: JSON.stringify({
-        sourceKind: "vibe_memory",
-        sourceKey: params.sourceKey,
-        sourceUri: params.sourceUri,
-        primaryReason: params.primaryReason,
-        primaryDiagnostics: params.primaryDiagnostics ?? null,
-        transcript: params.content,
-      }),
-    },
-  ];
+  return {
+    role: "user" as const,
+    content: JSON.stringify({
+      sourceKind: "vibe_memory",
+      sourceKey: params.sourceKey,
+      sourceUri: params.sourceUri,
+      primaryReason: params.primaryReason,
+      primaryDiagnostics: params.primaryDiagnostics ?? null,
+      transcript: params.content,
+    }),
+  };
 }
 
 async function readVibeMemoryMetadata(sourceKey: string): Promise<VibeMemoryMetadataRow | null> {
@@ -511,17 +505,26 @@ export async function maybeRunFindingCodexEscalation(
   }
 
   try {
+    const systemContext = renderSystemContext(
+      "findCandidate.codexEscalation",
+      {},
+      englishSystemContextBinding,
+    );
     const completion = await (deps.runCompletion ?? runDistillationCompletion)(
       {
         model: escalationModel,
-        messages: buildCodexEscalationMessages({
-          sourceKey: params.findingJob.sourceKey,
-          sourceUri: params.findingJob.sourceUri,
-          content: read.content,
-          primaryReason,
-          primaryDiagnostics: params.findResult.parseDiagnostics,
-        }),
+        messages: [
+          systemContextMessage(systemContext),
+          buildCodexEscalationUserMessage({
+            sourceKey: params.findingJob.sourceKey,
+            sourceUri: params.findingJob.sourceUri,
+            content: read.content,
+            primaryReason,
+            primaryDiagnostics: params.findResult.parseDiagnostics,
+          }),
+        ],
         maxTokens: Math.max(4096, groupedConfig.vibeDistillation.maxOutputTokens),
+        systemContexts: [systemContext.manifest],
       },
       {
         providerSetting: "codex",

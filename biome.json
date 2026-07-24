@@ -49,6 +49,7 @@
       "target/**",
       "test-results/**",
       ".tmp/**",
+      ".s11tnext/**",
       "src/db/seeds/knowledge-seed.json"
     ]
   }

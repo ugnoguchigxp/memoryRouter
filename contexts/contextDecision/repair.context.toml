@@ -1,0 +1,10 @@
+[[sections]]
+id = "output.repair-json"
+kind = "output-contract"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = "Repair the invalid response into the required JSON only."
+
+[sections.translations."en-US"]
+text = "Repair the invalid response into the required JSON only."

@@ -18,6 +18,10 @@ import {
   resolveFindCandidateRoute,
 } from "../settings/settings.service.js";
 import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
+import {
   type StorageCandidateParseDiagnostics,
   parseStorageCandidatesWithDiagnostics,
 } from "./parser.js";
@@ -241,85 +245,6 @@ function buildToolDefinitionForTarget(
       },
     },
   };
-}
-
-function commonCandidateRules(): string[] {
-  return [
-    "厳守ルール:",
-    "- 1候補 = 1知識（1ルール または 1手続き）",
-    "- 複数のルール/手続きを1候補に混ぜない",
-    "- ただし 1 つの再利用可能な手順・運用フロー・レビュー手順は、細切れの rule に分けず 1 つの procedure 候補にまとめる",
-    "- 文書全体をそのまま1候補にしない",
-    "- 複数の有用知識がある場合は候補を分割して複数出す",
-    "- type は必ず rule または procedure にする",
-    "- polarity は必ず positive または negative のどちらかにする",
-    "- type または polarity を判断できない場合、その候補は出さない",
-    "- positive は「行うべき・有効だった・採用しやすい知識」、negative は「避けるべき・失敗した・採用すると危険な知識」として使う",
-    "- 失敗事例、レビュー指摘、禁止事項、誤った実装方針、再発防止の判断基準は、内容が再利用可能なら negative の rule 候補として出す",
-    "- negative 候補は procedure にせず、必ず rule として「何を避けるか / どの条件で危険か / どう確認するか」を書く",
-    "- rule は持続的な制約・方針・不変条件・意思決定",
-    "- procedure は順序付き作業、コマンドフロー、検証/復旧/レビューの再利用可能な手順",
-    "- 単独の判断、制約、使うべき API/コマンド、避けるべき実装方針は procedure ではなく rule",
-    "- procedure は 2 step 以上の workflow と成功確認まで書ける候補だけにする",
-    "- procedure の content は SKILL.md 風の手順本文として、Use when: / Workflow: / Verification: / Avoid: の見出しをこの順に必ず含める",
-    "- Workflow: には 2 step 以上の具体的な手順を書き、Verification: には成功確認、Avoid: には避けることを書く",
-    "- source content からこの skill 形式を構成できない場合は、procedure ではなく rule にするか候補にしない",
-    "- 候補の title/content は、汎用的に使える知識として体裁を整える",
-    "- 候補件数は内容に応じて決める。件数合わせはしない",
-    "最終出力は JSON のみで返してください。",
-    "候補がある場合は単体オブジェクトまたは配列のどちらでも構いません。",
-    '{"type":"rule|procedure","polarity":"positive|negative","title":"...","content":"..."}',
-    '[{"type":"rule|procedure","polarity":"positive|negative","title":"...","content":"..."}]',
-    "候補がない場合は [] を返してください。",
-    "type/polarity/title/content 以外の field は省略してください。",
-  ];
-}
-
-function reusableKnowledgeSignals(): string[] {
-  return [
-    "候補化してよい signal:",
-    "- ユーザーが明示した継続的な好み、作業境界、禁止事項、優先順位",
-    "- 失敗原因、修正方法、検証方法が source から読み取れる再利用可能なトラブルシュート",
-    "- 特定の repo/module/tool で繰り返し使える調査順序、コマンド順序、復旧手順",
-    "- diff や tool output から確認できる実装上の不変条件、API 契約、設定上の注意",
-    "- レビューで見つかった再発しやすい落とし穴と、それを避けるための具体的な判断基準",
-    "- source が完成済み rule/procedure 形式でなくても、作業ログから適用条件・操作順序・検証・回避条件が読み取れるもの",
-    "- source に negative と明示されていなくても、ユーザーが否定した方針、レビューで退けられた実装、再発防止の禁止条件",
-    "候補化しないもの:",
-    "- 単なる進捗報告、作業中の感想、未検証の仮説、1回限りの成功/失敗",
-    "- source に根拠がない一般論、source content をそのまま要約しただけの文書断片",
-    "- tool 名、JSON schema、system/user prompt の文言そのもの",
-    "会話ログでも、上の signal が source に含まれる場合は [] にせず候補化してください。",
-    "ただし source にない事実は補完せず、形式が未整形な場合でも evidence から読み取れる範囲だけを候補化してください。",
-  ];
-}
-
-function wikiSystemPrompt(): string {
-  return [
-    "あなたの仕事は文章 content だけを見て、有用な知識候補を選ぶことです。",
-    "候補選出以外のことはしないでください。",
-    ...reusableKnowledgeSignals(),
-    ...commonCandidateRules(),
-  ].join("\n");
-}
-
-function vibeMemorySystemPrompt(): string {
-  return [
-    "あなたの仕事は filtered vibe memory content と agent diff だけを見て、再利用可能な知識候補を選ぶことです。",
-    "filtered content は機械的に不要部分を削った transcript です。source にない intent、summary、decision、task boundary を補完しないでください。",
-    "system/user prompt、tool 名、JSON schema、進行報告だけの会話文は知識候補にしないでください。",
-    "vibe memory は作業ログなので、永続的なルール、再利用できる手順、レビュー観点、復旧手順、リポジトリ固有の運用知だけを候補にしてください。",
-    "単なる一回限りの実行結果、途中経過、感想、明らかに古い仮説、未確認の推測は候補にしないでください。",
-    "agent diff がある場合は、diff から読み取れる実装上の不変条件や手順だけを候補にしてください。",
-    "ただし、会話が進捗報告中心でも、最終的に原因・修正・検証・ユーザーの継続的な preference が確認できる場合は候補化してください。",
-    "追加情報が必要な場合だけ memory_reader tool を使って次の filtered token window を読んでください。",
-    ...reusableKnowledgeSignals(),
-    ...commonCandidateRules(),
-  ].join("\n");
-}
-
-function systemPromptForTarget(targetKind: FindCandidateTargetKind): string {
-  return targetKind === "vibe_memory" ? vibeMemorySystemPrompt() : wikiSystemPrompt();
 }
 
 function wikiUserPrompt(): string {
@@ -624,8 +549,14 @@ export async function runFindCandidate(input: FindCandidateInput): Promise<FindC
       });
     };
 
+    const sourceSystemContext = renderSystemContext(
+      target.targetKind === "vibe_memory" ? "findCandidate.vibeMemory" : "findCandidate.wiki",
+      {},
+    );
+    const extractSystemContext = renderSystemContext("findCandidate.extract", {});
     const messages: DistillationMessage[] = [
-      { role: "system", content: systemPromptForTarget(target.targetKind) },
+      systemContextMessage(sourceSystemContext),
+      systemContextMessage(extractSystemContext),
       ...buildInitialUserMessages(target.targetKind),
     ];
     let deterministicInitialRead = false;
@@ -699,6 +630,7 @@ export async function runFindCandidate(input: FindCandidateInput): Promise<FindC
         model,
         maxTokens: candidateOutputMaxTokens(),
         messages,
+        systemContexts: [sourceSystemContext.manifest, extractSystemContext.manifest],
       },
       {
         providerSetting: provider,

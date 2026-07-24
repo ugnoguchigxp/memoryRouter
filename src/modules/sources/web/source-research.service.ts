@@ -10,6 +10,10 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveWebSourceResearchRoute,
 } from "../../settings/settings.service.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../../system-context/system-context.service.js";
 import { upsertSourceDocument } from "../source.repository.js";
 import { ensureContentRoot, writePage } from "../wiki/content-repo.js";
 
@@ -78,22 +82,6 @@ function extractFetchFinalUrl(
   return null;
 }
 
-function webResearchSystemPrompt(): string {
-  return [
-    "あなたは URL の調査結果 Markdown を作成する担当です。",
-    "必ず fetch_content tool を使って URL 本文を読み、その内容だけを根拠に出力してください。",
-    "出力は Markdown 本文のみ。JSON やコードフェンスは不要です。",
-    "次の構成を必ず含めてください:",
-    "- `# Title`",
-    "- `Source URL: ...`",
-    "- `## Summary`",
-    "- `## Reusable Signals`",
-    "- `## Notes`",
-    "長文の原文転載は避け、再利用可能な要点へ圧縮してください。",
-    "不確実な箇所は推測せず `Notes` に明記してください。",
-  ].join("\n");
-}
-
 function webResearchUserPrompt(url: string): string {
   return [
     `調査対象 URL: ${url}`,
@@ -118,15 +106,17 @@ export async function researchWebSourceToMarkdown(params: {
     routeModel: params.provider ? undefined : configuredRoute.model,
     localLlmModel,
   });
+  const systemContext = renderSystemContext("sourceResearch.web", {});
 
   const completion = await runDistillationCompletion(
     {
       model,
       maxTokens: Math.max(2048, groupedConfig.vibeDistillation.maxOutputTokens),
       messages: [
-        { role: "system", content: webResearchSystemPrompt() },
+        systemContextMessage(systemContext),
         { role: "user", content: webResearchUserPrompt(params.url) },
       ],
+      systemContexts: [systemContext.manifest],
     },
     {
       providerSetting: provider,

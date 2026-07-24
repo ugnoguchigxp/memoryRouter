@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { groupedConfig } from "../src/config.js";
+import { recordAuditLogSafe } from "../src/modules/audit/audit-log.service.js";
 import {
   checkAgenticLlmHealth,
   checkDistillationLlmHealth,
@@ -12,7 +13,14 @@ import { createBedrockProvider } from "../src/modules/llm/providers/bedrock.prov
 import { createCodexProvider } from "../src/modules/llm/providers/codex.provider.js";
 import { createLocalLlmProvider } from "../src/modules/llm/providers/local-llm.provider.js";
 import { createOpenAiProvider } from "../src/modules/llm/providers/openai.provider.js";
+import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
 
+vi.mock("../src/modules/audit/audit-log.service.js", () => ({
+  auditEventTypes: {
+    systemContextSubmitted: "SYSTEM_CONTEXT_SUBMITTED",
+  },
+  recordAuditLogSafe: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../src/modules/llm/llm-usage-logger.js", () => ({
   recordLlmUsage: vi.fn(),
 }));
@@ -112,6 +120,54 @@ describe("agentic-llm service tests", () => {
         source: "context-compiler",
       }),
     );
+  });
+
+  test("awaits audit persistence and combines request and provider SystemContext manifests", async () => {
+    const requestContext = renderSystemContext("shared.jsonOnly", {});
+    const providerContext = renderSystemContext("provider.codex.finalResponse", {});
+    const codex = mockProvider("codex", true, true);
+    codex.chat.mockResolvedValue({
+      content: "ok",
+      systemContexts: [providerContext.manifest],
+    });
+    vi.mocked(createCodexProvider).mockReturnValue(codex as any);
+
+    let releaseAudit: (() => void) | undefined;
+    vi.mocked(recordAuditLogSafe).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseAudit = resolve;
+        }),
+    );
+
+    const [provider] = getAgenticLlmProviders("codex", 2000, "context-compiler");
+    let completed = false;
+    const completion = provider
+      ?.chat({
+        messages: [{ role: "system", content: requestContext.content.text }],
+        maxTokens: 10,
+        systemContexts: [requestContext.manifest],
+      })
+      .then((result) => {
+        completed = true;
+        return result;
+      });
+
+    await vi.waitFor(() => expect(releaseAudit).toBeTypeOf("function"));
+    expect(completed).toBe(false);
+    releaseAudit?.();
+    await expect(completion).resolves.toEqual(expect.objectContaining({ content: "ok" }));
+    expect(recordAuditLogSafe).toHaveBeenCalledWith({
+      eventType: "SYSTEM_CONTEXT_SUBMITTED",
+      actor: "system",
+      payload: expect.objectContaining({
+        provider: "codex",
+        manifests: [
+          expect.objectContaining({ key: "shared.jsonOnly" }),
+          expect.objectContaining({ key: "provider.codex.finalResponse" }),
+        ],
+      }),
+    });
   });
 
   test("passes Azure deployment slot routing when configured", () => {

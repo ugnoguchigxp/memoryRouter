@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { groupedConfig } from "../../../config.js";
 import { checkCodexAuthStatus } from "../../codex/codex-auth.service.js";
+import { renderSystemContext } from "../../system-context/system-context.service.js";
 import type {
   LlmChatRequest,
   LlmChatResponse,
@@ -79,7 +80,8 @@ export function createCodexProvider(
         })
         .join("\n\n");
 
-      const prompt = `${formattedMessages}\n\n[Instructions]\nBased on the instructions and history above, generate the final response. Output only the requested content/JSON structure directly, without markdown blocks or conversational text outside the format.`;
+      const finalResponseContext = renderSystemContext("provider.codex.finalResponse", {});
+      const prompt = `${formattedMessages}\n\n${finalResponseContext.content.text}`;
 
       // P1: Wire timeout guard using AbortController
       const timeoutMs = defaultTimeoutMs;
@@ -92,6 +94,7 @@ export function createCodexProvider(
         return {
           content: turn.finalResponse,
           finishReason: "stop",
+          systemContexts: [finalResponseContext.manifest],
           usage: turn.usage
             ? {
                 promptTokens: turn.usage.input_tokens,

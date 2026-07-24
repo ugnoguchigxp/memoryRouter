@@ -21,6 +21,10 @@ import {
 import type { CandidateKnowledgeType } from "../findCandidate/repository.js";
 import { estimateTextTokens } from "../llm/token-estimator.js";
 import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
+import {
   type CoverEvidenceSourceContext,
   isAbortError,
   makeResult,
@@ -44,17 +48,11 @@ import { parseCoverEvidenceResult } from "./parser.js";
 import { repairProcedureCandidate } from "./procedure-repair.service.js";
 import {
   applicabilityBlankResponseReminderLines,
-  applicabilityRefinementSystemPrompt,
   applicabilityRefinementUserPrompt,
-  externalEvidenceFetchSelectionSystemPrompt,
   externalEvidenceFetchSelectionUserPrompt,
-  externalEvidenceFinalSystemPrompt,
   externalEvidenceFinalUserPrompt,
-  externalEvidenceSearchQuerySystemPrompt,
   externalEvidenceSearchQueryUserPrompt,
-  mcpEvidenceSystemPrompt,
   mcpEvidenceUserPrompt,
-  valueAssessmentSystemPrompt,
   valueAssessmentUserPrompt,
 } from "./prompts.js";
 import { buildCoverEvidenceSearchQuery } from "./search-query.service.js";
@@ -143,6 +141,7 @@ async function enrichApplicabilityFacets(params: {
   if (missingBefore.length === 0) {
     return params.result;
   }
+  const systemContext = renderSystemContext("coverEvidence.applicabilityRefinement", {});
 
   try {
     const completion = await runDistillationCompletion(
@@ -150,7 +149,7 @@ async function enrichApplicabilityFacets(params: {
         model: params.model,
         maxTokens: Math.max(768, groupedConfig.vibeDistillation.maxOutputTokens),
         messages: [
-          { role: "system", content: applicabilityRefinementSystemPrompt() },
+          systemContextMessage(systemContext),
           {
             role: "user",
             content: applicabilityRefinementUserPrompt({
@@ -161,6 +160,7 @@ async function enrichApplicabilityFacets(params: {
             }),
           },
         ],
+        systemContexts: [systemContext.manifest],
       },
       {
         providerSetting: params.provider,
@@ -522,12 +522,15 @@ export async function runValueAssessment(params: {
   signal?: AbortSignal;
 }): Promise<CoverEvidenceResult> {
   try {
+    const systemContext = renderSystemContext("coverEvidence.valueAssessment", {
+      lowImportanceRejectThreshold: groupedConfig.distillation.lowImportanceRejectThreshold,
+    });
     const completion = await runDistillationCompletion(
       {
         model: params.model,
         maxTokens: Math.max(1024, groupedConfig.vibeDistillation.maxOutputTokens),
         messages: [
-          { role: "system", content: valueAssessmentSystemPrompt() },
+          systemContextMessage(systemContext),
           {
             role: "user",
             content: valueAssessmentUserPrompt({
@@ -538,6 +541,7 @@ export async function runValueAssessment(params: {
             }),
           },
         ],
+        systemContexts: [systemContext.manifest],
       },
       {
         providerSetting: params.provider,
@@ -1018,12 +1022,13 @@ export async function runExternalEvidence(params: {
       id: params.id,
       forceRefreshEvidence: params.forceRefreshEvidence,
     });
+    const searchQuerySystemContext = renderSystemContext("coverEvidence.externalSearchQuery", {});
     const searchCompletion = await runDistillationCompletion(
       {
         model: params.model,
         maxTokens: 256,
         messages: [
-          { role: "system", content: externalEvidenceSearchQuerySystemPrompt() },
+          systemContextMessage(searchQuerySystemContext),
           {
             role: "user",
             content: externalEvidenceSearchQueryUserPrompt({
@@ -1031,6 +1036,7 @@ export async function runExternalEvidence(params: {
             }),
           },
         ],
+        systemContexts: [searchQuerySystemContext.manifest],
       },
       {
         providerSetting: params.provider,
@@ -1115,17 +1121,18 @@ export async function runExternalEvidence(params: {
       });
     }
 
+    const fetchSelectionSystemContext = renderSystemContext(
+      "coverEvidence.externalFetchSelection",
+      {
+        maxFetchCount: configuredCoverEvidenceFetchCalls(),
+      },
+    );
     const selectionCompletion = await runDistillationCompletion(
       {
         model: params.model,
         maxTokens: 128,
         messages: [
-          {
-            role: "system",
-            content: externalEvidenceFetchSelectionSystemPrompt(
-              configuredCoverEvidenceFetchCalls(),
-            ),
-          },
+          systemContextMessage(fetchSelectionSystemContext),
           {
             role: "user",
             content: externalEvidenceFetchSelectionUserPrompt({
@@ -1137,6 +1144,7 @@ export async function runExternalEvidence(params: {
             }),
           },
         ],
+        systemContexts: [fetchSelectionSystemContext.manifest],
       },
       {
         providerSetting: params.provider,
@@ -1210,15 +1218,15 @@ export async function runExternalEvidence(params: {
 
     let finalCompletion: Awaited<ReturnType<typeof runDistillationCompletion>>;
     try {
+      const finalSystemContext = renderSystemContext("coverEvidence.externalFinal", {
+        webEvidenceTokenBudget: WEB_EVIDENCE_PROMPT_TOKEN_BUDGET,
+      });
       finalCompletion = await runDistillationCompletion(
         {
           model: params.model,
           maxTokens: Math.max(2048, groupedConfig.vibeDistillation.maxOutputTokens),
           messages: [
-            {
-              role: "system",
-              content: externalEvidenceFinalSystemPrompt(WEB_EVIDENCE_PROMPT_TOKEN_BUDGET),
-            },
+            systemContextMessage(finalSystemContext),
             {
               role: "user",
               content: externalEvidenceFinalUserPrompt({
@@ -1234,6 +1242,7 @@ export async function runExternalEvidence(params: {
               }),
             },
           ],
+          systemContexts: [finalSystemContext.manifest],
         },
         {
           providerSetting: params.provider,
@@ -1442,14 +1451,18 @@ export async function runOptionalMcpEvidence(params: {
   }
 
   try {
+    const systemContext = renderSystemContext("coverEvidence.mcpEvidence", {
+      toolNames: toolNames.join(", "),
+    });
     const completion = await runDistillationCompletion(
       {
         model: params.model,
         maxTokens: 1024,
         messages: [
-          { role: "system", content: mcpEvidenceSystemPrompt(toolNames) },
+          systemContextMessage(systemContext),
           { role: "user", content: mcpEvidenceUserPrompt(params.candidate) },
         ],
+        systemContexts: [systemContext.manifest],
       },
       {
         providerSetting: params.provider,

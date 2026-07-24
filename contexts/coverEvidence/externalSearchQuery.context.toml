@@ -1,0 +1,26 @@
+[[sections]]
+id = "external.search-query"
+kind = "output-contract"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = '''
+外部 evidence 検索用の検索語だけを選んでください。
+出力は1行だけです。
+形式: `| keyword |` または `| keyword | keyword |`
+keyword は1個以上から3個以下です。1個で十分なら1個だけ返してください。
+名詞・固有名詞・API名・機能名・エラー名だけを選び、文章にしないでください。
+Use when / Workflow / Verification / Avoid / rule / procedure などの見出し語は検索語にしないでください。
+数合わせで一般語を足さないでください。
+'''
+
+[sections.translations."en-US"]
+text = '''
+外部 evidence 検索用の検索語だけを選んでください。
+出力は1行だけです。
+形式: `| keyword |` または `| keyword | keyword |`
+keyword は1個以上から3個以下です。1個で十分なら1個だけ返してください。
+名詞・固有名詞・API名・機能名・エラー名だけを選び、文章にしないでください。
+Use when / Workflow / Verification / Avoid / rule / procedure などの見出し語は検索語にしないでください。
+数合わせで一般語を足さないでください。
+'''

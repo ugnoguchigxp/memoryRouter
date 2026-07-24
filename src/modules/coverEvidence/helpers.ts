@@ -5,7 +5,6 @@ import {
   hasProcedureWorkflowSignal,
   validateCandidateQualityForStorage,
 } from "../distillation/procedure-quality.js";
-import { buildProcedureSystemContext } from "../distillation/procedure-system-context.js";
 import type { CandidateKnowledgeType } from "../findCandidate/repository.js";
 import {
   applicabilityToCoverCandidateFields,
@@ -51,25 +50,6 @@ const MAX_REASON_LENGTH = 160;
 export function compactReason(value: string | null | undefined): string | null {
   const reason = value?.replace(/\s+/g, " ").trim();
   return reason ? reason.slice(0, MAX_REASON_LENGTH) : null;
-}
-
-export function procedureBodyInstructions(): string[] {
-  return buildProcedureSystemContext().split("\n");
-}
-
-export function applicabilityInstructions(): string[] {
-  return [
-    "draft knowledge の applicability metadata を最終 JSON に返してください。",
-    "ネストした appliesTo や candidate オブジェクトは作らないでください。",
-    "任意 field は applicabilityGeneral, technologies, changeTypes, domains, repoPath, repoKey です。",
-    "technologies / changeTypes / domains は JSON 配列ではなく、できればカンマ区切り文字列で返してください。",
-    "technologies / changeTypes / domains の値は、可能な限り lowercase kebab-case の ASCII tag で返してください（例: release-management, feature-flag）。日本語しか根拠がない場合だけ日本語を使ってください。",
-    "knowledge_ready を返す場合、technologies/changeTypes/domains はそれぞれ最低 1 件を必ず埋めてください。",
-    "3カテゴリを埋められない場合は knowledge_ready にせず、status=insufficient と reason=applies_to_categories_required を返してください。",
-    "source evidence から明確に言える値を優先し、曖昧な推測で埋めないでください。",
-    "applicabilityGeneral は repo、project、file、technology に依存せず広く再利用できる knowledge の場合だけ true にしてください。",
-    "repoPath と repoKey は system/source metadata に明示されている場合だけ使い、推測で作らないでください。",
-  ];
 }
 
 export function sourceContextForPrompts(params: {

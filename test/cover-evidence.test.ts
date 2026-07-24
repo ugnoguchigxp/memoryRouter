@@ -1,12 +1,8 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { runCoverEvidence } from "../src/modules/coverEvidence/domain.js";
 import { parseCoverEvidenceResult } from "../src/modules/coverEvidence/parser.js";
-import {
-  applicabilityRefinementSystemPrompt,
-  externalEvidenceFinalSystemPrompt,
-  valueAssessmentSystemPrompt,
-} from "../src/modules/coverEvidence/prompts.js";
 import { buildCoverEvidenceSearchQuery } from "../src/modules/coverEvidence/search-query.service.js";
+import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
 
 const mocks = vi.hoisted(() => ({
   getFindCandidateResultById: vi.fn(),
@@ -654,20 +650,36 @@ describe("coverEvidence search query", () => {
 
 describe("coverEvidence prompts", () => {
   test("asks applicability facets to prefer ASCII tags", () => {
-    expect(externalEvidenceFinalSystemPrompt()).toContain("lowercase kebab-case の ASCII tag");
-    expect(applicabilityRefinementSystemPrompt()).toContain("lowercase kebab-case の ASCII tag");
+    expect(
+      renderSystemContext("coverEvidence.externalFinal", {
+        webEvidenceTokenBudget: 15_000,
+      }).content.text,
+    ).toContain("lowercase kebab-case の ASCII tag");
+    expect(renderSystemContext("coverEvidence.applicabilityRefinement", {}).content.text).toContain(
+      "lowercase kebab-case の ASCII tag",
+    );
   });
 
   test("nudges reusable knowledge title and body toward Japanese in Japanese contexts", () => {
-    expect(externalEvidenceFinalSystemPrompt()).toContain(
-      "knowledge_ready の title と body の自然文を必ず日本語",
+    expect(
+      renderSystemContext("coverEvidence.externalFinal", {
+        webEvidenceTokenBudget: 15_000,
+      }).content.text,
+    ).toContain("knowledge_ready の title と body の自然文を必ず日本語");
+    expect(
+      renderSystemContext("coverEvidence.valueAssessment", {
+        lowImportanceRejectThreshold: 30,
+      }).content.text,
+    ).toContain("入力や source evidence が英語の場合も");
+    expect(renderSystemContext("coverEvidence.applicabilityRefinement", {}).content.text).toContain(
+      "説明文は日本語へ言い換えてください",
     );
-    expect(valueAssessmentSystemPrompt()).toContain("入力や source evidence が英語の場合も");
-    expect(applicabilityRefinementSystemPrompt()).toContain("説明文は日本語へ言い換えてください");
   });
 
   test("instructs simple title body and final metadata output", () => {
-    const prompt = externalEvidenceFinalSystemPrompt();
+    const prompt = renderSystemContext("coverEvidence.externalFinal", {
+      webEvidenceTokenBudget: 15_000,
+    }).content.text;
 
     expect(prompt).toContain("1行目: タイトル");
     expect(prompt).toContain("2行目から最終行の前まで: 本文");
@@ -678,7 +690,9 @@ describe("coverEvidence prompts", () => {
   });
 
   test("asks external evidence final pass to enrich supported candidates", () => {
-    const prompt = externalEvidenceFinalSystemPrompt();
+    const prompt = renderSystemContext("coverEvidence.externalFinal", {
+      webEvidenceTokenBudget: 15_000,
+    }).content.text;
 
     expect(prompt).toContain("候補の title/body を肉付け・補完・清書");
     expect(prompt).toContain("再利用可能な knowledge_ready 候補へ補正");
@@ -687,7 +701,9 @@ describe("coverEvidence prompts", () => {
   });
 
   test("lets source-only value assessment accept faithful agent-log generalizations", () => {
-    const prompt = valueAssessmentSystemPrompt();
+    const prompt = renderSystemContext("coverEvidence.valueAssessment", {
+      lowImportanceRejectThreshold: 30,
+    }).content.text;
 
     expect(prompt).toContain("agent log や vibe memory の断片");
     expect(prompt).toContain("忠実に一般化");
@@ -696,8 +712,11 @@ describe("coverEvidence prompts", () => {
   });
 
   test("allows conservative applicability tags from candidate and source context", () => {
-    const valuePrompt = valueAssessmentSystemPrompt();
-    const refinementPrompt = applicabilityRefinementSystemPrompt();
+    const valuePrompt = renderSystemContext("coverEvidence.valueAssessment", {
+      lowImportanceRejectThreshold: 30,
+    }).content.text;
+    const refinementPrompt = renderSystemContext("coverEvidence.applicabilityRefinement", {})
+      .content.text;
 
     expect(valuePrompt).toContain("source evidence と candidate から保守的に推定");
     expect(refinementPrompt).toContain("保守的に推定できるカテゴリ");

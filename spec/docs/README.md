@@ -22,4 +22,6 @@
 | [Single-Process SQLite Writer Refactoring Implementation Plan](single-process-sqlite-writer-refactor-plan.md) | 分散している Rust/Hono/CLI の SQLite Writer を調査し、常駐 Rust daemon 内の単一 Writer queue/connection と read-only client、offline 排他処理へ段階移行する実装計画 |
 | [Rust Test Coverage 改善計画](rust-test-coverage-improvement-plan.md) | `context-stilld` の Rust unit test coverage を、baseline、優先 module、検証コマンド、停止条件つきで段階的に改善する計画 |
 | [Rust Daemon Replacement Readiness Implementation Plan](rust-daemon-replacement-readiness-plan.md) | Rust daemon を lifecycle host から boundary ごとに置き換え可能な runtime へ進めるための実装順序、検証ゲート、default switch 条件 |
+| [s11tnext SystemContext 全面採用 実装計画](s11tnext-system-context-full-adoption-plan.md) | ContextStill の全 SystemContext を s11tnext catalog へ移行し、型、locale、trust boundary、manifest audit を全面利用しながら package 改善へ還元する実装計画 |
+| [s11tnext Adoption Findings](s11tnext-adoption-findings.md) | ContextStill への実導入で確認した s11tnext の Runtime、authoring、locale、TypeScript DX、audit、release 上の改善点 |
 | Shared LLM Provider Pool Queue Scheduling 実装計画 (未配置) | 複数 queue が少数の共有 LLM endpoint を非プリエンプティブ優先度つきで使うための Provider Pool、lease、scheduler リファクタリング計画 |

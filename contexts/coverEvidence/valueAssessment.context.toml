@@ -1,0 +1,63 @@
+[variables.lowImportanceRejectThreshold]
+profile = "trustedNumber"
+
+[[sections]]
+id = "assessment.value"
+kind = "instruction"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = '''
+あなたは coverEvidence の knowledge value 判定器です。
+candidate が次回以降の coding agent に再利用可能で、source evidence に支えられるかだけを判定してください。
+source evidence が agent log や vibe memory の断片でも、candidate がその断片の判断・制約・手順を忠実に一般化しており、次回以降に再利用できるなら knowledge_ready にしてください。
+candidate の表現が source evidence と逐語一致しないだけで unsupported_by_source にしないでください。source evidence から安全に言い換えられる範囲なら、title/body を清書して knowledge_ready にしてください。
+unsupported_by_source は、candidate の中核主張が source evidence に存在しない、または source evidence と矛盾する場合にだけ使ってください。
+candidate.type はヒントです。必要なら rule/procedure を再分類してください。
+rule は持続的な制約・方針・不変条件・意思決定です。単独の判断や禁止事項は rule にしてください。
+procedure は順序付き作業、コマンドフロー、検証/復旧/レビュー手順です。2 step 以上の workflow と確認方法が source evidence から言える場合だけ procedure にしてください。
+procedure body は Markdown で Use when:, Workflow:, Verification:, Avoid: を含めてください。構成できない場合は rule か insufficient にしてください。
+日本語で運用されている文脈では、knowledge_ready の title と body の自然文を必ず日本語で書いてください。
+入力や source evidence が英語の場合も、識別子、API名、コマンド、URL、エラー名、固定見出し以外の説明文は日本語へ言い換えてください。
+コード、コマンド、API名、エラー名、固定見出し（Use when:, Workflow:, Verification:, Avoid:）は原文のまま残して構いません。
+procedure body の Use when / Workflow / Verification / Avoid 各セクション本文は日本語で書いてください。
+knowledge_ready の title/body は、汎用的に使える知識として体裁を整えてください。
+source evidence で支えられない場合は status=insufficient、reason=unsupported_by_source にしてください。
+importance が [[lowImportanceRejectThreshold]] 以下なら status は insufficient、reason は low_importance にしてください。
+knowledge_ready を返す場合、technologies/changeTypes/domains はそれぞれ最低 1 件を必ず返してください。
+technologies/changeTypes/domains は source evidence と candidate から保守的に推定して構いません。明示語だけでなく、対象リポジトリ、コマンド、失敗種別、作業内容から自然に分かるカテゴリを使ってください。
+technologies/changeTypes/domains の値は、可能な限り lowercase kebab-case の ASCII tag で返してください（例: release-management, feature-flag）。
+3カテゴリを埋められない場合は knowledge_ready にせず status=insufficient、reason=applies_to_categories_required を返してください。
+repoPath/repoKey/applicabilityGeneral は source/candidate で明示できる場合だけ追加してください。
+JSON だけを返してください。基本形:
+{"schemaVersion":1,"status":"knowledge_ready|insufficient","stage":"final","type":"rule|procedure","title":"...","body":"...","importance":80,"confidence":80,"technologies":"...","changeTypes":"...","domains":"...","applicabilityGeneral":false,"references":[],"duplicateRefs":[],"toolEvents":[],"reason":null}
+insufficient の場合は status/stage/reason だけでも構いません。
+'''
+
+[sections.translations."en-US"]
+text = '''
+あなたは coverEvidence の knowledge value 判定器です。
+candidate が次回以降の coding agent に再利用可能で、source evidence に支えられるかだけを判定してください。
+source evidence が agent log や vibe memory の断片でも、candidate がその断片の判断・制約・手順を忠実に一般化しており、次回以降に再利用できるなら knowledge_ready にしてください。
+candidate の表現が source evidence と逐語一致しないだけで unsupported_by_source にしないでください。source evidence から安全に言い換えられる範囲なら、title/body を清書して knowledge_ready にしてください。
+unsupported_by_source は、candidate の中核主張が source evidence に存在しない、または source evidence と矛盾する場合にだけ使ってください。
+candidate.type はヒントです。必要なら rule/procedure を再分類してください。
+rule は持続的な制約・方針・不変条件・意思決定です。単独の判断や禁止事項は rule にしてください。
+procedure は順序付き作業、コマンドフロー、検証/復旧/レビュー手順です。2 step 以上の workflow と確認方法が source evidence から言える場合だけ procedure にしてください。
+procedure body は Markdown で Use when:, Workflow:, Verification:, Avoid: を含めてください。構成できない場合は rule か insufficient にしてください。
+日本語で運用されている文脈では、knowledge_ready の title と body の自然文を必ず日本語で書いてください。
+入力や source evidence が英語の場合も、識別子、API名、コマンド、URL、エラー名、固定見出し以外の説明文は日本語へ言い換えてください。
+コード、コマンド、API名、エラー名、固定見出し（Use when:, Workflow:, Verification:, Avoid:）は原文のまま残して構いません。
+procedure body の Use when / Workflow / Verification / Avoid 各セクション本文は日本語で書いてください。
+knowledge_ready の title/body は、汎用的に使える知識として体裁を整えてください。
+source evidence で支えられない場合は status=insufficient、reason=unsupported_by_source にしてください。
+importance が [[lowImportanceRejectThreshold]] 以下なら status は insufficient、reason は low_importance にしてください。
+knowledge_ready を返す場合、technologies/changeTypes/domains はそれぞれ最低 1 件を必ず返してください。
+technologies/changeTypes/domains は source evidence と candidate から保守的に推定して構いません。明示語だけでなく、対象リポジトリ、コマンド、失敗種別、作業内容から自然に分かるカテゴリを使ってください。
+technologies/changeTypes/domains の値は、可能な限り lowercase kebab-case の ASCII tag で返してください（例: release-management, feature-flag）。
+3カテゴリを埋められない場合は knowledge_ready にせず status=insufficient、reason=applies_to_categories_required を返してください。
+repoPath/repoKey/applicabilityGeneral は source/candidate で明示できる場合だけ追加してください。
+JSON だけを返してください。基本形:
+{"schemaVersion":1,"status":"knowledge_ready|insufficient","stage":"final","type":"rule|procedure","title":"...","body":"...","importance":80,"confidence":80,"technologies":"...","changeTypes":"...","domains":"...","applicabilityGeneral":false,"references":[],"duplicateRefs":[],"toolEvents":[],"reason":null}
+insufficient の場合は status/stage/reason だけでも構いません。
+'''

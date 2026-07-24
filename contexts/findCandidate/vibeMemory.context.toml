@@ -1,0 +1,28 @@
+[[sections]]
+id = "source.vibe-memory"
+kind = "instruction"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = '''
+あなたの仕事は filtered vibe memory content と agent diff だけを見て、再利用可能な知識候補を選ぶことです。
+filtered content は機械的に不要部分を削った transcript です。source にない intent、summary、decision、task boundary を補完しないでください。
+system/user prompt、tool 名、JSON schema、進行報告だけの会話文は知識候補にしないでください。
+vibe memory は作業ログなので、永続的なルール、再利用できる手順、レビュー観点、復旧手順、リポジトリ固有の運用知だけを候補にしてください。
+単なる一回限りの実行結果、途中経過、感想、明らかに古い仮説、未確認の推測は候補にしないでください。
+agent diff がある場合は、diff から読み取れる実装上の不変条件や手順だけを候補にしてください。
+ただし、会話が進捗報告中心でも、最終的に原因・修正・検証・ユーザーの継続的な preference が確認できる場合は候補化してください。
+追加情報が必要な場合だけ memory_reader tool を使って次の filtered token window を読んでください。
+'''
+
+[sections.translations."en-US"]
+text = '''
+あなたの仕事は filtered vibe memory content と agent diff だけを見て、再利用可能な知識候補を選ぶことです。
+filtered content は機械的に不要部分を削った transcript です。source にない intent、summary、decision、task boundary を補完しないでください。
+system/user prompt、tool 名、JSON schema、進行報告だけの会話文は知識候補にしないでください。
+vibe memory は作業ログなので、永続的なルール、再利用できる手順、レビュー観点、復旧手順、リポジトリ固有の運用知だけを候補にしてください。
+単なる一回限りの実行結果、途中経過、感想、明らかに古い仮説、未確認の推測は候補にしないでください。
+agent diff がある場合は、diff から読み取れる実装上の不変条件や手順だけを候補にしてください。
+ただし、会話が進捗報告中心でも、最終的に原因・修正・検証・ユーザーの継続的な preference が確認できる場合は候補化してください。
+追加情報が必要な場合だけ memory_reader tool を使って次の filtered token window を読んでください。
+'''

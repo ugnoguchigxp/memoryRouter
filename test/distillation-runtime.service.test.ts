@@ -7,12 +7,14 @@ import {
 } from "../src/modules/distillation/distillation-runtime.service.js";
 import { recordLlmUsage } from "../src/modules/llm/llm-usage-logger.js";
 import { resetAzureOpenAiDeploymentPoolForTests } from "../src/modules/llm/providers/azure-openai-config.js";
+import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
 
 vi.mock("../src/modules/audit/audit-log.service.js", () => ({
   auditEventTypes: {
     coverEvidenceLlmStarted: "COVER_EVIDENCE_LLM_STARTED",
     coverEvidenceLlmCompleted: "COVER_EVIDENCE_LLM_COMPLETED",
     coverEvidenceLlmFailed: "COVER_EVIDENCE_LLM_FAILED",
+    systemContextSubmitted: "SYSTEM_CONTEXT_SUBMITTED",
   },
   recordAuditLogSafe: vi.fn().mockResolvedValue(undefined),
 }));
@@ -87,6 +89,67 @@ describe("Distillation Runtime Service", () => {
 
     expect(result.content).toBe("Hello result");
     expect(chatClient).toHaveBeenCalledTimes(1);
+  });
+
+  test("awaits manifest-only SystemContext audit persistence after provider success", async () => {
+    const systemContext = renderSystemContext("contextCompiler.agenticRefine", {
+      goal: "secret runtime goal",
+      retrievalMode: "task_context",
+      technologies: "",
+      changeTypes: "",
+      domains: "",
+    });
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: '{"candidates":[]}', tool_calls: [] } }],
+      }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    let releaseAudit: (() => void) | undefined;
+    vi.mocked(recordAuditLogSafe).mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseAudit = resolve;
+        }),
+    );
+
+    let completed = false;
+    const completion = runDistillationCompletion(
+      {
+        model: "mock-local-model",
+        messages: [{ role: "system", content: systemContext.content.text }],
+        maxTokens: 128,
+        systemContexts: [systemContext.manifest],
+      },
+      {
+        providerSetting: "local-llm",
+        enableTools: false,
+      },
+    ).then((result) => {
+      completed = true;
+      return result;
+    });
+
+    await vi.waitFor(() => expect(releaseAudit).toBeTypeOf("function"));
+    expect(completed).toBe(false);
+    releaseAudit?.();
+    await expect(completion).resolves.toEqual(
+      expect.objectContaining({ content: '{"candidates":[]}' }),
+    );
+
+    expect(recordAuditLogSafe).toHaveBeenCalledWith({
+      eventType: "SYSTEM_CONTEXT_SUBMITTED",
+      actor: "system",
+      payload: expect.objectContaining({
+        provider: "local-llm",
+        manifests: [expect.objectContaining({ key: "contextCompiler.agenticRefine" })],
+      }),
+    });
+    expect(JSON.stringify(vi.mocked(recordAuditLogSafe).mock.calls)).not.toContain(
+      "secret runtime goal",
+    );
   });
 
   test("truncates oversized distillation input before calling the provider", async () => {

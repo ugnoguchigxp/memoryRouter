@@ -1,6 +1,7 @@
 import { resolveCoverEvidenceRouteByPolicy } from "../coverEvidence/provider-policy.js";
 import { saveCoverEvidenceResult } from "../coverEvidence/repository.js";
 import type { CoverEvidenceResult } from "../coverEvidence/types.js";
+import { knowledgeIntentTagSlugs } from "../../knowledge/intentTagDefinitions.js";
 import {
   type DistillationChatClient,
   createDefaultChatClient,
@@ -12,13 +13,17 @@ import {
   resolveCoverEvidenceRoutes,
 } from "../settings/settings.service.js";
 import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
+import {
   applicabilityToCoverCandidateFields,
   hasRequiredApplicabilityFacets,
   mergeApplicability,
   normalizeApplicability,
 } from "../knowledge/applicability.js";
 import { parseNegativeEvidenceResult } from "./parser.js";
-import { buildNegativeEvidencePrompt } from "./prompts.js";
+import { buildNegativeEvidenceUserPrompt } from "./prompts.js";
 
 function buildNegativeKnowledgeBody(distilled: {
   failure: string;
@@ -177,9 +182,12 @@ export async function runCoverNegativeEvidence(params: {
     localLlmModel: mcpEvidenceRuntimeRoute.localLlmModel,
   });
 
-  const prompt = buildNegativeEvidencePrompt({
+  const prompt = buildNegativeEvidenceUserPrompt({
     title: row.title,
     content: row.content,
+  });
+  const systemContext = renderSystemContext("coverEvidence.negative", {
+    allowedIntentTags: knowledgeIntentTagSlugs.join(", "),
   });
 
   const chat =
@@ -192,16 +200,10 @@ export async function runCoverNegativeEvidence(params: {
       mcpEvidenceRuntimeRoute.localLlmModel,
     );
   const response = await chat({
-    messages: [
-      {
-        role: "system",
-        content:
-          "あなたは professional software engineering assistant です。JSON のキー名や固定 enum 以外の自然文は日本語で返してください。",
-      },
-      { role: "user", content: prompt },
-    ],
+    messages: [systemContextMessage(systemContext), { role: "user", content: prompt }],
     model,
     maxTokens: 2048,
+    systemContexts: [systemContext.manifest],
     signal: params.signal,
   });
 

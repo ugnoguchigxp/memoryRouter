@@ -9,6 +9,10 @@ import {
 } from "../distillation/distillation-runtime.service.js";
 import type { DistillationMessage } from "../distillation/types.js";
 import { resolveDeadZoneMergeReviewRoute } from "../settings/settings.service.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 
 export type DeadZoneMergeReviewKnowledgeSnapshot = {
   id: string;
@@ -69,12 +73,9 @@ export async function runDeadZoneMergeReviewLlm(params: {
     routeModel: route.model,
     localLlmModel: route.localLlmModel,
   });
+  const systemContext = renderSystemContext("landscape.deadZoneMergeReview", {});
   const messages: DistillationMessage[] = [
-    {
-      role: "system",
-      content:
-        "You review whether a weak or unreachable knowledge item should be merged into a canonical item. Return only strict JSON. Do not use tools.",
-    },
+    systemContextMessage(systemContext),
     {
       role: "user",
       content: JSON.stringify({
@@ -94,7 +95,12 @@ export async function runDeadZoneMergeReviewLlm(params: {
   ];
 
   const completion = await runDistillationCompletion(
-    { model, messages, maxTokens: 4000 },
+    {
+      model,
+      messages,
+      maxTokens: 4000,
+      systemContexts: [systemContext.manifest],
+    },
     {
       providerSetting,
       fallbackOrder: route.fallback,

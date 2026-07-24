@@ -25,6 +25,10 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveEpisodeDistillerRoute,
 } from "../settings/settings.service.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 import { appendQueueEvent } from "../queue/core/events.js";
 import {
   type EpisodeDistillerJob,
@@ -310,15 +314,6 @@ function buildNearDuplicateReviewMessages(params: {
 }): DistillationMessage[] {
   return [
     {
-      role: "system",
-      content: [
-        "あなたは ContextStill の EpisodeCard 登録前レビューアです。",
-        "新規Episode候補が既存Episodeと実質的に同じ作業・判断・教訓を表す場合は登録しない判断を返してください。",
-        "同じファイルや同じ親ログでも、別の判断・失敗・結果・再利用教訓を持つなら publish=true にしてください。",
-        "出力は JSON object のみ。Markdown や説明文を付けないでください。",
-      ].join("\n"),
-    },
-    {
       role: "user",
       content: [
         "次の shape の JSON object を返してください:",
@@ -371,11 +366,13 @@ async function reviewNearDuplicate(params: {
     routeModel: route.model,
     localLlmModel: route.localLlmModel,
   });
+  const systemContext = renderSystemContext("episodeDistiller.nearDuplicateReview", {});
   const completion = await runDistillationCompletion(
     {
       model,
-      messages: buildNearDuplicateReviewMessages(params),
+      messages: [systemContextMessage(systemContext), ...buildNearDuplicateReviewMessages(params)],
       maxTokens: 800,
+      systemContexts: [systemContext.manifest],
     },
     {
       providerSetting: provider,
@@ -488,25 +485,6 @@ function buildMessages(segment: Segment, document: EpisodeSourceDocument): Disti
   const project = metadataString(metadata, ["project", "projectName", "repoKey"]);
   return [
     {
-      role: "system",
-      content: [
-        "あなたは ContextStill の episodeDistiller です。",
-        "source evidence から、将来の作業判断に再利用できる task-oriented EpisodeCard だけを作ります。",
-        "出力は JSON array のみ。JSON 以外の説明文や Markdown は返さないでください。",
-        "JSON のキー名、enum 値、ファイルパス、コマンド名、API 名、固有名詞は指定どおり保持してください。それ以外の自然文は必ず日本語で書いてください。",
-        "差分ファイル単位の細切れ Episode を避け、同じ目的・原因・判断に属する内容は 1 件に統合してください。",
-        "原則として 1 segment から 1 件だけ作ります。明確に異なる decision/failure/task が同時にある場合だけ最大 2 件までにしてください。",
-        "rules/procedures の昇格はしません。因果関係、判断、失敗、再利用できる教訓、当時の未解決事項だけを記録してください。",
-        "context には状況・背景だけを書き、intent を混ぜないでください。",
-        "actionTaken には実際に行った修正、検証、運用操作、または明示的に避けた approach を日本語で書いてください。",
-        "outcome には source locator や蒸留由来ではなく、作業結果・判断結果・残った状態を日本語で書いてください。",
-        "openLoops は現在も未解決と断定しないでください。source 時点の未解決事項として、日本語で控えめに書いてください。",
-        "scores.importance は将来の作業判断で再利用する価値、scores.confidence はこの EpisodeCard の要約・教訓が source segment から妥当に読める確度として、0-100 の整数で別々に採点してください。",
-        "単一 segment 由来で追加検証がない場合、scores.confidence は最大 80 を目安にしてください。複数の独立した根拠が segment 内にある場合だけ 90 以上を使えます。",
-        "単一の小さな test fixture 変更、分類だけの作業、UI 微調整は scores.importance を 60 前後に抑えてください。",
-      ].join("\n"),
-    },
-    {
       role: "user",
       content: [
         `Vibe memory id: ${document.vibeMemoryId}`,
@@ -551,17 +529,6 @@ function buildSemanticChunkMessages(
   document: EpisodeSourceDocument,
 ): DistillationMessage[] {
   return [
-    {
-      role: "system",
-      content: [
-        "あなたは ContextStill の source chunk planner です。",
-        "長い作業ログを、安価な Local LLM でも後続生成しやすい semantic chunk に分割します。",
-        "EpisodeCard や candidate は作らず、境界情報だけを JSON array で返してください。",
-        "固定長分割ではなく、依頼から結果、調査、実装、検証、失敗解消、判断転換のまとまりを優先してください。",
-        "chunk は必ず提示された source window の byte range 内に収めてください。",
-        "JSON 以外の説明文や Markdown は返さないでください。",
-      ].join("\n"),
-    },
     {
       role: "user",
       content: [
@@ -632,11 +599,16 @@ async function createSemanticChunks(params: {
     localLlmModel: route.localLlmModel,
   });
   try {
+    const systemContext = renderSystemContext("episodeDistiller.semanticChunk", {});
     const completion = await runDistillationCompletion(
       {
         model,
-        messages: buildSemanticChunkMessages(params.windows, params.document),
+        messages: [
+          systemContextMessage(systemContext),
+          ...buildSemanticChunkMessages(params.windows, params.document),
+        ],
         maxTokens: 2000,
+        systemContexts: [systemContext.manifest],
       },
       {
         providerSetting: provider,
@@ -718,11 +690,16 @@ async function distillSegment(params: {
     routeModel: route.model,
     localLlmModel: route.localLlmModel,
   });
+  const systemContext = renderSystemContext("episodeDistiller.generate", {});
   const completion = await runDistillationCompletion(
     {
       model,
-      messages: buildMessages(params.segment, params.document),
+      messages: [
+        systemContextMessage(systemContext),
+        ...buildMessages(params.segment, params.document),
+      ],
       maxTokens: 4000,
+      systemContexts: [systemContext.manifest],
     },
     {
       providerSetting: provider,

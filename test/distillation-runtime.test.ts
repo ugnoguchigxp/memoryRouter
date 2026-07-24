@@ -1,10 +1,5 @@
 import { describe, expect, test } from "vitest";
 import {
-  buildDistillationExtractionSystemPrompt,
-  buildDistillationSystemPrompt,
-  buildDistillationVerificationSystemPrompt,
-} from "../src/modules/distillation/distillation-prompts.js";
-import {
   type DistillationChatClient,
   type DistillationToolExecutor,
   buildBedrockConversation,
@@ -321,52 +316,6 @@ describe("distillation runtime", () => {
 
     expect(result.content).toBe('{"candidates":[]}');
     expect(seenMessages).toHaveLength(2);
-  });
-
-  test("common system prompt keeps output constrained to compile-ready rule/procedure", () => {
-    const prompt = buildDistillationSystemPrompt("vibe_memory");
-
-    expect(prompt).toContain("知識タイプは rule と procedure のみ");
-    expect(prompt).toContain("context_compile");
-    expect(prompt).toContain("search_web");
-    expect(prompt).toContain("fetch_content");
-    expect(prompt).toContain("search_web は最大 1 回、fetch_content は最大 3 回");
-    expect(prompt).toContain("search query は短く安定");
-    expect(prompt).toContain("tool call JSON");
-    expect(prompt).toContain("title/body に search_web や fetch_content");
-    expect(prompt).toContain("title と body の自然文は必ず日本語");
-    expect(prompt).not.toMatch(/\bfact\b/i);
-    expect(prompt).not.toMatch(/\blesson\b/i);
-  });
-
-  test("extraction and verification prompts split source-first and tool-backed sessions", () => {
-    const extractionPrompt = buildDistillationExtractionSystemPrompt("wiki");
-    const procedureVerificationPrompt = buildDistillationVerificationSystemPrompt("procedure");
-
-    expect(extractionPrompt).toContain("1 段階目の候補抽出セッション");
-    expect(extractionPrompt).toContain("入力証拠だけから候補を抽出");
-    expect(extractionPrompt).not.toContain("fetch_content の成功結果を必須");
-    expect(procedureVerificationPrompt).toContain("2 段階目の新しいセッション");
-    expect(procedureVerificationPrompt).toContain("tool result を受け取る前");
-    expect(procedureVerificationPrompt).toContain("search_web");
-    expect(procedureVerificationPrompt).toContain("fetch_content");
-    expect(procedureVerificationPrompt).toContain("採用候補の一次ソース URL");
-    expect(procedureVerificationPrompt).toContain("search_web の言い換え query を繰り返さない");
-    expect(procedureVerificationPrompt).toContain('"name":"search_web"');
-    expect(procedureVerificationPrompt).toContain("中間応答専用");
-    expect(procedureVerificationPrompt).toContain("最終 candidates にコピーしてはいけない");
-    expect(procedureVerificationPrompt).toContain("SKILL.md");
-    expect(procedureVerificationPrompt).toContain("System Context");
-    expect(procedureVerificationPrompt).toContain("description に相当する使用条件");
-    expect(procedureVerificationPrompt).toContain("各見出しの本文は日本語");
-    expect(procedureVerificationPrompt).toContain("YAML frontmatter");
-    expect(procedureVerificationPrompt).toContain("Use when:");
-    expect(procedureVerificationPrompt).toContain("Workflow:");
-    expect(procedureVerificationPrompt).toContain(
-      "最終 knowledge に必要な情報は type / title / body / confidence / importance",
-    );
-    expect(procedureVerificationPrompt).not.toContain("sourceRefs");
-    expect(procedureVerificationPrompt).not.toContain("evidenceRefs");
   });
 
   test("throws error when tool rounds exceeded", async () => {

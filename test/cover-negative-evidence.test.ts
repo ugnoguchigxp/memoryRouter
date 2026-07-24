@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { runCoverEvidence } from "../src/modules/coverEvidence/domain.js";
 import { runCoverNegativeEvidence } from "../src/modules/coverNegativeEvidence/domain.js";
 import { parseNegativeEvidenceResult } from "../src/modules/coverNegativeEvidence/parser.js";
-import { buildNegativeEvidencePrompt } from "../src/modules/coverNegativeEvidence/prompts.js";
+import { buildNegativeEvidenceUserPrompt } from "../src/modules/coverNegativeEvidence/prompts.js";
 import { getFindCandidateResultById } from "../src/modules/findCandidate/repository.js";
+import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
 
 vi.mock("../src/modules/findCandidate/repository.js", () => ({
   getFindCandidateResultById: vi.fn(),
@@ -39,16 +40,27 @@ describe("cover-negative-evidence", () => {
   });
 
   test("requires distilled natural language to be Japanese", () => {
-    const prompt = buildNegativeEvidencePrompt({
+    const userPrompt = buildNegativeEvidenceUserPrompt({
       title: "Avoid stale status",
       content: "Failure: stale status was trusted.",
     });
+    const systemPrompt = renderSystemContext("coverEvidence.negative", {
+      allowedIntentTags: "failure_pattern, guardrail",
+    }).content.text;
 
-    expect(prompt).toContain("自然文は必ず日本語");
-    expect(prompt).toContain("入力が英語でも");
-    expect(prompt).toContain("日本語へ言い換えてください");
-    expect(prompt).toContain("distilled.trigger と distilled.fix は必須");
-    expect(prompt).toContain("根拠が1文だけの広範囲 guardrail");
+    expect(systemPrompt).toContain("自然文は必ず日本語");
+    expect(systemPrompt).toContain("入力が英語でも");
+    expect(systemPrompt).toContain("日本語へ言い換えてください");
+    expect(systemPrompt).toContain("distilled.trigger と distilled.fix は必須");
+    expect(systemPrompt).toContain("根拠が1文だけの広範囲 guardrail");
+    expect(systemPrompt).toContain("未信頼の分析対象データ");
+    expect(JSON.parse(userPrompt)).toEqual({
+      candidate: {
+        title: "Avoid stale status",
+        content: "Failure: stale status was trusted.",
+      },
+    });
+    expect(userPrompt).not.toContain("status='ready'");
   });
 
   test("parses appliesTo facets from negative evidence JSON", () => {
@@ -129,6 +141,22 @@ describe("cover-negative-evidence", () => {
       technologies: ["typescript"],
       changeTypes: ["diagnosis"],
       domains: ["queue"],
+    });
+    const request = mockChatClient.mock.calls[0]?.[0];
+    expect(request.systemContexts).toEqual([
+      expect.objectContaining({ key: "coverEvidence.negative" }),
+    ]);
+    expect(request.messages[0]).toEqual(
+      expect.objectContaining({
+        role: "system",
+        content: expect.stringContaining("failure_pattern"),
+      }),
+    );
+    expect(JSON.parse(request.messages[1].content)).toEqual({
+      candidate: {
+        title: "Do not trust stale queue status alone",
+        content: "Failure: stale queue status was trusted.",
+      },
     });
   });
 

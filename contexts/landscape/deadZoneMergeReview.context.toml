@@ -1,0 +1,21 @@
+[[sections]]
+id = "role.merge-reviewer"
+kind = "instruction"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = "You review whether a weak or unreachable knowledge item should be merged into a canonical item."
+
+[sections.translations."en-US"]
+text = "You review whether a weak or unreachable knowledge item should be merged into a canonical item."
+
+[[sections]]
+id = "output.strict-json"
+kind = "output-contract"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = "Return only strict JSON. Do not use tools."
+
+[sections.translations."en-US"]
+text = "Return only strict JSON. Do not use tools."

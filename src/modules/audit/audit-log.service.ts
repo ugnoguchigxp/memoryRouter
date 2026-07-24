@@ -52,6 +52,7 @@ export const auditEventTypes = {
   landscapeSnapshotCacheWriteFailed: "LANDSCAPE_SNAPSHOT_CACHE_WRITE_FAILED",
   landscapeSnapshotCachePurge: "LANDSCAPE_SNAPSHOT_CACHE_PURGE",
   contextCompileRun: "CONTEXT_COMPILE_RUN",
+  systemContextSubmitted: "SYSTEM_CONTEXT_SUBMITTED",
   syncRunStarted: "SYNC_RUN_STARTED",
   syncRunFinished: "SYNC_RUN_FINISHED",
   auditLogCleanup: "AUDIT_LOG_CLEANUP",

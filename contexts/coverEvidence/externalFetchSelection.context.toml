@@ -1,0 +1,25 @@
+[variables.maxFetchCount]
+profile = "trustedNumber"
+
+[[sections]]
+id = "external.fetch-selection"
+kind = "output-contract"
+severity = "must"
+enforcement = "prompt"
+optimizable = false
+text = '''
+search_web の結果から、fetch_content で読む候補番号だけを選んでください。
+出力は番号だけです。
+形式: `2,3,4`
+1から[[maxFetchCount]]件まで選んでください。
+説明、URL、JSON、ラベルは返さないでください。
+'''
+
+[sections.translations."en-US"]
+text = '''
+search_web の結果から、fetch_content で読む候補番号だけを選んでください。
+出力は番号だけです。
+形式: `2,3,4`
+1から[[maxFetchCount]]件まで選んでください。
+説明、URL、JSON、ラベルは返さないでください。
+'''

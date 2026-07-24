@@ -1,4 +1,5 @@
 import { groupedConfig } from "../../config.js";
+import { auditEventTypes, recordAuditLogSafe } from "../audit/audit-log.service.js";
 import { getRuntimeSettingsSnapshot } from "../settings/settings.service.ts";
 import type { LlmHealthStatus, LlmProvider, LlmProviderName } from "./llm-provider.js";
 import { recordLlmUsage } from "./llm-usage-logger.js";
@@ -8,6 +9,10 @@ import { createBedrockProvider } from "./providers/bedrock.provider.js";
 import { createCodexProvider } from "./providers/codex.provider.ts";
 import { createLocalLlmProvider } from "./providers/local-llm.provider.js";
 import { createOpenAiProvider } from "./providers/openai.provider.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 
 export type AgenticCompileProvider =
   | "openai"
@@ -55,6 +60,14 @@ type LlmProviderHealthEntry = {
 };
 
 const singleInstanceProviderNames: LlmProviderName[] = ["openai", "bedrock", "codex"];
+const jsonOnlySystemContext = renderSystemContext(
+  "shared.jsonOnly",
+  {},
+  {
+    instructionLocale: "en-US",
+    fallbackLocales: ["ja-JP"],
+  },
+);
 
 function dedupeOrder(values: LlmProviderName[]): LlmProviderName[] {
   const seen = new Set<LlmProviderName>();
@@ -182,6 +195,22 @@ function withUsageLogging(provider: LlmProvider, source: string): LlmProvider {
         completionText: response.content,
         source,
       });
+      const submittedSystemContexts = [
+        ...(request.systemContexts ?? []),
+        ...(response.systemContexts ?? []),
+      ];
+      if (submittedSystemContexts.length > 0) {
+        await recordAuditLogSafe({
+          eventType: auditEventTypes.systemContextSubmitted,
+          actor: "system",
+          payload: {
+            source,
+            provider: provider.name,
+            model: request.model ?? defaultModelForProvider(provider.name),
+            manifests: submittedSystemContexts,
+          },
+        });
+      }
       return response;
     },
   };
@@ -249,12 +278,13 @@ async function runLocalLlmSmokeChecks(
           await provider.chat({
             model,
             messages: [
-              { role: "system", content: "Return JSON only." },
+              systemContextMessage(jsonOnlySystemContext),
               { role: "user", content: 'Return {"ok":true} exactly.' },
             ],
             maxTokens: 32,
             temperature: 0,
             responseFormat: "json",
+            systemContexts: [jsonOnlySystemContext.manifest],
           })
         ).content,
       (content) => {
@@ -271,7 +301,7 @@ async function runLocalLlmSmokeChecks(
           await provider.chat({
             model,
             messages: [
-              { role: "system", content: "Return JSON only." },
+              systemContextMessage(jsonOnlySystemContext),
               { role: "user", content: "Use the tool result to answer." },
               {
                 role: "assistant",
@@ -295,6 +325,7 @@ async function runLocalLlmSmokeChecks(
             maxTokens: 64,
             temperature: 0,
             responseFormat: "json",
+            systemContexts: [jsonOnlySystemContext.manifest],
           })
         ).content,
       (content) => {

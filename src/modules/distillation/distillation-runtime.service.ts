@@ -619,6 +619,18 @@ export function createDefaultChatClient(
           completionMetadata: response.toolCalls,
           source: usageSource,
         });
+        if (request.systemContexts && request.systemContexts.length > 0) {
+          await recordAuditLogSafe({
+            eventType: auditEventTypes.systemContextSubmitted,
+            actor: "system",
+            payload: {
+              source: usageSource,
+              provider,
+              model: recordedModel,
+              manifests: request.systemContexts,
+            },
+          });
+        }
         pinnedProvider = provider;
         return {
           ...response,

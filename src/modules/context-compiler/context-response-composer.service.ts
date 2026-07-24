@@ -12,6 +12,10 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveAgenticCompileRouting,
 } from "../settings/settings.service.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 
 type ComposeInput = {
   input: CompileInput;
@@ -393,29 +397,7 @@ function buildFallbackCompose(params: ComposeInput, plan: ComposePlan): Fallback
   };
 }
 
-function buildPlanSystemPrompt(): string {
-  return [
-    "あなたは context_compile の返答構成プランナーです。",
-    "goal と候補要約だけを使って、次ラウンドで使う返答構成・出力形式・検索ヒントを JSON で設計してください。",
-    "",
-    "JSON 形式:",
-    '{ "headings": { "focus": "...", "steps": "...", "verification": "...", "avoid": "..." }, "includeAvoidSection": true, "ruleQueryHints": ["..."], "procedureQueryHints": ["..."], "exclusionHints": ["..."], "responseStyle": "skill|narrative", "styleReason": "...", "styleConfidence": 0.0, "candidateSufficiency": "enough|limited|insufficient" }',
-    "",
-    "必須ルール:",
-    "- 回答は JSON のみ。Markdown や説明文は返さない。",
-    "- 見出しは goal に合わせて自然な日本語で作る。",
-    "- ruleQueryHints / procedureQueryHints は、候補検索・選別で使える短い語句を2-6件に絞る。",
-    "- exclusionHints は、今回ノイズになりやすい語句を必要時のみ入れる。",
-    "- Goal が再利用可能な手順を求め、候補が十分な場合は responseStyle=skill を優先する。",
-    "- 候補が不足している場合は responseStyle=narrative を選ぶ。",
-    "- styleReason は1文で簡潔に書く。",
-    "- styleConfidence は 0.0-1.0 で返す。",
-    "- candidateSufficiency は enough / limited / insufficient のいずれかで返す。",
-    "- 過剰な一般論は避け、goal達成に必要な最小限へ絞る。",
-  ].join("\n");
-}
-
-function buildComposerSystemPrompt(maxTokens: number, plan: ComposePlan): string {
+function buildComposerSystemContextValues(maxTokens: number, plan: ComposePlan) {
   const normalizedMaxTokens = Math.max(128, Math.floor(maxTokens));
   const headings = plan.headings;
   const headingRule =
@@ -428,29 +410,11 @@ function buildComposerSystemPrompt(maxTokens: number, plan: ComposePlan): string
     plan.responseStyle === "skill"
       ? "- 出力は再利用可能な手順書として書き、Workflow は番号付き手順で具体化する。"
       : "- 出力は実装・調査判断に使える narrative コンテキストとして要点をまとめる。";
-  return [
-    "あなたは context_compile の最終コンテキスト編集者です。",
-    "入力された knowledge 候補をそのまま列挙せず、現在の goal に直結する指示へ統合してください。回答はJSONのみ返してください。",
-    "",
-    "JSON 形式:",
-    '{ "markdown": "...", "usedKnowledge": [{ "id": "knowledge-id", "confidence": 0.0-1.0, "evidence": "...", "outputSection": "...", "reason": "..." }] }',
-    "",
-    "必須ルール:",
-    "- 出力は日本語 Markdown。",
+  return {
     headingRule,
     styleRule,
-    "- `Rules` や `Procedures` の見出しは使わない。",
-    "- `negative guardrails` は参考情報ではなく、実行可否・修正条件・確認条件を制約する negative evidence として扱う。",
-    "- negative guardrails が現在の goal に適用される場合、実行を後押しする根拠として使わず、避けること・先に確認すること・修正してから進めることとして本文に反映する。",
-    "- `episode precedents` は過去の類似ケースであり、Knowledge rule や現在の source truth ではない。使う場合は現在のコード確認を前提にした参考 precedent として扱う。",
-    "- 入力knowledgeに無い事実を追加しない。",
-    `- markdown フィールドの本文は ${normalizedMaxTokens} トークン以内を目標に収める。`,
-    `- ${normalizedMaxTokens} トークンを埋める必要はない。goal達成に必要な最小限だけ書く。`,
-    "- JSON は必ず完結させる。出力上限に近い場合は markdown 本文を短くしてでも、閉じ括弧・閉じ配列まで出し切る。",
-    "- できるだけ短く要点を伝えること。相手はAIなので、挨拶や丁寧語で無駄にコンテキストを消費しないこと。",
-    '- goal と直接関係する指示が作れない場合は、`{"markdown":"No Content","usedKnowledge":[]}` を返す。',
-    "- ノイズを避け、受け手が次に行う行動へ変換する。",
-  ].join("\n");
+    maxTokens: normalizedMaxTokens,
+  };
 }
 
 function normalizedHintSet(hints: string[]): Set<string> {
@@ -828,7 +792,7 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
   let attempted = 0;
   const completionMaxTokens = maxTokensWithJsonHeadroom(routing.maxTokens);
   const plannerCompletionMaxTokens = plannerMaxTokens(routing.maxTokens);
-  const plannerSystemPrompt = buildPlanSystemPrompt();
+  const plannerSystemContext = renderSystemContext("contextCompiler.plan", {});
   const plannerUserPrompt = buildPlanUserPrompt(params);
   const selectableKnowledgeIds = new Set(
     [
@@ -856,12 +820,13 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
       const plannerResponse = await provider.chat({
         model: provider.name === "local-llm" ? providerModel : undefined,
         messages: [
-          { role: "system", content: plannerSystemPrompt },
+          systemContextMessage(plannerSystemContext),
           { role: "user", content: plannerUserPrompt },
         ],
         maxTokens: plannerCompletionMaxTokens,
         temperature: 0,
         responseFormat: "json",
+        systemContexts: [plannerSystemContext.manifest],
       });
       const parsedPlan = parseComposePlanPayload(plannerResponse.content, defaultPlan);
       composePlan = parsedPlan.plan;
@@ -888,18 +853,22 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
         ? withNarrativeStyle(effectivePlan, "skill fallback")
         : effectivePlan;
     const fallbackForThisRound = buildFallbackCompose(params, fallbackPlanForThisRound);
-    const systemPrompt = buildComposerSystemPrompt(routing.maxTokens, effectivePlan);
+    const composerSystemContext = renderSystemContext(
+      "contextCompiler.compose",
+      buildComposerSystemContextValues(routing.maxTokens, effectivePlan),
+    );
     const userPrompt = buildComposerUserPrompt(params, effectivePlan);
     try {
       const response = await provider.chat({
         model: provider.name === "local-llm" ? providerModel : undefined,
         messages: [
-          { role: "system", content: systemPrompt },
+          systemContextMessage(composerSystemContext),
           { role: "user", content: userPrompt },
         ],
         maxTokens: completionMaxTokens,
         temperature: 0,
         responseFormat: "json",
+        systemContexts: [composerSystemContext.manifest],
       });
       const parsed = parseAgenticComposerPayload(response.content, selectableKnowledgeIds);
       if (parsed.error) {

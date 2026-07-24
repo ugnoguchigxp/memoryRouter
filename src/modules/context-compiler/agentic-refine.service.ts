@@ -12,6 +12,10 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveAgenticCompileRouting,
 } from "../settings/settings.service.js";
+import {
+  renderSystemContext,
+  systemContextMessage,
+} from "../system-context/system-context.service.js";
 
 export type AgenticCandidate = {
   id: string;
@@ -37,46 +41,6 @@ type AgenticLlmOutput = {
   selectedIds: string[];
   reasoning?: string;
 };
-
-function buildSystemPrompt(input: CompileInput, retrievalMode: RetrievalMode): string {
-  const lines = [
-    "あなたはコーディングエージェントのためのコンテキストコンパイラです。",
-    "## 出力形式",
-    "厳密な JSON でなくてよい。最小限の構造だけを短く返してください。",
-    '推奨形: selectedIds: ["選別した知識のID"], reasoning: "簡潔な理由"',
-    "reasoning は省略してよい。selectedIds が分かればよい。",
-    "",
-    "## 選別基準",
-    "- **厳格な有用性評価**: 提示する知識が、現在のゴール達成に**直接的かつ具体的**に寄与するかを評価してください。",
-    "- **ノイズの排除**: 「UI関連だから」といった漠然とした理由は不採用です。確証がない知識は、エージェントの思考を汚染する「毒」となります。",
-    "- **勇気ある空配列**: 確信が持てない場合は、迷わず `selectedIds` を空配列 `[]` にしてください。有用な情報がないと判断することは、誤った情報を与えるよりも遥かに「賢い判断」です。",
-    "- 知識が一つも選別されない場合でも、関連するコード断片や警告があればそれらは返されます。確証がない知識を無理に選ぶより、空配列を優先してください。",
-    "- `polarity=negative` または `section=guardrails` の候補は、実行を後押しする support ではなく、避ける条件・先に確認する条件・修正してから進む条件として評価してください。",
-    "- 現在の goal に直接適用される negative guardrail は、positive support が少なくても選別対象に残してください。goal に関係しない negative guardrail は落として構いません。",
-    "",
-    "## タスク情報",
-    `- goal: ${input.goal}`,
-    `- retrievalMode: ${retrievalMode}`,
-  ];
-
-  if (input.technologies && input.technologies.length > 0) {
-    lines.push(`- technologies: ${input.technologies.join(", ")}`);
-  }
-  if (input.changeTypes && input.changeTypes.length > 0) {
-    lines.push(`- changeTypes: ${input.changeTypes.join(", ")}`);
-  }
-  if (input.domains && input.domains.length > 0) {
-    lines.push(`- domains: ${input.domains.join(", ")}`);
-  }
-
-  lines.push(
-    "",
-    "selectedIds は入力候補の id を relevance 順に列挙してください。",
-    "ゴールに無関係な知識しかない場合は、必ず空配列 `[]` を返してください。",
-  );
-
-  return lines.join("\n");
-}
 
 function buildUserPrompt(candidates: AgenticCandidate[]): string {
   const items = candidates.map((item) => ({
@@ -234,7 +198,13 @@ export async function agenticRefine(
   const fallbackErrors: string[] = [];
   let attempted = 0;
 
-  const systemPrompt = buildSystemPrompt(input, retrievalMode);
+  const systemContext = renderSystemContext("contextCompiler.agenticRefine", {
+    goal: input.goal,
+    retrievalMode,
+    technologies: input.technologies?.join(", ") ?? "",
+    changeTypes: input.changeTypes?.join(", ") ?? "",
+    domains: input.domains?.join(", ") ?? "",
+  });
   const userPrompt = buildUserPrompt(candidates);
 
   for (const provider of providers) {
@@ -254,12 +224,10 @@ export async function agenticRefine(
     try {
       const response = await provider.chat({
         model: provider.name === "local-llm" ? providerModel : undefined,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
+        messages: [systemContextMessage(systemContext), { role: "user", content: userPrompt }],
         maxTokens: routing.maxTokens,
         temperature: 0,
+        systemContexts: [systemContext.manifest],
       });
 
       const parsed = parseAgenticOutput(response.content);
