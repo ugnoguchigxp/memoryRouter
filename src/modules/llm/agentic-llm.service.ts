@@ -10,8 +10,9 @@ import { createCodexProvider } from "./providers/codex.provider.ts";
 import { createLocalLlmProvider } from "./providers/local-llm.provider.js";
 import { createOpenAiProvider } from "./providers/openai.provider.js";
 import {
-  renderSystemContext,
-  systemContextMessage,
+  englishPromptBinding,
+  renderPrompt,
+  promptMessage,
 } from "../system-context/system-context.service.js";
 
 export type AgenticCompileProvider =
@@ -60,14 +61,7 @@ type LlmProviderHealthEntry = {
 };
 
 const singleInstanceProviderNames: LlmProviderName[] = ["openai", "bedrock", "codex"];
-const jsonOnlySystemContext = renderSystemContext(
-  "shared.jsonOnly",
-  {},
-  {
-    instructionLocale: "en-US",
-    fallbackLocales: ["ja-JP"],
-  },
-);
+const jsonOnlySystemContext = renderPrompt("shared.jsonOnly", {}, englishPromptBinding);
 
 function dedupeOrder(values: LlmProviderName[]): LlmProviderName[] {
   const seen = new Set<LlmProviderName>();
@@ -278,7 +272,7 @@ async function runLocalLlmSmokeChecks(
           await provider.chat({
             model,
             messages: [
-              systemContextMessage(jsonOnlySystemContext),
+              promptMessage(jsonOnlySystemContext),
               { role: "user", content: 'Return {"ok":true} exactly.' },
             ],
             maxTokens: 32,
@@ -301,7 +295,7 @@ async function runLocalLlmSmokeChecks(
           await provider.chat({
             model,
             messages: [
-              systemContextMessage(jsonOnlySystemContext),
+              promptMessage(jsonOnlySystemContext),
               { role: "user", content: "Use the tool result to answer." },
               {
                 role: "assistant",

@@ -17,10 +17,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveFindCandidateRoute,
 } from "../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 import {
   type StorageCandidateParseDiagnostics,
   parseStorageCandidatesWithDiagnostics,
@@ -549,14 +546,14 @@ export async function runFindCandidate(input: FindCandidateInput): Promise<FindC
       });
     };
 
-    const sourceSystemContext = renderSystemContext(
+    const sourceSystemContext = renderPrompt(
       target.targetKind === "vibe_memory" ? "findCandidate.vibeMemory" : "findCandidate.wiki",
       {},
     );
-    const extractSystemContext = renderSystemContext("findCandidate.extract", {});
+    const extractSystemContext = renderPrompt("findCandidate.extract", {});
     const messages: DistillationMessage[] = [
-      systemContextMessage(sourceSystemContext),
-      systemContextMessage(extractSystemContext),
+      promptMessage(sourceSystemContext),
+      promptMessage(extractSystemContext),
       ...buildInitialUserMessages(target.targetKind),
     ];
     let deterministicInitialRead = false;

@@ -2,7 +2,6 @@
 id = "decision.judge"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 You are ContextStill structured decision judge.
@@ -42,7 +41,7 @@ If your final decision differs from Knowledge Assessment recommendedDirection, r
 reasoningSummary must mention the most important adopted support/counter/risk/EpisodeCard candidate and why non-adopted prominent contrary candidates were not decisive.
 '''
 
-[sections.translations."en-US"]
+[sections.translations."ja-JP"]
 text = '''
 You are ContextStill structured decision judge.
 Return exactly one JSON object and no markdown.

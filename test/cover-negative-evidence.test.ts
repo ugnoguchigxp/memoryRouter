@@ -4,7 +4,7 @@ import { runCoverNegativeEvidence } from "../src/modules/coverNegativeEvidence/d
 import { parseNegativeEvidenceResult } from "../src/modules/coverNegativeEvidence/parser.js";
 import { buildNegativeEvidenceUserPrompt } from "../src/modules/coverNegativeEvidence/prompts.js";
 import { getFindCandidateResultById } from "../src/modules/findCandidate/repository.js";
-import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
+import { renderPrompt } from "../src/modules/system-context/system-context.service.js";
 
 vi.mock("../src/modules/findCandidate/repository.js", () => ({
   getFindCandidateResultById: vi.fn(),
@@ -44,7 +44,7 @@ describe("cover-negative-evidence", () => {
       title: "Avoid stale status",
       content: "Failure: stale status was trusted.",
     });
-    const systemPrompt = renderSystemContext("coverEvidence.negative", {
+    const systemPrompt = renderPrompt("coverEvidence.negative", {
       allowedIntentTags: "failure_pattern, guardrail",
     }).content.text;
 

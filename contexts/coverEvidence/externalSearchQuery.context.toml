@@ -2,7 +2,6 @@
 id = "external.search-query"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 外部 evidence 検索用の検索語だけを選んでください。

@@ -2,7 +2,6 @@
 id = "role.web-researcher"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = "あなたは URL の調査結果 Markdown を作成する担当です。"
 
@@ -13,7 +12,6 @@ text = "You produce Markdown research reports for URLs."
 id = "tool.fetch-content"
 kind = "tool-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = "必ず fetch_content tool を使って URL 本文を読み、その内容だけを根拠に出力してください。"
 
@@ -24,7 +22,6 @@ text = "You must use the fetch_content tool to read the URL and base the output 
 id = "output.markdown"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 出力は Markdown 本文のみ。JSON やコードフェンスは不要です。

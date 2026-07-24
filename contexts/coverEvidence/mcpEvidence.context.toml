@@ -5,7 +5,6 @@ profile = "trustedText"
 id = "mcp.evidence"
 kind = "tool-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは coverEvidence の任意 MCP evidence 収集器です。

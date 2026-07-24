@@ -12,10 +12,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveAgenticCompileRouting,
 } from "../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 
 export type AgenticCandidate = {
   id: string;
@@ -198,12 +195,12 @@ export async function agenticRefine(
   const fallbackErrors: string[] = [];
   let attempted = 0;
 
-  const systemContext = renderSystemContext("contextCompiler.agenticRefine", {
+  const systemContext = renderPrompt("contextCompiler.agenticRefine", {
     goal: input.goal,
     retrievalMode,
-    technologies: input.technologies?.join(", ") ?? "",
-    changeTypes: input.changeTypes?.join(", ") ?? "",
-    domains: input.domains?.join(", ") ?? "",
+    ...(input.technologies?.length ? { technologies: input.technologies.join(", ") } : {}),
+    ...(input.changeTypes?.length ? { changeTypes: input.changeTypes.join(", ") } : {}),
+    ...(input.domains?.length ? { domains: input.domains.join(", ") } : {}),
   });
   const userPrompt = buildUserPrompt(candidates);
 
@@ -224,7 +221,7 @@ export async function agenticRefine(
     try {
       const response = await provider.chat({
         model: provider.name === "local-llm" ? providerModel : undefined,
-        messages: [systemContextMessage(systemContext), { role: "user", content: userPrompt }],
+        messages: [promptMessage(systemContext), { role: "user", content: userPrompt }],
         maxTokens: routing.maxTokens,
         temperature: 0,
         systemContexts: [systemContext.manifest],

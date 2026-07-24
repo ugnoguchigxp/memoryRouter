@@ -2,7 +2,6 @@
 id = "source.wiki"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたの仕事は文章 content だけを見て、有用な知識候補を選ぶことです。

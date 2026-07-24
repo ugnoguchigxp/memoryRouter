@@ -1,6 +1,7 @@
 {
   "format": "s11tnext.catalog",
-  "compilerVersion": "0.1.0",
+  "artifactVersion": 2,
+  "compilerVersion": "0.1.2",
   "releaseProfile": "production",
   "policyDigest": "sha256:12e91e274e4cb78231219b4cbfafea536dfde545e0656cae9fd431c8b5330e7d",
   "createdFrom": {
@@ -38,6 +39,7 @@
       "key": "contextCompiler.agenticRefine",
       "owner": "context-compiler",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -45,39 +47,39 @@
       ],
       "variables": {
         "changeTypes": {
-          "required": true,
+          "required": false,
           "type": "string",
           "trust": "untrusted",
           "placement": "delimited-context",
-          "encoding": "json-string"
+          "encoding": "delimited-text"
         },
         "domains": {
-          "required": true,
+          "required": false,
           "type": "string",
           "trust": "untrusted",
           "placement": "delimited-context",
-          "encoding": "json-string"
+          "encoding": "delimited-text"
         },
         "goal": {
           "required": true,
           "type": "string",
           "trust": "untrusted",
           "placement": "delimited-context",
-          "encoding": "json-string"
+          "encoding": "delimited-text"
         },
         "retrievalMode": {
           "required": true,
           "type": "string",
           "trust": "untrusted",
           "placement": "delimited-context",
-          "encoding": "json-string"
+          "encoding": "delimited-text"
         },
         "technologies": {
-          "required": true,
+          "required": false,
           "type": "string",
           "trust": "untrusted",
           "placement": "delimited-context",
-          "encoding": "json-string"
+          "encoding": "delimited-text"
         }
       },
       "locales": {
@@ -87,8 +89,8 @@
               "id": "role.context-compiler",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -100,8 +102,8 @@
               "id": "output.loose-selection",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -113,8 +115,8 @@
               "id": "selection.criteria",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -126,8 +128,8 @@
               "id": "task.runtime-facts",
               "kind": "runtime-fact",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -147,7 +149,20 @@
                 },
                 {
                   "type": "literal",
-                  "value": "\n</RETRIEVAL_MODE_JSON_STRING>\n<TECHNOLOGIES_JSON_STRING>\n"
+                  "value": "\n</RETRIEVAL_MODE_JSON_STRING>"
+                }
+              ]
+            },
+            {
+              "id": "task.technologies",
+              "kind": "runtime-fact",
+              "severity": "must",
+              "optimizable": false,
+              "omitIfEmpty": true,
+              "segments": [
+                {
+                  "type": "literal",
+                  "value": "<TECHNOLOGIES_JSON_STRING>\n"
                 },
                 {
                   "type": "variable",
@@ -155,7 +170,20 @@
                 },
                 {
                   "type": "literal",
-                  "value": "\n</TECHNOLOGIES_JSON_STRING>\n<CHANGE_TYPES_JSON_STRING>\n"
+                  "value": "\n</TECHNOLOGIES_JSON_STRING>"
+                }
+              ]
+            },
+            {
+              "id": "task.change-types",
+              "kind": "runtime-fact",
+              "severity": "must",
+              "optimizable": false,
+              "omitIfEmpty": true,
+              "segments": [
+                {
+                  "type": "literal",
+                  "value": "<CHANGE_TYPES_JSON_STRING>\n"
                 },
                 {
                   "type": "variable",
@@ -163,7 +191,20 @@
                 },
                 {
                   "type": "literal",
-                  "value": "\n</CHANGE_TYPES_JSON_STRING>\n<DOMAINS_JSON_STRING>\n"
+                  "value": "\n</CHANGE_TYPES_JSON_STRING>"
+                }
+              ]
+            },
+            {
+              "id": "task.domains",
+              "kind": "runtime-fact",
+              "severity": "must",
+              "optimizable": false,
+              "omitIfEmpty": true,
+              "segments": [
+                {
+                  "type": "literal",
+                  "value": "<DOMAINS_JSON_STRING>\n"
                 },
                 {
                   "type": "variable",
@@ -179,8 +220,8 @@
               "id": "selection.final-instruction",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -189,7 +230,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:51fa4d33bd5fdaa243150f59b55ce2eca9ba0947d78eddb1c43dfbd57d498864"
+          "artifactHash": "sha256:6bf6228d58572fb36ab8e718fa2a6d51d2e699bf75bae083e7e08eac009270df"
         },
         "ja-JP": {
           "sections": [
@@ -197,8 +238,8 @@
               "id": "role.context-compiler",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -210,8 +251,8 @@
               "id": "output.loose-selection",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -223,8 +264,8 @@
               "id": "selection.criteria",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -236,8 +277,8 @@
               "id": "task.runtime-facts",
               "kind": "runtime-fact",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -257,7 +298,20 @@
                 },
                 {
                   "type": "literal",
-                  "value": "\n</RETRIEVAL_MODE_JSON_STRING>\n<TECHNOLOGIES_JSON_STRING>\n"
+                  "value": "\n</RETRIEVAL_MODE_JSON_STRING>"
+                }
+              ]
+            },
+            {
+              "id": "task.technologies",
+              "kind": "runtime-fact",
+              "severity": "must",
+              "optimizable": false,
+              "omitIfEmpty": true,
+              "segments": [
+                {
+                  "type": "literal",
+                  "value": "<TECHNOLOGIES_JSON_STRING>\n"
                 },
                 {
                   "type": "variable",
@@ -265,7 +319,20 @@
                 },
                 {
                   "type": "literal",
-                  "value": "\n</TECHNOLOGIES_JSON_STRING>\n<CHANGE_TYPES_JSON_STRING>\n"
+                  "value": "\n</TECHNOLOGIES_JSON_STRING>"
+                }
+              ]
+            },
+            {
+              "id": "task.change-types",
+              "kind": "runtime-fact",
+              "severity": "must",
+              "optimizable": false,
+              "omitIfEmpty": true,
+              "segments": [
+                {
+                  "type": "literal",
+                  "value": "<CHANGE_TYPES_JSON_STRING>\n"
                 },
                 {
                   "type": "variable",
@@ -273,7 +340,20 @@
                 },
                 {
                   "type": "literal",
-                  "value": "\n</CHANGE_TYPES_JSON_STRING>\n<DOMAINS_JSON_STRING>\n"
+                  "value": "\n</CHANGE_TYPES_JSON_STRING>"
+                }
+              ]
+            },
+            {
+              "id": "task.domains",
+              "kind": "runtime-fact",
+              "severity": "must",
+              "optimizable": false,
+              "omitIfEmpty": true,
+              "segments": [
+                {
+                  "type": "literal",
+                  "value": "<DOMAINS_JSON_STRING>\n"
                 },
                 {
                   "type": "variable",
@@ -289,8 +369,8 @@
               "id": "selection.final-instruction",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -299,16 +379,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:7d6f22fa3f927bd755dad2ddc6bb8e710f8a09b0788e996b3712048fe539f98f"
+          "artifactHash": "sha256:64c6319424956b01117cc7b403b426d8620486b32cc2d732ffbeccadcc0e8243"
         }
       },
-      "definitionHash": "sha256:ecc076fafa77516737b39bb895a80d2388a3c37f2f466377c8943541f1d05e46",
-      "releaseDigest": "sha256:420abfbc7734d27c42e538cbb754a7c1df1a9f2e56c3471383f7445714d59736"
+      "definitionHash": "sha256:6f08dd32b44061c4f9ce743c5cea2461cb38fd5e4e28f57c27e229e3951063e3",
+      "releaseDigest": "sha256:61033cfe7667cc63198084e4480df98f1ceccca45aac723500a5d55498a81ae3"
     },
     "contextCompiler.compose": {
       "key": "contextCompiler.compose",
       "owner": "context-compiler",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -320,7 +401,7 @@
           "type": "string",
           "trust": "untrusted",
           "placement": "delimited-context",
-          "encoding": "json-string"
+          "encoding": "delimited-text"
         },
         "maxTokens": {
           "required": true,
@@ -344,8 +425,8 @@
               "id": "role.context-editor",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -357,8 +438,8 @@
               "id": "output.composed-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -370,8 +451,8 @@
               "id": "runtime.heading-rule",
               "kind": "runtime-fact",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -387,8 +468,8 @@
               "id": "composition.rules",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -421,7 +502,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:28697353d4e3269038d5d681750b37323ee91e9f0d01676053b963602660ee11"
+          "artifactHash": "sha256:6ac6e44d317581c683705a7022005b18d0f8b0344caf0168971a2ba9a85f7b61"
         },
         "ja-JP": {
           "sections": [
@@ -429,8 +510,8 @@
               "id": "role.context-editor",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -442,8 +523,8 @@
               "id": "output.composed-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -455,8 +536,8 @@
               "id": "runtime.heading-rule",
               "kind": "runtime-fact",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -472,8 +553,8 @@
               "id": "composition.rules",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -506,16 +587,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:81294f4d355d25679a9b79f2b4d9eef11d53311c656b1948aa4f7d794fe17ebd"
+          "artifactHash": "sha256:26a82987cbc39ee5314611628908ba49e46869576508386731b14e354ea4318f"
         }
       },
-      "definitionHash": "sha256:12130c8986c0cf0f0700f69dcbf54f6d1e7d8a00e9e1b3d10059d55b6e5e620b",
-      "releaseDigest": "sha256:2df09a527c1b87b35bc0dd3e356fd35a4890c335283cbd8d8ae9d5d8bd2e693d"
+      "definitionHash": "sha256:2c52e34ac1e5f5a5e72cd00adc62ad057224acf8946b5a14a83ae49237fbf917",
+      "releaseDigest": "sha256:924526c4607ce2eb7a6e4e0a5fbd658efafff19711e61cc9c1589d44227414db"
     },
     "contextCompiler.plan": {
       "key": "contextCompiler.plan",
       "owner": "context-compiler",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -529,8 +611,8 @@
               "id": "role.response-planner",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -542,8 +624,8 @@
               "id": "output.plan-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -552,7 +634,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:e0078ebe52d745309f6477679d76ada344b220871c5c873beb8735cde69fef28"
+          "artifactHash": "sha256:3181c46e6f0a638e03f9441d252e103ecd8522965e249d5ab505d0c402674702"
         },
         "ja-JP": {
           "sections": [
@@ -560,8 +642,8 @@
               "id": "role.response-planner",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -573,8 +655,8 @@
               "id": "output.plan-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -583,17 +665,18 @@
               ]
             }
           ],
-          "artifactHash": "sha256:5984998e6e243b578e3db7c51821c83bfc2ad4a5a4935155793e43366024b2d4"
+          "artifactHash": "sha256:e41e8321bed98dee6372ae1177ec8cdc8b5e9c51808c4305b33f0a4e81ca6460"
         }
       },
-      "definitionHash": "sha256:1b97b6e1f7cbaa8a9b1f8beef337998115adb24dec1b47b9beaaa60ce8a120cd",
-      "releaseDigest": "sha256:1c871de087e7a2f8bdae37117271ee431f0afbe59cd1a5e2f25b18ea8de07ec8"
+      "definitionHash": "sha256:f41bee7f4c0f5e03cecdf6d2c2d8ca28de0843be53001c07155953830760c48a",
+      "releaseDigest": "sha256:a8e068fcd3442780639860901cbcafc7343341f20935d8cec98329a404993f7d"
     },
     "contextDecision.answer": {
       "key": "contextDecision.answer",
       "owner": "context-decision",
       "contentKind": "text",
-      "sourceLocale": "ja-JP",
+      "messageRole": "system",
+      "sourceLocale": "en-US",
       "requiredLocales": [
         "ja-JP",
         "en-US"
@@ -606,8 +689,8 @@
               "id": "decision.answer",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -616,7 +699,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:8940dd894f1c47e1ed3fd8c19663da19b56db1763516e9aa3324ae07d226ba66"
+          "artifactHash": "sha256:e78c51b93e1e4d7ea556a5d309b12525f93ccd5dee28b7a101992d75c7a7f670"
         },
         "ja-JP": {
           "sections": [
@@ -624,8 +707,8 @@
               "id": "decision.answer",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -634,17 +717,18 @@
               ]
             }
           ],
-          "artifactHash": "sha256:ef9d7d7a4d08b5dacb2fe430e79f983e5ce1aca6659ad0e35a9ff16650bbb183"
+          "artifactHash": "sha256:a0f4566ac41edff7b85bce1a49fcd4eb87e3ebb8273b28b04ee3b39500dcb4a1"
         }
       },
-      "definitionHash": "sha256:9583f93662e73c008a46da7021b74238ceb60891229bc66f8462a74daa02ae41",
-      "releaseDigest": "sha256:9633ef93ca424668ae4f6df853c55c6cd1cf4145e486b159b431234899339ac0"
+      "definitionHash": "sha256:79d6d42b73efe14f2a60c28542ce4dca579556f8662a498c9d075371d5c3ef44",
+      "releaseDigest": "sha256:7ef69c59dfc605295f0675a75e4b48b0385af13f8b4d1dba34af1cee18970729"
     },
     "contextDecision.judge": {
       "key": "contextDecision.judge",
       "owner": "context-decision",
       "contentKind": "text",
-      "sourceLocale": "ja-JP",
+      "messageRole": "system",
+      "sourceLocale": "en-US",
       "requiredLocales": [
         "ja-JP",
         "en-US"
@@ -657,8 +741,8 @@
               "id": "decision.judge",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -667,7 +751,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:92f9d1ce4f9eed8462062a734440c2190c05482698bbd5cdbe3aa755fdb58ae5"
+          "artifactHash": "sha256:6f111067dffcb417f9677708364325afcac4b5181571f700185362121ccc0225"
         },
         "ja-JP": {
           "sections": [
@@ -675,8 +759,8 @@
               "id": "decision.judge",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -685,17 +769,18 @@
               ]
             }
           ],
-          "artifactHash": "sha256:5794c552bad01ff2f1216d7e20219b193c1a2d24acc598f2f45e9a165ee8ffa5"
+          "artifactHash": "sha256:6b19db8fe10b422ab459b876e5d0b7405ac416bd2a63e9c85dfe4afd1ea9592c"
         }
       },
-      "definitionHash": "sha256:4a503fda8d5f83fd9fdd1c4a3e8487d26e13d6fc9ed2a3845bf8cf706a696f57",
-      "releaseDigest": "sha256:e90f3bbf937ac77842e0630183f3276df70b6d04c1717c0b117552ba5cb27926"
+      "definitionHash": "sha256:5196b4deb013d9dc67c1e72751c6151958ec681c7a2e7ed8a08adab6cb1f2741",
+      "releaseDigest": "sha256:cb2575bf5160ed3fae1e69fab2a977094eb935889d94a0f1f419b930cb970be6"
     },
     "contextDecision.repair": {
       "key": "contextDecision.repair",
       "owner": "context-decision",
       "contentKind": "text",
-      "sourceLocale": "ja-JP",
+      "messageRole": "system",
+      "sourceLocale": "en-US",
       "requiredLocales": [
         "ja-JP",
         "en-US"
@@ -708,8 +793,8 @@
               "id": "output.repair-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -718,7 +803,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:fa0f78c57d13b0fb3571360f5bbf882b8e05b534c9e3200cdcd9a127c4d89242"
+          "artifactHash": "sha256:3ce1b6f7f686776d94f02d98270d0355a56f5f417db346f4d50c33de30d38b71"
         },
         "ja-JP": {
           "sections": [
@@ -726,8 +811,8 @@
               "id": "output.repair-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -736,16 +821,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:0e7d646e854a882017363683cc57a7f816f97da77382e583248000dadf037128"
+          "artifactHash": "sha256:71667bf2ce40b236b5855bda6adb95f6b9d959aaf543d966eb63db85bef3804b"
         }
       },
-      "definitionHash": "sha256:3d6904363d39a8d593d1230dacfa3c971442bde3eb0f437601603a3af55e777c",
-      "releaseDigest": "sha256:eb8de9a68ff285636328ef489fc1e1b0fd631155c7e830bac485a0dd7e7d5bbe"
+      "definitionHash": "sha256:31c35c7734620e563057e1ec7585887e1a827a9207d2edb7fadb46c6f69a5f6f",
+      "releaseDigest": "sha256:df9f68a5027f3b803fd12a7466429da5e3e7e935ff9767f70a47eb64465de3d8"
     },
     "coverEvidence.applicabilityRefinement": {
       "key": "coverEvidence.applicabilityRefinement",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -759,8 +845,8 @@
               "id": "assessment.applicability",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -769,7 +855,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:326dc991d6b936164c6978d81948bb664f8de1e0139ba76b3f1162499a5ef7d7"
+          "artifactHash": "sha256:aaf53c958c4353685e8facbeeccd9e0a462127dfbb0d32f533d57a34001d4bf3"
         },
         "ja-JP": {
           "sections": [
@@ -777,8 +863,8 @@
               "id": "assessment.applicability",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -787,16 +873,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:2733885e055de2c21b1260f2f62980c5edd8dfe65cce78e2cc8a17804b1508e7"
+          "artifactHash": "sha256:4abf0e5d7ed863cf1dcf1681f7a3e3df75540d60e6e699cf1a16d08172305794"
         }
       },
-      "definitionHash": "sha256:5f6737fc03b00732ca63957117e361f54da4302574c4781efe587ff953c80d47",
-      "releaseDigest": "sha256:320529d72ee01b87c5c51498e8d01772d1e36d13ab3d939fa32b112221b1157c"
+      "definitionHash": "sha256:ed45d18970c4b3918b9d23a8bba00e05d3f18b729378d3fa661db039f556f8e5",
+      "releaseDigest": "sha256:f2a6747713653a4e5a29c7bf253db6777388e84d93f2f824d577d1f0b7f6d081"
     },
     "coverEvidence.externalFetchSelection": {
       "key": "coverEvidence.externalFetchSelection",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -818,8 +905,8 @@
               "id": "external.fetch-selection",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -836,7 +923,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:3bd31d56cb8a40586e21319279ade644371aa08cf3d2aebe3e33925e2a74d950"
+          "artifactHash": "sha256:83a0ba70f28b9076b8bea91e8f2461d2469c70d4327f46442330857e48c48610"
         },
         "ja-JP": {
           "sections": [
@@ -844,8 +931,8 @@
               "id": "external.fetch-selection",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -862,16 +949,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:d201f9b57a395afc4bf8cad394e53d8db9c7156102817d4bff48090a437dc2b5"
+          "artifactHash": "sha256:a3f41444f3394a6b52b7d1aea309e70162e144cda24bb08f7ea6f6a08b50b7c9"
         }
       },
-      "definitionHash": "sha256:61d507336ee0ac69a36cd7e9cc0ead0be56118e94645504aef44365f8670c57a",
-      "releaseDigest": "sha256:dab5bba8d044b2eb0e6a6ee41e83c78e2104e415c7b4a3fa95191c9cc8865cb6"
+      "definitionHash": "sha256:75a518e92abb340ca72729b332d8194152572ff1451bedb850e6b9e69c862b91",
+      "releaseDigest": "sha256:2a831dd89f68069cc9b32060d4d74cded4c17166cb3fce3c6287e85ee34e33e7"
     },
     "coverEvidence.externalFinal": {
       "key": "coverEvidence.externalFinal",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -893,8 +981,8 @@
               "id": "external.final-assessment",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -911,7 +999,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:010f247aa5e2cf3e3ffe635cc04f7f7de217ac46f8a493bf81d5a7c44b2b8e12"
+          "artifactHash": "sha256:93d5a8034122aae273944d8a8b77e0c564a31ff1fdc0456954a419fc329a4dd5"
         },
         "ja-JP": {
           "sections": [
@@ -919,8 +1007,8 @@
               "id": "external.final-assessment",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -937,16 +1025,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:2ee1aa94155d1b788cae73757ef01d35e59fa68556755faac4e05029fafff269"
+          "artifactHash": "sha256:122a631bd1d53a1c31575645f53da18731afbf3a3f7ebaf1542347aa608c86ef"
         }
       },
-      "definitionHash": "sha256:27ccdc52140af443032b90f1242cdb937d5c5bbff77a1647f10e32aed7e9f6e4",
-      "releaseDigest": "sha256:2e1f477f52601ea079e080f4681836f29e396a712ceef79ab29c41a320c6728b"
+      "definitionHash": "sha256:5e5dfd9aed70f18499dba5e199588489700f92129f8b5514dad83788c816d549",
+      "releaseDigest": "sha256:e3321fb2cfb1f563653750e8194f5ec4e89dba1ac8f1e33771e6187db7679938"
     },
     "coverEvidence.externalSearchQuery": {
       "key": "coverEvidence.externalSearchQuery",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -960,8 +1049,8 @@
               "id": "external.search-query",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -970,7 +1059,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:1c8e52828fdde60fba04f3cfbbbf640352e3dc62fc2747d38a088e287db0af98"
+          "artifactHash": "sha256:b4405bd56b7b304481cc9fa6578ce89d3c3640371471eda816264bc503aaf684"
         },
         "ja-JP": {
           "sections": [
@@ -978,8 +1067,8 @@
               "id": "external.search-query",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -988,16 +1077,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:783db60717913c7e42d1f409ed44124a8cc3bb7c53dd034f83e0eed90c7d198e"
+          "artifactHash": "sha256:0696edbe7a3affe3d75ea6f8cd0fb870f84d24c376535f746565b681407cc7de"
         }
       },
-      "definitionHash": "sha256:8541da161eba1dff67cf9b3b1d3b48311cf8286541ede625e1edf5a21b01b4a4",
-      "releaseDigest": "sha256:d852368ddc6e3bb62a910268480a1dd76cb73b40f47a964b91bf36b0ca9ac36a"
+      "definitionHash": "sha256:171e117bc91008c2edcc6d30b11943b50d9efaaa4b6db6252d59363cbee7b7c3",
+      "releaseDigest": "sha256:bff9cd530f67dfa5184c9aa815ba217341a245d7ada311df51eec1ede9356cd9"
     },
     "coverEvidence.mcpEvidence": {
       "key": "coverEvidence.mcpEvidence",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1019,8 +1109,8 @@
               "id": "mcp.evidence",
               "kind": "tool-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1037,7 +1127,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:3fe23990db686e9319cdc742a922a8be3e0265474c5c2bde0139c0b77e6df64d"
+          "artifactHash": "sha256:c7bcbf4bb62b83fd68eefaefa306551a604926cd82835d528bfa01aa20ef6dfa"
         },
         "ja-JP": {
           "sections": [
@@ -1045,8 +1135,8 @@
               "id": "mcp.evidence",
               "kind": "tool-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1063,16 +1153,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:b78b97d6b9a0654e96ac04c6e9972135bc9fb84fa473589c7d7b49ebad313064"
+          "artifactHash": "sha256:7faf55d96ee36ad06cbea195c90ffdd763ba47ca2bd56be81d6a5348bf3aeb83"
         }
       },
-      "definitionHash": "sha256:cef316f2f3c72a8ef5c57e3fa9549d10ee58e46318d69dfb18e978991601372c",
-      "releaseDigest": "sha256:dae3440e9804482c45ffa00a0ae7c5c35a1d478b18a022a1e998d602782051a7"
+      "definitionHash": "sha256:aa86761f74cc50b86e338e9242abc1fa6e726019defe602bd1b52ebb618e8f82",
+      "releaseDigest": "sha256:39a31a2ed7aeeb931fe873342d20b60de7c5f1ac3d77f6591340bfc3e08163e2"
     },
     "coverEvidence.negative": {
       "key": "coverEvidence.negative",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1094,8 +1185,8 @@
               "id": "assessment.negative-evidence",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1111,8 +1202,8 @@
               "id": "output.negative-evidence-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1121,7 +1212,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:d11e90e1d0602cf3284fd1fa3bff9f1e31cef6c72056f50e52a459ef657a766a"
+          "artifactHash": "sha256:1e1a705f9ee9ff9094086a1532c7176bf2803bca563bb5452aa177977c88a65e"
         },
         "ja-JP": {
           "sections": [
@@ -1129,8 +1220,8 @@
               "id": "assessment.negative-evidence",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1146,8 +1237,8 @@
               "id": "output.negative-evidence-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1156,16 +1247,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:5f84708b6257e938f570e05085cc00b1fa917c1443be7e6d7eed1624631fd0a2"
+          "artifactHash": "sha256:d380fb5a57ae4828b5bbf9a192d59d9014b92d6911b9b6f45552956f95ce9171"
         }
       },
-      "definitionHash": "sha256:957c6c87627415e970b10afeda7e0d8b55a5ed19f2d31366fa45a6660adcb696",
-      "releaseDigest": "sha256:df00073ded6b41765beedb509a50ce1bca94e4c6787f8634da9954b5a382f5c6"
+      "definitionHash": "sha256:78fa77c244134cc65738f738fb2be1d2fa241e54286372784919d6e453baa410",
+      "releaseDigest": "sha256:f3203f1c35684af0413b0d52b28682bbef79bedcfd93a38db9576cca155b141c"
     },
     "coverEvidence.procedureRepair": {
       "key": "coverEvidence.procedureRepair",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1179,8 +1271,8 @@
               "id": "procedure.repair",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1189,7 +1281,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:5aa9a8c13f70378d2391153ce3803d08f1233eee1fdad30b4c0ef958cac36c54"
+          "artifactHash": "sha256:beba5bd78eff9944433d7db7f3e8bf1a3ad8db6ce6a5e615c2cb0e6aee65c8a1"
         },
         "ja-JP": {
           "sections": [
@@ -1197,8 +1289,8 @@
               "id": "procedure.repair",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1207,16 +1299,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:1d4e41b0a50308d22e236f55b6389ba424a00e4ee4d57d5c0c3f8e8d2ba70372"
+          "artifactHash": "sha256:fd1e76f199c8e89be4dce5a186d4848f79d34d19ddb5879a74aa07fd49cdd26f"
         }
       },
-      "definitionHash": "sha256:ba83818f4b570fc78e88ca8bb63c0c309b8296971e8b55324da9695f31c5f6b0",
-      "releaseDigest": "sha256:56d2aa0c6d6d16e2e52ccf81a93ecdd591b19218dc266437cce0aec8fb6c676c"
+      "definitionHash": "sha256:01199d2ce6afeac46c222ab3e9e0489eb74f1ee4fc327de5a13e4013d3aee94d",
+      "releaseDigest": "sha256:6c661ba68510a81d12112c8b766689eab190285581a4cbcee708d28a6d06f2a6"
     },
     "coverEvidence.valueAssessment": {
       "key": "coverEvidence.valueAssessment",
       "owner": "cover-evidence",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1238,8 +1331,8 @@
               "id": "assessment.value",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1256,7 +1349,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:c4c9a12a301b944a09b842656cb76d32e136f827a299198e8006870b67709888"
+          "artifactHash": "sha256:c6abcdc3442c2ef31b9a0de7b5cca2bc24cbbab354ca18c9d2751a797f5011f6"
         },
         "ja-JP": {
           "sections": [
@@ -1264,8 +1357,8 @@
               "id": "assessment.value",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1282,16 +1375,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:e8d85ea54eccf33f60c2484f2f0b4c703857c7d451905bb593492c93a71a7f50"
+          "artifactHash": "sha256:bdd53d0771e7740e39a1f2b1d51da874d9d517ad24274f0de835c4079d350c85"
         }
       },
-      "definitionHash": "sha256:24fc649f459f894b5c985218103c904fec0462f206e13328b1b5b816eb51c000",
-      "releaseDigest": "sha256:3fc1e63d8465638083bea12b247f51875434d43924050f39555864c9ad94eac6"
+      "definitionHash": "sha256:f04d1e73331063fd5f85533b5d10159b5637d07676f733848c4f9fce9696ecbf",
+      "releaseDigest": "sha256:3cfbef8e300abee28518a44528dccccfc22a08263e917026accb0fa500ad5c15"
     },
     "episodeDistiller.generate": {
       "key": "episodeDistiller.generate",
       "owner": "episode-distiller",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1305,8 +1399,8 @@
               "id": "episode.generate",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1315,7 +1409,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:8b5601c79af684e827564b7103734200e5496d61f38d0ac132dfae499384644f"
+          "artifactHash": "sha256:adc553074b46424bd411a3b070db64dee40bdebb0ae61693bc3981fab017243c"
         },
         "ja-JP": {
           "sections": [
@@ -1323,8 +1417,8 @@
               "id": "episode.generate",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1333,16 +1427,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:7f4a140698ac73e35e26ed03587c734238d01deaf1e916f764662c9d82365c75"
+          "artifactHash": "sha256:7ca62c0268151ac4bbb1c7160951b325d414252d8492427ff9dcecc2be4809a5"
         }
       },
-      "definitionHash": "sha256:4957ea3d42298ae4ddb69088db8352607b34db0a9d0e0267c0de9b562605d0d2",
-      "releaseDigest": "sha256:cd33bfa5681203c91620c258c5a389d271ca644b910f3f9ca55074a65e85e5e0"
+      "definitionHash": "sha256:d4fc0ca5634d2569577d51e2c1e74f1b6bfdd2ac6d9af370866ac7d4ae351888",
+      "releaseDigest": "sha256:70b67e3dccd98f643a231079e4418854425a538857985ef62fe05454b9b84a6e"
     },
     "episodeDistiller.nearDuplicateReview": {
       "key": "episodeDistiller.nearDuplicateReview",
       "owner": "episode-distiller",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1356,8 +1451,8 @@
               "id": "episode.near-duplicate-review",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1366,7 +1461,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:f2396d490da15716df078dd1b8b58499421ed40a395d19c794559f11af875509"
+          "artifactHash": "sha256:f3e7e5c1447670d26fab4fafb1b21b52f1c9b9050dab3b147b63741cb74f527b"
         },
         "ja-JP": {
           "sections": [
@@ -1374,8 +1469,8 @@
               "id": "episode.near-duplicate-review",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1384,16 +1479,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:c75f102b3decf68c998402ff10ccffc53a105e29752c720596ba4deff37d7bcd"
+          "artifactHash": "sha256:14afd0f22f317364ef1faaaebf2f2e4fee80f6790dde6614ee83cf784d1f4812"
         }
       },
-      "definitionHash": "sha256:4f3ac07408fc8ab4d0c96d504d39bc697494fe9723f44831803224b83550ce50",
-      "releaseDigest": "sha256:1f0cd9af9b782d7bb47d3294b96794a88ccaaaea1a30a5a7a31d3c4a03c37542"
+      "definitionHash": "sha256:9296045811333647d2b1072f31d6d1c7e17393749c6342f12f3097d6ccd42a2f",
+      "releaseDigest": "sha256:9568fe421792fc929892e83baefbfcd4bae4761d88344fb1d00ccdd3395d5e5c"
     },
     "episodeDistiller.semanticChunk": {
       "key": "episodeDistiller.semanticChunk",
       "owner": "episode-distiller",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1407,8 +1503,8 @@
               "id": "episode.semantic-chunk",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1417,7 +1513,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:c1c546b2f6141c482e1a0c251a2782fa79acdac20874c1cf296b320311197e58"
+          "artifactHash": "sha256:374e28c482b22dcb61b192eb5c4db262a4a600ad20a9c03083dfd7469ff9382d"
         },
         "ja-JP": {
           "sections": [
@@ -1425,8 +1521,8 @@
               "id": "episode.semantic-chunk",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1435,17 +1531,18 @@
               ]
             }
           ],
-          "artifactHash": "sha256:4fc31ecc99b2e730b23ebf454f35ab480b2925bb6541ba0eeb73e802ffe13102"
+          "artifactHash": "sha256:6c870799a91b3b9e835f668726b85eccd8b0a366f0feee13f614647a5089c077"
         }
       },
-      "definitionHash": "sha256:686f5d64c76c0f1396e2a4c938e959ceedbcc92768b2422587e0899a3ee44c1f",
-      "releaseDigest": "sha256:e003dac15ceb472a09c4d19a557ab778e3722528a8c767b66623775593c0853c"
+      "definitionHash": "sha256:869862cb851a0969d9905381c322a22779d96ab9d15a65900f5678480d5fecf5",
+      "releaseDigest": "sha256:9bd7a7091498de9c4ff0614e84b34c826030dcd126e30c8a9d0723eb43c077a5"
     },
     "findCandidate.codexEscalation": {
       "key": "findCandidate.codexEscalation",
       "owner": "find-candidate",
       "contentKind": "text",
-      "sourceLocale": "ja-JP",
+      "messageRole": "system",
+      "sourceLocale": "en-US",
       "requiredLocales": [
         "ja-JP",
         "en-US"
@@ -1458,8 +1555,8 @@
               "id": "candidate.codex-escalation",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1468,7 +1565,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:40276ff437f6af35fa5fc011a23a70ccdac0ac9174e79ff087b696960a068e44"
+          "artifactHash": "sha256:42e132f289780b5a33fb5ac9d61946ff7c975ef2befc7543baf42fce5b7158f0"
         },
         "ja-JP": {
           "sections": [
@@ -1476,8 +1573,8 @@
               "id": "candidate.codex-escalation",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1486,16 +1583,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:c617fcfb5a21f516d8495cfab502eec978a9ef07d9ac079bd50e5a3d1053fbae"
+          "artifactHash": "sha256:3b0d7be0045ecd4df2c7a96ea0692af6757547f5da6b2499aa34baddae01e919"
         }
       },
-      "definitionHash": "sha256:fce046d73551483c9d573a6f57db68ea1f17c612205e4041c2f6ab2236cac38a",
-      "releaseDigest": "sha256:99336a45ef56a161fb9745a607c1c982b7960ee683bbff617090b27dac085729"
+      "definitionHash": "sha256:794e082c0290898abab6d49f3f84ecdd279760affe52eef99411537c9fc2b6d9",
+      "releaseDigest": "sha256:116edc20eb2ece35548fcf8cae01cefe1fe23ef1437a39cda6e587dd8da54b98"
     },
     "findCandidate.extract": {
       "key": "findCandidate.extract",
       "owner": "find-candidate",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1509,8 +1607,8 @@
               "id": "candidate.signals",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1522,8 +1620,8 @@
               "id": "candidate.rules",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1532,7 +1630,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:f1de1e33ea5267e5a720a4b0f15f869dad33f1cc78c9cc5abc47873d5ff0b7d3"
+          "artifactHash": "sha256:09e6b7fbc58b43abcd860d46bde4f370774bec9a48270365a4f99962826a8126"
         },
         "ja-JP": {
           "sections": [
@@ -1540,8 +1638,8 @@
               "id": "candidate.signals",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1553,8 +1651,8 @@
               "id": "candidate.rules",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1563,16 +1661,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:017837a5f9a60e0321837843690f401deb42fd6a378514c41d11206743e9ca56"
+          "artifactHash": "sha256:b25643c60165b90689afb74e4fae3ed9e4c6cf4d35872644fac359ef5323f889"
         }
       },
-      "definitionHash": "sha256:16ca1aba1abec3ecd8f542cfd8dc05b6b69401697125b87882264bce513746e6",
-      "releaseDigest": "sha256:2611c1f7df2bebca917fdf4f4705a2105d3fbc69e205b77969e68d095a773f6b"
+      "definitionHash": "sha256:bd00a875f48db95e2ad6a3777322a0b9bf6a6e412a3c8b12472ec640b5376369",
+      "releaseDigest": "sha256:8f8729e800decd297c82a74abdcfab012baeee69ae73f6f6a4e65e82e610f35d"
     },
     "findCandidate.vibeMemory": {
       "key": "findCandidate.vibeMemory",
       "owner": "find-candidate",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1586,8 +1685,8 @@
               "id": "source.vibe-memory",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1596,7 +1695,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:b1f26b88de4fd20add17ef5c3e3e8bf0ab8cb241d8d40a8e54749e543de94c0d"
+          "artifactHash": "sha256:58f5eb390777e3d753a1d464517b86ce3b0e1ac221f151ef7af31e0570df88f6"
         },
         "ja-JP": {
           "sections": [
@@ -1604,8 +1703,8 @@
               "id": "source.vibe-memory",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1614,16 +1713,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:d0d32fc68459e6beb077504261362f515900f4aeb72d2b1f1c6d64c54cc5a0b6"
+          "artifactHash": "sha256:d3a50b1da0c0275cf0c5980697b8a802019e98bdf3e8da5e7da834caf01196d1"
         }
       },
-      "definitionHash": "sha256:e41ddd23a921ac283dbb30c90bb76cc3f47e1e57ddc0bba2f2c557a1eb48aab6",
-      "releaseDigest": "sha256:48af3b33cc9b18c5f07fa3fcbce8ae4ea12f359725de370562a8a8462c0a348f"
+      "definitionHash": "sha256:39ac58045a6b4fb822ae2121c6a8de9384694e17184f2543f0049a66584b444f",
+      "releaseDigest": "sha256:937ba201b55a82d0d7b8b9e1dffa7d3c980824086f87c94200e2aca3dbfd9b9b"
     },
     "findCandidate.wiki": {
       "key": "findCandidate.wiki",
       "owner": "find-candidate",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1637,8 +1737,8 @@
               "id": "source.wiki",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1647,7 +1747,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:942ecb4ad1d4b587e519e6c667318e9994a82cde1e643aeb97e3f6346e22f642"
+          "artifactHash": "sha256:127850283cb93692fa59bb8585791336bbfea55d902506db6258d31be4035413"
         },
         "ja-JP": {
           "sections": [
@@ -1655,8 +1755,8 @@
               "id": "source.wiki",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1665,17 +1765,18 @@
               ]
             }
           ],
-          "artifactHash": "sha256:3c22c44b35494f7983699e7e41e065ffbce710b203a37e07df2f5563c1c6ee17"
+          "artifactHash": "sha256:010cd80f30d46472945ae5780e572c2dd08f788f0024fd82f2d2b5914de60246"
         }
       },
-      "definitionHash": "sha256:779775cecff2e6f04e885d24d638f1030973f3e395c1155feb1e56215e9743d6",
-      "releaseDigest": "sha256:cc28437b0296f4a295cda3910633eed973b3428cc6933fdca800f8e6c008b7ff"
+      "definitionHash": "sha256:dbe01886c9079de937ea336b848e8f1cf123bd5da4413dc8bbdc16ba4e79c1a0",
+      "releaseDigest": "sha256:6b65591c1cf3b8dbe4a0b5287cf14826cab685fbdc0fcf9fac3fb84507745b07"
     },
     "landscape.deadZoneMergeReview": {
       "key": "landscape.deadZoneMergeReview",
       "owner": "landscape",
       "contentKind": "text",
-      "sourceLocale": "ja-JP",
+      "messageRole": "system",
+      "sourceLocale": "en-US",
       "requiredLocales": [
         "ja-JP",
         "en-US"
@@ -1688,8 +1789,8 @@
               "id": "role.merge-reviewer",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1701,8 +1802,8 @@
               "id": "output.strict-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1711,7 +1812,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:4a65c5b99be76ed1c1983780925a1e65dfda76e71dd6257832dd8d5f87e1e153"
+          "artifactHash": "sha256:9ca32c1ca16dc4ef07da18302a9e646641879ba13829fe4a0d2e66a34f8aa777"
         },
         "ja-JP": {
           "sections": [
@@ -1719,8 +1820,8 @@
               "id": "role.merge-reviewer",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1732,8 +1833,8 @@
               "id": "output.strict-json",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1742,17 +1843,18 @@
               ]
             }
           ],
-          "artifactHash": "sha256:5eb24ed271cf3a6e93dbd134b719450e2109cce56eba9d20daee77d8ea9aa6a9"
+          "artifactHash": "sha256:a7bf9d8e12acc53563c3b6f21182f292bd2a9ddacfe637a9743022eb566ced51"
         }
       },
-      "definitionHash": "sha256:3ecab6138ff983922c28795db7f895d6be63dd355601aae2ebc1791a811920de",
-      "releaseDigest": "sha256:c5842cdcd2d3e15689712493d854a01f9a9494b09f36e6130793876697a282c4"
+      "definitionHash": "sha256:84e6254b2f1bbb999e850400d1b1b64966761f3c0d2f2d8b34eaab116a20364d",
+      "releaseDigest": "sha256:3ca64d40265372fd6fcf36f10aadfd6717cdf1ed5f32168c9abe9214fbb16b5b"
     },
     "provider.codex.finalResponse": {
       "key": "provider.codex.finalResponse",
       "owner": "llm-platform",
       "contentKind": "text",
-      "sourceLocale": "ja-JP",
+      "messageRole": "system",
+      "sourceLocale": "en-US",
       "requiredLocales": [
         "ja-JP",
         "en-US"
@@ -1765,8 +1867,8 @@
               "id": "provider.final-response",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1775,7 +1877,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:c1f93edcc2932524dee83dd8077ee239c71f59ed3a3292cf5b91abbe3edd2083"
+          "artifactHash": "sha256:7f9440eef2b5fc6c882f37abff99d569cb8952b1c880ca52f26a0a588aac03d8"
         },
         "ja-JP": {
           "sections": [
@@ -1783,8 +1885,8 @@
               "id": "provider.final-response",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1793,16 +1895,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:f5978847c40dd4c6c0cfd7a903a5cdda1dfad0d71d7106f7fb9e1994d3e3b12f"
+          "artifactHash": "sha256:d9016944cc756b189ed13bb0d9b68507eddef1b2eb9dd4dff3d894311e68537a"
         }
       },
-      "definitionHash": "sha256:751aacdc651b056a8ca3a6176cd570e905363b14da8dda72e947aabf31bfe9e9",
-      "releaseDigest": "sha256:5ae4fabb304a1439b0882518aea0cdb77ae1cf23b10c28f30e3a03c242e37e26"
+      "definitionHash": "sha256:271fc04a1e5f20a02220594bc616cf1bb1161753e6f7ca556fbe6fa4dc9d1f53",
+      "releaseDigest": "sha256:b66db9833c4f9dc583b366a4d8824861aac62622f08cb66a206566162d5b24e1"
     },
     "shared.jsonOnly": {
       "key": "shared.jsonOnly",
       "owner": "platform",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1816,8 +1919,8 @@
               "id": "output.json-only",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1826,7 +1929,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:dfd2d67524bfac6da4be0019a13d717d7bbf64e98be05c77a65ff6d95e53a5dd"
+          "artifactHash": "sha256:464e4c7c1ef79f81b92b328641e4b66f736e03c6b82b5636e00c29147412d2dd"
         },
         "ja-JP": {
           "sections": [
@@ -1834,8 +1937,8 @@
               "id": "output.json-only",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1844,16 +1947,17 @@
               ]
             }
           ],
-          "artifactHash": "sha256:bb9346251adbdb9b8b7899c7739d89c413f7ff421c242669e0b6b05e366d70af"
+          "artifactHash": "sha256:e7c8d669fef2357ae6da61a759b63f62279a273147a71a9d547dbc514efc55c0"
         }
       },
-      "definitionHash": "sha256:edfab53ce8bec69ef35c44115b729b611fd9c98eb14373e7eddb4c24d6670011",
-      "releaseDigest": "sha256:aadcad0d2b74201d09cb0b2479bdf0f8850945794852c85ea926be1b17a589a3"
+      "definitionHash": "sha256:e07f14f7327afb30ca0076b42ff2f196123e1e594d695eaf8969c7eb8d2cd462",
+      "releaseDigest": "sha256:d5c920e886076f3c46863870d5412574a8b17c84cc4cfd3f4cceec882c1f91e6"
     },
     "sourceResearch.web": {
       "key": "sourceResearch.web",
       "owner": "source-research",
       "contentKind": "text",
+      "messageRole": "system",
       "sourceLocale": "ja-JP",
       "requiredLocales": [
         "ja-JP",
@@ -1867,8 +1971,8 @@
               "id": "role.web-researcher",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1880,8 +1984,8 @@
               "id": "tool.fetch-content",
               "kind": "tool-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1893,8 +1997,8 @@
               "id": "output.markdown",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1903,7 +2007,7 @@
               ]
             }
           ],
-          "artifactHash": "sha256:29cf10baef766c151ab094483f6189cf22896833dfdf90b7b4f75e6c7589aa40"
+          "artifactHash": "sha256:234e5a5aab098977de43d8216327ea420d75cab3ae17d95f26dda9c8a09fc866"
         },
         "ja-JP": {
           "sections": [
@@ -1911,8 +2015,8 @@
               "id": "role.web-researcher",
               "kind": "instruction",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1924,8 +2028,8 @@
               "id": "tool.fetch-content",
               "kind": "tool-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1937,8 +2041,8 @@
               "id": "output.markdown",
               "kind": "output-contract",
               "severity": "must",
-              "enforcement": "prompt",
               "optimizable": false,
+              "omitIfEmpty": false,
               "segments": [
                 {
                   "type": "literal",
@@ -1947,12 +2051,12 @@
               ]
             }
           ],
-          "artifactHash": "sha256:8bddc2d66d20538f2a803051efdad929ddee533c76b9429e0b69351e0d4b72bf"
+          "artifactHash": "sha256:eaef51342ed1f9a5b6604a2ded8be8d667bb7e48fba3c3e96e13c7d859cbdd7c"
         }
       },
-      "definitionHash": "sha256:8c1ceee86d6f2f546d0e3c7975b45563bbc185bac4891c76d2e668cce5949187",
-      "releaseDigest": "sha256:3ba26a547b87a2867a140eebf4159653ea4e9f97f36098028875e9603ac0286b"
+      "definitionHash": "sha256:6484301779a5ccc5a5d6bba7f6ff2d4d3bf534160b1b58b564aaa7baad20632f",
+      "releaseDigest": "sha256:9cb5a1f4b90890b86743103c9b8d8c765301de04d66079e02f31aafbe23b7729"
     }
   },
-  "catalogDigest": "sha256:f979597403ef700c24fb015e4fb269a98eeae4d3982d906578b5984d0bf56ebc"
+  "catalogDigest": "sha256:6cb7f36eede85ef50c04e5ed61988c27542cb25376d4f678669444a31de0327f"
 }

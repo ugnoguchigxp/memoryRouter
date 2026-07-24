@@ -59,7 +59,7 @@ if (violations.length > 0) {
   console.error(
     [
       "SystemContext boundary check failed.",
-      "New system-role construction must use systemContextMessage(renderSystemContext(...)).",
+      "New provider-message construction must use promptMessage(renderPrompt(...)).",
       ...violations.map((violation) => `- ${violation}`),
     ].join("\n"),
   );

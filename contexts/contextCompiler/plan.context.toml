@@ -2,7 +2,6 @@
 id = "role.response-planner"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは context_compile の返答構成プランナーです。
@@ -19,7 +18,6 @@ Using only the goal and candidate summaries, design the response structure, outp
 id = "output.plan-json"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 JSON 形式:

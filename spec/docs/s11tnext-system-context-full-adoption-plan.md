@@ -66,7 +66,7 @@ s11tnext は、この自然言語 authoring を TOML に分離し、検証済み
 ### Version contract
 
 - `s11tnext` と `s11tnext-cli` は同じ exact version に固定する。
-- 初期 version は `0.1.0`。
+- 初期 version は `0.1.0`。2026-07-24 に Runtime / CLI を exact `0.1.2` へ更新した。
 - caret / tilde range は使用しない。
 - s11tnext 側を修正した場合は、互換 fix は patch、breaking change は minor として両 package を同時 release する。
 - upgrade 時は changelog 確認、exact version 同時更新、catalog 再生成、全 gate、canary の順で進める。
@@ -900,4 +900,4 @@ cargo clippy -p context-stilld --all-targets -- -D warnings
 - [ ] canary behavior baseline passed
 - [x] temporary fallback removed
 - [x] adoption findings triaged
-- [ ] blocking findings closed
+- [x] blocking findings closed

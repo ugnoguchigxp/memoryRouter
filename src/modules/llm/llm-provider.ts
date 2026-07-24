@@ -1,4 +1,4 @@
-import type { SystemContextManifest } from "../system-context/system-context.service.js";
+import type { PromptManifest } from "../system-context/system-context.service.js";
 
 export type LlmChatMessage = {
   role: "system" | "user" | "assistant" | "tool";
@@ -22,17 +22,17 @@ export type LlmChatRequest = {
   temperature?: number;
   responseFormat?: "json" | "text";
   /**
-   * The exact s11tnext manifests for SystemContext text included in this request.
+   * The exact s11tnext prompt manifests included in this request.
    * Providers must not serialize this host-only metadata into their API payloads.
    */
-  systemContexts?: readonly SystemContextManifest[];
+  systemContexts?: readonly PromptManifest[];
 };
 
 export type LlmChatResponse = {
   content: string;
   finishReason?: string;
-  /** SystemContext manifests added by the provider adapter itself. */
-  systemContexts?: readonly SystemContextManifest[];
+  /** Prompt manifests added by the provider adapter itself. */
+  systemContexts?: readonly PromptManifest[];
   usage?: {
     promptTokens: number;
     completionTokens: number;

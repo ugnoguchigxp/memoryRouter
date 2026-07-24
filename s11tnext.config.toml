@@ -15,15 +15,18 @@ owner = "context-compiler"
 
 [keyspaces.contextDecision]
 owner = "context-decision"
+source_locale = "en-US"
 
 [keyspaces.provider]
 owner = "llm-platform"
+source_locale = "en-US"
 
 [keyspaces.sourceResearch]
 owner = "source-research"
 
 [keyspaces.landscape]
 owner = "landscape"
+source_locale = "en-US"
 
 [keyspaces.coverEvidence]
 owner = "cover-evidence"
@@ -44,7 +47,14 @@ required_locales = ["ja-JP", "en-US"]
 type = "string"
 trust = "untrusted"
 placement = "delimited-context"
-encoding = "json-string"
+encoding = "delimited-text"
+
+[variable_profiles.untrustedOptionalText]
+required = false
+type = "string"
+trust = "untrusted"
+placement = "delimited-context"
+encoding = "delimited-text"
 
 [variable_profiles.trustedText]
 type = "string"
@@ -57,3 +67,6 @@ type = "number"
 trust = "trusted"
 placement = "inline"
 encoding = "json-value"
+
+[generation]
+typescript_indent = 2

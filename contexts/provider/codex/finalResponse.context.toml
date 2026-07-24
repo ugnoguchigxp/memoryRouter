@@ -2,14 +2,13 @@
 id = "provider.final-response"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 [Instructions]
 Based on the instructions and history above, generate the final response. Output only the requested content/JSON structure directly, without markdown blocks or conversational text outside the format.
 '''
 
-[sections.translations."en-US"]
+[sections.translations."ja-JP"]
 text = '''
 [Instructions]
 Based on the instructions and history above, generate the final response. Output only the requested content/JSON structure directly, without markdown blocks or conversational text outside the format.

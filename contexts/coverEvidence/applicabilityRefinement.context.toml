@@ -2,7 +2,6 @@
 id = "assessment.applicability"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは coverEvidence の applicability 補完器です。

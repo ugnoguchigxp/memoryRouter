@@ -2,7 +2,6 @@
 id = "episode.near-duplicate-review"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは ContextStill の EpisodeCard 登録前レビューアです。

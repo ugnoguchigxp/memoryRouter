@@ -25,10 +25,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveEpisodeDistillerRoute,
 } from "../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 import { appendQueueEvent } from "../queue/core/events.js";
 import {
   type EpisodeDistillerJob,
@@ -366,11 +363,11 @@ async function reviewNearDuplicate(params: {
     routeModel: route.model,
     localLlmModel: route.localLlmModel,
   });
-  const systemContext = renderSystemContext("episodeDistiller.nearDuplicateReview", {});
+  const systemContext = renderPrompt("episodeDistiller.nearDuplicateReview", {});
   const completion = await runDistillationCompletion(
     {
       model,
-      messages: [systemContextMessage(systemContext), ...buildNearDuplicateReviewMessages(params)],
+      messages: [promptMessage(systemContext), ...buildNearDuplicateReviewMessages(params)],
       maxTokens: 800,
       systemContexts: [systemContext.manifest],
     },
@@ -599,12 +596,12 @@ async function createSemanticChunks(params: {
     localLlmModel: route.localLlmModel,
   });
   try {
-    const systemContext = renderSystemContext("episodeDistiller.semanticChunk", {});
+    const systemContext = renderPrompt("episodeDistiller.semanticChunk", {});
     const completion = await runDistillationCompletion(
       {
         model,
         messages: [
-          systemContextMessage(systemContext),
+          promptMessage(systemContext),
           ...buildSemanticChunkMessages(params.windows, params.document),
         ],
         maxTokens: 2000,
@@ -690,14 +687,11 @@ async function distillSegment(params: {
     routeModel: route.model,
     localLlmModel: route.localLlmModel,
   });
-  const systemContext = renderSystemContext("episodeDistiller.generate", {});
+  const systemContext = renderPrompt("episodeDistiller.generate", {});
   const completion = await runDistillationCompletion(
     {
       model,
-      messages: [
-        systemContextMessage(systemContext),
-        ...buildMessages(params.segment, params.document),
-      ],
+      messages: [promptMessage(systemContext), ...buildMessages(params.segment, params.document)],
       maxTokens: 4000,
       systemContexts: [systemContext.manifest],
     },

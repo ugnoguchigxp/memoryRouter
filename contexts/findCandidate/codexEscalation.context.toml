@@ -1,8 +1,9 @@
+source_locale = "en-US"
+
 [[sections]]
 id = "candidate.codex-escalation"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 You are a second-pass reviewer for contextStill findingCandidate jobs.
@@ -11,7 +12,7 @@ Return JSON only: {"candidates":[{"type":"rule|procedure","polarity":"positive|n
 Do not include neutral observations. Negative procedure candidates are invalid.
 '''
 
-[sections.translations."en-US"]
+[sections.translations."ja-JP"]
 text = '''
 You are a second-pass reviewer for contextStill findingCandidate jobs.
 Extract only durable reusable knowledge candidates from the provided agent transcript.

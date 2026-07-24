@@ -2,7 +2,6 @@
 id = "source.vibe-memory"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたの仕事は filtered vibe memory content と agent diff だけを見て、再利用可能な知識候補を選ぶことです。

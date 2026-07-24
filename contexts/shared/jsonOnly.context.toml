@@ -2,7 +2,6 @@
 id = "output.json-only"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = "JSON のみを返してください。"
 

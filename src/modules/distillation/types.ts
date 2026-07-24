@@ -1,6 +1,6 @@
 import type { DistillationToolCall, DistillationToolResult } from "./distillation-tools.service.js";
 import type { DistillationProviderName, DistillationProviderSetting } from "./llm-resolver.js";
-import type { SystemContextManifest } from "../system-context/system-context.service.js";
+import type { PromptManifest } from "../system-context/system-context.service.js";
 
 export type DistillationRuntimeToolDefinition = {
   type: "function";
@@ -28,7 +28,7 @@ export type DistillationModelRequest = {
   model: string;
   messages: DistillationMessage[];
   maxTokens: number;
-  systemContexts?: readonly SystemContextManifest[];
+  systemContexts?: readonly PromptManifest[];
 };
 
 export type DistillationChatRequest = DistillationModelRequest & {

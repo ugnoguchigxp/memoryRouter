@@ -10,10 +10,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveWebSourceResearchRoute,
 } from "../../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../../system-context/system-context.service.js";
 import { upsertSourceDocument } from "../source.repository.js";
 import { ensureContentRoot, writePage } from "../wiki/content-repo.js";
 
@@ -106,14 +103,14 @@ export async function researchWebSourceToMarkdown(params: {
     routeModel: params.provider ? undefined : configuredRoute.model,
     localLlmModel,
   });
-  const systemContext = renderSystemContext("sourceResearch.web", {});
+  const systemContext = renderPrompt("sourceResearch.web", {});
 
   const completion = await runDistillationCompletion(
     {
       model,
       maxTokens: Math.max(2048, groupedConfig.vibeDistillation.maxOutputTokens),
       messages: [
-        systemContextMessage(systemContext),
+        promptMessage(systemContext),
         { role: "user", content: webResearchUserPrompt(params.url) },
       ],
       systemContexts: [systemContext.manifest],

@@ -11,10 +11,7 @@ import {
   hasProcedureWorkflowSignal,
   hasSkillLikeProcedureBody,
 } from "../distillation/procedure-quality.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 import type { CoverEvidenceCandidate, CoverEvidenceToolEvent } from "./types.js";
 
 type ProcedureNotRepairableReason =
@@ -150,13 +147,13 @@ export async function repairProcedureCandidate(
   });
 
   try {
-    const systemContext = renderSystemContext("coverEvidence.procedureRepair", {});
+    const systemContext = renderPrompt("coverEvidence.procedureRepair", {});
     const completion = await runDistillationCompletion(
       {
         model: input.model,
         maxTokens: 2048,
         messages: [
-          systemContextMessage(systemContext),
+          promptMessage(systemContext),
           { role: "user", content: repairUserPrompt(input) },
         ],
         systemContexts: [systemContext.manifest],

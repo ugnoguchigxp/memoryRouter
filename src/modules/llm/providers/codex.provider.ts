@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { groupedConfig } from "../../../config.js";
 import { checkCodexAuthStatus } from "../../codex/codex-auth.service.js";
-import { renderSystemContext } from "../../system-context/system-context.service.js";
+import { renderPrompt } from "../../system-context/system-context.service.js";
 import type {
   LlmChatRequest,
   LlmChatResponse,
@@ -80,7 +80,7 @@ export function createCodexProvider(
         })
         .join("\n\n");
 
-      const finalResponseContext = renderSystemContext("provider.codex.finalResponse", {});
+      const finalResponseContext = renderPrompt("provider.codex.finalResponse", {});
       const prompt = `${formattedMessages}\n\n${finalResponseContext.content.text}`;
 
       // P1: Wire timeout guard using AbortController

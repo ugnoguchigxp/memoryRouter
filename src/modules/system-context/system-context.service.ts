@@ -1,11 +1,17 @@
 import { readFileSync } from "node:fs";
 
-import { type CatalogBinding, type SystemContextInvocation, verifyRenderedHash } from "s11tnext";
+import {
+  type CatalogBinding,
+  type PromptInvocation,
+  verifyPromptMessageHash,
+  verifyRenderedHash,
+} from "s11tnext";
 
 import {
   createAppCatalog,
-  type SystemContextKey,
-  type SystemContextValueMap,
+  type PromptKey,
+  type PromptMessageRoleMap,
+  type PromptValueMap,
 } from "../../../.s11tnext/catalog.generated.js";
 
 const artifact: unknown = JSON.parse(
@@ -14,41 +20,51 @@ const artifact: unknown = JSON.parse(
 
 const catalog = createAppCatalog(artifact);
 
-export const defaultSystemContextBinding = {
+export const defaultPromptBinding = {
   instructionLocale: "ja-JP",
   fallbackLocales: ["en-US"],
+  trailingNewline: false,
 } as const satisfies CatalogBinding;
 
-export const englishSystemContextBinding = {
+export const englishPromptBinding = {
   instructionLocale: "en-US",
   fallbackLocales: ["ja-JP"],
+  trailingNewline: false,
 } as const satisfies CatalogBinding;
 
-export type SystemContextManifest = SystemContextInvocation["manifest"];
+export type PromptManifest = PromptInvocation["manifest"];
 
-export function renderSystemContext<K extends SystemContextKey>(
+export function renderPrompt<K extends PromptKey>(
   key: K,
-  values: SystemContextValueMap[K],
-  binding: CatalogBinding = defaultSystemContextBinding,
-): SystemContextInvocation<K> {
+  values: PromptValueMap[K],
+  binding: CatalogBinding = defaultPromptBinding,
+): PromptInvocation<K, PromptMessageRoleMap[K]> {
   return catalog.bind(binding)(key, values);
 }
 
-export function systemContextMessage<K extends SystemContextKey>(
-  invocation: SystemContextInvocation<K>,
+export function promptMessage<K extends PromptKey>(
+  invocation: PromptInvocation<K, PromptMessageRoleMap[K]>,
 ): {
-  role: "system";
+  role: PromptMessageRoleMap[K];
   content: string;
 } {
   if (!verifyRenderedHash(invocation.content.text, invocation.manifest.renderedHash)) {
-    throw new Error(`SystemContext rendered hash mismatch: ${invocation.manifest.key}`);
+    throw new Error(`Prompt rendered hash mismatch: ${invocation.manifest.key}`);
+  }
+  if (
+    !verifyPromptMessageHash(
+      { role: invocation.role, text: invocation.content.text },
+      invocation.manifest.messageHash,
+    )
+  ) {
+    throw new Error(`Prompt message hash mismatch: ${invocation.manifest.key}`);
   }
   return Object.freeze({
-    role: "system",
+    role: invocation.role,
     content: invocation.content.text,
   });
 }
 
-export function listSystemContexts() {
+export function listPrompts() {
   return catalog.list();
 }

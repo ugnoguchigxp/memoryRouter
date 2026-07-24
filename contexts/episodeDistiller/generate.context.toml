@@ -2,7 +2,6 @@
 id = "episode.generate"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは ContextStill の episodeDistiller です。

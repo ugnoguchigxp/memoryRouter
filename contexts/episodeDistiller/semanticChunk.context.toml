@@ -2,7 +2,6 @@
 id = "episode.semantic-chunk"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは ContextStill の source chunk planner です。

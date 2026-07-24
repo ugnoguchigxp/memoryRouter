@@ -12,10 +12,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveCoverEvidenceRoutes,
 } from "../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 import {
   applicabilityToCoverCandidateFields,
   hasRequiredApplicabilityFacets,
@@ -186,7 +183,7 @@ export async function runCoverNegativeEvidence(params: {
     title: row.title,
     content: row.content,
   });
-  const systemContext = renderSystemContext("coverEvidence.negative", {
+  const systemContext = renderPrompt("coverEvidence.negative", {
     allowedIntentTags: knowledgeIntentTagSlugs.join(", "),
   });
 
@@ -200,7 +197,7 @@ export async function runCoverNegativeEvidence(params: {
       mcpEvidenceRuntimeRoute.localLlmModel,
     );
   const response = await chat({
-    messages: [systemContextMessage(systemContext), { role: "user", content: prompt }],
+    messages: [promptMessage(systemContext), { role: "user", content: prompt }],
     model,
     maxTokens: 2048,
     systemContexts: [systemContext.manifest],

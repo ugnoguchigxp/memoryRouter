@@ -2,7 +2,6 @@
 id = "candidate.signals"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 候補化してよい signal:
@@ -43,7 +42,6 @@ text = '''
 id = "candidate.rules"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 厳守ルール:

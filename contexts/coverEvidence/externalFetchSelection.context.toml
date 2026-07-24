@@ -5,7 +5,6 @@ profile = "trustedNumber"
 id = "external.fetch-selection"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 search_web の結果から、fetch_content で読む候補番号だけを選んでください。

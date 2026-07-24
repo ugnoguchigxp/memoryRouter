@@ -2,7 +2,6 @@
 id = "procedure.repair"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 source evidence だけを使って、再利用可能な procedure candidate を修復してください。

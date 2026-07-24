@@ -5,7 +5,6 @@ profile = "trustedText"
 id = "assessment.negative-evidence"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは failure pattern、regression、architecture/security risk を表す review correction candidate（Negative Knowledge）を分析します。
@@ -30,7 +29,6 @@ Choose intentTags only from this allowlist: [[allowedIntentTags]]
 id = "output.negative-evidence-json"
 kind = "output-contract"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 次の schema の JSON response だけを返してください:

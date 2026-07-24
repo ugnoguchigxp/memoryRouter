@@ -9,10 +9,7 @@ import {
 } from "../distillation/distillation-runtime.service.js";
 import type { DistillationMessage } from "../distillation/types.js";
 import { resolveDeadZoneMergeReviewRoute } from "../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 
 export type DeadZoneMergeReviewKnowledgeSnapshot = {
   id: string;
@@ -73,9 +70,9 @@ export async function runDeadZoneMergeReviewLlm(params: {
     routeModel: route.model,
     localLlmModel: route.localLlmModel,
   });
-  const systemContext = renderSystemContext("landscape.deadZoneMergeReview", {});
+  const systemContext = renderPrompt("landscape.deadZoneMergeReview", {});
   const messages: DistillationMessage[] = [
-    systemContextMessage(systemContext),
+    promptMessage(systemContext),
     {
       role: "user",
       content: JSON.stringify({

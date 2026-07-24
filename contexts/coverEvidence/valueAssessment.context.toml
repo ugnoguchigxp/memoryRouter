@@ -5,7 +5,6 @@ profile = "trustedNumber"
 id = "assessment.value"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 あなたは coverEvidence の knowledge value 判定器です。

@@ -22,9 +22,9 @@ import {
   resolveAgenticCompileRouting,
 } from "../settings/settings.service.js";
 import {
-  englishSystemContextBinding,
-  renderSystemContext,
-  systemContextMessage,
+  englishPromptBinding,
+  renderPrompt,
+  promptMessage,
 } from "../system-context/system-context.service.js";
 import { buildDecisionCoverageQueries } from "./context-decision.coverage.js";
 import {
@@ -676,16 +676,8 @@ async function structuredLlmJudgment(params: {
     3,
   );
   const episodeBriefs = buildEpisodePrecedentBriefs(params.trace.episodePrecedents, 4);
-  const judgeSystemContext = renderSystemContext(
-    "contextDecision.judge",
-    {},
-    englishSystemContextBinding,
-  );
-  const repairSystemContext = renderSystemContext(
-    "contextDecision.repair",
-    {},
-    englishSystemContextBinding,
-  );
+  const judgeSystemContext = renderPrompt("contextDecision.judge", {}, englishPromptBinding);
+  const repairSystemContext = renderPrompt("contextDecision.repair", {}, englishPromptBinding);
   const userPrompt = [
     `Decision point: ${params.input.decisionPoint}`,
     `Technologies: ${compactLines(params.input.retrievalHints.technologies)}`,
@@ -796,7 +788,7 @@ async function structuredLlmJudgment(params: {
     if (!provider.isConfigured()) continue;
     try {
       const response = await provider.chat({
-        messages: [systemContextMessage(judgeSystemContext), { role: "user", content: userPrompt }],
+        messages: [promptMessage(judgeSystemContext), { role: "user", content: userPrompt }],
         maxTokens: 700,
         temperature: 0,
         responseFormat: "json",
@@ -827,7 +819,7 @@ async function structuredLlmJudgment(params: {
 
       const repairResponse = await provider.chat({
         messages: [
-          systemContextMessage(repairSystemContext),
+          promptMessage(repairSystemContext),
           {
             role: "user",
             content: [
@@ -930,11 +922,7 @@ async function composeAgentMessage(params: {
         ]
       : [`status=${params.reliabilityGate.status}`];
   const providers = await contextDecisionLlmProviders("context-decision-answer");
-  const answerSystemContext = renderSystemContext(
-    "contextDecision.answer",
-    {},
-    englishSystemContextBinding,
-  );
+  const answerSystemContext = renderPrompt("contextDecision.answer", {}, englishPromptBinding);
   const userPrompt = [
     `Decision point: ${params.input.decisionPoint}`,
     `Decision: ${params.decision}`,
@@ -997,10 +985,7 @@ async function composeAgentMessage(params: {
     if (!provider.isConfigured()) continue;
     try {
       const response = await provider.chat({
-        messages: [
-          systemContextMessage(answerSystemContext),
-          { role: "user", content: userPrompt },
-        ],
+        messages: [promptMessage(answerSystemContext), { role: "user", content: userPrompt }],
         maxTokens: 512,
         temperature: 0,
         responseFormat: "text",

@@ -13,7 +13,7 @@ import { createBedrockProvider } from "../src/modules/llm/providers/bedrock.prov
 import { createCodexProvider } from "../src/modules/llm/providers/codex.provider.js";
 import { createLocalLlmProvider } from "../src/modules/llm/providers/local-llm.provider.js";
 import { createOpenAiProvider } from "../src/modules/llm/providers/openai.provider.js";
-import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
+import { renderPrompt } from "../src/modules/system-context/system-context.service.js";
 
 vi.mock("../src/modules/audit/audit-log.service.js", () => ({
   auditEventTypes: {
@@ -123,8 +123,8 @@ describe("agentic-llm service tests", () => {
   });
 
   test("awaits audit persistence and combines request and provider SystemContext manifests", async () => {
-    const requestContext = renderSystemContext("shared.jsonOnly", {});
-    const providerContext = renderSystemContext("provider.codex.finalResponse", {});
+    const requestContext = renderPrompt("shared.jsonOnly", {});
+    const providerContext = renderPrompt("provider.codex.finalResponse", {});
     const codex = mockProvider("codex", true, true);
     codex.chat.mockResolvedValue({
       content: "ok",

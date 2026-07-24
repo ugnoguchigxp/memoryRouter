@@ -13,9 +13,9 @@ import {
   getRuntimeSettingsSnapshot,
 } from "../settings/settings.service.js";
 import {
-  englishSystemContextBinding,
-  renderSystemContext,
-  systemContextMessage,
+  englishPromptBinding,
+  renderPrompt,
+  promptMessage,
 } from "../system-context/system-context.service.js";
 import type { FindCandidateResult } from "./domain.js";
 import { evaluateVibeFindingEligibility } from "./vibe-finding-eligibility.js";
@@ -505,16 +505,12 @@ export async function maybeRunFindingCodexEscalation(
   }
 
   try {
-    const systemContext = renderSystemContext(
-      "findCandidate.codexEscalation",
-      {},
-      englishSystemContextBinding,
-    );
+    const systemContext = renderPrompt("findCandidate.codexEscalation", {}, englishPromptBinding);
     const completion = await (deps.runCompletion ?? runDistillationCompletion)(
       {
         model: escalationModel,
         messages: [
-          systemContextMessage(systemContext),
+          promptMessage(systemContext),
           buildCodexEscalationUserMessage({
             sourceKey: params.findingJob.sourceKey,
             sourceUri: params.findingJob.sourceUri,

@@ -5,7 +5,6 @@ profile = "trustedNumber"
 id = "external.final-assessment"
 kind = "instruction"
 severity = "must"
-enforcement = "prompt"
 optimizable = false
 text = '''
 source evidence と guarded fetch_content evidence から、coverEvidence の最終判定を返してください。

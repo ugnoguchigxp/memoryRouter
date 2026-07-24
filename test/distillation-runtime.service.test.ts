@@ -7,7 +7,7 @@ import {
 } from "../src/modules/distillation/distillation-runtime.service.js";
 import { recordLlmUsage } from "../src/modules/llm/llm-usage-logger.js";
 import { resetAzureOpenAiDeploymentPoolForTests } from "../src/modules/llm/providers/azure-openai-config.js";
-import { renderSystemContext } from "../src/modules/system-context/system-context.service.js";
+import { renderPrompt } from "../src/modules/system-context/system-context.service.js";
 
 vi.mock("../src/modules/audit/audit-log.service.js", () => ({
   auditEventTypes: {
@@ -92,7 +92,7 @@ describe("Distillation Runtime Service", () => {
   });
 
   test("awaits manifest-only SystemContext audit persistence after provider success", async () => {
-    const systemContext = renderSystemContext("contextCompiler.agenticRefine", {
+    const systemContext = renderPrompt("contextCompiler.agenticRefine", {
       goal: "secret runtime goal",
       retrievalMode: "task_context",
       technologies: "",

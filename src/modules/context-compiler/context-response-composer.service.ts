@@ -12,10 +12,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveAgenticCompileRouting,
 } from "../settings/settings.service.js";
-import {
-  renderSystemContext,
-  systemContextMessage,
-} from "../system-context/system-context.service.js";
+import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
 
 type ComposeInput = {
   input: CompileInput;
@@ -792,7 +789,7 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
   let attempted = 0;
   const completionMaxTokens = maxTokensWithJsonHeadroom(routing.maxTokens);
   const plannerCompletionMaxTokens = plannerMaxTokens(routing.maxTokens);
-  const plannerSystemContext = renderSystemContext("contextCompiler.plan", {});
+  const plannerSystemContext = renderPrompt("contextCompiler.plan", {});
   const plannerUserPrompt = buildPlanUserPrompt(params);
   const selectableKnowledgeIds = new Set(
     [
@@ -820,7 +817,7 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
       const plannerResponse = await provider.chat({
         model: provider.name === "local-llm" ? providerModel : undefined,
         messages: [
-          systemContextMessage(plannerSystemContext),
+          promptMessage(plannerSystemContext),
           { role: "user", content: plannerUserPrompt },
         ],
         maxTokens: plannerCompletionMaxTokens,
@@ -853,7 +850,7 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
         ? withNarrativeStyle(effectivePlan, "skill fallback")
         : effectivePlan;
     const fallbackForThisRound = buildFallbackCompose(params, fallbackPlanForThisRound);
-    const composerSystemContext = renderSystemContext(
+    const composerSystemContext = renderPrompt(
       "contextCompiler.compose",
       buildComposerSystemContextValues(routing.maxTokens, effectivePlan),
     );
@@ -861,10 +858,7 @@ export async function composeContextResponse(params: ComposeInput): Promise<Comp
     try {
       const response = await provider.chat({
         model: provider.name === "local-llm" ? providerModel : undefined,
-        messages: [
-          systemContextMessage(composerSystemContext),
-          { role: "user", content: userPrompt },
-        ],
+        messages: [promptMessage(composerSystemContext), { role: "user", content: userPrompt }],
         maxTokens: completionMaxTokens,
         temperature: 0,
         responseFormat: "json",
