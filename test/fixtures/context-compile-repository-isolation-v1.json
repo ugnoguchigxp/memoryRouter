@@ -1,0 +1,567 @@
+{
+  "contractVersion": 1,
+  "description": "Shared repository scope, facet, saturation, and legacy-selection reproduction fixture.",
+  "identities": [
+    {
+      "id": "identity-none",
+      "input": {},
+      "expected": {
+        "matchBasis": "none",
+        "scopeMode": "global_only"
+      }
+    },
+    {
+      "id": "identity-project-a",
+      "input": {
+        "projectRef": "project-A"
+      },
+      "expected": {
+        "matchBasis": "project_ref",
+        "matchValue": "project-A"
+      }
+    },
+    {
+      "id": "identity-repo-key-a",
+      "input": {
+        "repoKey": "ORG/Repo-A"
+      },
+      "expected": {
+        "matchBasis": "repo_key",
+        "matchValue": "org/repo-a"
+      }
+    },
+    {
+      "id": "identity-repo-path-a",
+      "input": {
+        "repoPath": "/work/repo-a/./"
+      },
+      "expected": {
+        "matchBasis": "repo_path",
+        "matchValue": "/work/repo-a"
+      }
+    },
+    {
+      "id": "identity-windows-path-a",
+      "input": {
+        "repoPath": "C:\\Work\\Repo-A\\."
+      },
+      "expected": {
+        "matchBasis": "repo_path",
+        "matchValue": "C:/Work/Repo-A"
+      }
+    },
+    {
+      "id": "identity-file-uri-a",
+      "input": {
+        "repoPath": "file://localhost/work/repo-a/../repo-a"
+      },
+      "expected": {
+        "matchBasis": "repo_path",
+        "matchValue": "/work/repo-a"
+      }
+    }
+  ],
+  "invalidIdentities": [
+    {
+      "id": "relative-path",
+      "input": {
+        "repoPath": "work/repo-a"
+      },
+      "expectedError": "INVALID_REPO_PATH"
+    },
+    {
+      "id": "remote-file-uri",
+      "input": {
+        "repoPath": "file://remote.example/work/repo-a"
+      },
+      "expectedError": "INVALID_REPO_PATH"
+    },
+    {
+      "id": "malformed-percent-encoding",
+      "input": {
+        "repoPath": "file:///work/%GG/repo-a"
+      },
+      "expectedError": "INVALID_REPO_PATH"
+    },
+    {
+      "id": "file-uri-query",
+      "input": {
+        "repoPath": "file:///work/repo-a?revision=1"
+      },
+      "expectedError": "INVALID_REPO_PATH"
+    }
+  ],
+  "aliases": [
+    {
+      "projectRef": "project-A",
+      "aliasKind": "repo_key",
+      "normalizedValue": "org/repo-a"
+    },
+    {
+      "projectRef": "project-A",
+      "aliasKind": "repo_path",
+      "normalizedValue": "/work/repo-a"
+    },
+    {
+      "projectRef": "project-B",
+      "aliasKind": "repo_key",
+      "normalizedValue": "org/repo-b"
+    },
+    {
+      "projectRef": "project-B",
+      "aliasKind": "repo_path",
+      "normalizedValue": "/work/repo-b"
+    }
+  ],
+  "conflictingIdentities": [
+    {
+      "id": "project-a-path-b",
+      "input": {
+        "projectRef": "project-A",
+        "repoPath": "/work/repo-b"
+      },
+      "expectedError": "IDENTITY_CONFLICT"
+    },
+    {
+      "id": "key-a-path-b",
+      "input": {
+        "repoKey": "org/repo-a",
+        "repoPath": "/work/repo-b"
+      },
+      "expectedError": "IDENTITY_CONFLICT"
+    }
+  ],
+  "candidates": [
+    {
+      "id": "knowledge-global-general",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "global",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "knowledge-global-rust",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "global",
+      "general": false,
+      "facets": {
+        "technologies": ["rust"]
+      }
+    },
+    {
+      "id": "knowledge-repo-a-project",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "repoKey": "org/repo-a",
+      "repoPath": "/work/repo-a",
+      "general": false,
+      "facets": {
+        "technologies": ["rust"],
+        "changeTypes": ["fix"]
+      }
+    },
+    {
+      "id": "knowledge-repo-a-general",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "repoKey": "org/repo-a",
+      "repoPath": "/work/repo-a",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "knowledge-repo-a-lower-basis-only",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "repoKey": "org/repo-a",
+      "repoPath": "/work/repo-a",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "knowledge-repo-b-general",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-B",
+      "repoKey": "org/repo-b",
+      "repoPath": "/work/repo-b",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "knowledge-prefix-collision",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-A-archive",
+      "repoKey": "org/repo-a-archive",
+      "repoPath": "/work/repo-a-archive",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "knowledge-path-case-collision",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "repoPath": "/Work/repo-a",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "knowledge-unresolved",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "unresolved",
+      "scope": "repo",
+      "general": true,
+      "producer": "legacy_import",
+      "facets": {}
+    },
+    {
+      "id": "knowledge-malformed",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "malformed",
+      "scope": "repo",
+      "repoPath": "relative/repo-a",
+      "general": true,
+      "producer": "legacy_import",
+      "facets": {}
+    },
+    {
+      "id": "knowledge-conflict",
+      "entityKind": "knowledge",
+      "status": "active",
+      "classificationStatus": "conflict",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "repoKey": "org/repo-b",
+      "general": true,
+      "producer": "legacy_import",
+      "facets": {}
+    },
+    {
+      "id": "knowledge-inactive-repo-a",
+      "entityKind": "knowledge",
+      "status": "deprecated",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "general": true,
+      "facets": {}
+    },
+    {
+      "id": "source-global-general",
+      "entityKind": "source",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "global",
+      "general": true,
+      "producer": "wiki",
+      "facets": {}
+    },
+    {
+      "id": "source-repo-a-rust",
+      "entityKind": "source",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "repoKey": "org/repo-a",
+      "repoPath": "/work/repo-a",
+      "general": false,
+      "producer": "wiki",
+      "facets": {
+        "technologies": ["rust"]
+      }
+    },
+    {
+      "id": "source-repo-b-general",
+      "entityKind": "source",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-B",
+      "repoKey": "org/repo-b",
+      "repoPath": "/work/repo-b",
+      "general": true,
+      "producer": "wiki",
+      "facets": {}
+    },
+    {
+      "id": "source-unresolved",
+      "entityKind": "source",
+      "status": "active",
+      "classificationStatus": "unresolved",
+      "scope": "repo",
+      "general": true,
+      "producer": "wiki",
+      "facets": {}
+    },
+    {
+      "id": "source-malformed",
+      "entityKind": "source",
+      "status": "active",
+      "classificationStatus": "malformed",
+      "scope": "repo",
+      "general": true,
+      "producer": "wiki",
+      "facets": {}
+    },
+    {
+      "id": "episode-global-general",
+      "entityKind": "episode",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "global",
+      "general": true,
+      "producer": "compile_run",
+      "facets": {}
+    },
+    {
+      "id": "episode-repo-a-rust",
+      "entityKind": "episode",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "repoKey": "org/repo-a",
+      "repoPath": "/work/repo-a",
+      "general": false,
+      "producer": "compile_run",
+      "facets": {
+        "technologies": ["rust"]
+      }
+    },
+    {
+      "id": "episode-repo-b-general",
+      "entityKind": "episode",
+      "status": "active",
+      "classificationStatus": "classified",
+      "scope": "repo",
+      "projectRef": "project-B",
+      "repoKey": "org/repo-b",
+      "repoPath": "/work/repo-b",
+      "general": true,
+      "producer": "vibe_memory",
+      "facets": {}
+    },
+    {
+      "id": "episode-unresolved",
+      "entityKind": "episode",
+      "status": "active",
+      "classificationStatus": "unresolved",
+      "scope": "repo",
+      "general": true,
+      "producer": "vibe_memory",
+      "facets": {}
+    },
+    {
+      "id": "episode-conflict",
+      "entityKind": "episode",
+      "status": "active",
+      "classificationStatus": "conflict",
+      "scope": "repo",
+      "projectRef": "project-A",
+      "repoKey": "org/repo-b",
+      "general": true,
+      "producer": "compile_run",
+      "facets": {}
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "missing-identity-global-only",
+      "identityId": "identity-none",
+      "requestFacets": {},
+      "expectedEligibleIds": [
+        "knowledge-global-general",
+        "knowledge-global-rust",
+        "source-global-general",
+        "episode-global-general"
+      ]
+    },
+    {
+      "id": "project-a-no-facets",
+      "identityId": "identity-project-a",
+      "requestFacets": {},
+      "expectedEligibleIds": [
+        "knowledge-global-general",
+        "knowledge-global-rust",
+        "knowledge-repo-a-project",
+        "knowledge-repo-a-general",
+        "source-global-general",
+        "source-repo-a-rust",
+        "episode-global-general",
+        "episode-repo-a-rust"
+      ]
+    },
+    {
+      "id": "project-a-rust-facet",
+      "identityId": "identity-project-a",
+      "requestFacets": {
+        "technologies": ["Rust"]
+      },
+      "expectedEligibleIds": [
+        "knowledge-global-general",
+        "knowledge-global-rust",
+        "knowledge-repo-a-project",
+        "knowledge-repo-a-general",
+        "source-global-general",
+        "source-repo-a-rust",
+        "episode-global-general",
+        "episode-repo-a-rust"
+      ]
+    },
+    {
+      "id": "project-a-typescript-facet",
+      "identityId": "identity-project-a",
+      "requestFacets": {
+        "technologies": ["typescript"]
+      },
+      "expectedEligibleIds": [
+        "knowledge-global-general",
+        "knowledge-repo-a-general",
+        "source-global-general",
+        "episode-global-general"
+      ]
+    },
+    {
+      "id": "repo-key-a-selected-basis",
+      "identityId": "identity-repo-key-a",
+      "requestFacets": {},
+      "expectedEligibleIds": [
+        "knowledge-global-general",
+        "knowledge-global-rust",
+        "knowledge-repo-a-project",
+        "knowledge-repo-a-general",
+        "knowledge-repo-a-lower-basis-only",
+        "source-global-general",
+        "source-repo-a-rust",
+        "episode-global-general",
+        "episode-repo-a-rust"
+      ]
+    },
+    {
+      "id": "repo-path-a-case-and-prefix-exact",
+      "identityId": "identity-repo-path-a",
+      "requestFacets": {},
+      "expectedEligibleIds": [
+        "knowledge-global-general",
+        "knowledge-global-rust",
+        "knowledge-repo-a-project",
+        "knowledge-repo-a-general",
+        "knowledge-repo-a-lower-basis-only",
+        "source-global-general",
+        "source-repo-a-rust",
+        "episode-global-general",
+        "episode-repo-a-rust"
+      ]
+    }
+  ],
+  "saturation": [
+    {
+      "id": "knowledge-wrong-project-before-500-limit",
+      "entityKind": "knowledge",
+      "generatedCount": 501,
+      "generatedCandidate": {
+        "status": "active",
+        "classificationStatus": "classified",
+        "scope": "repo",
+        "projectRef": "project-B",
+        "repoKey": "org/repo-b",
+        "repoPath": "/work/repo-b",
+        "general": true,
+        "facets": {}
+      },
+      "anchorCandidateId": "knowledge-repo-a-project",
+      "identityId": "identity-project-a",
+      "requestFacets": {
+        "technologies": ["rust"]
+      },
+      "expectedAnchorEligible": true
+    },
+    {
+      "id": "knowledge-facet-mismatch-before-500-limit",
+      "entityKind": "knowledge",
+      "generatedCount": 501,
+      "generatedCandidate": {
+        "status": "active",
+        "classificationStatus": "classified",
+        "scope": "repo",
+        "projectRef": "project-A",
+        "repoKey": "org/repo-a",
+        "repoPath": "/work/repo-a",
+        "general": false,
+        "facets": {
+          "technologies": ["typescript"]
+        }
+      },
+      "anchorCandidateId": "knowledge-repo-a-project",
+      "identityId": "identity-project-a",
+      "requestFacets": {
+        "technologies": ["rust"]
+      },
+      "expectedAnchorEligible": true
+    },
+    {
+      "id": "episode-wrong-project-before-120-limit",
+      "entityKind": "episode",
+      "generatedCount": 121,
+      "generatedCandidate": {
+        "status": "active",
+        "classificationStatus": "classified",
+        "scope": "repo",
+        "projectRef": "project-B",
+        "repoKey": "org/repo-b",
+        "repoPath": "/work/repo-b",
+        "general": true,
+        "facets": {}
+      },
+      "anchorCandidateId": "episode-repo-a-rust",
+      "identityId": "identity-project-a",
+      "requestFacets": {
+        "technologies": ["rust"]
+      },
+      "expectedAnchorEligible": true
+    }
+  ],
+  "legacyReproduction": {
+    "goal": "repository isolation rust compile",
+    "identityId": "identity-project-a",
+    "wrongProjectKnowledgeId": "knowledge-repo-b-general",
+    "unresolvedKnowledgeId": "knowledge-unresolved",
+    "expectedLegacySelectedAny": [
+      "knowledge-repo-b-general",
+      "knowledge-unresolved"
+    ]
+  },
+  "privacy": {
+    "maxPreviewIds": 20,
+    "forbiddenOutputFields": [
+      "title",
+      "body",
+      "situation",
+      "lesson",
+      "repoPath",
+      "matchValue"
+    ]
+  }
+}

@@ -7,6 +7,7 @@
 | Document | 目的 |
 |---|---|
 | [Context Compile Repository Isolation Improvement Plan](context-compile-repository-isolation-improvement-plan.md) | repository identityを全candidate、trace、producer、migrationへ一貫して適用し、wrong-project retrievalをfail-closedで防ぐ進行中の実装計画 |
+| [Context Compile Repository Isolation T0 Evidence](context-compile-repository-isolation-t0-evidence.md) | cross-repository fixture、legacy再現、read-only inventory、baseline cohortの実行証拠 |
 | [Rust Runtime Closeout Implementation Plan](rust-runtime-closeout-implementation-plan.md) | live database identity、doctor/backup、queue executor truth、vector modeの測定判断、regression testを一貫させてRust runtimeを安全に完了判定する計画 |
 | [LLM Provider busy 503 contract](llm-provider-busy-503-contract.md) | provider busyを恒久障害や完了として扱わず、`Retry-After`に従うretryable queue状態へ戻す契約 |
 | [Security Intelligence Integration Concept](security-intelligence-integration-concept.md) | vulnWorkbench、NightWorkers、contextStillが共有するSecurity Learning Loop、責務境界、trust boundary、段階導入、評価方法 |

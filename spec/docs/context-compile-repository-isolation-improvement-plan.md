@@ -2,7 +2,7 @@
 
 ## Status And Decision
 
-Status: implementation in progress. T1 additive foundation landed locally; T0 inventory/baseline and enforcement remain incomplete.
+Status: implementation in progress. T0 reproduction/inventory/baseline and T1 additive foundation are complete; T2-T7 and enforcement remain incomplete.
 
 Decision:
 
@@ -19,7 +19,8 @@ Implementation progress as of 2026-08-15:
 - Rust/TypeScript compile runとtask traceはdaemon root/process cwdではなくnormalized request identityを保存する。
 - SQLite v1互換binary→additive revision 2 migration、旧writer相当のidentity省略writeが`classification_status=unresolved`になること、両言語fixture parityをtest済みである。
 - SQLiteは`user_version=1`をbinary互換境界として維持し、identity schemaを`schema_migrations` revision 2として追跡する。これによりold binary/new schemaは追加列を無視でき、new binary/old schemaは起動時にrevision 2を冪等適用できる。
-- T0のshared identity fixtureは追加済みだが、cross-repository retrieval fixture、read-only inventory、baseline cohort計測は未完了である。
+- T0のcross-repository shared fixture、legacy wrong-project reproduction、candidate/outbound/pack ID harness、read-only inventory、baseline cohort計測は完了した。実行証拠は[Context Compile Repository Isolation T0 Evidence](context-compile-repository-isolation-t0-evidence.md)に記録した。
+- live read-only inventoryの現在値はKnowledge 7,227、Source 178、EpisodeCard 6,602がcanonical contract上unresolvedである。EpisodeCard 5,761件にはlegacy `repo_key`があるが、`classification_status`列がないためclassifiedとは扱わない。identity-present compile runは30日間でも0件で、availability baselineはsample不足である。
 - T2 producer修正、T3 deterministic backfill、T4 scope enforcement/shadow、T5 replay/cache、T6 rollout、T7 Security adapterは未着手である。したがって現時点ではrepository isolation完了とは扱わない。
 
 ## Purpose
@@ -366,7 +367,7 @@ Tasks:
 Completion criteria:
 
 - wrong-project selectionが修正前に自動testで再現される。
-- Knowledge 7,092、Source 99、EpisodeCard 841の未分類をlive DBへwriteせず観測できる。
+- live DBへwriteせず、entity別の現在件数、canonical schema capability、legacy identity signalを観測できる。2026-08-15の基準値はKnowledge 7,227、Source 178、EpisodeCard 6,602 unresolvedで、EpisodeCardのうちlegacy identityなしが841件である。
 - Rust、TypeScript SQLite、TypeScript PostgreSQLが同じfixtureを読み、現行差分をreportできる。
 - integration suiteがskipされた場合は成功扱いにしない。
 

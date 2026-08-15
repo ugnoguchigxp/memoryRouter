@@ -2103,11 +2103,15 @@ fn goal_hash(goal: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::SystemTime;
 
     use rusqlite::Connection;
+    use serde::Deserialize;
     use serde_json::json;
 
     use super::*;
@@ -2132,6 +2136,10 @@ mod tests {
                   type text not null,
                   status text not null,
                   scope text not null default 'repo',
+                  classification_status text not null default 'unresolved',
+                  project_ref text,
+                  repo_key text,
+                  repo_path text,
                   polarity text not null default 'positive',
                   title text not null,
                   body text not null,
@@ -2231,6 +2239,11 @@ mod tests {
                   title text not null,
                   situation text not null,
                   lesson text not null default '',
+                  classification_status text not null default 'unresolved',
+                  scope text not null default 'repo',
+                  project_ref text,
+                  repo_key text,
+                  repo_path text,
                   importance integer not null default 50,
                   status text not null default 'active',
                   updated_at text not null default CURRENT_TIMESTAMP
@@ -2264,6 +2277,342 @@ mod tests {
                 "#,
             )
             .unwrap();
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RepositoryIsolationFixture {
+        candidates: Vec<RepositoryIsolationCandidate>,
+        legacy_reproduction: LegacyReproduction,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RepositoryIsolationCandidate {
+        id: String,
+        entity_kind: String,
+        status: String,
+        classification_status: String,
+        scope: String,
+        project_ref: Option<String>,
+        repo_key: Option<String>,
+        repo_path: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct LegacyReproduction {
+        goal: String,
+        wrong_project_knowledge_id: String,
+        unresolved_knowledge_id: String,
+        expected_legacy_selected_any: Vec<String>,
+    }
+
+    fn repository_isolation_fixture() -> RepositoryIsolationFixture {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../test/fixtures/context-compile-repository-isolation-v1.json"
+        )))
+        .expect("repository isolation fixture must parse")
+    }
+
+    fn seed_repository_isolation_knowledge(
+        connection: &Connection,
+        fixture: &RepositoryIsolationFixture,
+    ) {
+        for candidate in fixture
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.entity_kind == "knowledge")
+        {
+            let importance =
+                if candidate.id == fixture.legacy_reproduction.wrong_project_knowledge_id {
+                    100
+                } else if candidate.id == fixture.legacy_reproduction.unresolved_knowledge_id {
+                    99
+                } else {
+                    10
+                };
+            connection
+                .execute(
+                    r#"
+                    insert into knowledge_items (
+                      id, type, status, scope, classification_status, project_ref, repo_key,
+                      repo_path, title, body, importance
+                    ) values (?1, 'rule', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                    "#,
+                    rusqlite::params![
+                        candidate.id,
+                        candidate.status,
+                        candidate.scope,
+                        candidate.classification_status,
+                        candidate.project_ref,
+                        candidate.repo_key,
+                        candidate.repo_path,
+                        format!("{} {}", fixture.legacy_reproduction.goal, candidate.id),
+                        format!(
+                            "{} verification candidate {}",
+                            fixture.legacy_reproduction.goal, candidate.id
+                        ),
+                        importance,
+                    ],
+                )
+                .unwrap();
+        }
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let count = stream.read(&mut buffer).unwrap_or(0);
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&bytes[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if bytes.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let body_start = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| index + 4)
+            .unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[body_start..]).to_string()
+    }
+
+    fn spawn_composer_mock(
+        goal: &str,
+        used_ids: &[String],
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let goal = goal.to_string();
+        let used_ids = used_ids.to_vec();
+        let handle = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                requests.push(read_http_request(&mut stream));
+                let content = if index == 0 {
+                    json!({
+                        "headings": {
+                            "focus": "実装フォーカス",
+                            "steps": "実装手順",
+                            "verification": "検証観点",
+                            "avoid": "注意点"
+                        },
+                        "includeAvoidSection": false,
+                        "responseStyle": "narrative",
+                        "styleConfidence": 0.9,
+                        "candidateSufficiency": "enough"
+                    })
+                    .to_string()
+                } else {
+                    json!({
+                        "markdown": format!("## 実装フォーカス\n- {goal}\n\n## 実装手順\n1. fixture\n\n## 検証観点\n- ids"),
+                        "usedKnowledge": used_ids
+                            .iter()
+                            .map(|id| json!({"id": id, "confidence": 0.8}))
+                            .collect::<Vec<_>>(),
+                        "usedEpisodes": []
+                    })
+                    .to_string()
+                };
+                let response_body = json!({
+                    "choices": [{"message": {"content": content}}]
+                })
+                .to_string();
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    response_body.len(),
+                    response_body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[test]
+    fn legacy_compile_reproduces_wrong_project_and_unresolved_selection() {
+        let fixture = repository_isolation_fixture();
+        let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        create_minimal_compile_schema(&connection);
+        seed_repository_isolation_knowledge(&connection, &fixture);
+        drop(connection);
+
+        let result = context_compile(
+            &json!({"arguments": {
+                "goal": fixture.legacy_reproduction.goal,
+                "projectRef": "project-A"
+            }}),
+            &NativeToolContext {
+                project_root: std::env::temp_dir(),
+                sqlite_core_path: db_path.clone(),
+            },
+        );
+        assert_ne!(result["content"][0]["text"], "No Content");
+
+        let connection = Connection::open(&db_path).unwrap();
+        let pack_ids = connection
+            .prepare("select item_id from context_pack_items order by id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>();
+        let candidate_ids = connection
+            .prepare(
+                "select item_id from context_compile_candidate_traces where selected = 1 order by id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(pack_ids, candidate_ids);
+        assert!(fixture
+            .legacy_reproduction
+            .expected_legacy_selected_any
+            .iter()
+            .any(|id| pack_ids.contains(id)));
+        assert!(pack_ids.contains(&fixture.legacy_reproduction.wrong_project_knowledge_id));
+        assert!(pack_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn agentic_harness_observes_candidate_outbound_and_pack_ids() {
+        let fixture = repository_isolation_fixture();
+        let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        create_minimal_compile_schema(&connection);
+        seed_repository_isolation_knowledge(&connection, &fixture);
+        let expected_used_ids = vec![
+            fixture
+                .legacy_reproduction
+                .wrong_project_knowledge_id
+                .clone(),
+            fixture.legacy_reproduction.unresolved_knowledge_id.clone(),
+        ];
+        let (base_url, mock_handle) =
+            spawn_composer_mock(&fixture.legacy_reproduction.goal, &expected_used_ids);
+        let settings = json!({
+            "settings": {
+                "providers": {
+                    "openai": {"enabled": false, "apiBaseUrl": "https://api.openai.com/v1", "model": "gpt-test"},
+                    "azure-openai": {"enabled": false, "apiBaseUrl": "", "apiPath": "/openai/deployments", "apiVersion": "2025-04-01-preview", "model": ""},
+                    "local-llm": {
+                        "enabled": true,
+                        "apiBaseUrl": base_url,
+                        "apiPath": "/chat",
+                        "model": "fixture-model",
+                        "models": []
+                    }
+                },
+                "taskRouting": {
+                    "agenticCompile": {
+                        "enabled": true,
+                        "provider": "local-llm",
+                        "model": "fixture-model",
+                        "fallback": [],
+                        "timeoutMs": 5000,
+                        "maxTokens": 512
+                    }
+                }
+            }
+        });
+        connection
+            .execute(
+                "insert into settings (id, namespace, key, value) values ('settings-1', 'runtime', 'settings.v1', ?1)",
+                [settings.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+
+        let result = context_compile(
+            &json!({"arguments": {
+                "goal": fixture.legacy_reproduction.goal,
+                "projectRef": "project-A"
+            }}),
+            &NativeToolContext {
+                project_root: std::env::temp_dir(),
+                sqlite_core_path: db_path.clone(),
+            },
+        );
+        assert!(!result
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
+        let outbound_requests = mock_handle.join().unwrap();
+
+        let connection = Connection::open(&db_path).unwrap();
+        let selected_ids = connection
+            .prepare(
+                "select item_id from context_compile_candidate_traces where selected = 1 order by id",
+            )
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .flatten()
+            .collect::<BTreeSet<_>>();
+        let pack_ids = connection
+            .prepare("select item_id from context_pack_items order by id")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .flatten()
+            .collect::<BTreeSet<_>>();
+        let all_fixture_ids = fixture
+            .candidates
+            .iter()
+            .map(|candidate| candidate.id.as_str())
+            .collect::<Vec<_>>();
+        let outbound_ids = outbound_requests
+            .iter()
+            .flat_map(|request| {
+                let payload: Value = serde_json::from_str(request).unwrap();
+                let user_content = payload["messages"]
+                    .as_array()
+                    .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
+                    .and_then(|message| message["content"].as_str())
+                    .unwrap_or_default();
+                all_fixture_ids
+                    .iter()
+                    .filter(move |id| user_content.contains(**id))
+                    .map(|id| (*id).to_string())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(selected_ids, pack_ids);
+        assert!(outbound_ids.is_subset(&selected_ids));
+        for expected in expected_used_ids {
+            assert!(selected_ids.contains(&expected));
+            assert!(outbound_ids.contains(&expected));
+        }
+        let _ = std::fs::remove_file(db_path);
     }
 
     fn sample_knowledge() -> Vec<PackKnowledge> {
