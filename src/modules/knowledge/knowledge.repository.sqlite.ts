@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { SqliteCoreRepository } from "../../db/sqlite/core-repository.js";
 import {
   sqliteKnowledgeItems,
@@ -8,6 +8,10 @@ import {
 } from "../../db/sqlite/schema.js";
 import { normalizeKnowledgeScore } from "../../lib/score-scale.js";
 import type { KnowledgeStatus } from "../../shared/schemas/knowledge.schema.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 import { computeDecayFactor } from "./knowledge-value.service.js";
 import {
   type ApplicabilityQuery,
@@ -22,6 +26,7 @@ import {
   fallbackSourceRefsFromMetadata,
   finiteOrZero,
   hasApplicabilityQuery,
+  resolveKnowledgeSearchIdentity,
 } from "./knowledge.repository.shared.js";
 
 async function getSqliteCoreDatabase() {
@@ -107,35 +112,15 @@ function matchesRepoScope(
   row: typeof sqliteKnowledgeItems.$inferSelect,
   options: KnowledgeSearchOptions,
 ): boolean {
-  const repoPath = options.repoPath?.trim();
-  const repoKey = options.repoKey?.trim().toLowerCase();
-  if (!repoPath && !repoKey) return true;
-  const allowGlobalScope = options.allowGlobalScope !== false;
-  const appliesTo = asRecord(row.appliesTo);
-  const metadata = asRecord(row.metadata);
-  if (options.scopeMatchMode !== "legacy") {
-    if (allowGlobalScope && row.scope === "global") return true;
-    if (repoKey && String(appliesTo.repoKey ?? "").toLowerCase() === repoKey) return true;
-    if (repoPath && String(appliesTo.repoPath ?? "") === repoPath) return true;
-    return false;
+  const identity = resolveKnowledgeSearchIdentity(options);
+  if (row.classificationStatus !== "classified") return false;
+  if (row.scope === "global") {
+    return !row.projectRef && !row.repoKey && !row.repoPath;
   }
-  if (repoKey) {
-    if (String(metadata.repoKey ?? "").toLowerCase() === repoKey) return true;
-    if (String(metadata.sourceProject ?? "").toLowerCase() === repoKey) return true;
-  }
-  if (repoPath) {
-    const fileUriPrefix = `file://${repoPath.startsWith("/") ? "" : "/"}${repoPath}`;
-    for (const key of ["repoPath", "sourceUri", "sourceDocumentUri"]) {
-      const value = String(metadata[key] ?? "");
-      if (
-        value === repoPath ||
-        value.startsWith(`${repoPath}/`) ||
-        value.startsWith(`${fileUriPrefix}/`)
-      ) {
-        return true;
-      }
-    }
-  }
+  if (row.scope !== "repo" || identity.matchValue === null) return false;
+  if (identity.matchBasis === "project_ref") return row.projectRef === identity.matchValue;
+  if (identity.matchBasis === "repo_key") return row.repoKey === identity.matchValue;
+  if (identity.matchBasis === "repo_path") return row.repoPath === identity.matchValue;
   return false;
 }
 
@@ -201,6 +186,10 @@ function mapRowsToResults(
       type: row.type,
       status: row.status,
       scope: row.scope,
+      classificationStatus: row.classificationStatus,
+      projectRef: row.projectRef,
+      repoKey: row.repoKey,
+      repoPath: row.repoPath,
       polarity: String(row.polarity ?? "positive"),
       intentTags: stringArray(row.intentTags),
       title: row.title,
@@ -241,6 +230,36 @@ export async function searchKnowledgeSqlite(
   const types = options.types && options.types.length > 0 ? options.types : input.types;
   const polarities = options.polarities ?? input.polarities;
   const applicabilityQuery = buildApplicabilityQuery(input, options);
+  const identity = resolveKnowledgeSearchIdentity({
+    ...options,
+    repoPath: options.repoPath ?? input.repoPath,
+  });
+  const globalCondition = and(
+    eq(sqliteKnowledgeItems.scope, "global"),
+    isNull(sqliteKnowledgeItems.projectRef),
+    isNull(sqliteKnowledgeItems.repoKey),
+    isNull(sqliteKnowledgeItems.repoPath),
+  );
+  const matchValue = identity.matchValue;
+  const repoCondition =
+    matchValue === null
+      ? undefined
+      : identity.matchBasis === "project_ref"
+        ? and(
+            eq(sqliteKnowledgeItems.scope, "repo"),
+            eq(sqliteKnowledgeItems.projectRef, matchValue),
+          )
+        : identity.matchBasis === "repo_key"
+          ? and(
+              eq(sqliteKnowledgeItems.scope, "repo"),
+              eq(sqliteKnowledgeItems.repoKey, matchValue),
+            )
+          : identity.matchBasis === "repo_path"
+            ? and(
+                eq(sqliteKnowledgeItems.scope, "repo"),
+                eq(sqliteKnowledgeItems.repoPath, matchValue),
+              )
+            : undefined;
   const candidates = sqlite.orm
     .select()
     .from(sqliteKnowledgeItems)
@@ -251,10 +270,11 @@ export async function searchKnowledgeSqlite(
         ...(polarities && polarities.length > 0
           ? [inArray(sqliteKnowledgeItems.polarity, polarities)]
           : []),
+        eq(sqliteKnowledgeItems.classificationStatus, "classified"),
+        repoCondition ? or(globalCondition, repoCondition) : globalCondition,
       ),
     )
     .orderBy(desc(sqliteKnowledgeItems.importance), desc(sqliteKnowledgeItems.updatedAt))
-    .limit(Math.max(input.limit * 12, 120))
     .all();
 
   const query = input.query.trim();
@@ -267,9 +287,6 @@ export async function searchKnowledgeSqlite(
           matchesApplicability(row, applicabilityQuery)),
     )
     .filter((row) => matchesIntentTags(row, options.intentTags ?? input.intentTags))
-    .filter((row) =>
-      matchesRepoScope(row, { ...options, repoPath: options.repoPath ?? input.repoPath }),
-    )
     .filter((row) => matchesApplicability(row, applicabilityQuery))
     .sort(
       (a, b) =>
@@ -291,6 +308,24 @@ export async function upsertKnowledgeFromSourceSqlite(
   const sqlite = await getSqliteCoreDatabase();
   const repo = new SqliteCoreRepository(sqlite);
   const scoped = buildKnowledgeScopeMetadata(params.sourceUri, params.metadata, params.appliesTo);
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: params.scope,
+      projectRef:
+        params.projectRef ??
+        (typeof scoped.metadata.projectRef === "string" ? scoped.metadata.projectRef : undefined),
+      repoKey:
+        params.repoKey ??
+        (typeof scoped.appliesTo.repoKey === "string" ? scoped.appliesTo.repoKey : undefined),
+      repoPath:
+        params.repoPath ??
+        (typeof scoped.appliesTo.repoPath === "string" ? scoped.appliesTo.repoPath : undefined),
+    },
+    {
+      producer: params.identityProducer ?? "knowledge.upsert-from-source",
+      entityKind: "knowledge",
+    },
+  );
   const existing = sqlite.orm
     .select()
     .from(sqliteKnowledgeItems)
@@ -301,7 +336,11 @@ export async function upsertKnowledgeFromSourceSqlite(
     id,
     type: params.type,
     status: params.status,
-    scope: params.scope,
+    scope: identity.scope,
+    classificationStatus: identity.classificationStatus,
+    projectRef: identity.projectRef,
+    repoKey: identity.repoKey,
+    repoPath: identity.repoPath,
     polarity: params.polarity ?? existing?.polarity ?? "positive",
     intentTags: params.intentTags ?? stringArray(existing?.intentTags),
     title: params.title,
@@ -314,47 +353,22 @@ export async function upsertKnowledgeFromSourceSqlite(
     createdAt: existing?.createdAt ?? nowIso(),
     updatedAt: nowIso(),
   });
+  await recordProjectScopedWritePersisted(identity, {
+    producer: params.identityProducer ?? "knowledge.upsert-from-source",
+    entityKind: "knowledge",
+    entityId: id,
+  });
   return id;
 }
 
 export async function vectorSearchKnowledgeSqlite(
-  embedding: number[],
-  limit: number,
-  statuses: KnowledgeStatus[] = ["active"],
-  options: KnowledgeSearchOptions = {},
+  _embedding: number[],
+  _limit: number,
+  _statuses: KnowledgeStatus[] = ["active"],
+  _options: KnowledgeSearchOptions = {},
 ): Promise<KnowledgeSearchResult[]> {
-  const sqlite = await getSqliteCoreDatabase();
-  const repo = new SqliteCoreRepository(sqlite);
-  const hits = repo.vectorSearchKnowledge(embedding, Math.max(limit * 4, 20));
-  if (hits.length === 0) return [];
-  const hitScoreById = new Map(hits.map((hit) => [hit.id, hit.score]));
-  const rows = sqlite.orm
-    .select()
-    .from(sqliteKnowledgeItems)
-    .where(
-      inArray(
-        sqliteKnowledgeItems.id,
-        hits.map((hit) => hit.id),
-      ),
-    )
-    .all()
-    .filter((row) => statuses.includes(row.status as KnowledgeStatus))
-    .filter(
-      (row) =>
-        !options.types || options.types.length === 0 || options.types.includes(row.type as any),
-    )
-    .filter(
-      (row) =>
-        !options.polarities ||
-        options.polarities.length === 0 ||
-        options.polarities.includes(row.polarity as any),
-    )
-    .filter((row) => matchesIntentTags(row, options.intentTags))
-    .filter((row) => matchesRepoScope(row, options))
-    .map((row) => ({ ...row, score: hitScoreById.get(row.id) ?? 0 }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
-  const applicabilityQuery = buildApplicabilityQuery({ includeGeneral: true }, options);
-  const sourceRefsByKnowledgeId = await listKnowledgeSourceRefs(rows.map((row) => row.id));
-  return mapRowsToResults(rows, sourceRefsByKnowledgeId, applicabilityQuery);
+  // sqlite-vec returns an unscoped top-K before relational predicates can be applied.
+  // Returning no vector hits preserves correctness under repository saturation; callers
+  // expose an explicit degraded reason and continue with the scope-aware text lane.
+  return [];
 }

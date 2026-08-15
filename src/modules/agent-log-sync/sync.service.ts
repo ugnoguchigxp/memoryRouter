@@ -16,6 +16,12 @@ import {
   cleanupExpiredAuditLogsSafe,
   recordAuditLogSafe,
 } from "../audit/audit-log.service.js";
+import {
+  ProjectScopedWriteError,
+  type ResolvedProjectScopedWriteIdentity,
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 import { appendQueueEvent } from "../queue/core/events.js";
 import { normalizeAgentDiffEntries } from "../vibe-memory/agent-diff-ingestion.service.js";
 import {
@@ -149,6 +155,41 @@ function parseDate(value: string | null | undefined): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
+function agentLogSyncWarnings(
+  warnings: string[],
+  runtimeContractLeakSkipped: number,
+  identityRejected: number,
+): string[] {
+  return [
+    ...warnings,
+    ...(runtimeContractLeakSkipped > 0
+      ? [`Skipped ${runtimeContractLeakSkipped} NightWorkers Runtime Contract leak chunk(s).`]
+      : []),
+    ...(identityRejected > 0
+      ? [`Rejected ${identityRejected} repo-scoped VibeMemory write(s) without valid identity.`]
+      : []),
+  ];
+}
+
+async function attachAgentLogProjectIdentity(
+  metadata: Record<string, unknown>,
+): Promise<ResolvedProjectScopedWriteIdentity | null> {
+  try {
+    const identity = await resolveAuditedProjectScopedWriteIdentity(
+      {
+        scope: "repo",
+        repoPath: typeof metadata.projectRoot === "string" ? metadata.projectRoot : undefined,
+      },
+      { producer: "agent-log-sync.typescript", entityKind: "vibe_memory" },
+    );
+    metadata.projectIdentity = identity;
+    return identity;
+  } catch (error) {
+    if (error instanceof ProjectScopedWriteError) return null;
+    throw error;
+  }
+}
+
 async function syncAllAgentLogsSqlite(params: {
   summary: AgentLogSyncSummary;
   enabledBySourceId: Record<string, boolean>;
@@ -240,7 +281,12 @@ async function syncAllAgentLogsSqlite(params: {
     let insertedMemories = 0;
     let insertedDiffs = 0;
     let runtimeContractLeakSkipped = 0;
+    let identityRejected = 0;
     const enqueuedEpisodeJobs: Array<{ id: string; sourceKey: string }> = [];
+    const persistedIdentityWrites: Array<{
+      entityId: string;
+      identity: ResolvedProjectScopedWriteIdentity;
+    }> = [];
 
     sqlite.db.query("BEGIN IMMEDIATE").run();
     try {
@@ -293,6 +339,11 @@ async function syncAllAgentLogsSqlite(params: {
             agentDiffCount: diffEntries.length,
           });
           if (isExcludedAgentLogMetadata(memoryMetadata)) continue;
+          const writeIdentity = await attachAgentLogProjectIdentity(memoryMetadata);
+          if (!writeIdentity) {
+            identityRejected += 1;
+            continue;
+          }
 
           const existing = sqlite.db
             .query<{ id: string }, [string, string]>(
@@ -321,6 +372,7 @@ async function syncAllAgentLogsSqlite(params: {
               now,
             );
           insertedMemories += 1;
+          persistedIdentityWrites.push({ entityId: memoryId, identity: writeIdentity });
 
           const episodeJobId = crypto.randomUUID();
           sqlite.db
@@ -452,6 +504,13 @@ async function syncAllAgentLogsSqlite(params: {
 
     params.summary.imported += insertedMemories;
     params.summary.insertedDiffs += insertedDiffs;
+    for (const persisted of persistedIdentityWrites) {
+      await recordProjectScopedWritePersisted(persisted.identity, {
+        producer: "agent-log-sync.typescript",
+        entityKind: "vibe_memory",
+        entityId: persisted.entityId,
+      });
+    }
     for (const job of enqueuedEpisodeJobs) {
       await appendQueueEvent({
         queueName: "episodeDistiller",
@@ -473,13 +532,11 @@ async function syncAllAgentLogsSqlite(params: {
       messages: messages.length,
       insertedMemories,
       insertedDiffs,
-      warnings:
-        runtimeContractLeakSkipped > 0
-          ? [
-              ...ingestResult.warnings,
-              `Skipped ${runtimeContractLeakSkipped} NightWorkers Runtime Contract leak chunk(s).`,
-            ]
-          : ingestResult.warnings,
+      warnings: agentLogSyncWarnings(
+        ingestResult.warnings,
+        runtimeContractLeakSkipped,
+        identityRejected,
+      ),
       errors: [],
       lastSyncedAt: checkpointDate.toISOString(),
     });
@@ -624,7 +681,12 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
       let insertedMemories = 0;
       let insertedDiffs = 0;
       let runtimeContractLeakSkipped = 0;
+      let identityRejected = 0;
       const enqueuedEpisodeJobs: Array<{ id: string; sourceKey: string }> = [];
+      const persistedIdentityWrites: Array<{
+        entityId: string;
+        identity: ResolvedProjectScopedWriteIdentity;
+      }> = [];
 
       await db.transaction(async (tx) => {
         if (isFirst20Sync && shouldDeleteLegacyAntigravityVibeMemories()) {
@@ -684,6 +746,11 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
             if (isExcludedAgentLogMetadata(memoryMetadata)) {
               continue;
             }
+            const writeIdentity = await attachAgentLogProjectIdentity(memoryMetadata);
+            if (!writeIdentity) {
+              identityRejected += 1;
+              continue;
+            }
             const [inserted] = await tx
               .insert(vibeMemories)
               .values({
@@ -703,6 +770,7 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
             }
 
             insertedMemories += 1;
+            persistedIdentityWrites.push({ entityId: inserted.id, identity: writeIdentity });
 
             const [episodeJob] = await tx
               .insert(episodeDistillerQueue)
@@ -805,6 +873,13 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
 
       summary.imported += insertedMemories;
       summary.insertedDiffs += insertedDiffs;
+      for (const persisted of persistedIdentityWrites) {
+        await recordProjectScopedWritePersisted(persisted.identity, {
+          producer: "agent-log-sync.typescript",
+          entityKind: "vibe_memory",
+          entityId: persisted.entityId,
+        });
+      }
       for (const job of enqueuedEpisodeJobs) {
         await appendQueueEvent({
           queueName: "episodeDistiller",
@@ -826,13 +901,11 @@ export async function syncAllAgentLogs(): Promise<AgentLogSyncSummary> {
         messages: messages.length,
         insertedMemories,
         insertedDiffs,
-        warnings:
-          runtimeContractLeakSkipped > 0
-            ? [
-                ...ingestResult.warnings,
-                `Skipped ${runtimeContractLeakSkipped} NightWorkers Runtime Contract leak chunk(s).`,
-              ]
-            : ingestResult.warnings,
+        warnings: agentLogSyncWarnings(
+          ingestResult.warnings,
+          runtimeContractLeakSkipped,
+          identityRejected,
+        ),
         errors: [],
         lastSyncedAt: checkpointDate.toISOString(),
       });

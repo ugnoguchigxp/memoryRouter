@@ -136,6 +136,46 @@ export const projectIdentityAliases = pgTable(
   }),
 );
 
+export const repositoryIdentityMigrationAudits = pgTable(
+  "repository_identity_migration_audits",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    migrationVersion: text("migration_version").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    beforeFingerprint: text("before_fingerprint").notNull(),
+    afterFingerprint: text("after_fingerprint").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    provenanceSource: text("provenance_source").notNull(),
+    outcome: text("outcome").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    replayUnique: uniqueIndex("repository_identity_migration_audits_replay_unique_idx").on(
+      table.migrationVersion,
+      table.entityKind,
+      table.entityId,
+      table.afterFingerprint,
+    ),
+    versionOutcomeIdx: index("repository_identity_migration_audits_version_outcome_idx").on(
+      table.migrationVersion,
+      table.outcome,
+    ),
+    entityIdx: index("repository_identity_migration_audits_entity_idx").on(
+      table.entityKind,
+      table.entityId,
+    ),
+    entityKindCheck: check(
+      "repository_identity_migration_audits_entity_kind_check",
+      sql`${table.entityKind} IN ('knowledge','source','episode')`,
+    ),
+    outcomeCheck: check(
+      "repository_identity_migration_audits_outcome_check",
+      sql`${table.outcome} IN ('backfilled','unresolved','conflict','malformed','global_promoted')`,
+    ),
+  }),
+);
+
 export const contextCompileEvals = pgTable(
   "context_compile_evals",
   {

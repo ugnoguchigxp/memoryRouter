@@ -304,6 +304,10 @@ export async function runFinalizeDistille(
   if (missingFacets.length > 0) {
     return rejectedResult(coverEvidenceResultId, result, "applies_to_categories_required");
   }
+  const authoritativeProjectIdentity = {
+    repoPath: candidate.repoPath,
+    repoKey: candidate.repoKey,
+  };
 
   let candidateContext = input.candidateContext;
   if (!candidateContext) {
@@ -541,6 +545,9 @@ export async function runFinalizeDistille(
     type: candidate.type,
     status: "draft",
     scope: "repo",
+    repoPath: authoritativeProjectIdentity.repoPath,
+    repoKey: authoritativeProjectIdentity.repoKey,
+    identityProducer: "finalize-distille",
     polarity,
     intentTags,
     title: candidate.title,

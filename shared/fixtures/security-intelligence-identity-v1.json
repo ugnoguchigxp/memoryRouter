@@ -16,7 +16,7 @@
   "workingTree": {
     "scanStartSourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "scanStartSourceRevisionRole": "base_revision",
-    "assessmentSourceRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "assessmentSourceRevision": "working-tree/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     "assessmentSourceRevisionRole": "assessed_revision"
   },
   "fullTarget": {

@@ -49,6 +49,13 @@ describe("knowledge applicability service", () => {
     expect(result.appliesTo.technologies).toEqual(["fastapi"]);
   });
 
+  test("does not derive a legacy repoKey from repoPath", async () => {
+    vi.mocked(listKnowledgeTagDefinitions).mockResolvedValue([] as any);
+    const result = await normalizeKnowledgeApplicability({ repoPath: "/workspace/repo-a" });
+    expect(result.appliesTo).toMatchObject({ repoPath: "/workspace/repo-a" });
+    expect(result.appliesTo).not.toHaveProperty("repoKey");
+  });
+
   test("mergeApplicabilityInput merges top-level and appliesTo facets", () => {
     const merged = mergeApplicabilityInput({
       appliesTo: {

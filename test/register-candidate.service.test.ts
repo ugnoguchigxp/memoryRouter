@@ -1,9 +1,38 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { db } from "../src/db/index.js";
 import {
-  registerCandidate,
-  registerCandidatesBulk,
+  registerCandidate as registerCandidateRaw,
+  registerCandidatesBulk as registerCandidatesBulkRaw,
 } from "../src/modules/registerCandidate/register-candidate.service.js";
+
+type CandidateInput = Parameters<typeof registerCandidateRaw>[0];
+
+function explicitTestScope(input: CandidateInput): "repo" | "global" {
+  return input.projectRef ||
+    input.repoPath ||
+    input.repoKey ||
+    input.appliesTo?.repoPath ||
+    input.appliesTo?.repoKey
+    ? "repo"
+    : "global";
+}
+
+function registerCandidate(
+  input: CandidateInput,
+  options?: Parameters<typeof registerCandidateRaw>[1],
+) {
+  return registerCandidateRaw({ scope: explicitTestScope(input), ...input }, options);
+}
+
+function registerCandidatesBulk(
+  input: CandidateInput[],
+  options?: Parameters<typeof registerCandidatesBulkRaw>[1],
+) {
+  return registerCandidatesBulkRaw(
+    input.map((item) => ({ scope: explicitTestScope(item), ...item })),
+    options,
+  );
+}
 
 const mockInsert = vi.fn().mockImplementation(() => makeChain([{ id: "default-id" }]));
 const mockAppendQueueEvent = vi.fn().mockResolvedValue(undefined);

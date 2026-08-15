@@ -21,6 +21,7 @@ describe("vibe-memory repository", () => {
   describe("insertVibeMemory", () => {
     test("inserts a vibe memory and returns the inserted record", async () => {
       const seed = {
+        scope: "global" as const,
         sessionId: "s1",
         content: "test content",
         memoryType: "chat",
@@ -40,6 +41,7 @@ describe("vibe-memory repository", () => {
 
     test("uses default values if optional fields are missing", async () => {
       const seed = {
+        scope: "global" as const,
         sessionId: "s1",
         content: "test content",
       };
@@ -51,10 +53,21 @@ describe("vibe-memory repository", () => {
 
       await insertVibeMemory(seed);
 
-      expect(mockValues).toHaveBeenCalledWith(
+      const inserted = mockValues.mock.calls.find(
+        ([value]) => value?.content === "test content",
+      )?.[0];
+      expect(inserted).toEqual(
         expect.objectContaining({
           memoryType: "chat",
-          metadata: {},
+          metadata: expect.objectContaining({
+            projectIdentity: expect.objectContaining({
+              classificationStatus: "classified",
+              scope: "global",
+              projectRef: null,
+              repoKey: null,
+              repoPath: null,
+            }),
+          }),
         }),
       );
     });
@@ -67,12 +80,13 @@ describe("vibe-memory repository", () => {
       });
 
       await insertVibeMemory({
+        scope: "global",
         sessionId: "s1",
         content: "api_key=sk-abcdefghijklmnopqrstuvwxyz0123456789\nnormal",
         metadata: { authToken: "raw-token-value" },
       });
 
-      const inserted = mockValues.mock.calls[0]?.[0];
+      const inserted = mockValues.mock.calls.find(([value]) => value?.sessionId === "s1")?.[0];
       const serialized = JSON.stringify(inserted);
       expect(serialized).toContain("[REMOVED SENSITIVE DATA]");
       expect(serialized).toContain("normal");

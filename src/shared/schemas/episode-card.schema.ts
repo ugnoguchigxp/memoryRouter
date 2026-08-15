@@ -64,6 +64,8 @@ export const episodeCardCreateSchema = z.object({
   technologies: stringListSchema,
   changeTypes: stringListSchema,
   tools: stringListSchema,
+  scope: z.enum(["repo", "global"]).default("repo"),
+  projectRef: z.string().trim().min(1).nullable().optional(),
   repoPath: z.string().trim().min(1).nullable().optional(),
   repoKey: z.string().trim().min(1).nullable().optional(),
   sourceKind: episodeSourceKindSchema,
@@ -87,6 +89,7 @@ export const episodeCardSearchInputSchema = z.object({
   technologies: stringListSchema.optional(),
   changeTypes: stringListSchema.optional(),
   tools: stringListSchema.optional(),
+  projectRef: z.string().trim().min(1).max(256).optional(),
   repoPath: z.string().trim().min(1).optional(),
   repoKey: z.string().trim().min(1).optional(),
   outcomeKinds: z.array(episodeOutcomeKindSchema).optional(),
@@ -105,6 +108,7 @@ export const episodeRetrievalFeedbackInputSchema = z.object({
 
 export const episodeCardSchema = episodeCardCreateSchema.omit({ refs: true }).extend({
   id: z.string().min(1),
+  classificationStatus: z.enum(["classified", "unresolved", "conflict", "malformed"]),
   staleAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),

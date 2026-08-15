@@ -1,0 +1,312 @@
+{
+  "reviewVersion": 1,
+  "reviewer": "codex-local-review",
+  "reviewedAt": "2026-08-15T22:07:19+09:00",
+  "selectionBasis": "Top 50 knowledge_items ordered by compile_select_count, agentic_accept_count, explicit_upvote_count, importance, and updated_at from the local SQLite database.",
+  "privacy": {
+    "localOnly": true,
+    "contentSentExternally": false
+  },
+  "decisions": [
+    {
+      "entityKind": "knowledge",
+      "entityId": "3b9aed5c-fd8b-4a4d-b1b3-9a6ebb704a8f",
+      "decision": "global",
+      "reason": "Repository-independent implementation verification and closeout procedure."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "a1e5fb27-eafd-4414-b239-59884c6374e3",
+      "decision": "unresolved",
+      "reason": "NightWorkers-specific artifact boundary without authoritative repository identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "aaa0a85e-9eb3-4500-ab97-d712166c66bc",
+      "decision": "unresolved",
+      "reason": "Product-specific supervisor/runtime routing without authoritative repository identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "5694dccf-f0b1-4b68-a505-2dd0250f1321",
+      "decision": "global",
+      "reason": "Repository-independent finish-the-plan verification workflow."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "c484e7ac-5b13-4151-a5f0-bb2bcc299ac1",
+      "decision": "unresolved",
+      "reason": "Contains project-specific quality-gate commands and migration details."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "0b2b8c06-9b72-43c9-bd2c-adf77bf14761",
+      "decision": "global",
+      "reason": "Repository-independent scope and non-goal planning principle."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "0f6148cd-7b00-4956-87fd-d69bf832c4e4",
+      "decision": "repo",
+      "reason": "NightWorkers-specific Todo repository rule with an authoritative repository path in local provenance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "40a6824a-4d9f-4b4b-a80e-303e54a60a8d",
+      "decision": "global",
+      "reason": "Repository-independent design-document scope and boundary guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "b3ec9c7c-cbd5-4cf0-8c13-68904303f7fc",
+      "decision": "global",
+      "reason": "Repository-independent test selection and regression guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "769c5b7d-c2eb-4137-bdcf-92c2d9a18f29",
+      "decision": "unresolved",
+      "reason": "NightWorkers/contextStill integration policy without authoritative repository identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "3e5b1ea7-2c16-47f9-9663-5cb0592cb7d4",
+      "decision": "unresolved",
+      "reason": "Project-specific Settings API test and UI navigation contract."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "a54b50c8-ee43-4940-8602-d3923421ecac",
+      "decision": "global",
+      "reason": "Repository-independent typecheck, lint, and verification repair workflow."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "23030532-4a88-4da0-aa5a-8c1404935580",
+      "decision": "unresolved",
+      "reason": "Contains repository-specific Bun commands and directory contracts."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "4479ba38-6b6c-4eff-9ee5-3fa4a12b0827",
+      "decision": "global",
+      "reason": "Repository-independent colocation principle."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "debf295b-a77c-43d2-950c-003d1ad9e801",
+      "decision": "repo",
+      "reason": "NightWorkers-specific code_change rule with an authoritative repository path in local provenance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "c528c887-7730-465f-b066-424e3476fcf5",
+      "decision": "unresolved",
+      "reason": "NightWorkers MCP initialization procedure without authoritative repository identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "130f73ca-92a8-41a4-8883-d9e897dabd28",
+      "decision": "unresolved",
+      "reason": "Review status algorithm depends on a specific product model."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "5e8da347-46b3-4b75-b4e5-2463c254a653",
+      "decision": "global",
+      "reason": "Repository-independent single-responsibility and extensibility principle."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "6256fab3-a025-4027-b754-557d18e3d499",
+      "decision": "global",
+      "reason": "Reviewed content is repository-independent minimal, surgical, verified change guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "67deb118-4818-43b9-a944-d7e144931f0f",
+      "decision": "global",
+      "reason": "Reviewed content is repository-independent design-review prioritization guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "b3dac899-84e9-44e5-b5cf-ade7610b0e43",
+      "decision": "global",
+      "reason": "Repository-independent Explore, Plan, Implement, Verify, Report workflow."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "d6332612-af14-4b36-bbb6-3b82be6a2867",
+      "decision": "global",
+      "reason": "Repository-independent review-comment writing procedure."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "89552b23-6347-401a-8da6-f9b18ce95110",
+      "decision": "global",
+      "reason": "Repository-independent plan checklist implementation and verification workflow."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "9efe40b9-1a24-4f53-b527-452c051575b0",
+      "decision": "global",
+      "reason": "Repository-independent exploration, planning, implementation, and verification workflow."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "6a0d0de8-c899-4190-bcc0-7cba19e9c6dd",
+      "decision": "global",
+      "reason": "Repository-independent small-change reviewability principle."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "1af48c2c-5f97-4532-b88a-92908ef13781",
+      "decision": "global",
+      "reason": "Repository-independent verification-command planning guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "42a25790-1aa1-4d41-8f06-b4e1b898ec40",
+      "decision": "unresolved",
+      "reason": "NightWorkers MCP web application initialization procedure without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "29d8a749-3c53-4a16-9228-bd6eaa4de839",
+      "decision": "global",
+      "reason": "Repository-independent guidance to report lint, test, and typecheck separately."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "eab57877-2d37-4fd6-9aaf-66ca57362535",
+      "decision": "global",
+      "reason": "Repository-independent MCP server testability and smoke-test guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "fce2c352-1996-4b2a-bc64-406e508fc272",
+      "decision": "repo",
+      "reason": "memoryRouter-specific context_compile behavior with exact /Users/y.noguchi/Code/memoryRouter provenance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "1284459d-5b7a-44f5-996d-fa090ccadb9e",
+      "decision": "global",
+      "reason": "Repository-independent TypeScript API client type-safety rule."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "137bd364-c8f0-4698-8c3a-20cdbfb3c267",
+      "decision": "unresolved",
+      "reason": "Design-system workflow contains project-specific dependencies and commands."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "4eeea6f0-e9fa-480a-b379-61d95a353dbf",
+      "decision": "unresolved",
+      "reason": "NightWorkers Activity event projection contract without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "f1c1b791-0145-4539-baf2-4f0193318b32",
+      "decision": "unresolved",
+      "reason": "contextStill Landscape classification rule without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "890549fa-e4f5-42e5-b04a-30136cb951d0",
+      "decision": "unresolved",
+      "reason": "contextStill knowledge-feedback API procedure without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "f982fe2e-7e3e-4dae-97a8-1cd10818d601",
+      "decision": "global",
+      "reason": "Repository-independent transactional worker completion rule."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "cad93e54-abcf-4ff4-a07a-6b9d31f8344d",
+      "decision": "global",
+      "reason": "Repository-independent Codex SDK tool-catalog isolation guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "30f96a9d-6e39-4494-963f-c120b9650a9a",
+      "decision": "global",
+      "reason": "Technology-specific but repository-independent TanStack Router authorization procedure."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "f85889a4-fc63-4b86-bcd3-f8ffd4562885",
+      "decision": "unresolved",
+      "reason": "Project-specific prompt route and use-case contract."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "67685b01-99ad-4ab9-8ca7-a8889ba93a24",
+      "decision": "unresolved",
+      "reason": "contextStill coverEvidence implementation contract without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "6dae52f8-0858-41c5-b7ae-52c71c6aaa5a",
+      "decision": "global",
+      "reason": "Reviewed content is repository-independent bug reproduction guidance; clears legacy path metadata."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "1c8c7a4d-f3b0-4311-89b3-6bb95fa3c81d",
+      "decision": "unresolved",
+      "reason": "contextStill knowledge-extraction implementation procedure without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "a69ca537-146c-4858-9cab-8a47bdff281b",
+      "decision": "global",
+      "reason": "Repository-independent design-document verification guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "b3027dff-25b5-427a-b07e-dd24892d6fc2",
+      "decision": "global",
+      "reason": "Repository-independent persisted source-of-truth UI principle."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "a7f92eb5-3b95-4dbe-b20d-b7fd5d78fb2f",
+      "decision": "unresolved",
+      "reason": "Phase 2A Landscape review procedure without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "da016070-547d-416d-970b-0727d7bbff96",
+      "decision": "unresolved",
+      "reason": "NightWorkers/contextStill integration decision without authoritative identity."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "5f07663f-f578-49dd-85fb-7433b3d3f723",
+      "decision": "global",
+      "reason": "Repository-independent Codex SDK authentication and parameter guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "f62ceffe-2517-4309-b0d2-7de17146f4ac",
+      "decision": "global",
+      "reason": "Repository-independent verification-as-plan guidance."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "f51d98ef-8dd1-422a-91b4-039b8a8c6226",
+      "decision": "global",
+      "reason": "Repository-independent baseline-before-change procedure."
+    },
+    {
+      "entityKind": "knowledge",
+      "entityId": "13a75eab-859b-423c-9ef4-130a951c2e11",
+      "decision": "global",
+      "reason": "Technology-specific but repository-independent Hono sandbox verification procedure."
+    }
+  ]
+}

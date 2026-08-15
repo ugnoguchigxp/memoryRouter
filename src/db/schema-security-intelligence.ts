@@ -37,6 +37,7 @@ export const securityCandidateBatchItems = pgTable(
     candidateRef: text("candidate_ref").notNull(),
     fingerprint: text("fingerprint"),
     payloadDigest: text("payload_digest"),
+    provenanceJson: jsonb("provenance_json"),
     status: text("status").notNull(),
     reasonCode: text("reason_code"),
     targetStateRef: text("target_state_ref"),

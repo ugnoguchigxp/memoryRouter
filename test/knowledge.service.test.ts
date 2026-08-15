@@ -58,7 +58,7 @@ describe("Knowledge Service", () => {
     expect(call?.[1]?.repoPath).toBeUndefined();
   });
 
-  test("marks degraded reason when legacy metadata fallback is used for scoped search candidates", async () => {
+  test("does not use legacy metadata or unscoped fallback for scoped search candidates", async () => {
     groupedConfig.compile.enableVectorSearch = false;
     let calls = 0;
     vi.mocked(repo.searchKnowledge).mockImplementation(async () => {
@@ -96,10 +96,14 @@ describe("Knowledge Service", () => {
     });
 
     expect(result.stats.repoScopeFallbackUsed).toBe(false);
-    expect(result.degradedReasons).toContain("KNOWLEDGE_APPLIES_TO_FALLBACK");
+    expect(result.items).toEqual([]);
+    expect(result.degradedReasons).toContain("NO_ACTIVE_KNOWLEDGE_MATCH");
+    expect(result.degradedReasons).not.toContain("KNOWLEDGE_APPLIES_TO_FALLBACK");
     expect(result.degradedReasons).not.toContain("KNOWLEDGE_REPO_SCOPE_FALLBACK");
-    const legacyCall = vi.mocked(repo.searchKnowledge).mock.calls[1];
-    expect(legacyCall?.[1]?.scopeMatchMode).toBe("legacy");
+    expect(vi.mocked(repo.searchKnowledge)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(repo.searchKnowledge).mock.calls[0]?.[1]?.projectIdentity?.matchBasis).toBe(
+      "repo_path",
+    );
   });
 
   test("registerKnowledgeFromMarkdown generates embedding if missing", async () => {

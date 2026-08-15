@@ -16,6 +16,10 @@ use super::native_tools::NativeToolContext;
 use super::project_identity::{
     resolve_compile_project_identity, CompileProjectIdentityInput, CompileProjectIdentityTrust,
 };
+use super::repository_scope::{
+    applicability_general, eligible_scope_clause, facets_allow, json_string_array,
+    parse_json_object, query_params, scope_snapshot, RepositoryRequestFacets,
+};
 
 fn optional_identity_string_arg(
     args: &serde_json::Map<String, Value>,
@@ -141,8 +145,25 @@ fn context_compile_on_connection(
     }
 
     let search_text = search_text(&goal, &technologies, &change_types, &domains);
-    let knowledge = search_knowledge_items(connection, &search_text, 8);
-    let episodes = search_episode_cards(connection, &search_text, 3);
+    let request_facets = RepositoryRequestFacets {
+        technologies: technologies.clone(),
+        change_types: change_types.clone(),
+        domains: domains.clone(),
+    };
+    let knowledge = search_knowledge_items(
+        connection,
+        &search_text,
+        8,
+        &project_identity,
+        &request_facets,
+    );
+    let episodes = search_episode_cards(
+        connection,
+        &search_text,
+        3,
+        &project_identity,
+        &request_facets,
+    );
     let run_id = pseudo_uuid();
     let mut degraded_reasons = degraded_reasons(connection);
     let composed = compose_context_response(connection, &goal, &knowledge, &episodes);
@@ -176,6 +197,13 @@ fn context_compile_on_connection(
             "degradedReasons": degraded_reasons,
             "selectedKnowledge": knowledge.len(),
             "selectedEpisodes": episodes.len(),
+            "repositoryIsolation": {
+                "mode": "enforced",
+                "matchBasis": project_identity.match_basis.as_str(),
+                "scopeMode": project_identity.scope_mode,
+                "identityFingerprint": project_identity.identity_fingerprint,
+                "missingIdentityGlobalOnly": project_identity.match_basis.as_str() == "none"
+            },
             "responseComposer": {
                 "used": composed.agentic_used,
                 "markdownKind": if markdown == "No Content" { "no-content" } else { "narrative" },
@@ -263,6 +291,7 @@ struct PackKnowledge {
     polarity: String,
     score: i64,
     source_refs: Vec<String>,
+    scope_snapshot: Value,
 }
 
 impl PackKnowledge {
@@ -287,6 +316,7 @@ struct PackEpisode {
     situation: String,
     lesson: String,
     score: i64,
+    scope_snapshot: Value,
 }
 
 impl PackEpisode {
@@ -317,23 +347,27 @@ fn search_knowledge_items(
     connection: &Connection,
     query: &str,
     limit: usize,
+    identity: &super::project_identity::ResolvedCompileProjectIdentity,
+    request_facets: &RepositoryRequestFacets,
 ) -> Vec<PackKnowledge> {
     if !table_exists(connection, "knowledge_items") {
         return Vec::new();
     }
-    let mut statement = match connection.prepare(
+    let (scope_clause, values) = eligible_scope_clause(identity);
+    let sql = format!(
         r#"
-        select id, type, polarity, title, body, coalesce(dynamic_score, 0), intent_tags, applies_to
+        select id, type, polarity, title, body, coalesce(dynamic_score, 0), applies_to,
+               scope, project_ref, repo_key, repo_path
         from knowledge_items
-        where status = 'active'
+        where status = 'active' and {scope_clause}
         order by importance desc, updated_at desc
-        limit 500
         "#,
-    ) {
+    );
+    let mut statement = match connection.prepare(&sql) {
         Ok(statement) => statement,
         Err(_) => return Vec::new(),
     };
-    let rows = match statement.query_map([], |row| {
+    let rows = match statement.query_map(query_params(&values), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
@@ -341,6 +375,11 @@ fn search_knowledge_items(
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
             row.get::<_, f64>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
         ))
     }) {
         Ok(rows) => rows,
@@ -348,48 +387,98 @@ fn search_knowledge_items(
     };
     let mut items = rows
         .flatten()
-        .filter_map(|(id, kind, polarity, title, body, dynamic_score)| {
-            let score =
-                score_text(&format!("{title}\n{body}"), query) + dynamic_score.round() as i64;
-            (score > 0).then(|| PackKnowledge {
-                source_refs: knowledge_source_refs(connection, &id),
+        .filter_map(
+            |(
                 id,
                 kind,
+                polarity,
                 title,
                 body,
-                polarity,
-                score,
-            })
-        })
+                dynamic_score,
+                applies_to_raw,
+                item_scope,
+                project_ref,
+                repo_key,
+                repo_path,
+            )| {
+                let applies_to = parse_json_object(&applies_to_raw);
+                let technologies = json_string_array(&applies_to, "technologies");
+                let change_types = json_string_array(&applies_to, "changeTypes");
+                let domains = json_string_array(&applies_to, "domains");
+                if !facets_allow(
+                    request_facets,
+                    &technologies,
+                    &change_types,
+                    &domains,
+                    applicability_general(&applies_to, &technologies, &change_types, &domains),
+                ) {
+                    return None;
+                }
+                let score =
+                    score_text(&format!("{title}\n{body}"), query) + dynamic_score.round() as i64;
+                (score > 0).then(|| PackKnowledge {
+                    source_refs: knowledge_source_refs(connection, &id),
+                    scope_snapshot: scope_snapshot(
+                        identity,
+                        &item_scope,
+                        project_ref.as_deref(),
+                        repo_key.as_deref(),
+                        repo_path.as_deref(),
+                    ),
+                    id,
+                    kind,
+                    title,
+                    body,
+                    polarity,
+                    score,
+                })
+            },
+        )
         .collect::<Vec<_>>();
     items.sort_by(|left, right| right.score.cmp(&left.score));
     items.truncate(limit);
     items
 }
 
-fn search_episode_cards(connection: &Connection, query: &str, limit: usize) -> Vec<PackEpisode> {
+fn search_episode_cards(
+    connection: &Connection,
+    query: &str,
+    limit: usize,
+    identity: &super::project_identity::ResolvedCompileProjectIdentity,
+    request_facets: &RepositoryRequestFacets,
+) -> Vec<PackEpisode> {
     if !table_exists(connection, "episode_cards") {
         return Vec::new();
     }
-    let mut statement = match connection.prepare(
+    let (scope_clause, values) = eligible_scope_clause(identity);
+    let sql = format!(
         r#"
-        select id, title, situation, lesson, importance
+        select id, title, situation, lesson, importance, technologies, change_types, domains,
+               applicability, scope, project_ref, repo_key, repo_path
         from episode_cards
-        where status = 'active'
+        where status = 'active' and {scope_clause}
         order by importance desc, updated_at desc
-        limit 200
         "#,
-    ) {
+    );
+    let mut statement = match connection.prepare(&sql) {
         Ok(statement) => statement,
         Err(_) => return Vec::new(),
     };
-    let rows = match statement.query_map([], |row| {
+    let rows = match statement.query_map(query_params(&values), |row| {
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, i64>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, String>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, String>(9)?,
+            row.get::<_, Option<String>>(10)?,
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
         ))
     }) {
         Ok(rows) => rows,
@@ -397,17 +486,55 @@ fn search_episode_cards(connection: &Connection, query: &str, limit: usize) -> V
     };
     let mut items = rows
         .flatten()
-        .filter_map(|(id, title, situation, lesson, importance)| {
-            let score =
-                score_text(&format!("{title}\n{situation}\n{lesson}"), query) + importance / 10;
-            (score > 0).then_some(PackEpisode {
+        .filter_map(
+            |(
                 id,
                 title,
                 situation,
                 lesson,
-                score,
-            })
-        })
+                importance,
+                technologies_raw,
+                change_types_raw,
+                domains_raw,
+                applicability_raw,
+                item_scope,
+                project_ref,
+                repo_key,
+                repo_path,
+            )| {
+                let technologies =
+                    serde_json::from_str::<Vec<String>>(&technologies_raw).unwrap_or_default();
+                let change_types =
+                    serde_json::from_str::<Vec<String>>(&change_types_raw).unwrap_or_default();
+                let domains = serde_json::from_str::<Vec<String>>(&domains_raw).unwrap_or_default();
+                let applicability = parse_json_object(&applicability_raw);
+                if !facets_allow(
+                    request_facets,
+                    &technologies,
+                    &change_types,
+                    &domains,
+                    applicability_general(&applicability, &technologies, &change_types, &domains),
+                ) {
+                    return None;
+                }
+                let score =
+                    score_text(&format!("{title}\n{situation}\n{lesson}"), query) + importance / 10;
+                (score > 0).then_some(PackEpisode {
+                    id,
+                    title,
+                    situation,
+                    lesson,
+                    score,
+                    scope_snapshot: scope_snapshot(
+                        identity,
+                        &item_scope,
+                        project_ref.as_deref(),
+                        repo_key.as_deref(),
+                        repo_path.as_deref(),
+                    ),
+                })
+            },
+        )
         .collect::<Vec<_>>();
     items.sort_by(|left, right| right.score.cmp(&left.score));
     items.truncate(limit);
@@ -1828,8 +1955,9 @@ fn insert_compile_items(
             .execute(
                 r#"
                 insert into context_pack_items (
-                  run_id, item_kind, item_id, section, score, ranking_reason, source_refs
-                ) values (?1, ?2, ?3, ?4, ?5, 'rust_native_text_score', ?6)
+                  run_id, item_kind, item_id, section, score, ranking_reason, source_refs,
+                  scope_snapshot
+                ) values (?1, ?2, ?3, ?4, ?5, 'rust_native_text_score', ?6, ?7)
                 "#,
                 (
                     run_id,
@@ -1846,6 +1974,7 @@ fn insert_compile_items(
                     },
                     item.score as f64,
                     json!(item.source_refs).to_string(),
+                    item.scope_snapshot.to_string(),
                 ),
             )
             .map_err(|error| format!("failed to insert context pack item: {error}"))?;
@@ -1855,10 +1984,16 @@ fn insert_compile_items(
             .execute(
                 r#"
                 insert into context_pack_items (
-                  run_id, item_kind, item_id, section, score, ranking_reason, source_refs
-                ) values (?1, 'episode', ?2, 'episodes', ?3, 'rust_native_text_score', '[]')
+                  run_id, item_kind, item_id, section, score, ranking_reason, source_refs,
+                  scope_snapshot
+                ) values (?1, 'episode', ?2, 'episodes', ?3, 'rust_native_text_score', '[]', ?4)
                 "#,
-                (run_id, &item.id, item.score as f64),
+                (
+                    run_id,
+                    &item.id,
+                    item.score as f64,
+                    item.scope_snapshot.to_string(),
+                ),
             )
             .map_err(|error| format!("failed to insert episode pack item: {error}"))?;
     }
@@ -1899,7 +2034,8 @@ fn insert_candidate_traces(
                     item.score as f64,
                     json!({
                         "engine": "rust-native",
-                        "retrievalMethod": "sqlite_text"
+                        "retrievalMethod": "sqlite_text",
+                        "scopeSnapshot": &item.scope_snapshot
                     })
                     .to_string(),
                     &now,
@@ -1948,11 +2084,13 @@ fn insert_knowledge_usage_events(
                 "evidence": used.evidence,
                 "outputSection": used.output_section,
                 "selectedRank": index + 1
+                ,"scopeSnapshot": &item.scope_snapshot
             }),
             None => json!({
                 "source": "response_composer",
                 "signalSource": "context_response_composer",
                 "selectedRank": index + 1
+                ,"scopeSnapshot": &item.scope_snapshot
             }),
         };
         connection
@@ -2021,12 +2159,14 @@ fn insert_episode_retrieval_feedback(
                 "evidence": used.evidence,
                 "outputSection": used.output_section,
                 "selectedRank": index + 1
+                ,"scopeSnapshot": &item.scope_snapshot
             }),
             None => json!({
                 "actor": actor,
                 "source": "response_composer",
                 "signalSource": "context_response_composer",
                 "selectedRank": index + 1
+                ,"scopeSnapshot": &item.scope_snapshot
             }),
         };
         connection
@@ -2135,8 +2275,8 @@ mod tests {
                   id text primary key,
                   type text not null,
                   status text not null,
-                  scope text not null default 'repo',
-                  classification_status text not null default 'unresolved',
+                  scope text not null default 'global',
+                  classification_status text not null default 'classified',
                   project_ref text,
                   repo_key text,
                   repo_path text,
@@ -2199,6 +2339,7 @@ mod tests {
                   score real not null default 0,
                   ranking_reason text not null default '',
                   source_refs text not null default '[]',
+                  scope_snapshot text not null default '{}',
                   created_at text not null default CURRENT_TIMESTAMP
                 );
                 create table knowledge_usage_events (
@@ -2239,8 +2380,12 @@ mod tests {
                   title text not null,
                   situation text not null,
                   lesson text not null default '',
-                  classification_status text not null default 'unresolved',
-                  scope text not null default 'repo',
+                  technologies text not null default '[]',
+                  change_types text not null default '[]',
+                  domains text not null default '[]',
+                  applicability text not null default '{}',
+                  classification_status text not null default 'classified',
+                  scope text not null default 'global',
                   project_ref text,
                   repo_key text,
                   repo_path text,
@@ -2453,7 +2598,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_compile_reproduces_wrong_project_and_unresolved_selection() {
+    fn native_compile_excludes_wrong_project_and_unresolved_selection() {
         let fixture = repository_isolation_fixture();
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
@@ -2491,15 +2636,189 @@ mod tests {
             .flatten()
             .collect::<Vec<_>>();
         assert_eq!(pack_ids, candidate_ids);
-        assert!(fixture
+        assert!(!fixture
             .legacy_reproduction
             .expected_legacy_selected_any
             .iter()
             .any(|id| pack_ids.contains(id)));
-        assert!(pack_ids.contains(&fixture.legacy_reproduction.wrong_project_knowledge_id));
-        assert!(pack_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
+        assert!(!pack_ids.contains(&fixture.legacy_reproduction.wrong_project_knowledge_id));
+        assert!(!pack_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
+        assert!(pack_ids.contains(&"knowledge-repo-a-project".to_string()));
+        assert!(pack_ids.contains(&"knowledge-global-general".to_string()));
 
         let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn native_retrieval_applies_scope_and_facets_before_any_candidate_limit() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        create_minimal_compile_schema(&connection);
+        let transaction = connection.transaction().unwrap();
+        for index in 0..501 {
+            transaction
+                .execute(
+                    r#"
+                    insert into knowledge_items (
+                      id, type, status, scope, classification_status, project_ref,
+                      title, body, importance, applies_to
+                    ) values (?1, 'rule', 'active', 'repo', 'classified', 'project-B',
+                      'knowledge saturation anchor', 'wrong repository', 100, '{"general":true}')
+                    "#,
+                    [format!("wrong-project-{index:04}")],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                r#"
+                insert into knowledge_items (
+                  id, type, status, scope, classification_status, project_ref,
+                  title, body, importance, applies_to
+                ) values ('knowledge-anchor', 'rule', 'active', 'repo', 'classified', 'project-A',
+                  'knowledge saturation anchor', 'correct repository', 1, '{"technologies":["rust"]}')
+                "#,
+                [],
+            )
+            .unwrap();
+        for index in 0..501 {
+            transaction
+                .execute(
+                    r#"
+                    insert into knowledge_items (
+                      id, type, status, scope, classification_status, project_ref,
+                      title, body, importance, applies_to
+                    ) values (?1, 'rule', 'active', 'repo', 'classified', 'project-A',
+                      'facet saturation anchor', 'typescript only', 100, '{"technologies":["typescript"]}')
+                    "#,
+                    [format!("wrong-facet-{index:04}")],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                r#"
+                insert into knowledge_items (
+                  id, type, status, scope, classification_status, project_ref,
+                  title, body, importance, applies_to
+                ) values ('knowledge-facet-anchor', 'rule', 'active', 'repo', 'classified', 'project-A',
+                  'facet saturation anchor', 'rust match', 1, '{"technologies":["rust"]}')
+                "#,
+                [],
+            )
+            .unwrap();
+        for index in 0..201 {
+            transaction
+                .execute(
+                    r#"
+                    insert into episode_cards (
+                      id, title, situation, lesson, technologies, classification_status,
+                      scope, project_ref, importance
+                    ) values (?1, 'episode saturation anchor', 'wrong repository', 'ignore',
+                      '["rust"]', 'classified', 'repo', 'project-B', 100)
+                    "#,
+                    [format!("wrong-episode-{index:04}")],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                r#"
+                insert into episode_cards (
+                  id, title, situation, lesson, technologies, classification_status,
+                  scope, project_ref, importance
+                ) values ('episode-anchor', 'episode saturation anchor', 'correct repository',
+                  'use this', '["rust"]', 'classified', 'repo', 'project-A', 1)
+                "#,
+                [],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                r#"
+                insert into knowledge_items (
+                  id, type, status, scope, classification_status, title, body, importance, applies_to
+                ) values ('global-anchor', 'rule', 'active', 'global', 'classified',
+                  'global only anchor', 'global candidate', 1, '{"general":true}')
+                "#,
+                [],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+
+        let project_identity = resolve_compile_project_identity(
+            &CompileProjectIdentityInput {
+                project_ref: Some("project-A".to_string()),
+                repo_key: None,
+                repo_path: None,
+            },
+            CompileProjectIdentityTrust::RequestHint,
+            None,
+        )
+        .unwrap();
+        let rust_facets = RepositoryRequestFacets {
+            technologies: vec!["rust".to_string()],
+            change_types: Vec::new(),
+            domains: Vec::new(),
+        };
+
+        let scoped = search_knowledge_items(
+            &connection,
+            "knowledge saturation anchor",
+            8,
+            &project_identity,
+            &rust_facets,
+        );
+        assert!(scoped.iter().any(|item| item.id == "knowledge-anchor"));
+        assert!(!scoped
+            .iter()
+            .any(|item| item.id.starts_with("wrong-project-")));
+
+        let faceted = search_knowledge_items(
+            &connection,
+            "facet saturation anchor",
+            8,
+            &project_identity,
+            &rust_facets,
+        );
+        assert!(faceted
+            .iter()
+            .any(|item| item.id == "knowledge-facet-anchor"));
+        assert!(!faceted
+            .iter()
+            .any(|item| item.id.starts_with("wrong-facet-")));
+
+        let episodes = search_episode_cards(
+            &connection,
+            "episode saturation anchor",
+            3,
+            &project_identity,
+            &rust_facets,
+        );
+        assert!(episodes.iter().any(|item| item.id == "episode-anchor"));
+        assert!(!episodes
+            .iter()
+            .any(|item| item.id.starts_with("wrong-episode-")));
+
+        let global_identity = resolve_compile_project_identity(
+            &CompileProjectIdentityInput::default(),
+            CompileProjectIdentityTrust::RequestHint,
+            None,
+        )
+        .unwrap();
+        let global = search_knowledge_items(
+            &connection,
+            "global only anchor",
+            8,
+            &global_identity,
+            &RepositoryRequestFacets::default(),
+        );
+        assert_eq!(
+            global
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["global-anchor"]
+        );
     }
 
     #[test]
@@ -2510,11 +2829,10 @@ mod tests {
         create_minimal_compile_schema(&connection);
         seed_repository_isolation_knowledge(&connection, &fixture);
         let expected_used_ids = vec![
-            fixture
-                .legacy_reproduction
-                .wrong_project_knowledge_id
-                .clone(),
-            fixture.legacy_reproduction.unresolved_knowledge_id.clone(),
+            "knowledge-global-general".to_string(),
+            "knowledge-global-rust".to_string(),
+            "knowledge-repo-a-project".to_string(),
+            "knowledge-repo-a-general".to_string(),
         ];
         let (base_url, mock_handle) =
             spawn_composer_mock(&fixture.legacy_reproduction.goal, &expected_used_ids);
@@ -2612,6 +2930,10 @@ mod tests {
             assert!(selected_ids.contains(&expected));
             assert!(outbound_ids.contains(&expected));
         }
+        assert!(!selected_ids.contains(&fixture.legacy_reproduction.wrong_project_knowledge_id));
+        assert!(!selected_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
+        assert!(!outbound_ids.contains(&fixture.legacy_reproduction.wrong_project_knowledge_id));
+        assert!(!outbound_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
         let _ = std::fs::remove_file(db_path);
     }
 
@@ -2625,6 +2947,7 @@ mod tests {
                 polarity: "positive".to_string(),
                 score: 10,
                 source_refs: vec![],
+                scope_snapshot: json!({}),
             },
             PackKnowledge {
                 id: "procedure-1".to_string(),
@@ -2634,6 +2957,7 @@ mod tests {
                 polarity: "positive".to_string(),
                 score: 9,
                 source_refs: vec![],
+                scope_snapshot: json!({}),
             },
         ]
     }
@@ -2981,6 +3305,7 @@ mod tests {
             situation: "Rust-native compile uses episode precedent.".to_string(),
             lesson: "Persist episode retrieval feedback from composer output.".to_string(),
             score: 8,
+            scope_snapshot: json!({}),
         }];
         let parsed = parse_composer_payload(
             r###"{"markdown":"## 実装フォーカス\n- Rust context_compile","usedKnowledge":[{"id":"rule-1","confidence":0.82,"evidence":"applied","outputSection":"実装フォーカス","reason":"directly relevant"},{"id":"unknown","confidence":1}],"usedEpisodes":[{"id":"episode-1","confidence":0.7,"reason":"precedent applied"},{"id":"missing","confidence":1}]}"###,

@@ -163,6 +163,7 @@ export const landscapeReplayComparisonKindSchema = z.enum([
   "lost_baseline",
   "new_only",
   "no_current_match",
+  "not_comparable",
 ]);
 
 export const landscapeReplayRecompilePlanSchema = z.object({
@@ -255,6 +256,7 @@ export const landscapeReplayComparisonRunSchema = z.object({
   goal: z.string(),
   retrievalMode: z.string(),
   status: landscapeRunStatusSchema,
+  identityCompatibility: z.enum(["comparable", "legacy_identity_unknown"]),
   taskFacets: landscapeTaskFacetsSchema,
   baselineSelectedKnowledgeIds: z.array(z.string()),
   currentRetrievedKnowledgeIds: z.array(z.string()),
@@ -311,6 +313,7 @@ export const landscapeReplayComparisonResponseSchema = z.object({
     lost_baseline: z.number().int().nonnegative(),
     new_only: z.number().int().nonnegative(),
     no_current_match: z.number().int().nonnegative(),
+    not_comparable: z.number().int().nonnegative(),
   }),
   recompilePlan: landscapeReplayRecompilePlanSchema,
   rankingExperiments: z.array(landscapeRankingExperimentSummarySchema),

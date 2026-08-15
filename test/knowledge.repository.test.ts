@@ -117,8 +117,6 @@ describe("Knowledge Repository", () => {
         {
           repoPath: "/workspace/project",
           repoKey: "my-project",
-          allowGlobalScope: true,
-          scopeMatchMode: "legacy",
           includeGeneral: true,
         },
       );
@@ -148,6 +146,7 @@ describe("Knowledge Repository", () => {
         type: "rule",
         status: "active",
         scope: "repo",
+        repoKey: "test/knowledge-repository",
         title: "T",
         body: "B",
       });
@@ -169,6 +168,7 @@ describe("Knowledge Repository", () => {
         type: "rule",
         status: "active",
         scope: "repo",
+        repoKey: "test/knowledge-repository",
         title: "T",
         body: "B",
       });

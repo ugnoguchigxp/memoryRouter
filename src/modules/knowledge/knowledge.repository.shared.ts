@@ -1,4 +1,4 @@
-import { type SQL, eq, or, sql } from "drizzle-orm";
+import { type SQL, and, eq, isNull, or, sql } from "drizzle-orm";
 import { knowledgeItems } from "../../db/schema.js";
 import type {
   KnowledgeApplicabilityInput,
@@ -6,7 +6,11 @@ import type {
   KnowledgeSearchInput,
   KnowledgeStatus,
 } from "../../shared/schemas/knowledge.schema.js";
-import { normalizeRepoKey, normalizeRepoPath } from "../context-compiler/query-context.js";
+import {
+  type ResolvedCompileProjectIdentity,
+  normalizeCompileRepoPath,
+  resolveCompileProjectIdentity,
+} from "../context-compiler/compile-project-identity.js";
 import { parseApplicabilityFromRecord } from "./applicability.service.js";
 
 export type KnowledgeSearchResult = {
@@ -14,6 +18,10 @@ export type KnowledgeSearchResult = {
   type: string;
   status: string;
   scope: string;
+  classificationStatus?: string;
+  projectRef?: string | null;
+  repoKey?: string | null;
+  repoPath?: string | null;
   polarity: string;
   intentTags: string[];
   title: string;
@@ -57,16 +65,20 @@ export type UpsertKnowledgeFromSourceParams = {
   metadata?: Record<string, unknown>;
   embedding?: number[];
   appliesTo?: Record<string, unknown> | KnowledgeApplicabilityInput;
+  projectRef?: string | null;
+  repoKey?: string | null;
+  repoPath?: string | null;
+  identityProducer?: string;
 };
 
 export type KnowledgeSearchOptions = {
+  projectIdentity?: ResolvedCompileProjectIdentity;
+  projectRef?: string;
   repoPath?: string;
   repoKey?: string;
-  allowGlobalScope?: boolean;
   types?: KnowledgeItem["type"][];
   polarities?: Array<"positive" | "negative" | "neutral">;
   intentTags?: string[];
-  scopeMatchMode?: "primary" | "legacy";
   technologies?: string[];
   changeTypes?: string[];
   domains?: string[];
@@ -211,11 +223,8 @@ export function buildKnowledgeScopeMetadata(
     valueAsString(sourceMetadata.repoPath) ??
     valueAsString(sourceMetadata.sourceRepoPath) ??
     valueAsString(sourceMetadata.workspacePath);
-  const repoPath = normalizeRepoPath(repoPathCandidate);
-  const repoKey =
-    valueAsString(explicit.repoKey) ??
-    valueAsString(sourceMetadata.repoKey) ??
-    normalizeRepoKey(repoPathCandidate);
+  const repoPath = normalizeCompileRepoPath(repoPathCandidate) ?? undefined;
+  const repoKey = valueAsString(explicit.repoKey) ?? valueAsString(sourceMetadata.repoKey);
   const technologies = uniqueLowerSlugs(explicit.technologies);
   const changeTypes = uniqueLowerSlugs(explicit.changeTypes);
   const domains = uniqueLowerSlugs(explicit.domains);
@@ -239,58 +248,40 @@ export function buildKnowledgeScopeMetadata(
   };
 }
 
-function normalizeRepoScope(
+export function resolveKnowledgeSearchIdentity(
   options: KnowledgeSearchOptions,
-): { repoPath: string; repoKey: string; allowGlobalScope: boolean } | undefined {
-  const repoPath = normalizeRepoPath(options.repoPath);
-  const repoKey = (options.repoKey || normalizeRepoKey(options.repoPath))?.trim();
-  if (!repoPath && !repoKey) return undefined;
-  return {
-    repoPath: repoPath ?? "",
-    repoKey: (repoKey ?? "").toLowerCase(),
-    allowGlobalScope: options.allowGlobalScope !== false,
-  };
+): ResolvedCompileProjectIdentity {
+  if (options.projectIdentity) return options.projectIdentity;
+  return resolveCompileProjectIdentity({
+    projectRef: options.projectRef,
+    repoKey: options.repoKey,
+    repoPath: options.repoPath,
+  });
 }
 
-export function buildRepoScopedCondition(options: KnowledgeSearchOptions): SQL | undefined {
-  const normalized = normalizeRepoScope(options);
-  if (!normalized) return undefined;
-
-  const mode = options.scopeMatchMode ?? "primary";
-  const clauses: SQL[] = [];
-  if (mode === "primary") {
-    if (normalized.allowGlobalScope) {
-      clauses.push(eq(knowledgeItems.scope, "global"));
-    }
-    if (normalized.repoKey) {
-      clauses.push(sql`${knowledgeItems.appliesTo} ->> 'repoKey' = ${normalized.repoKey}`);
-    }
-    if (normalized.repoPath) {
-      clauses.push(sql`${knowledgeItems.appliesTo} ->> 'repoPath' = ${normalized.repoPath}`);
-    }
-  } else {
-    if (normalized.repoKey) {
-      clauses.push(sql`${knowledgeItems.metadata} ->> 'repoKey' = ${normalized.repoKey}`);
-      clauses.push(sql`${knowledgeItems.metadata} ->> 'sourceProject' = ${normalized.repoKey}`);
-    }
-    if (normalized.repoPath) {
-      clauses.push(sql`${knowledgeItems.metadata} ->> 'repoPath' = ${normalized.repoPath}`);
-      clauses.push(
-        sql`${knowledgeItems.metadata} ->> 'sourceUri' ilike ${`${normalized.repoPath}/%`}`,
-      );
-      clauses.push(
-        sql`${knowledgeItems.metadata} ->> 'sourceDocumentUri' ilike ${`${normalized.repoPath}/%`}`,
-      );
-      const fileUriPrefix = `file://${normalized.repoPath.startsWith("/") ? "" : "/"}${normalized.repoPath}`;
-      clauses.push(sql`${knowledgeItems.metadata} ->> 'sourceUri' ilike ${`${fileUriPrefix}/%`}`);
-      clauses.push(
-        sql`${knowledgeItems.metadata} ->> 'sourceDocumentUri' ilike ${`${fileUriPrefix}/%`}`,
-      );
-    }
-  }
-
-  if (clauses.length === 0) return undefined;
-  return clauses.length === 1 ? clauses[0] : or(...clauses);
+export function buildRepoScopedCondition(options: KnowledgeSearchOptions): SQL {
+  const identity = resolveKnowledgeSearchIdentity(options);
+  const global = and(
+    eq(knowledgeItems.scope, "global"),
+    isNull(knowledgeItems.projectRef),
+    isNull(knowledgeItems.repoKey),
+    isNull(knowledgeItems.repoPath),
+  ) as SQL;
+  const matchValue = identity.matchValue;
+  const repo =
+    matchValue === null
+      ? undefined
+      : identity.matchBasis === "project_ref"
+        ? and(eq(knowledgeItems.scope, "repo"), eq(knowledgeItems.projectRef, matchValue))
+        : identity.matchBasis === "repo_key"
+          ? and(eq(knowledgeItems.scope, "repo"), eq(knowledgeItems.repoKey, matchValue))
+          : identity.matchBasis === "repo_path"
+            ? and(eq(knowledgeItems.scope, "repo"), eq(knowledgeItems.repoPath, matchValue))
+            : undefined;
+  return and(
+    eq(knowledgeItems.classificationStatus, "classified"),
+    repo ? or(global, repo) : global,
+  ) as SQL;
 }
 
 export function fallbackSourceRefsFromMetadata(metadata: Record<string, unknown>): string[] {

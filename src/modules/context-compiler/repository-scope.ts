@@ -54,6 +54,17 @@ export type RepositoryScopeDecision = {
   matchBasis: ResolvedCompileProjectIdentity["matchBasis"];
 };
 
+export type RepositorySelectionScopeSnapshot = {
+  contractVersion: number;
+  matchBasis: ResolvedCompileProjectIdentity["matchBasis"];
+  scopeMode: ResolvedCompileProjectIdentity["scopeMode"];
+  identityFingerprint: string | null;
+  candidateClassification: RepositoryClassification;
+  candidateScope: "global" | "repo";
+  decision: RepositoryScopeDecisionReason;
+  allowed: boolean;
+};
+
 function present(value: string | null | undefined): value is string {
   return typeof value === "string" && value.length > 0;
 }
@@ -144,7 +155,9 @@ export function evaluateRepositoryScope(
     matchBasis: identity.matchBasis,
   });
 
-  if (candidate.status !== "active") return denied("STATUS_DENIED");
+  if (candidate.status !== "active" && candidate.status !== "draft") {
+    return denied("STATUS_DENIED");
+  }
   if (classification === "unresolved") return denied("CLASSIFICATION_UNRESOLVED");
   if (classification === "malformed") return denied("CLASSIFICATION_MALFORMED");
   if (classification === "conflict") return denied("CLASSIFICATION_CONFLICT");
@@ -184,4 +197,22 @@ export function selectRepositoryScopedCandidates(
   return candidates.filter(
     (candidate) => evaluateRepositoryScope(candidate, identity, requestFacets).allowed,
   );
+}
+
+export function buildRepositorySelectionScopeSnapshot(
+  candidate: RepositoryScopeCandidate,
+  identity: ResolvedCompileProjectIdentity,
+  requestFacets: RepositoryFacets = {},
+): RepositorySelectionScopeSnapshot {
+  const decision = evaluateRepositoryScope(candidate, identity, requestFacets);
+  return {
+    contractVersion: identity.contractVersion,
+    matchBasis: identity.matchBasis,
+    scopeMode: identity.scopeMode,
+    identityFingerprint: identity.identityFingerprint,
+    candidateClassification: decision.classification,
+    candidateScope: candidate.scope === "global" ? "global" : "repo",
+    decision: decision.reason,
+    allowed: decision.allowed,
+  };
 }

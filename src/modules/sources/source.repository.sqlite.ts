@@ -1,11 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { sqliteSourceFragments, sqliteSources } from "../../db/sqlite/schema.js";
 import { SqliteCoreRepository } from "../../db/sqlite/core-repository.js";
+import { sqliteSourceFragments, sqliteSources } from "../../db/sqlite/schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
-import { normalizeRepoKey, normalizeRepoPath } from "../context-compiler/query-context.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
+import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
+import { normalizeRepoPath } from "../context-compiler/query-context.js";
 import { embedOne } from "../embedding/embedding.service.js";
-import type { SourceKind, SourceSearchOptions, SourceSearchResult } from "./source.repository.js";
+import type {
+  SourceKind,
+  SourceSearchOptions,
+  SourceSearchResult,
+  UpsertSourceParams,
+} from "./source.repository.js";
 
 type SourceRow = typeof sqliteSources.$inferSelect;
 
@@ -81,19 +91,20 @@ function matchesSourceKind(row: SourceRow, sourceKinds?: SourceKind[]): boolean 
 }
 
 function matchesRepoScope(row: SourceRow, options?: SourceSearchOptions): boolean {
-  const repoPath = normalizeRepoPath(options?.repoPath);
-  const repoKey = (options?.repoKey ?? normalizeRepoKey(options?.repoPath))?.trim().toLowerCase();
-  if (!repoPath && !repoKey) return true;
-  const metadata = asRecord(row.metadata);
-  if (repoKey && String(metadata.repoKey ?? "").toLowerCase() === repoKey) return true;
-  if (!repoPath) return false;
-  const fileUriPrefix = `file://${repoPath.startsWith("/") ? "" : "/"}${repoPath}`;
-  return (
-    row.uri.startsWith(`${repoPath}/`) ||
-    row.uri.startsWith(`${fileUriPrefix}/`) ||
-    String(metadata.repoPath ?? "") === repoPath ||
-    String(metadata.sourceRootPath ?? "") === repoPath
-  );
+  const identity =
+    options?.projectIdentity ??
+    resolveCompileProjectIdentity({
+      projectRef: options?.projectRef,
+      repoKey: options?.repoKey,
+      repoPath: options?.repoPath,
+    });
+  if (row.classificationStatus !== "classified") return false;
+  if (row.scope === "global") return !row.projectRef && !row.repoKey && !row.repoPath;
+  if (row.scope !== "repo" || identity.matchValue === null) return false;
+  if (identity.matchBasis === "project_ref") return row.projectRef === identity.matchValue;
+  if (identity.matchBasis === "repo_key") return row.repoKey === identity.matchValue;
+  if (identity.matchBasis === "repo_path") return row.repoPath === identity.matchValue;
+  return false;
 }
 
 function tokenize(query: string): string[] {
@@ -118,19 +129,32 @@ function scoreText(text: string, query: string): number {
   return score;
 }
 
-export async function upsertSourceDocumentSqlite(params: {
-  sourceKind: SourceKind;
-  uri: string;
-  title?: string;
-  body: string;
-  metadata?: Record<string, unknown>;
-}): Promise<string> {
+export async function upsertSourceDocumentSqlite(params: UpsertSourceParams): Promise<string> {
   const sqlite = await getSqliteCoreDatabase();
   const repo = new SqliteCoreRepository(sqlite);
   const redactedUri = redactSecrets(params.uri);
   const redactedTitle = params.title ? redactSecrets(params.title) : params.title;
   const redactedBody = redactSecrets(params.body);
   const redactedMetadata = redactSecretRecord(params.metadata ?? {});
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: params.scope,
+      projectRef:
+        params.projectRef ??
+        (typeof redactedMetadata.projectRef === "string" ? redactedMetadata.projectRef : undefined),
+      repoKey:
+        params.repoKey ??
+        (typeof redactedMetadata.repoKey === "string" ? redactedMetadata.repoKey : undefined),
+      repoPath:
+        params.repoPath ??
+        (typeof redactedMetadata.repoPath === "string" ? redactedMetadata.repoPath : undefined),
+    },
+    {
+      producer: params.identityProducer ?? "source.upsert-document",
+      entityKind: "source",
+      actor: params.actor,
+    },
+  );
   const existing = sqlite.orm
     .select({ id: sqliteSources.id })
     .from(sqliteSources)
@@ -140,6 +164,11 @@ export async function upsertSourceDocumentSqlite(params: {
   repo.upsertSource({
     id: sourceId,
     sourceKind: params.sourceKind,
+    classificationStatus: identity.classificationStatus,
+    scope: identity.scope,
+    projectRef: identity.projectRef,
+    repoKey: identity.repoKey,
+    repoPath: identity.repoPath,
     uri: redactedUri,
     title: redactedTitle ?? null,
     body: redactedBody,
@@ -162,6 +191,12 @@ export async function upsertSourceDocumentSqlite(params: {
       embedding: await tryEmbedSourceFragment(chunk.content),
     });
   }
+  await recordProjectScopedWritePersisted(identity, {
+    producer: params.identityProducer ?? "source.upsert-document",
+    entityKind: "source",
+    entityId: sourceId,
+    actor: params.actor,
+  });
   return sourceId;
 }
 
@@ -182,7 +217,7 @@ export async function deleteStaleSourcesForRootSqlite(params: {
   let deleted = 0;
   for (const row of rows) {
     if (keepSet.has(row.uri)) continue;
-    if (!matchesRepoScope(row, { repoPath: normalizedRootPath })) continue;
+    if (String(asRecord(row.metadata).sourceRootPath ?? "") !== normalizedRootPath) continue;
     sqlite.orm.delete(sqliteSources).where(eq(sqliteSources.id, row.id)).run();
     deleted += 1;
   }
@@ -262,23 +297,11 @@ export async function searchSourceContentSqlite(
 }
 
 export async function vectorSearchSourceContentSqlite(
-  embedding: number[],
-  limit: number,
-  sourceKinds?: SourceKind[],
-  options?: SourceSearchOptions,
+  _embedding: number[],
+  _limit: number,
+  _sourceKinds?: SourceKind[],
+  _options?: SourceSearchOptions,
 ): Promise<SourceSearchResult[]> {
-  const sqlite = await getSqliteCoreDatabase();
-  const repo = new SqliteCoreRepository(sqlite);
-  const sourceRows = sqlite.orm.select().from(sqliteSources).all();
-  const sourceById = new Map(sourceRows.map((row) => [row.id, row]));
-  return repo
-    .vectorSearchSourceFragments(embedding, Math.max(limit * 3, 20))
-    .filter((hit) => {
-      const source = sourceById.get(hit.sourceId);
-      return source
-        ? matchesSourceKind(source, sourceKinds) && matchesRepoScope(source, options)
-        : false;
-    })
-    .map((hit) => ({ ...hit }))
-    .slice(0, Math.max(1, Math.trunc(limit)));
+  // sqlite-vec cannot apply source scope predicates before top-K selection.
+  return [];
 }

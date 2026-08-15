@@ -227,7 +227,14 @@ export function replayComparisonForPromotionGate(
     usedBaselineLostItemCount: 0,
     averageOverlapRate: 0,
     currentNoMatchRunCount: 0,
-    comparisonCounts: { stable: 0, drifted: 0, lost_baseline: 0, new_only: 0, no_current_match: 0 },
+    comparisonCounts: {
+      stable: 0,
+      drifted: 0,
+      lost_baseline: 0,
+      new_only: 0,
+      no_current_match: 0,
+      not_comparable: 0,
+    },
     recompilePlan: {
       mode: "current_retrieval_dry_run",
       writesCompileRuns: false,

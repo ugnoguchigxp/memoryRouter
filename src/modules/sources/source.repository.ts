@@ -1,21 +1,34 @@
-import { type SQL, and, desc, eq, ilike, inArray, notInArray, or, sql } from "drizzle-orm";
+import { type SQL, and, desc, eq, ilike, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { db } from "../../db/index.js";
 import { sourceFragments, sources } from "../../db/schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
 import { auditEventTypes, recordAuditLogSafe } from "../audit/audit-log.service.js";
-import { normalizeRepoKey, normalizeRepoPath } from "../context-compiler/query-context.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
+import {
+  type ResolvedCompileProjectIdentity,
+  resolveCompileProjectIdentity,
+} from "../context-compiler/compile-project-identity.js";
+import { normalizeRepoPath } from "../context-compiler/query-context.js";
 import { embedOne } from "../embedding/embedding.service.js";
 
 export type SourceKind = "wiki";
 
-type UpsertSourceParams = {
+export type UpsertSourceParams = {
   sourceKind: SourceKind;
+  scope: "repo" | "global";
+  projectRef?: string | null;
+  repoKey?: string | null;
+  repoPath?: string | null;
   uri: string;
   title?: string;
   body: string;
   metadata?: Record<string, unknown>;
   actor?: "agent" | "user" | "system";
+  identityProducer?: string;
 };
 
 export type SourceSearchResult = {
@@ -29,6 +42,8 @@ export type SourceSearchResult = {
 };
 
 export type SourceSearchOptions = {
+  projectIdentity?: ResolvedCompileProjectIdentity;
+  projectRef?: string;
   repoPath?: string;
   repoKey?: string;
 };
@@ -38,31 +53,35 @@ function finiteOrZero(value: unknown): number {
   return Number.isFinite(num) ? num : 0;
 }
 
-function buildRepoPathBoundaryClauses(repoPath: string): SQL[] {
-  const normalized = normalizeRepoPath(repoPath) ?? repoPath;
-  const fileUriPrefix = `file://${normalized.startsWith("/") ? "" : "/"}${normalized}`;
-  return [
-    ilike(sources.uri, `${normalized}/%`),
-    ilike(sources.uri, `${fileUriPrefix}/%`),
-    sql`${sources.metadata} ->> 'repoPath' = ${normalized}`,
-    sql`${sources.metadata} ->> 'sourceRootPath' = ${normalized}`,
-  ];
-}
-
-function buildSourceRepoScopedCondition(options?: SourceSearchOptions): SQL | undefined {
-  const repoPath = normalizeRepoPath(options?.repoPath);
-  const repoKey = (options?.repoKey ?? normalizeRepoKey(options?.repoPath))?.trim().toLowerCase();
-  if (!repoPath && !repoKey) return undefined;
-
-  const clauses: SQL[] = [];
-  if (repoPath) {
-    clauses.push(...buildRepoPathBoundaryClauses(repoPath));
-  }
-  if (repoKey) {
-    clauses.push(sql`${sources.metadata} ->> 'repoKey' = ${repoKey}`);
-  }
-  if (clauses.length === 0) return undefined;
-  return clauses.length === 1 ? clauses[0] : or(...clauses);
+function buildSourceRepoScopedCondition(options?: SourceSearchOptions): SQL {
+  const identity =
+    options?.projectIdentity ??
+    resolveCompileProjectIdentity({
+      projectRef: options?.projectRef,
+      repoKey: options?.repoKey,
+      repoPath: options?.repoPath,
+    });
+  const global = and(
+    eq(sources.scope, "global"),
+    isNull(sources.projectRef),
+    isNull(sources.repoKey),
+    isNull(sources.repoPath),
+  ) as SQL;
+  const matchValue = identity.matchValue;
+  const repo =
+    matchValue === null
+      ? undefined
+      : identity.matchBasis === "project_ref"
+        ? and(eq(sources.scope, "repo"), eq(sources.projectRef, matchValue))
+        : identity.matchBasis === "repo_key"
+          ? and(eq(sources.scope, "repo"), eq(sources.repoKey, matchValue))
+          : identity.matchBasis === "repo_path"
+            ? and(eq(sources.scope, "repo"), eq(sources.repoPath, matchValue))
+            : undefined;
+  return and(
+    eq(sources.classificationStatus, "classified"),
+    repo ? or(global, repo) : global,
+  ) as SQL;
 }
 
 async function tryEmbedSourceFragment(content: string): Promise<number[] | undefined> {
@@ -157,6 +176,25 @@ export async function upsertSourceDocument(params: UpsertSourceParams): Promise<
   const redactedTitle = params.title ? redactSecrets(params.title) : params.title;
   const redactedBody = redactSecrets(params.body);
   const redactedMetadata = redactSecretRecord(params.metadata ?? {});
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: params.scope,
+      projectRef:
+        params.projectRef ??
+        (typeof redactedMetadata.projectRef === "string" ? redactedMetadata.projectRef : undefined),
+      repoKey:
+        params.repoKey ??
+        (typeof redactedMetadata.repoKey === "string" ? redactedMetadata.repoKey : undefined),
+      repoPath:
+        params.repoPath ??
+        (typeof redactedMetadata.repoPath === "string" ? redactedMetadata.repoPath : undefined),
+    },
+    {
+      producer: params.identityProducer ?? "source.upsert-document",
+      entityKind: "source",
+      actor,
+    },
+  );
   const existing = await db.query.sources.findFirst({
     where: eq(sources.uri, redactedUri),
     columns: { id: true },
@@ -167,6 +205,11 @@ export async function upsertSourceDocument(params: UpsertSourceParams): Promise<
       .update(sources)
       .set({
         sourceKind: params.sourceKind,
+        classificationStatus: identity.classificationStatus,
+        scope: identity.scope,
+        projectRef: identity.projectRef,
+        repoKey: identity.repoKey,
+        repoPath: identity.repoPath,
         uri: redactedUri,
         title: redactedTitle ?? null,
         body: redactedBody,
@@ -191,6 +234,12 @@ export async function upsertSourceDocument(params: UpsertSourceParams): Promise<
         fragmentCount,
       },
     });
+    await recordProjectScopedWritePersisted(identity, {
+      producer: params.identityProducer ?? "source.upsert-document",
+      entityKind: "source",
+      entityId: existing.id,
+      actor,
+    });
     return existing.id;
   }
 
@@ -198,6 +247,11 @@ export async function upsertSourceDocument(params: UpsertSourceParams): Promise<
     .insert(sources)
     .values({
       sourceKind: params.sourceKind,
+      classificationStatus: identity.classificationStatus,
+      scope: identity.scope,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
       uri: redactedUri,
       title: redactedTitle ?? null,
       body: redactedBody,
@@ -221,6 +275,12 @@ export async function upsertSourceDocument(params: UpsertSourceParams): Promise<
       fragmentCount,
     },
   });
+  await recordProjectScopedWritePersisted(identity, {
+    producer: params.identityProducer ?? "source.upsert-document",
+    entityKind: "source",
+    entityId: inserted.id,
+    actor,
+  });
   return inserted.id;
 }
 
@@ -240,7 +300,7 @@ export async function deleteStaleSourcesForRoot(params: {
   );
   const keepSet = [...new Set([...normalizedKeepUris, ...fileUriKeepUris])];
 
-  const conditions: SQL[] = [or(...buildRepoPathBoundaryClauses(normalizedRootPath)) as SQL];
+  const conditions: SQL[] = [sql`${sources.metadata} ->> 'sourceRootPath' = ${normalizedRootPath}`];
   if (keepSet.length > 0) {
     conditions.push(notInArray(sources.uri, keepSet));
   }
@@ -339,9 +399,7 @@ export async function searchSourceContent(
     fragmentConditions.push(inArray(sources.sourceKind, sourceKinds));
   }
   const repoScopedCondition = buildSourceRepoScopedCondition(options);
-  if (repoScopedCondition) {
-    fragmentConditions.push(repoScopedCondition);
-  }
+  fragmentConditions.push(repoScopedCondition);
 
   const fragmentRows = await db
     .select({
@@ -381,9 +439,7 @@ export async function searchSourceContent(
   if (sourceKinds && sourceKinds.length > 0) {
     sourceConditions.push(inArray(sources.sourceKind, sourceKinds));
   }
-  if (repoScopedCondition) {
-    sourceConditions.push(repoScopedCondition);
-  }
+  sourceConditions.push(repoScopedCondition);
 
   const sourceRows = await db
     .select({

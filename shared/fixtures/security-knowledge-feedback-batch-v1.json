@@ -1,0 +1,41 @@
+{
+  "contractVersion": 1,
+  "batchRef": "skfb:v1:6de7723035118b5391f7126baf06d7e946d82f2aa265edfd191857a40b330607",
+  "idempotencyKey": "security-feedback:fixture:v1",
+  "batchPayloadDigest": "sha256:6de7723035118b5391f7126baf06d7e946d82f2aa265edfd191857a40b330607",
+  "producer": {
+    "system": "nightworkers",
+    "version": "0.1.0"
+  },
+  "events": [
+    {
+      "eventType": "retrieved",
+      "occurredAt": "2026-08-15T00:00:00.000Z",
+      "correlation": {
+        "taskRef": "task:fixture",
+        "runRef": "run:fixture",
+        "compileRunRef": "compile:fixture"
+      },
+      "knowledgeRef": "skc:v1:1111111111111111111111111111111111111111111111111111111111111111",
+      "knowledgeRevision": 0,
+      "evidenceRefs": [],
+      "eventRef": "skfe:v1:62cbffda4c2b614cbe37fdbbb345a22632a7ff644faf7afaee252e313fcaa24a"
+    },
+    {
+      "eventType": "verification_outcome",
+      "occurredAt": "2026-08-15T00:01:00.000Z",
+      "correlation": {
+        "taskRef": "task:fixture",
+        "runRef": "run:fixture",
+        "compileRunRef": "compile:fixture",
+        "verificationRef": "verification:fixture"
+      },
+      "knowledgeRef": "skc:v1:1111111111111111111111111111111111111111111111111111111111111111",
+      "knowledgeRevision": 0,
+      "outcome": "supported",
+      "evidenceRefs": ["verification:fixture"],
+      "reasonCode": "verified_by_rerun",
+      "eventRef": "skfe:v1:f94e08ba4355c6a5fdb7747581416e5ad0861c5cb8df96416a33d8d5bb09c41c"
+    }
+  ]
+}

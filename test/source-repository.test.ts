@@ -55,6 +55,7 @@ describe("source repository", () => {
 
       const params = {
         sourceKind: "wiki" as const,
+        scope: "global" as const,
         uri: "wiki://test",
         title: "Test Wiki",
         body: "Line 1\nLine 2\n# Heading 1\nContent under heading",
@@ -85,6 +86,7 @@ describe("source repository", () => {
 
       const params = {
         sourceKind: "wiki" as const,
+        scope: "global" as const,
         uri: "wiki://test",
         body: "New content",
       };

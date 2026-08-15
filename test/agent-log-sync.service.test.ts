@@ -7,6 +7,12 @@ import {
   ingestCodexLogs,
 } from "../src/modules/agent-log-sync/ingest.service.js";
 import {
+  hasTargetedNightWorkersRuntimeContract,
+  mergeMessageMetadata,
+  sanitizeNightWorkersRuntimeContractChunk,
+  sanitizeNightWorkersRuntimeContractMessage,
+} from "../src/modules/agent-log-sync/sync.service.helpers.js";
+import {
   buildReadableTranscript,
   chunkMessages,
   filterDistillableAgentLogMessages,
@@ -15,12 +21,6 @@ import {
   shouldDeleteLegacyAntigravityVibeMemories,
   syncAllAgentLogs,
 } from "../src/modules/agent-log-sync/sync.service.js";
-import {
-  hasTargetedNightWorkersRuntimeContract,
-  mergeMessageMetadata,
-  sanitizeNightWorkersRuntimeContractChunk,
-  sanitizeNightWorkersRuntimeContractMessage,
-} from "../src/modules/agent-log-sync/sync.service.helpers.js";
 
 vi.mock("../src/modules/agent-log-sync/ingest.service.js");
 vi.mock("../src/db/client.js", () => {
@@ -156,12 +156,20 @@ describe("Agent Log Sync Service", () => {
         {
           role: "user",
           content: "M1",
-          metadata: { sessionId: "s1", timestamp: new Date().toISOString() },
+          metadata: {
+            sessionId: "s1",
+            timestamp: new Date().toISOString(),
+            projectRoot: "/repo/context-still",
+          },
         },
         {
           role: "user",
           content: "M2",
-          metadata: { sessionId: "s2", timestamp: new Date().toISOString() },
+          metadata: {
+            sessionId: "s2",
+            timestamp: new Date().toISOString(),
+            projectRoot: "/repo/context-still",
+          },
         },
       ],
       cursor: {},
@@ -203,6 +211,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "codex_logs",
             projectName: "contextStill",
+            projectRoot: "/repo/context-still",
             sessionId: "normal-session",
           },
         },
@@ -220,6 +229,36 @@ describe("Agent Log Sync Service", () => {
     expect(summary.sources.find((source) => source.id === "codex_logs")?.messages).toBe(1);
   });
 
+  test("does not infer repository identity from projectName or cwd", async () => {
+    vi.mocked(ingestCodexLogs).mockResolvedValue({
+      ok: true,
+      messages: [
+        {
+          role: "user",
+          content: "Do not infer this repository",
+          metadata: {
+            sourceId: "codex_logs",
+            projectName: "contextStill",
+            cwd: "/repo/context-still",
+            sessionId: "identity-less-session",
+          },
+        },
+      ],
+      cursor: {},
+      maxObservedMtimeMs: 2000,
+      checkedFiles: 1,
+      errors: [],
+      warnings: [],
+    } as any);
+
+    const summary = await syncAllAgentLogs();
+
+    expect(summary.imported).toBe(0);
+    expect(summary.sources.flatMap((source) => source.warnings).join("\n")).toContain(
+      "without valid identity",
+    );
+  });
+
   test("syncAllAgentLogs skips short chunks below the distillable character threshold", async () => {
     groupedConfig.agentLogSync.minDistillableChars = 2000;
     vi.mocked(ingestCodexLogs).mockResolvedValue({
@@ -231,6 +270,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "codex_logs",
             projectName: "nightWorkers",
+            projectRoot: "/repo/nightworkers",
             sessionId: "short-session",
           },
         },
@@ -240,6 +280,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "codex_logs",
             projectName: "nightWorkers",
+            projectRoot: "/repo/nightworkers",
             sessionId: "long-session",
           },
         },
@@ -305,6 +346,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "codex_logs",
             projectName: "nightWorkers",
+            projectRoot: "/repo/nightworkers",
             sessionId: "nightworkers-impl-session",
           },
         },
@@ -314,6 +356,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "codex_logs",
             projectName: "nightWorkers",
+            projectRoot: "/repo/nightworkers",
             sessionId: "nightworkers-impl-session",
           },
         },
@@ -595,6 +638,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "antigravity_logs",
             projectName: "memoryRouter",
+            projectRoot: "/repo/memory-router",
             sessionId: "antigravity-session",
           },
         },
@@ -649,6 +693,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sourceId: "codex_logs",
             projectName: "contextStill",
+            projectRoot: "/repo/context-still",
             sessionId: "normal-session",
           },
         },
@@ -676,6 +721,7 @@ describe("Agent Log Sync Service", () => {
           metadata: {
             sessionId: "s1",
             timestamp: new Date().toISOString(),
+            projectRoot: "/repo/context-still",
             authToken: "raw-token-value",
             toolCalls: [
               {
@@ -712,7 +758,11 @@ describe("Agent Log Sync Service", () => {
         {
           role: "assistant",
           content: "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-old\n+new",
-          metadata: { sessionId: "s1", timestamp: new Date().toISOString() },
+          metadata: {
+            sessionId: "s1",
+            timestamp: new Date().toISOString(),
+            projectRoot: "/repo/context-still",
+          },
         },
       ],
       cursor: {},

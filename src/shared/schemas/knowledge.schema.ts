@@ -81,6 +81,8 @@ export const knowledgeSearchInputSchema = z.object({
   status: knowledgeStatusSchema.default("active"),
   polarities: z.array(z.enum(["positive", "negative", "neutral"])).optional(),
   intentTags: z.array(z.string().trim().min(1)).optional(),
+  projectRef: z.string().trim().min(1).max(256).optional(),
+  repoKey: z.string().trim().min(1).max(1024).optional(),
   repoPath: z.string().trim().min(1).optional(),
   changeTypes: z.array(z.string().trim().min(1)).optional(),
   technologies: z.array(z.string().trim().min(1)).optional(),
@@ -104,6 +106,7 @@ export const registerKnowledgeInputSchema = z.object({
   technologies: optionalApplicabilityArraySchema,
   changeTypes: optionalApplicabilityArraySchema,
   domains: optionalApplicabilityArraySchema,
+  projectRef: z.string().trim().min(1).max(256).optional(),
   repoPath: optionalApplicabilityStringSchema,
   repoKey: optionalApplicabilityStringSchema,
   metadata: z.record(z.unknown()).default({}),
@@ -126,6 +129,8 @@ export const registerCandidateInputSchema = z
     technologies: optionalApplicabilityArraySchema,
     changeTypes: optionalApplicabilityArraySchema,
     domains: optionalApplicabilityArraySchema,
+    scope: scopeSchema.default("repo"),
+    projectRef: z.string().trim().min(1).max(256).optional(),
     repoPath: optionalApplicabilityStringSchema,
     repoKey: optionalApplicabilityStringSchema,
     metadata: z.record(z.unknown()).default({}),
@@ -244,6 +249,7 @@ const knowledgeUpdatePatchSchema = z.object({
   technologies: optionalApplicabilityArraySchema,
   changeTypes: optionalApplicabilityArraySchema,
   domains: optionalApplicabilityArraySchema,
+  projectRef: z.string().trim().min(1).max(256).optional(),
   repoPath: optionalApplicabilityStringSchema,
   repoKey: optionalApplicabilityStringSchema,
   metadata: z.record(z.unknown()).optional(),
@@ -268,6 +274,7 @@ export const updateKnowledgeInputSchema = z
       value.technologies !== undefined ||
       value.changeTypes !== undefined ||
       value.domains !== undefined ||
+      value.projectRef !== undefined ||
       value.repoPath !== undefined ||
       value.repoKey !== undefined ||
       value.metadata !== undefined,

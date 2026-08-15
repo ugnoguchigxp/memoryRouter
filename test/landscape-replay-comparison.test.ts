@@ -25,11 +25,25 @@ describe("landscape replay comparison service", () => {
           id: "run-1",
           goal: "Compare replay retrieval",
           intent: "test",
+          projectRef: null,
+          repoKey: null,
           repoPath: "/repo",
+          matchBasis: "repo_path",
+          identityContractVersion: 1,
+          scopeMode: "project",
           input: {
             technologies: ["TypeScript"],
             domains: ["landscape"],
             changeTypes: ["feature"],
+            projectIdentity: {
+              contractVersion: 1,
+              scopeMode: "project",
+              matchBasis: "repo_path",
+              matchValue: "/repo",
+              projectRef: null,
+              repoKey: null,
+              repoPath: "/repo",
+            },
           },
           retrievalMode: "task_context",
           status: "ok",
@@ -119,6 +133,7 @@ describe("landscape replay comparison service", () => {
     expect(retrieveKnowledgeMock).toHaveBeenCalledWith(
       {
         goal: "Compare replay retrieval",
+        repoPath: "/repo",
         technologies: ["typescript"],
         changeTypes: ["feature"],
         domains: ["landscape"],
@@ -172,7 +187,6 @@ describe("landscape replay comparison service", () => {
           reason: "baseline_off_topic",
           confidence: "medium",
           suggestedAppliesTo: {
-            repoKey: "/repo",
             repoPath: "/repo",
             retrievalMode: "task_context",
             technologies: ["typescript"],

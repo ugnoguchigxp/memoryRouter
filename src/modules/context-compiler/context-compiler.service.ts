@@ -34,9 +34,14 @@ import {
   applyLandscapeCompileIntervention,
   isLandscapeCompileInterventionEnabled,
 } from "../landscape/landscape-compile-intervention.service.js";
+import {
+  type SecurityIntelligenceShadowResult,
+  collectSecurityIntelligenceShadowRetrieval,
+} from "../security-intelligence/shadow-retrieval.service.js";
 import { retrieveSources } from "../sources/source-retrieval.service.js";
 import { agenticRefine } from "./agentic-refine.service.js";
 import { resolveCompileProjectIdentity } from "./compile-project-identity.js";
+import { buildRepositorySelectionScopeSnapshot } from "./repository-scope.js";
 import { upsertContextCompileTaskTrace } from "./context-compile-task-trace.repository.js";
 import {
   insertCompileRun,
@@ -51,7 +56,6 @@ import {
   suppressNearDuplicateKnowledge,
 } from "./duplicate-suppression.service.js";
 import { renderContextPackMarkdown } from "./pack-renderer.js";
-import { normalizeRepoKey, normalizeRepoPath } from "./query-context.js";
 import { type Rankable, explainRankableScore, rankAndDedupe } from "./ranking.service.js";
 import { applySectionTokenBudget, estimateTokens } from "./token-budget.js";
 import { collectUtilityTraceCandidates } from "./utility-retrieval.service.js";
@@ -240,6 +244,7 @@ function toKnowledgePackItem(item: {
   score: number;
   sourceRefs: string[];
   polarity?: string;
+  scopeSnapshot: Record<string, unknown>;
 }): ContextPackItem {
   const section =
     item.polarity === "negative"
@@ -257,6 +262,7 @@ function toKnowledgePackItem(item: {
     score: item.score,
     rankingReason: `ranked by weighted score (${item.status})`,
     sourceRefs: item.sourceRefs,
+    scopeSnapshot: item.scopeSnapshot,
   };
 }
 
@@ -304,7 +310,12 @@ function compactEpisodeText(value: string, maxLength = 220): string {
   return `${normalized.slice(0, Math.max(1, maxLength - 3)).trim()}...`;
 }
 
-function episodeToPackItem(episode: EpisodeCard, index: number): ContextPackItem {
+function episodeToPackItem(
+  episode: EpisodeCard,
+  index: number,
+  projectIdentity: ReturnType<typeof resolveCompileProjectIdentity>,
+  facets: { technologies: string[]; changeTypes: string[]; domains: string[] },
+): ContextPackItem {
   const sourceRefs = episodeSourceRefs(episode);
   const refHint =
     sourceRefs.length > 1
@@ -323,6 +334,12 @@ function episodeToPackItem(episode: EpisodeCard, index: number): ContextPackItem
     "Avoid:",
     "- Do not treat EpisodeCard precedent as a decision source or as verified source material by itself.",
   ].join("\n");
+  const applicability = asRecord(episode.applicability);
+  const general =
+    applicability.general === true ||
+    (episode.technologies.length === 0 &&
+      episode.changeTypes.length === 0 &&
+      episode.domains.length === 0);
   return {
     id: `episode_card:${episode.id}`,
     itemKind: "episode_card",
@@ -336,13 +353,32 @@ function episodeToPackItem(episode: EpisodeCard, index: number): ContextPackItem
     changeTypes: episode.changeTypes,
     technologies: episode.technologies,
     domains: episode.domains,
+    scopeSnapshot: buildRepositorySelectionScopeSnapshot(
+      {
+        id: episode.id,
+        entityKind: "episode",
+        status: episode.status,
+        classificationStatus: episode.classificationStatus,
+        scope: episode.scope,
+        projectRef: episode.projectRef ?? null,
+        repoKey: episode.repoKey ?? null,
+        repoPath: episode.repoPath ?? null,
+        general,
+        facets: {
+          technologies: episode.technologies,
+          changeTypes: episode.changeTypes,
+          domains: episode.domains,
+        },
+        producer: episode.sourceKind,
+      },
+      projectIdentity,
+      facets,
+    ),
   };
 }
 
 async function retrieveEpisodePrecedents(params: {
   input: CompileInput;
-  repoPath: string;
-  repoKey: string | null;
   technologies: string[];
   changeTypes: string[];
   domains: string[];
@@ -356,23 +392,11 @@ async function retrieveEpisodePrecedents(params: {
       domains: params.domains.length > 0 ? params.domains : params.input.domains,
       status: "active",
       limit: 5,
+      projectRef: params.input.projectRef,
+      repoKey: params.input.repoKey,
+      repoPath: params.input.repoPath,
     };
-    const scopedRepoKey = params.input.repoKey ?? params.repoKey ?? undefined;
-    const scopedRepoPath = scopedRepoKey ? undefined : params.input.repoPath;
-    const scopedItems =
-      scopedRepoKey || scopedRepoPath
-        ? await searchEpisodes({
-            ...baseSearch,
-            repoKey: scopedRepoKey,
-            repoPath: scopedRepoPath,
-          })
-        : [];
-    const scopedIds = new Set(scopedItems.map((item) => item.id));
-    const globalItems =
-      scopedItems.length < CONTEXT_COMPILE_LIMITS.episodePrecedentLimit
-        ? (await searchEpisodes(baseSearch)).filter((item) => !scopedIds.has(item.id))
-        : [];
-    const items = [...scopedItems, ...globalItems];
+    const items = await searchEpisodes(baseSearch);
     const selected = items.slice(0, CONTEXT_COMPILE_LIMITS.episodePrecedentLimit);
     const selectedIds = selected.map((item) => item.id);
     const selectedTitles = selected.map((item) => item.title);
@@ -384,8 +408,8 @@ async function retrieveEpisodePrecedents(params: {
         searchFailed: false,
         selectedIds,
         selectedTitles,
-        scopedHitCount: scopedItems.length,
-        globalHitCount: globalItems.length,
+        scopedHitCount: items.filter((item) => item.scope === "repo").length,
+        globalHitCount: items.filter((item) => item.scope === "global").length,
         ...(selected.length > 0 ? { usedFor: "compile_precedent" as const } : {}),
       },
     };
@@ -408,6 +432,7 @@ type KnowledgeRankable = Rankable & {
   sourceRefs: string[];
   candidateEvidence?: KnowledgeCandidateEvidence;
   polarity: string;
+  scopeSnapshot: Record<string, unknown>;
 };
 
 type CompileReasonBuckets = {
@@ -662,6 +687,7 @@ async function recordCompileRunKnowledgeUsageSignalsSafe(params: {
     reason?: string;
   }>;
   actor: "agent" | "system";
+  scopeSnapshotByKnowledgeId: Map<string, Record<string, unknown>>;
 }): Promise<void> {
   const selectedSet = new Set(params.selectedKnowledgeIds.map((id) => id.trim()).filter(Boolean));
   if (selectedSet.size === 0) return;
@@ -705,6 +731,7 @@ async function recordCompileRunKnowledgeUsageSignalsSafe(params: {
           ...(used.evidence ? { evidence: used.evidence } : {}),
           ...(used.outputSection ? { outputSection: used.outputSection } : {}),
           ...(selectedRank ? { selectedRank } : {}),
+          scopeSnapshot: params.scopeSnapshotByKnowledgeId.get(knowledgeId) ?? {},
         },
       };
     }
@@ -717,6 +744,7 @@ async function recordCompileRunKnowledgeUsageSignalsSafe(params: {
         signalSource: "context_response_composer",
         agenticAccepted: agenticAcceptedSet.has(knowledgeId),
         ...(selectedRank ? { selectedRank } : {}),
+        scopeSnapshot: params.scopeSnapshotByKnowledgeId.get(knowledgeId) ?? {},
       },
     };
   });
@@ -897,6 +925,7 @@ function buildCandidateTraceRows(params: {
     score: number;
     metadata?: Record<string, unknown>;
     candidateEvidence?: KnowledgeCandidateEvidence;
+    scopeSnapshot?: Record<string, unknown>;
   }>;
   rankedKnowledgeBeforeIntervention: KnowledgeRankable[];
   filteredKnowledge: KnowledgeRankable[];
@@ -919,6 +948,7 @@ function buildCandidateTraceRows(params: {
       score: number;
       metadata?: Record<string, unknown>;
       candidateEvidence?: KnowledgeCandidateEvidence;
+      scopeSnapshot?: Record<string, unknown>;
     }
   >();
   for (const item of params.knowledgeItems) {
@@ -932,6 +962,7 @@ function buildCandidateTraceRows(params: {
       status: item.status,
       score: item.score,
       candidateEvidence: item.candidateEvidence,
+      scopeSnapshot: item.scopeSnapshot,
     });
   }
 
@@ -1030,6 +1061,7 @@ function buildCandidateTraceRows(params: {
         dropReason: drop.dropReason,
         status: knowledge.status,
         candidateEvidence: knowledge.candidateEvidence ?? null,
+        scopeSnapshot: knowledge.scopeSnapshot ?? null,
         rankingScore: rankable
           ? explainRankableScore(rankable)
           : explainRankableScore({
@@ -1230,17 +1262,13 @@ export async function compileContextPack(
 ): Promise<{
   pack: ContextPack;
   markdown: string;
+  securityIntelligenceShadow?: SecurityIntelligenceShadowResult;
 }> {
   const compileStartedAt = Date.now();
   const input = compileInputSchema.parse(rawInput);
   const projectIdentity = resolveCompileProjectIdentity(input);
   const retrievalMode =
     input.retrievalMode ?? deriveRetrievalModeFromChangeTypes(input.changeTypes);
-  // T1 preserves the current retrieval lane while stopping daemon cwd from being persisted as
-  // caller identity. T4 removes this legacy fallback from candidate selection.
-  const legacyWorkspaceRepoPath = normalizeRepoPath(process.cwd()) ?? process.cwd();
-  const legacyWorkspaceRepoKey =
-    normalizeRepoKey(legacyWorkspaceRepoPath) ?? normalizeRepoKey(process.cwd()) ?? null;
   const tokenBudget = input.tokenBudget ?? groupedConfig.compile.defaultTokenBudget;
   const candidateTraceLimit = groupedConfig.compile.candidateTraceLimit;
   const persistedInput = {
@@ -1256,6 +1284,9 @@ export async function compileContextPack(
     ...(projectIdentity.repoKey ? { repoKey: projectIdentity.repoKey } : {}),
     ...(input.includeDraft !== undefined ? { includeDraft: input.includeDraft } : {}),
     ...(input.tokenBudget ? { tokenBudget: input.tokenBudget } : {}),
+    ...(input.securityIntelligenceShadow
+      ? { securityIntelligenceShadow: input.securityIntelligenceShadow }
+      : {}),
     projectIdentity,
   };
 
@@ -1391,7 +1422,21 @@ export async function compileContextPack(
       },
     });
 
-    return { pack: packWithMarkdown, markdown };
+    const securityIntelligenceShadow = await collectSecurityIntelligenceShadowRetrieval({
+      compileRunRef: runId,
+      compileInput: input,
+      retrievalMode,
+      facets: {
+        technologies: matchedTechnologies,
+        changeTypes: matchedChangeTypes,
+        domains: matchedDomains,
+      },
+    });
+    return {
+      pack: packWithMarkdown,
+      markdown,
+      ...(securityIntelligenceShadow ? { securityIntelligenceShadow } : {}),
+    };
   }
 
   const [positiveKnowledge, negativeKnowledge, sourceContext, episodePrecedents] =
@@ -1417,8 +1462,6 @@ export async function compileContextPack(
       retrieveSources(input, { retrievalMode }),
       retrieveEpisodePrecedents({
         input,
-        repoPath: legacyWorkspaceRepoPath,
-        repoKey: legacyWorkspaceRepoKey,
         technologies: matchedTechnologies,
         changeTypes: matchedChangeTypes,
         domains: matchedDomains,
@@ -1434,25 +1477,55 @@ export async function compileContextPack(
   const combinedItems = [...positiveKnowledge.items, ...negativeKnowledge.items];
 
   const rankedKnowledgeBeforeIntervention = rankAndDedupe<KnowledgeRankable>(
-    combinedItems.map((item) => ({
-      id: item.id,
-      title: item.title,
-      content: item.body,
-      score: item.score,
-      confidence: item.confidence,
-      importance: item.importance,
-      dynamicScore: item.dynamicScore,
-      decayFactor: item.decayFactor,
-      type: normalizeKnowledgeType(item.type),
-      status: normalizeKnowledgeStatus(item.status),
-      sourceRefs: item.sourceRefs,
-      sourceRefCount: item.sourceRefs.length,
-      hasSourceLinks: item.hasSourceLinks,
-      stale: item.status === "deprecated",
-      applicabilityScore: item.applicabilityScore,
-      candidateEvidence: item.candidateEvidence,
-      polarity: item.polarity ?? "positive",
-    })),
+    combinedItems.map((item) => {
+      const applicability = asRecord(item.appliesTo);
+      const metadata = asRecord(item.metadata);
+      const technologies = asStringArray(applicability.technologies);
+      const changeTypes = asStringArray(applicability.changeTypes);
+      const domains = asStringArray(applicability.domains);
+      return {
+        id: item.id,
+        title: item.title,
+        content: item.body,
+        score: item.score,
+        confidence: item.confidence,
+        importance: item.importance,
+        dynamicScore: item.dynamicScore,
+        decayFactor: item.decayFactor,
+        type: normalizeKnowledgeType(item.type),
+        status: normalizeKnowledgeStatus(item.status),
+        sourceRefs: item.sourceRefs,
+        sourceRefCount: item.sourceRefs.length,
+        hasSourceLinks: item.hasSourceLinks,
+        stale: item.status === "deprecated",
+        applicabilityScore: item.applicabilityScore,
+        candidateEvidence: item.candidateEvidence,
+        polarity: item.polarity ?? "positive",
+        scopeSnapshot: buildRepositorySelectionScopeSnapshot(
+          {
+            id: item.id,
+            entityKind: "knowledge",
+            status: item.status,
+            classificationStatus: item.classificationStatus ?? "unresolved",
+            scope: item.scope,
+            projectRef: item.projectRef ?? null,
+            repoKey: item.repoKey ?? null,
+            repoPath: item.repoPath ?? null,
+            general:
+              applicability.general === true ||
+              (technologies.length === 0 && changeTypes.length === 0 && domains.length === 0),
+            facets: { technologies, changeTypes, domains },
+            producer: typeof metadata.producer === "string" ? metadata.producer : "knowledge",
+          },
+          projectIdentity,
+          {
+            technologies: matchedTechnologies,
+            changeTypes: matchedChangeTypes,
+            domains: matchedDomains,
+          },
+        ),
+      };
+    }),
     isLandscapeCompileInterventionEnabled() ? 24 : CONTEXT_COMPILE_LIMITS.normalRankingLimit,
   );
   const landscapeIntervention = applyLandscapeCompileIntervention(
@@ -1534,9 +1607,16 @@ export async function compileContextPack(
       score: item.score,
       sourceRefs,
       polarity: item.polarity,
+      scopeSnapshot: item.scopeSnapshot,
     });
   });
-  const episodePackItems = episodePrecedents.items.map(episodeToPackItem);
+  const episodePackItems = episodePrecedents.items.map((episode, index) =>
+    episodeToPackItem(episode, index, projectIdentity, {
+      technologies: matchedTechnologies,
+      changeTypes: matchedChangeTypes,
+      domains: matchedDomains,
+    }),
+  );
   if (episodePrecedents.items.length > 0) {
     await recordEpisodeUsage({
       usageKind: "compile",
@@ -1586,6 +1666,8 @@ export async function compileContextPack(
       score: item.score,
       metadata: item.metadata,
       candidateEvidence: item.candidateEvidence,
+      scopeSnapshot: rankedKnowledgeBeforeIntervention.find((ranked) => ranked.id === item.id)
+        ?.scopeSnapshot,
     })),
     rankedKnowledgeBeforeIntervention,
     filteredKnowledge: compressedKnowledge,
@@ -1768,6 +1850,7 @@ export async function compileContextPack(
           score: item.score,
           rankingReason: item.rankingReason,
           sourceRefs: item.sourceRefs,
+          scopeSnapshot: item.scopeSnapshot,
         })),
       ),
     ]);
@@ -1910,6 +1993,11 @@ export async function compileContextPack(
     agenticAcceptedKnowledgeIds,
     usedKnowledge: composedResponse.usedKnowledge,
     actor: composedResponse.agenticUsed ? "agent" : "system",
+    scopeSnapshotByKnowledgeId: new Map(
+      selectedPackItems
+        .filter((item) => item.itemKind === "rule" || item.itemKind === "procedure")
+        .map((item) => [item.itemId, item.scopeSnapshot ?? {}]),
+    ),
   });
 
   const sourceRefs =
@@ -2004,5 +2092,19 @@ export async function compileContextPack(
     },
   });
 
-  return { pack: packWithMarkdown, markdown };
+  const securityIntelligenceShadow = await collectSecurityIntelligenceShadowRetrieval({
+    compileRunRef: runId,
+    compileInput: input,
+    retrievalMode,
+    facets: {
+      technologies: matchedTechnologies,
+      changeTypes: matchedChangeTypes,
+      domains: matchedDomains,
+    },
+  });
+  return {
+    pack: packWithMarkdown,
+    markdown,
+    ...(securityIntelligenceShadow ? { securityIntelligenceShadow } : {}),
+  };
 }

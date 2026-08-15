@@ -10,6 +10,7 @@ import {
   auditEventTypes,
   recordAuditLogSafe,
 } from "../../../src/modules/audit/audit-log.service.js";
+import { resolveAuditedProjectScopedWriteIdentity } from "../../../src/modules/context-compiler/project-scoped-write.js";
 import { embedOne } from "../../../src/modules/embedding/embedding.service.js";
 import { canTransitionKnowledgeStatus } from "../../../src/modules/knowledge/knowledge-lifecycle.service.js";
 import {
@@ -370,6 +371,17 @@ export async function createKnowledgeItem(input: KnowledgeCreateInput) {
     inputAppliesTo: input.appliesTo,
     normalizedAppliesTo: normalizedApplicability.appliesTo,
   });
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: input.scope,
+      projectRef: input.projectRef,
+      repoKey:
+        input.repoKey ?? (typeof appliesTo.repoKey === "string" ? appliesTo.repoKey : undefined),
+      repoPath:
+        input.repoPath ?? (typeof appliesTo.repoPath === "string" ? appliesTo.repoPath : undefined),
+    },
+    { producer: "knowledge.api-create", entityKind: "knowledge", actor: "user" },
+  );
 
   if (isSqliteBackend()) {
     const sqlite = await getSqliteCoreDatabase();
@@ -380,7 +392,11 @@ export async function createKnowledgeItem(input: KnowledgeCreateInput) {
       id,
       type: input.type,
       status: input.status,
-      scope: input.scope,
+      scope: identity.scope,
+      classificationStatus: identity.classificationStatus,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
       polarity: input.polarity ?? "positive",
       intentTags: input.intentTags ?? [],
       title: input.title,
@@ -423,7 +439,11 @@ export async function createKnowledgeItem(input: KnowledgeCreateInput) {
     .values({
       type: input.type,
       status: input.status,
-      scope: input.scope,
+      scope: identity.scope,
+      classificationStatus: identity.classificationStatus,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
       polarity: input.polarity ?? "positive",
       intentTags: input.intentTags ?? [],
       title: input.title,
@@ -473,6 +493,10 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
           importance: knowledgeItems.importance,
           appliesTo: knowledgeItems.appliesTo,
           metadata: knowledgeItems.metadata,
+          classificationStatus: knowledgeItems.classificationStatus,
+          projectRef: knowledgeItems.projectRef,
+          repoKey: knowledgeItems.repoKey,
+          repoPath: knowledgeItems.repoPath,
           createdAt: knowledgeItems.createdAt,
           lastVerifiedAt: knowledgeItems.lastVerifiedAt,
         })
@@ -521,7 +545,7 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
         repoKey: input.repoKey,
       })
     : null;
-  const appliesTo =
+  let appliesTo =
     normalizedApplicability === null
       ? existingAppliesTo
       : mergeNormalizedApplicability({
@@ -529,6 +553,35 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
           inputAppliesTo: input.appliesTo,
           normalizedAppliesTo: normalizedApplicability.appliesTo,
         });
+  const explicitAppliesTo = asRecord(input.appliesTo);
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: nextScope as "repo" | "global",
+      projectRef:
+        input.projectRef ??
+        (nextScope === "repo" && "projectRef" in existing
+          ? (existing.projectRef as string | null | undefined)
+          : undefined),
+      repoKey:
+        input.repoKey ??
+        (typeof explicitAppliesTo.repoKey === "string" ? explicitAppliesTo.repoKey : undefined) ??
+        (nextScope === "repo" && "repoKey" in existing
+          ? (existing.repoKey as string | null | undefined)
+          : undefined),
+      repoPath:
+        input.repoPath ??
+        (typeof explicitAppliesTo.repoPath === "string" ? explicitAppliesTo.repoPath : undefined) ??
+        (nextScope === "repo" && "repoPath" in existing
+          ? (existing.repoPath as string | null | undefined)
+          : undefined),
+    },
+    { producer: "knowledge.api-update", entityKind: "knowledge", actor: "user" },
+  );
+  if (identity.scope === "global") {
+    appliesTo = Object.fromEntries(
+      Object.entries(appliesTo).filter(([key]) => key !== "repoKey" && key !== "repoPath"),
+    );
+  }
   const metadataBase = {
     ...asRecord(existing.metadata),
     ...(input.metadata ?? {}),
@@ -559,7 +612,11 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
       id: existing.id,
       type: nextType,
       status: nextStatus,
-      scope: nextScope,
+      scope: identity.scope,
+      classificationStatus: identity.classificationStatus,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
       polarity: nextPolarity,
       intentTags: Array.isArray(nextIntentTags) ? nextIntentTags : [],
       title: nextTitle,
@@ -610,7 +667,11 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
     .set({
       type: nextType,
       status: nextStatus,
-      scope: nextScope,
+      scope: identity.scope,
+      classificationStatus: identity.classificationStatus,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
       polarity: nextPolarity,
       intentTags: nextIntentTags,
       title: nextTitle,

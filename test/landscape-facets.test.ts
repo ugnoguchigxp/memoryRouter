@@ -20,7 +20,8 @@ describe("landscape facets", () => {
       degradedReasons: ["vector_failed"],
     });
 
-    expect(facets.repoKey).toBe("/users/example/code/memoryrouter");
+    expect(facets.repoKey).toBeUndefined();
+    expect(facets.repoPath).toBe("/Users/example/Code/memoryRouter");
     expect(facets.technologies).toEqual(["typescript", "drizzle"]);
     expect(facets.changeTypes).toEqual(["feature"]);
     expect(facets.domains).toEqual(["graph-ui"]);

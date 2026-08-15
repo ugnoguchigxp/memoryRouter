@@ -2,11 +2,11 @@ import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
 export const SECURITY_INTELLIGENCE_IDENTITY_FIXTURE_SHA256 =
-  "sha256:0c0278ecfd8eca8e6866e3bc8f7ae45b20bd198eb2758ac3b568091d304c98c4";
+  "sha256:d715270ebf16ed55ac9bb3dca2b095e800d3ca51e0de58111b28d3129f007c12";
 
 const rawDigestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const canonicalDigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const rawRefSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,247}$/);
+const rawRefSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,246}$/);
 
 export const securityIntelligenceIdentityFixtureSchema = z
   .object({

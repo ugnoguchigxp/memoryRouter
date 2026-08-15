@@ -264,6 +264,8 @@ describe("sqlite runtime support repositories", () => {
 
   test("persists and searches episode cards in sqlite", async () => {
     const episode = await createEpisode({
+      scope: "repo",
+      repoPath: "/repo/contextStill",
       title: "SQLite episode recovery",
       situation: "A SQLite migration failed while compiling context.",
       action: "Ran the sqlite runtime support test and fixed schema bootstrap.",
@@ -284,6 +286,7 @@ describe("sqlite runtime support repositories", () => {
 
     const hits = await searchEpisodes({
       query: "schema bootstrap",
+      repoPath: "/repo/contextStill",
       technologies: ["sqlite"],
       limit: 5,
     });
@@ -887,6 +890,7 @@ describe("sqlite runtime support repositories", () => {
 
   test("persists vibe memories and diff entries in sqlite", async () => {
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "sqlite-vibe-session",
       content: "SQLite ingest memory about queue migration.",
       memoryType: "chat",
@@ -1011,13 +1015,15 @@ describe("sqlite runtime support repositories", () => {
   test("distills vibe memory episodes from sqlite episodeDistiller queue idempotently", async () => {
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "repo",
+      repoPath: "/repo/contextStill",
       sessionId: "episode-distiller-session",
       content:
         "The implementation separated Episode generation from findCandidate and kept source refs for later review.",
       memoryType: "chat",
       metadata: {
-        projectName: "contextStill",
-        cwd: "/repo/contextStill",
+        projectName: "legacy-wrong-project",
+        cwd: "/legacy/wrong-root",
       },
       agentDiffs: [
         {
@@ -1087,6 +1093,7 @@ describe("sqlite runtime support repositories", () => {
 
     const episodes = await searchEpisodes({
       query: "queue split",
+      repoPath: "/repo/contextStill",
       technologies: ["sqlite"],
       limit: 10,
     });
@@ -1119,10 +1126,14 @@ describe("sqlite runtime support repositories", () => {
           action: string;
           outcome: string;
           anti_applicability: string;
+          classification_status: string;
+          scope: string;
+          repo_path: string | null;
+          repo_key: string | null;
         },
         [string]
       >(
-        "select status, situation, action, outcome, anti_applicability from episode_cards where id = ?",
+        "select status, situation, action, outcome, anti_applicability, classification_status, scope, repo_path, repo_key from episode_cards where id = ?",
       )
       .get(episodes[0]?.id ?? "");
     expect(episodeRow?.status).toBe("active");
@@ -1137,6 +1148,12 @@ describe("sqlite runtime support repositories", () => {
     expect(episodeRow?.outcome).toBe(
       "Episode generation was split from findCandidate and saved with source refs.",
     );
+    expect(episodeRow).toMatchObject({
+      classification_status: "classified",
+      scope: "repo",
+      repo_path: "/repo/contextStill",
+      repo_key: null,
+    });
     expect(JSON.parse(episodeRow?.anti_applicability ?? "{}")).toMatchObject({
       openLoops: ["Review quality scores after real LLM runs."],
     });
@@ -1191,6 +1208,7 @@ describe("sqlite runtime support repositories", () => {
     expect(
       await searchEpisodes({
         query: "queue split",
+        repoPath: "/repo/contextStill",
         technologies: ["sqlite"],
         limit: 10,
       }),
@@ -1208,6 +1226,7 @@ describe("sqlite runtime support repositories", () => {
     expect(
       await searchEpisodes({
         query: "queue split",
+        repoPath: "/repo/contextStill",
         technologies: ["sqlite"],
         limit: 10,
       }),
@@ -1218,6 +1237,7 @@ describe("sqlite runtime support repositories", () => {
     groupedConfig.distillation.internalChunkedDistillationEnabled = true;
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-chunked-session",
       content:
         "The queue investigation found a stale worker lease. Restarting the owner process restored episode processing.",
@@ -1313,6 +1333,7 @@ describe("sqlite runtime support repositories", () => {
     groupedConfig.distillation.internalChunkedDistillationEnabled = true;
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-near-duplicate-session",
       content: "A normalize.ts utility module was added and later summarized again.",
       memoryType: "chat",
@@ -1445,6 +1466,7 @@ describe("sqlite runtime support repositories", () => {
     groupedConfig.distillation.internalChunkedDistillationEnabled = true;
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-candidate-only-session",
       content:
         "The source only contains a reusable rule candidate and should not become an EpisodeCard.",
@@ -1512,6 +1534,7 @@ describe("sqlite runtime support repositories", () => {
   test("skips low-value episodeDistiller candidates without creating EpisodeCards", async () => {
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-low-value-session",
       content:
         "A short source fragment only repeated that work happened without decisions, evidence, or reusable lessons.",
@@ -1851,6 +1874,7 @@ describe("sqlite runtime support repositories", () => {
   test("skips duplicate episodeDistiller generation kinds within one source segment", async () => {
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-duplicate-kind-session",
       content:
         "The worker received two task episode candidates for the same source span and should keep deterministic source keys.",
@@ -1941,6 +1965,7 @@ describe("sqlite runtime support repositories", () => {
   test("keeps episodeDistiller jobs retryable when all segments fail", async () => {
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-all-failed-session",
       content: "The local LLM route rejected the configured model before any episode was saved.",
       memoryType: "chat",
@@ -1998,6 +2023,7 @@ describe("sqlite runtime support repositories", () => {
   test("returns episodeDistiller loading-model 503 failures to the queue", async () => {
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-loading-model-session",
       content: "The local LLM route is loading the configured model before any episode is saved.",
       memoryType: "chat",
@@ -2064,6 +2090,7 @@ describe("sqlite runtime support repositories", () => {
   test("does not immediately stale-recover fresh provider leases", async () => {
     const sqlite = await getRuntimeSqliteCoreDatabase();
     const first = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-provider-lease-session-1",
       content: "First provider lease candidate.",
       memoryType: "chat",
@@ -2078,6 +2105,7 @@ describe("sqlite runtime support repositories", () => {
       ],
     });
     const second = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-provider-lease-session-2",
       content: "Second provider lease candidate.",
       memoryType: "chat",
@@ -2172,6 +2200,7 @@ describe("sqlite runtime support repositories", () => {
     };
     await saveRuntimeSettings({ settings, updatedBy: "sqlite-runtime-test" });
     const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-provider-target-session",
       content: "Provider lease should match the episodeDistiller route target.",
       memoryType: "chat",
@@ -2474,6 +2503,7 @@ describe("sqlite runtime support repositories", () => {
     });
 
     const firstMemory = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-wait-preferred-session-1",
       content: "First preferred target claim.",
       memoryType: "chat",
@@ -2488,6 +2518,7 @@ describe("sqlite runtime support repositories", () => {
       ],
     });
     const secondMemory = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "episode-distiller-wait-preferred-session-2",
       content: "Second preferred target claim should wait.",
       memoryType: "chat",
@@ -2951,6 +2982,7 @@ describe("sqlite runtime support repositories", () => {
     };
     await saveRuntimeSettings({ settings, updatedBy: "sqlite-runtime-test" });
     const queued = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "finding-same-route-wait-session-1",
       content: "First same-route finding candidate.",
       memoryType: "chat",
@@ -2958,6 +2990,7 @@ describe("sqlite runtime support repositories", () => {
       agentDiffs: [],
     });
     const waiting = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "finding-same-route-wait-session-2",
       content: "Second same-route finding candidate.",
       memoryType: "chat",
@@ -3992,7 +4025,23 @@ describe("sqlite runtime support repositories", () => {
     const runId = await insertCompileRun({
       goal: "sqlite overview compile run",
       intent: "implementation",
-      input: { goal: "sqlite overview compile run" },
+      repoPath: "/repo/contextStill",
+      matchBasis: "repo_path",
+      identityContractVersion: 1,
+      scopeMode: "project",
+      input: {
+        goal: "sqlite overview compile run",
+        repoPath: "/repo/contextStill",
+        projectIdentity: {
+          contractVersion: 1,
+          matchBasis: "repo_path",
+          matchValue: "/repo/contextStill",
+          scopeMode: "project",
+          projectRef: null,
+          repoKey: null,
+          repoPath: "/repo/contextStill",
+        },
+      },
       retrievalMode: "implementation_context",
       status: "ok",
       degradedReasons: [],
@@ -4021,7 +4070,23 @@ describe("sqlite runtime support repositories", () => {
     const replayRunId = await insertCompileRun({
       goal: "sqlite overview related compile run",
       intent: "implementation",
-      input: { goal: "sqlite overview related compile run" },
+      repoPath: "/repo/contextStill",
+      matchBasis: "repo_path",
+      identityContractVersion: 1,
+      scopeMode: "project",
+      input: {
+        goal: "sqlite overview related compile run",
+        repoPath: "/repo/contextStill",
+        projectIdentity: {
+          contractVersion: 1,
+          matchBasis: "repo_path",
+          matchValue: "/repo/contextStill",
+          scopeMode: "project",
+          projectRef: null,
+          repoKey: null,
+          repoPath: "/repo/contextStill",
+        },
+      },
       retrievalMode: "implementation_context",
       status: "ok",
       degradedReasons: [],

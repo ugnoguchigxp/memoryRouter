@@ -3,6 +3,10 @@ import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { db } from "../../db/client.js";
 import { agentDiffEntries, vibeMemories } from "../../db/schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 
 export type VibeMemorySeed = {
   sessionId: string;
@@ -10,24 +14,58 @@ export type VibeMemorySeed = {
   memoryType?: string;
   embedding?: number[];
   metadata?: Record<string, unknown>;
+  scope: "repo" | "global";
+  projectRef?: string | null;
+  repoKey?: string | null;
+  repoPath?: string | null;
 };
 
 export async function insertVibeMemory(seed: VibeMemorySeed) {
+  const projectIdentity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: seed.scope,
+      projectRef: seed.projectRef,
+      repoKey: seed.repoKey,
+      repoPath: seed.repoPath,
+    },
+    {
+      producer: "vibe-memory.legacy-capture",
+      entityKind: "vibe_memory",
+      actor: "agent",
+    },
+  );
+  const normalizedSeed = {
+    ...seed,
+    metadata: redactSecretRecord({ ...seed.metadata, projectIdentity }),
+  };
   if (resolveDatabaseBackendConfig().kind === "sqlite") {
     const sqlite = await import("./vibe-memory.repository.sqlite.js");
-    return sqlite.insertVibeMemorySqlite(seed);
+    const inserted = await sqlite.insertVibeMemorySqlite(normalizedSeed);
+    await recordProjectScopedWritePersisted(projectIdentity, {
+      producer: "vibe-memory.legacy-capture",
+      entityKind: "vibe_memory",
+      entityId: inserted.id,
+      actor: "agent",
+    });
+    return inserted;
   }
 
   const [inserted] = await db
     .insert(vibeMemories)
     .values({
-      sessionId: seed.sessionId,
-      content: redactSecrets(seed.content),
-      memoryType: seed.memoryType ?? "chat",
-      embedding: seed.embedding,
-      metadata: redactSecretRecord(seed.metadata ?? {}),
+      sessionId: normalizedSeed.sessionId,
+      content: redactSecrets(normalizedSeed.content),
+      memoryType: normalizedSeed.memoryType ?? "chat",
+      embedding: normalizedSeed.embedding,
+      metadata: normalizedSeed.metadata,
     })
     .returning();
+  await recordProjectScopedWritePersisted(projectIdentity, {
+    producer: "vibe-memory.legacy-capture",
+    entityKind: "vibe_memory",
+    entityId: inserted.id,
+    actor: "agent",
+  });
   return inserted;
 }
 

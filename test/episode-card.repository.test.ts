@@ -48,6 +48,9 @@ describe("episode-card.repository (PostgreSQL)", () => {
     technologies: ["vitest"],
     changeTypes: ["test-change"],
     tools: ["antigravity"],
+    classificationStatus: "classified",
+    scope: "repo",
+    projectRef: null,
     repoPath: "/repo",
     repoKey: "key",
     sourceKind: "compile_run",
@@ -195,8 +198,7 @@ describe("episode-card.repository (PostgreSQL)", () => {
     const mockSelectResult = {
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([dummyEpisode]),
+      orderBy: vi.fn().mockResolvedValue([dummyEpisode]),
     };
 
     const mockSelectRefsResult = {
@@ -232,6 +234,10 @@ describe("episode-card.repository (PostgreSQL)", () => {
       ...dummyEpisode,
       id: "older-high-score",
       title: "Older high score episode",
+      scope: "global",
+      projectRef: null,
+      repoKey: null,
+      repoPath: null,
       outcomeKind: "success",
       importance: 100,
       confidence: 100,
@@ -242,6 +248,10 @@ describe("episode-card.repository (PostgreSQL)", () => {
       ...dummyEpisode,
       id: "newest-low-score",
       title: "Newest low score episode",
+      scope: "global",
+      projectRef: null,
+      repoKey: null,
+      repoPath: null,
       outcomeKind: "unknown",
       importance: 0,
       confidence: 0,
@@ -251,8 +261,7 @@ describe("episode-card.repository (PostgreSQL)", () => {
     const mockSelectResult = {
       from: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([olderHighScoreEpisode, newestLowScoreEpisode]),
+      orderBy: vi.fn().mockResolvedValue([olderHighScoreEpisode, newestLowScoreEpisode]),
     };
     const mockSelectRefsResult = {
       from: vi.fn().mockReturnThis(),

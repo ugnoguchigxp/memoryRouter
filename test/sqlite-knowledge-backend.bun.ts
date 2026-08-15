@@ -139,12 +139,13 @@ describe("sqlite knowledge backend", () => {
     expect(hits).toEqual([]);
   });
 
-  test("uses sqlite vector fallback for knowledge vector search", async () => {
+  test("disables sqlite vector search when scope cannot be prefiltered", async () => {
     await upsertKnowledgeFromSource({
       sourceUri: "agent://candidate/vector-target",
       type: "rule",
       status: "active",
       scope: "repo",
+      repoPath: "/repo/contextStill",
       title: "Vector target",
       body: "SQLite vector fallback should find this row.",
       confidence: 80,
@@ -156,6 +157,7 @@ describe("sqlite knowledge backend", () => {
       type: "rule",
       status: "active",
       scope: "repo",
+      repoPath: "/repo/contextStill",
       title: "Vector other",
       body: "Different vector.",
       confidence: 80,
@@ -163,8 +165,10 @@ describe("sqlite knowledge backend", () => {
       embedding: [0, 1, 0],
     });
 
-    const hits = await vectorSearchKnowledge([1, 0, 0], 1);
-    expect(hits.map((hit) => hit.title)).toEqual(["Vector target"]);
+    const hits = await vectorSearchKnowledge([1, 0, 0], 1, ["active"], {
+      repoPath: "/repo/contextStill",
+    });
+    expect(hits).toEqual([]);
   });
 
   test("knowledge API repository writes use sqlite backend", async () => {
@@ -172,6 +176,7 @@ describe("sqlite knowledge backend", () => {
       type: "rule",
       status: "draft",
       scope: "repo",
+      repoPath: "/repo/contextStill",
       polarity: "positive",
       intentTags: ["sqlite-api"],
       title: "SQLite API draft",
@@ -205,6 +210,7 @@ describe("sqlite knowledge backend", () => {
       type: "procedure",
       status: "draft",
       scope: "repo",
+      repoPath: "/repo/contextStill",
       title: "SQLite API bulk target",
       body: "Bulk status updates should use SQLite selection rows.",
       confidence: 70,
@@ -260,6 +266,7 @@ describe("sqlite knowledge backend", () => {
     });
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "repo",
       uri: "file:///repo/contextStill/docs/sqlite.md",
       title: "SQLite backend notes",
       body: "SQLite backend mode stores compile run snapshots and source fragments locally.",

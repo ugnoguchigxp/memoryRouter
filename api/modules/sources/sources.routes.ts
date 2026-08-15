@@ -195,6 +195,7 @@ export const sourcesRouter = new Hono()
       if (!page) continue;
       await upsertSourceDocument({
         sourceKind: "wiki",
+        scope: "global",
         uri: page.path,
         title: page.title,
         body: page.body,
@@ -424,6 +425,7 @@ export const sourcesRouter = new Hono()
     }
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: savedPage.path,
       title: savedPage.title,
       body: savedPage.body,
@@ -482,6 +484,7 @@ export const sourcesRouter = new Hono()
     }
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: savedPage.path,
       title: savedPage.title,
       body: savedPage.body,

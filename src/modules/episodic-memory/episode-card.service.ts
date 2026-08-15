@@ -1,3 +1,4 @@
+import type { CompileRunDetail } from "../../shared/schemas/compile-run.schema.js";
 import {
   type EpisodeCard,
   type EpisodeCardCreateInput,
@@ -5,13 +6,17 @@ import {
   type EpisodeRetrievalFeedbackInput,
   episodeRetrievalFeedbackInputSchema,
 } from "../../shared/schemas/episode-card.schema.js";
-import type { CompileRunDetail } from "../../shared/schemas/compile-run.schema.js";
 import { asRecord, asStringArray } from "../../shared/utils/normalize.js";
 import { getCompileRunDetail } from "../context-compiler/context-compiler.repository.js";
 import {
+  PROJECT_IDENTITY_REQUIRED,
+  ProjectScopedWriteError,
+  resolveProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
+import {
   createEpisodeCard,
-  getEpisodeCardBySource,
   getEpisodeCard,
+  getEpisodeCardBySource,
   incrementEpisodeUsageCounts,
   searchEpisodeCards,
 } from "./episode-card.repository.js";
@@ -164,10 +169,26 @@ function collectCompileSourceRefs(detail: CompileRunDetail): EpisodeCardCreateIn
   }));
 }
 
+function compileRunProjectIdentity(input: Record<string, unknown>) {
+  const snapshot = asRecord(input.projectIdentity);
+  if (snapshot.contractVersion !== 1) {
+    throw new ProjectScopedWriteError(
+      PROJECT_IDENTITY_REQUIRED,
+      "compile-run EpisodeCards require a normalized request identity snapshot",
+    );
+  }
+  const scope = snapshot.scopeMode === "global_only" ? "global" : "repo";
+  return resolveProjectScopedWriteIdentity({
+    scope,
+    projectRef: typeof snapshot.projectRef === "string" ? snapshot.projectRef : undefined,
+    repoKey: typeof snapshot.repoKey === "string" ? snapshot.repoKey : undefined,
+    repoPath: typeof snapshot.repoPath === "string" ? snapshot.repoPath : undefined,
+  });
+}
+
 function compileRunToEpisodeInput(detail: CompileRunDetail): EpisodeCardCreateInput {
   const input = asRecord(detail.run.input);
-  const repoPath = typeof input.repoPath === "string" ? input.repoPath : null;
-  const repoKey = typeof input.repoKey === "string" ? input.repoKey : null;
+  const identity = compileRunProjectIdentity(input);
   const output =
     detail.outputMarkdown && detail.outputMarkdown !== "No Content" ? detail.outputMarkdown : "";
   const degradedReasons = detail.run.degradedReasons.length
@@ -205,8 +226,10 @@ function compileRunToEpisodeInput(detail: CompileRunDetail): EpisodeCardCreateIn
     technologies: collectFacets(detail, "technologies"),
     changeTypes: collectFacets(detail, "changeTypes"),
     tools: ["context_compile"],
-    repoPath,
-    repoKey,
+    scope: identity.scope,
+    projectRef: identity.projectRef,
+    repoPath: identity.repoPath,
+    repoKey: identity.repoKey,
     sourceKind: "compile_run",
     sourceKey: detail.run.id,
     outcomeKind: inferOutcomeKind(detail),

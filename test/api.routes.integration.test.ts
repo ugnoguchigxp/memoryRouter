@@ -62,6 +62,7 @@ describeDb("api route integration", () => {
       type: "rule",
       status: "active",
       scope: "repo",
+      repoPath: "/workspace/repo-a",
       title: "Feedback rule",
       body: "feedback compile token",
     });
@@ -71,6 +72,7 @@ describeDb("api route integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         goal: "feedback compile token",
+        repoPath: "/workspace/repo-a",
       }),
     });
     expect(compileResponse.status).toBe(200);
@@ -125,6 +127,7 @@ describeDb("api route integration", () => {
       type: "rule",
       status: "active",
       scope: "repo",
+      repoPath: "/workspace/repo-a",
       title: "Applicability Facet Rule",
       body: "body without the searched facet token",
       appliesTo: {
@@ -151,7 +154,7 @@ describeDb("api route integration", () => {
       sourceUri: "file:///integration/context-decision.md",
       type: "procedure",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Context decision integration evidence",
       body: "context decision integration token should continue autonomously before asking user",
     });
@@ -218,6 +221,8 @@ describeDb("api route integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        scope: "repo",
+        repoPath: "/workspace/repo-a",
         sessionId: "integration-session-newer",
         content: "integration vibe memory newer token",
         metadata: {
@@ -232,6 +237,8 @@ describeDb("api route integration", () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        scope: "repo",
+        repoPath: "/workspace/repo-a",
         sessionId: "integration-session-older",
         content: "integration vibe memory older token",
         metadata: {

@@ -59,6 +59,7 @@ describe("context eval service", () => {
           lost_baseline: 0,
           new_only: 0,
           no_current_match: 1,
+          not_comparable: 0,
         },
         recompilePlan: {
           mode: "current_retrieval_dry_run",
@@ -239,6 +240,7 @@ describe("context eval service", () => {
         lost_baseline: 0,
         new_only: 0,
         no_current_match: 0,
+        not_comparable: 0,
       },
       recompilePlan: {
         mode: "current_retrieval_dry_run",

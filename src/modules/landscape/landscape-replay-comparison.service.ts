@@ -39,12 +39,16 @@ function buildRecompilePlan(params: {
   replayRunCount: number;
   comparedRunCount: number;
 }): LandscapeReplayRecompilePlan {
+  const excludedCount = Math.max(0, params.replayRunCount - params.comparedRunCount);
   return {
     mode: "current_retrieval_dry_run",
     writesCompileRuns: false,
     replayRunCount: params.replayRunCount,
     comparedRunCount: params.comparedRunCount,
-    blockers: [],
+    blockers:
+      excludedCount > 0
+        ? [`${excludedCount} legacy run(s) excluded: identity snapshot is unknown.`]
+        : [],
   };
 }
 
@@ -389,7 +393,12 @@ export async function buildLandscapeReplayComparison(
         const compileInput = compileInputFromRun({
           goal: run.goal,
           runInput: run.input,
+          projectRef: run.projectRef,
+          repoKey: run.repoKey,
           repoPath: run.repoPath,
+          matchBasis: run.matchBasis,
+          identityContractVersion: run.identityContractVersion,
+          scopeMode: run.scopeMode,
           retrievalMode: run.retrievalMode,
           source: run.source,
           runStatus: run.status,
@@ -399,29 +408,7 @@ export async function buildLandscapeReplayComparison(
         const baselineSelectedKnowledgeIds = uniqueOrdered(
           orderPackItems(packItemsByRunId.get(run.id) ?? []).map((item) => item.itemId),
         );
-        const current = await retrieveKnowledge(compileInput, {
-          retrievalMode,
-          limit: input.currentLimit,
-          facetFilters: {
-            technologies: taskFacets.technologies,
-            changeTypes: taskFacets.changeTypes,
-            domains: taskFacets.domains,
-          },
-        });
-        const currentRetrievedKnowledgeIds = uniqueOrdered(
-          current.items.map((item) => item.id).slice(0, input.currentLimit),
-        );
         const baselineSet = new Set(baselineSelectedKnowledgeIds);
-        const currentSet = new Set(currentRetrievedKnowledgeIds);
-        const retainedKnowledgeIds = baselineSelectedKnowledgeIds.filter((id) =>
-          currentSet.has(id),
-        );
-        const missingFromCurrentKnowledgeIds = baselineSelectedKnowledgeIds.filter(
-          (id) => !currentSet.has(id),
-        );
-        const newlyRetrievedKnowledgeIds = currentRetrievedKnowledgeIds.filter(
-          (id) => !baselineSet.has(id),
-        );
         const baselineUsageEvents = (usageEventsByRunId.get(run.id) ?? []).filter((event) =>
           baselineSet.has(event.knowledgeId),
         );
@@ -440,6 +427,64 @@ export async function buildLandscapeReplayComparison(
           baselineUsageEvents
             .filter((event) => event.verdict === "wrong")
             .map((event) => event.knowledgeId),
+        );
+        if (!compileInput) {
+          comparisonCounts.not_comparable += 1;
+          runs.push({
+            runId: run.id,
+            createdAt: run.createdAt.toISOString(),
+            goal: run.goal,
+            retrievalMode,
+            status: run.status as LandscapeRunStatus,
+            identityCompatibility: "legacy_identity_unknown",
+            taskFacets,
+            baselineSelectedKnowledgeIds,
+            currentRetrievedKnowledgeIds: [],
+            retainedKnowledgeIds: [],
+            missingFromCurrentKnowledgeIds: [],
+            newlyRetrievedKnowledgeIds: [],
+            baselineVerdicts,
+            usedBaselineRetainedKnowledgeIds: [],
+            usedBaselineLostKnowledgeIds: [],
+            offTopicBaselineKnowledgeIds,
+            wrongBaselineKnowledgeIds,
+            overlapRate: 0,
+            replacementRate: 0,
+            comparison: "not_comparable",
+            currentDegradedReasons: ["LEGACY_IDENTITY_UNKNOWN"],
+            currentRetrievalStats: {
+              textHitCount: 0,
+              vectorHitCount: 0,
+              mergedCount: 0,
+              textFailed: false,
+              vectorFailed: false,
+              embeddingStatus: "disabled",
+              repoScopeFallbackUsed: false,
+            },
+          });
+          continue;
+        }
+        const current = await retrieveKnowledge(compileInput, {
+          retrievalMode,
+          limit: input.currentLimit,
+          facetFilters: {
+            technologies: taskFacets.technologies,
+            changeTypes: taskFacets.changeTypes,
+            domains: taskFacets.domains,
+          },
+        });
+        const currentRetrievedKnowledgeIds = uniqueOrdered(
+          current.items.map((item) => item.id).slice(0, input.currentLimit),
+        );
+        const currentSet = new Set(currentRetrievedKnowledgeIds);
+        const retainedKnowledgeIds = baselineSelectedKnowledgeIds.filter((id) =>
+          currentSet.has(id),
+        );
+        const missingFromCurrentKnowledgeIds = baselineSelectedKnowledgeIds.filter(
+          (id) => !currentSet.has(id),
+        );
+        const newlyRetrievedKnowledgeIds = currentRetrievedKnowledgeIds.filter(
+          (id) => !baselineSet.has(id),
         );
         const usedBaselineRetainedKnowledgeIds = usedBaselineKnowledgeIds.filter((id) =>
           currentSet.has(id),
@@ -473,6 +518,7 @@ export async function buildLandscapeReplayComparison(
           goal: run.goal,
           retrievalMode,
           status: run.status as LandscapeRunStatus,
+          identityCompatibility: "comparable",
           taskFacets,
           baselineSelectedKnowledgeIds,
           currentRetrievedKnowledgeIds,
@@ -500,11 +546,12 @@ export async function buildLandscapeReplayComparison(
         });
       }
 
+      const comparableRuns = runs.filter((run) => run.identityCompatibility === "comparable");
       const averageOverlapRate = rate(
-        runs.reduce((sum, run) => sum + run.overlapRate, 0),
-        runs.length,
+        comparableRuns.reduce((sum, run) => sum + run.overlapRate, 0),
+        comparableRuns.length,
       );
-      const scoreTuning = buildScoreTuningSummary(runs);
+      const scoreTuning = buildScoreTuningSummary(comparableRuns);
 
       return {
         generatedAt: analysisAsOf,
@@ -521,7 +568,7 @@ export async function buildLandscapeReplayComparison(
           currentLimit: input.currentLimit,
         },
         replayRunCount: corpus.runs.length,
-        comparedRunCount: runs.length,
+        comparedRunCount: comparableRuns.length,
         baselineSelectedItemCount,
         currentRetrievedItemCount,
         retainedItemCount,
@@ -533,17 +580,17 @@ export async function buildLandscapeReplayComparison(
         comparisonCounts,
         recompilePlan: buildRecompilePlan({
           replayRunCount: corpus.runs.length,
-          comparedRunCount: runs.length,
+          comparedRunCount: comparableRuns.length,
         }),
         rankingExperiments: buildRankingExperiments({
-          runs,
+          runs: comparableRuns,
           retainedItemCount,
           missingFromCurrentItemCount,
           usedBaselineLostItemCount,
           averageOverlapRate,
         }),
-        appliesToRefineCandidates: buildAppliesToRefineCandidates(runs),
-        promotionGateSummary: buildPromotionGateSummary(runs),
+        appliesToRefineCandidates: buildAppliesToRefineCandidates(comparableRuns),
+        promotionGateSummary: buildPromotionGateSummary(comparableRuns),
         scoreTuning,
         compileInterventionPlan: buildCompileInterventionPlan(scoreTuning),
         runs: input.includeRuns ? runs : [],

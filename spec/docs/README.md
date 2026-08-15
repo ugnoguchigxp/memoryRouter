@@ -6,7 +6,8 @@
 
 | Document | 目的 |
 |---|---|
-| [Context Compile Repository Isolation Improvement Plan](context-compile-repository-isolation-improvement-plan.md) | repository identityを全candidate、trace、producer、migrationへ一貫して適用し、wrong-project retrievalをfail-closedで防ぐ進行中の実装計画 |
+| [Repository Isolation First Product Hardening Plan](repository-isolation-first-product-hardening-plan.md) | repository isolationを最優先に、compile ownership、巨大module、SQLite-first onboarding、release運用までの依存順序と完了gateを定める上位改善計画 |
+| [Context Compile Repository Isolation Closeout Plan](context-compile-repository-isolation-improvement-plan.md) | caller adoptionからactive Rust enforcementまでをP0-P5で完了し、wrong-project retrievalをfail-closedで防ぐ進行中の実装計画 |
 | [Context Compile Repository Isolation T0 Evidence](context-compile-repository-isolation-t0-evidence.md) | cross-repository fixture、legacy再現、read-only inventory、baseline cohortの実行証拠 |
 | [Rust Runtime Closeout Implementation Plan](rust-runtime-closeout-implementation-plan.md) | live database identity、doctor/backup、queue executor truth、vector modeの測定判断、regression testを一貫させてRust runtimeを安全に完了判定する計画 |
 | [LLM Provider busy 503 contract](llm-provider-busy-503-contract.md) | provider busyを恒久障害や完了として扱わず、`Retry-After`に従うretryable queue状態へ戻す契約 |

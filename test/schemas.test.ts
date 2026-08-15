@@ -130,7 +130,7 @@ describe("Shared Schemas", () => {
         items: [{ body: "A" }],
       }),
     ).toEqual({
-      items: [{ body: "A", metadata: {} }],
+      items: [{ body: "A", scope: "repo", metadata: {} }],
     });
     expect(
       registerCandidatesToolInputSchema.safeParse({

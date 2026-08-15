@@ -12,6 +12,7 @@ const contextCompileMcpInputSchema = compileInputSchema
     projectRef: true,
     repoKey: true,
     repoPath: true,
+    securityIntelligenceShadow: true,
   })
   .strict();
 
@@ -57,18 +58,35 @@ export const contextCompileTool: ToolEntry = {
         pattern: "^[^\\u0000-\\u001F\\u007F-\\u009F]+$",
         description: "Absolute lexical repository path or local absolute file URI.",
       },
+      securityIntelligenceShadow: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          enabled: { type: "boolean", const: true },
+          taskRef: { type: "string", minLength: 1, maxLength: 256 },
+          runRef: { type: "string", minLength: 1, maxLength: 256 },
+          projectRef: {
+            type: "string",
+            pattern: "^project:[A-Za-z0-9._:-]{1,247}$",
+          },
+        },
+        required: ["enabled", "taskRef", "runRef", "projectRef"],
+        description:
+          "Explicit Security Contract-bound shadow retrieval. Candidate/draft refs are recorded but never added to the context markdown.",
+      },
     },
     required: ["goal"],
   },
   handler: async (args, context) => {
     const parsed = contextCompileMcpInputSchema.parse(args ?? {});
     await reloadRuntimeSettingsCache();
-    const { markdown } = await compileContextPack(parsed, {
+    const { markdown, securityIntelligenceShadow } = await compileContextPack(parsed, {
       source: "mcp",
       sessionId: resolveSessionIdFromMeta(context?.requestMeta),
     });
     return {
       content: [{ type: "text", text: markdown }],
+      ...(securityIntelligenceShadow ? { _meta: { securityIntelligenceShadow } } : {}),
     };
   },
 };

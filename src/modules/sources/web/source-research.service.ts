@@ -10,7 +10,7 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveWebSourceResearchRoute,
 } from "../../settings/settings.service.js";
-import { renderPrompt, promptMessage } from "../../system-context/system-context.service.js";
+import { promptMessage, renderPrompt } from "../../system-context/system-context.service.js";
 import { upsertSourceDocument } from "../source.repository.js";
 import { ensureContentRoot, writePage } from "../wiki/content-repo.js";
 
@@ -156,6 +156,7 @@ export async function researchWebSourceToMarkdown(params: {
 
   await upsertSourceDocument({
     sourceKind: "wiki",
+    scope: "global",
     uri: savedWikiTargetKey,
     title,
     body,

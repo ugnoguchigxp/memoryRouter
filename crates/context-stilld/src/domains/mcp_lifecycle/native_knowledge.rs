@@ -6,6 +6,14 @@ use super::native_common::{
     table_exists, tool_error, usize_arg, with_writer,
 };
 use super::native_tools::NativeToolContext;
+use super::project_identity::{
+    resolve_compile_project_identity, CompileProjectIdentityInput,
+    CompileProjectIdentityMatchBasis, CompileProjectIdentityTrust,
+};
+use super::repository_scope::{
+    applicability_general, eligible_scope_clause, facets_allow, identity_input_from_args,
+    json_string_array, parse_json_object, query_params, request_facets_from_args,
+};
 
 pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> Value {
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
@@ -16,6 +24,22 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
         _ => return tool_error("query is required"),
     };
     let limit = usize_arg(args, "limit").unwrap_or(10).min(50);
+    let identity_input = match identity_input_from_args(args) {
+        Ok(value) => value,
+        Err(error) => return tool_error(&error),
+    };
+    let identity = match resolve_compile_project_identity(
+        &identity_input,
+        CompileProjectIdentityTrust::RequestHint,
+        None,
+    ) {
+        Ok(value) => value,
+        Err(error) => return tool_error(&error.to_string()),
+    };
+    let request_facets = match request_facets_from_args(args) {
+        Ok(value) => value,
+        Err(error) => return tool_error(&error),
+    };
     let connection = match open_database(context) {
         Ok(connection) => connection,
         Err(error) => return tool_error(&error),
@@ -25,25 +49,35 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
             "query": query,
             "normalizedQuery": query,
             "items": [],
-            "diagnostics": {"degradedReasons":["knowledge_items_missing"],"stats":{"queryText": query}}
+            "diagnostics": {"degradedReasons":["knowledge_items_missing"],"stats":{
+                "queryText": query,
+                "scopedSearch": identity.match_basis != CompileProjectIdentityMatchBasis::None,
+                "matchBasis": identity.match_basis.as_str(),
+                "scopeMode": identity.scope_mode,
+                "missingIdentityGlobalOnly": identity.match_basis == CompileProjectIdentityMatchBasis::None,
+                "repoScopeFallbackUsed": false
+            }}
         }));
     }
 
-    let mut statement = match connection.prepare(
+    let (scope_clause, scope_values) = eligible_scope_clause(&identity);
+    let sql = format!(
         r#"
         select id, type, status, scope, polarity, intent_tags, title, body, applies_to,
                confidence, importance, compile_select_count, last_compiled_at,
                agentic_accept_count, explicit_upvote_count, explicit_downvote_count,
-               dynamic_score, metadata, updated_at, last_verified_at
+               dynamic_score, metadata, updated_at, last_verified_at,
+               project_ref, repo_key, repo_path
         from knowledge_items
+        where {scope_clause}
         order by importance desc, updated_at desc
-        limit 500
         "#,
-    ) {
+    );
+    let mut statement = match connection.prepare(&sql) {
         Ok(statement) => statement,
         Err(error) => return tool_error(&format!("failed to search knowledge: {error}")),
     };
-    let rows = match statement.query_map([], |row| {
+    let rows = match statement.query_map(query_params(&scope_values), |row| {
         Ok(KnowledgeRow {
             id: row.get(0)?,
             kind: row.get(1)?,
@@ -65,6 +99,9 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
             metadata: row.get(17)?,
             updated_at: row.get(18)?,
             last_verified_at: row.get(19)?,
+            project_ref: row.get(20)?,
+            repo_key: row.get(21)?,
+            repo_path: row.get(22)?,
         })
     }) {
         Ok(rows) => rows,
@@ -83,6 +120,23 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
         if !matches_arg_array(args, "types", &row.kind)
             || !matches_arg_array(args, "polarities", &row.polarity)
         {
+            continue;
+        }
+        let applies_to = parse_json_object(&row.applies_to);
+        let technologies = json_string_array(&applies_to, "technologies");
+        let change_types = json_string_array(&applies_to, "changeTypes");
+        let domains = json_string_array(&applies_to, "domains");
+        let general = applicability_general(&applies_to, &technologies, &change_types, &domains);
+        if args.get("includeGeneral").and_then(Value::as_bool) == Some(false) && general {
+            continue;
+        }
+        if !facets_allow(
+            &request_facets,
+            &technologies,
+            &change_types,
+            &domains,
+            general,
+        ) {
             continue;
         }
         let score = score_text(&format!("{}\n{}", row.title, row.body), &query)
@@ -115,7 +169,11 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
                 "lastVerifiedAt": row.last_verified_at,
                 "updatedAt": row.updated_at,
                 "sourceRefs": source_refs,
-                "appliesTo": parse_json_or_empty(&row.applies_to),
+                "appliesTo": applies_to,
+                "projectRef": row.project_ref,
+                "repoKey": row.repo_key,
+                "repoPath": row.repo_path,
+                "classificationStatus": "classified",
                 "applicabilityScore": 0,
                 "applicabilityMatches": {},
                 "metadata": parse_json_or_empty(&row.metadata)
@@ -128,9 +186,6 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
         .take(limit)
         .map(|(_, value)| value)
         .collect::<Vec<_>>();
-    if values.is_empty() {
-        return json!({"content":[{"type":"text","text":"no content"}]});
-    }
     content_json(json!({
         "query": query,
         "normalizedQuery": query,
@@ -145,7 +200,10 @@ pub(crate) fn search_knowledge(params: &Value, context: &NativeToolContext) -> V
                 "textFailed": false,
                 "vectorFailed": false,
                 "embeddingStatus": "disabled",
-                "scopedSearch": false,
+                "scopedSearch": identity.match_basis != CompileProjectIdentityMatchBasis::None,
+                "matchBasis": identity.match_basis.as_str(),
+                "scopeMode": identity.scope_mode,
+                "missingIdentityGlobalOnly": identity.match_basis == CompileProjectIdentityMatchBasis::None,
                 "repoScopeFallbackUsed": false
             }
         }
@@ -322,6 +380,17 @@ fn register_candidates_on_connection(params: &Value, connection: &mut Connection
                 }));
             }
             Err(error) => {
+                if is_project_identity_error(&error) {
+                    record_project_identity_producer_event(
+                        &tx,
+                        "PROJECT_IDENTITY_PRODUCER_REJECTED",
+                        json!({
+                            "producer": "register-candidates.rust",
+                            "entityKind": "candidate",
+                            "rejectionCode": error.split(':').next().unwrap_or(&error)
+                        }),
+                    );
+                }
                 results.push(json!({"index": index, "status": "candidate_failed", "error": error}));
             }
         }
@@ -368,6 +437,9 @@ struct KnowledgeRow {
     metadata: String,
     updated_at: String,
     last_verified_at: Option<String>,
+    project_ref: Option<String>,
+    repo_key: Option<String>,
+    repo_path: Option<String>,
 }
 
 #[derive(Debug)]
@@ -379,6 +451,7 @@ struct Candidate {
     intent_tags: Vec<String>,
     applies_to: Value,
     metadata: Value,
+    project_identity: Value,
     warnings: Vec<String>,
 }
 
@@ -491,6 +564,7 @@ fn normalize_candidate(item: &serde_json::Map<String, Value>) -> Result<Candidat
         warnings.push("text_parsed_to_candidate_json".to_string());
     }
     let applies_to = build_applies_to(item);
+    let project_identity = resolve_candidate_write_identity(item, &applies_to)?;
     let metadata = json!({
         "source": "mcp_register_candidate",
         "registeredAt": now_iso(),
@@ -505,6 +579,7 @@ fn normalize_candidate(item: &serde_json::Map<String, Value>) -> Result<Candidat
         intent_tags: string_array_arg(item, "intentTags"),
         applies_to,
         metadata,
+        project_identity,
         warnings,
     })
 }
@@ -529,6 +604,7 @@ fn insert_candidate(
         "intentTags": candidate.intent_tags,
         "appliesTo": candidate.applies_to,
         "metadata": candidate.metadata,
+        "projectIdentity": candidate.project_identity,
     });
     let payload = json!({
         "title": candidate.title,
@@ -538,6 +614,7 @@ fn insert_candidate(
         "appliesTo": candidate.applies_to,
         "intentTags": candidate.intent_tags,
         "origin": origin,
+        "projectIdentity": candidate.project_identity,
         "legacyTargetStateId": target_state_id,
         "legacyFindCandidateResultId": find_candidate_result_id,
     });
@@ -549,6 +626,7 @@ fn insert_candidate(
         "polarity": candidate.polarity,
         "intentTags": candidate.intent_tags,
         "appliesTo": candidate.applies_to,
+        "projectIdentity": candidate.project_identity,
     });
     connection
         .execute(
@@ -629,11 +707,28 @@ fn insert_candidate(
             insert into covering_evidence_queue (
               id, found_candidate_id, distillation_version, status, priority,
               provider_policy, payload, metadata, created_at, updated_at
-            ) values (?1, ?2, 'v1', 'pending', 90, 'default', '{}', '{}', ?3, ?3)
+            ) values (?1, ?2, 'v1', 'pending', 90, 'default', '{}', ?3, ?4, ?4)
             "#,
-            (&covering_job_id, &found_candidate_id, &now),
+            (
+                &covering_job_id,
+                &found_candidate_id,
+                json!({"projectIdentity": candidate.project_identity}).to_string(),
+                &now,
+            ),
         )
         .map_err(|error| format!("failed to insert covering queue job: {error}"))?;
+    record_project_identity_producer_event(
+        connection,
+        "PROJECT_IDENTITY_PRODUCER_PERSISTED",
+        json!({
+            "producer": "register-candidates.rust",
+            "entityKind": "candidate",
+            "scope": candidate.project_identity.get("scope"),
+            "matchBasis": candidate.project_identity.get("matchBasis"),
+            "identityFingerprint": candidate.project_identity.get("identityFingerprint"),
+            "bindingStatus": candidate.project_identity.get("bindingStatus")
+        }),
+    );
     for (queue_name, queue_job_id, event_type, message) in [
         (
             "findingCandidate",
@@ -675,6 +770,73 @@ fn insert_candidate(
         kind: candidate.kind,
         warnings: candidate.warnings,
     })
+}
+
+fn resolve_candidate_write_identity(
+    item: &serde_json::Map<String, Value>,
+    applies_to: &Value,
+) -> Result<Value, String> {
+    let scope = string_arg(item, "scope").unwrap_or_else(|| "repo".to_string());
+    if scope != "repo" && scope != "global" {
+        return Err("scope must be repo or global".to_string());
+    }
+    let nested_string = |key: &str| {
+        applies_to
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let resolved = resolve_compile_project_identity(
+        &CompileProjectIdentityInput {
+            project_ref: string_arg(item, "projectRef"),
+            repo_key: string_arg(item, "repoKey").or_else(|| nested_string("repoKey")),
+            repo_path: string_arg(item, "repoPath").or_else(|| nested_string("repoPath")),
+        },
+        CompileProjectIdentityTrust::TrustedAdapter,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+
+    if scope == "global" && resolved.match_basis != CompileProjectIdentityMatchBasis::None {
+        return Err(
+            "PROJECT_IDENTITY_FORBIDDEN: global writes must not carry project identity".to_string(),
+        );
+    }
+    if scope == "repo" && resolved.match_basis == CompileProjectIdentityMatchBasis::None {
+        return Err("PROJECT_IDENTITY_REQUIRED: repo-scoped writes require projectRef, repoKey, or an absolute repoPath".to_string());
+    }
+
+    let mut snapshot = serde_json::to_value(&resolved)
+        .map_err(|error| format!("failed to serialize project identity: {error}"))?;
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("classificationStatus".to_string(), json!("classified"));
+        object.insert("scope".to_string(), json!(scope));
+    }
+    Ok(snapshot)
+}
+
+fn is_project_identity_error(error: &str) -> bool {
+    [
+        "PROJECT_IDENTITY_REQUIRED",
+        "PROJECT_IDENTITY_FORBIDDEN",
+        "INVALID_PROJECT_REF",
+        "INVALID_REPO_KEY",
+        "INVALID_REPO_PATH",
+        "IDENTITY_CONFLICT",
+    ]
+    .iter()
+    .any(|code| error.starts_with(code))
+}
+
+fn record_project_identity_producer_event(
+    connection: &rusqlite::Transaction<'_>,
+    event_type: &str,
+    payload: Value,
+) {
+    let _ = connection.execute(
+        "insert into audit_logs (id, event_type, actor, payload, created_at) values (?1, ?2, 'agent', ?3, ?4)",
+        (pseudo_uuid(), event_type, payload.to_string(), now_iso()),
+    );
 }
 
 fn infer_title(body: &str) -> String {
@@ -769,7 +931,11 @@ mod tests {
                   id text primary key,
                   type text not null,
                   status text not null,
-                  scope text not null default 'repo',
+                  scope text not null default 'global',
+                  classification_status text not null default 'classified',
+                  project_ref text,
+                  repo_key text,
+                  repo_path text,
                   polarity text not null default 'positive',
                   intent_tags text not null default '[]',
                   title text not null,
@@ -918,6 +1084,10 @@ mod tests {
                   event_type text not null, message text, metadata text not null,
                   created_at text not null
                 );
+                create table audit_logs (
+                  id text primary key, event_type text not null, actor text not null,
+                  payload text not null, created_at text not null
+                );
                 "#,
             )
             .unwrap();
@@ -1011,6 +1181,30 @@ mod tests {
         assert!(degraded
             .iter()
             .any(|v| v.as_str() == Some("knowledge_items_missing")));
+        assert_eq!(
+            inner["diagnostics"]["stats"]["missingIdentityGlobalOnly"],
+            json!(true)
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn search_knowledge_empty_result_reports_global_only_diagnostics() {
+        let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        create_knowledge_schema(&connection);
+        drop(connection);
+
+        let context = make_context(&db_path);
+        let result = search_knowledge(&json!({"arguments": {"query": "anything"}}), &context);
+        let inner = parse_inner(&result);
+        assert_eq!(inner["items"], json!([]));
+        assert_eq!(inner["diagnostics"]["stats"]["scopedSearch"], json!(false));
+        assert_eq!(
+            inner["diagnostics"]["stats"]["missingIdentityGlobalOnly"],
+            json!(true)
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -1462,6 +1656,8 @@ mod tests {
             &json!({"arguments": {"items": [
                 {
                     "type": "rule",
+                    "scope": "repo",
+                    "repoKey": "test/native-register",
                     "title": "Always use Result",
                     "body": "Always use Result for recoverable errors"
                 }
@@ -1496,6 +1692,22 @@ mod tests {
             })
             .unwrap();
         assert_eq!(candidate_count, 1);
+        let identity_json: String = connection
+            .query_row(
+                "select metadata from distillation_target_states limit 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let identity: Value = serde_json::from_str(&identity_json).unwrap();
+        assert_eq!(
+            identity["projectIdentity"]["repoKey"].as_str(),
+            Some("test/native-register")
+        );
+        assert_eq!(
+            identity["projectIdentity"]["classificationStatus"].as_str(),
+            Some("classified")
+        );
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -1513,6 +1725,7 @@ mod tests {
             &json!({"arguments": {"items": [
                 {
                     "type": "procedure",
+                    "scope": "global",
                     "title": "TS to Rust migration",
                     "body": body
                 }
@@ -1604,6 +1817,43 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("type must be rule or procedure"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn register_candidates_identityless_repo_rejected_and_audited() {
+        let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        create_candidate_registration_schema(&connection);
+        drop(connection);
+
+        let context = make_context(&db_path);
+        let result = register_candidates(
+            &json!({"arguments": {"items": [{
+                "type": "rule",
+                "title": "Identity is required",
+                "body": "A repo candidate must declare project identity"
+            }]}}),
+            &context,
+        );
+        assert!(!is_error(&result));
+        let inner = parse_inner(&result);
+        assert_eq!(inner["registeredCount"].as_i64(), Some(0));
+        assert!(inner["items"][0]["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("PROJECT_IDENTITY_REQUIRED"));
+
+        let connection = Connection::open(&db_path).unwrap();
+        let rejection_count: i64 = connection
+            .query_row(
+                "select count(*) from audit_logs where event_type = 'PROJECT_IDENTITY_PRODUCER_REJECTED'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rejection_count, 1);
 
         let _ = std::fs::remove_file(db_path);
     }

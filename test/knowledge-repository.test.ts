@@ -7,7 +7,10 @@ import {
   upsertKnowledgeFromSource,
   vectorSearchKnowledge,
 } from "../src/modules/knowledge/knowledge.repository.js";
-import { computeApplicability } from "../src/modules/knowledge/knowledge.repository.shared.js";
+import {
+  buildKnowledgeScopeMetadata,
+  computeApplicability,
+} from "../src/modules/knowledge/knowledge.repository.shared.js";
 
 vi.mock("../src/db/index.js", () => ({
   db: {
@@ -42,6 +45,17 @@ vi.mock("../src/modules/knowledge/source-linking.service.js", () => ({
 }));
 
 describe("knowledge repository", () => {
+  test("does not derive repoKey or an absolute path from a relative metadata path", () => {
+    expect(() =>
+      buildKnowledgeScopeMetadata("fixture://relative", { repoPath: "../repo" }),
+    ).toThrow("repoPath must be absolute");
+    const scoped = buildKnowledgeScopeMetadata("fixture://absolute", {
+      repoPath: "/workspace/repo-a",
+    });
+    expect(scoped).toMatchObject({ appliesTo: { repoPath: "/workspace/repo-a" } });
+    expect(scoped.appliesTo).not.toHaveProperty("repoKey");
+  });
+
   beforeEach(() => {
     vi.resetAllMocks();
     (recordAuditLogSafe as any).mockResolvedValue(undefined);
@@ -99,21 +113,6 @@ describe("knowledge repository", () => {
       expect(result[0].confidence).toBe(80); // Normalized
       expect(result[0].importance).toBe(90); // Normalized
       expect(result[0].sourceRefs).toContain("file:///test.md#full"); // Fallback from metadata
-    });
-
-    test("handles scopeMatchMode legacy", async () => {
-      (db.select as any).mockReturnValue({
-        from: vi.fn().mockReturnThis(),
-        where: vi.fn().mockReturnThis(),
-        orderBy: vi.fn().mockReturnThis(),
-        limit: vi.fn().mockResolvedValue([]),
-      });
-
-      await searchKnowledge(
-        { query: "test", limit: 5, status: "active", repoPath: "/test", includeDraft: false },
-        { scopeMatchMode: "legacy" },
-      );
-      expect(db.select).toHaveBeenCalled();
     });
 
     test("adds applicability score on the same scale as text rank", async () => {
@@ -241,6 +240,7 @@ describe("knowledge repository", () => {
         type: "rule" as const,
         status: "active" as const,
         scope: "repo" as const,
+        repoKey: "test/knowledge-repository",
         title: "New Rule",
         body: "Body",
       };
@@ -270,6 +270,7 @@ describe("knowledge repository", () => {
         type: "rule",
         status: "draft",
         scope: "repo",
+        repoKey: "test/knowledge-repository",
         title: "Feature flag rollout",
         body: "Body",
         appliesTo: {
@@ -303,6 +304,7 @@ describe("knowledge repository", () => {
         type: "rule" as const,
         status: "active" as const,
         scope: "repo" as const,
+        repoKey: "test/knowledge-repository",
         title: "Updated Rule",
         body: "Body",
       };

@@ -31,6 +31,15 @@ export type RepositoryIsolationRunObservation = {
   selectedIdsByEntity: Record<RepositoryEntityKind, string[]>;
 };
 
+export type RepositoryIdentityProducerEvent = {
+  eventType:
+    | "PROJECT_IDENTITY_PRODUCER_VALIDATED"
+    | "PROJECT_IDENTITY_PRODUCER_PERSISTED"
+    | "PROJECT_IDENTITY_PRODUCER_REJECTED";
+  createdAt: Date;
+  payload: Record<string, unknown>;
+};
+
 type ClassificationCounts = Record<RepositoryClassification, number>;
 type IdentityBasisCounts = Record<"project_ref" | "repo_key" | "repo_path" | "none", number>;
 
@@ -87,6 +96,24 @@ export type RepositoryIsolationReport = {
     selectedIds: string[];
     mismatchIds: string[];
   }>;
+  producerObservation: {
+    requestedWindowDays: 7;
+    minimumIdentityBearingEvents: 200;
+    oldestIdentityBearingEventAt: string | null;
+    observedDays: number;
+    validatedCount: number;
+    persistedCount: number;
+    identityBearingPersistedCount: number;
+    rejectedCount: number;
+    persistedByProducer: Record<string, number>;
+    rejectedByProducer: Record<string, number>;
+    rejectedByCode: Record<string, number>;
+    newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
+    newUnresolvedCount: number;
+    hasFullWindow: boolean;
+    hasMinimumIdentityBearingEvents: boolean;
+    completionCriteriaMet: boolean;
+  };
   baseline: {
     requestedWindowDays: 14;
     actualWindowDays: 14 | 30;
@@ -270,6 +297,88 @@ function buildBaseline(
   };
 }
 
+function sortedCounts(entries: Array<string | null>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of entries) {
+    const key = entry?.slice(0, 120) || "unknown";
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return Object.fromEntries(
+    Object.entries(counts).sort(
+      ([leftKey, leftCount], [rightKey, rightCount]) =>
+        rightCount - leftCount || leftKey.localeCompare(rightKey),
+    ),
+  );
+}
+
+function producerObservation(input: {
+  events: RepositoryIdentityProducerEvent[];
+  now: Date;
+  newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
+}): RepositoryIsolationReport["producerObservation"] {
+  const windowMs = 7 * 24 * 60 * 60 * 1000;
+  const cutoff = input.now.getTime() - windowMs;
+  const events = input.events.filter((event) => {
+    const timestamp = event.createdAt.getTime();
+    return Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= input.now.getTime();
+  });
+  const validated = events.filter(
+    (event) => event.eventType === "PROJECT_IDENTITY_PRODUCER_VALIDATED",
+  );
+  const persisted = events.filter(
+    (event) => event.eventType === "PROJECT_IDENTITY_PRODUCER_PERSISTED",
+  );
+  const rejected = events.filter(
+    (event) => event.eventType === "PROJECT_IDENTITY_PRODUCER_REJECTED",
+  );
+  const identityBearing = persisted.filter((event) => event.payload.matchBasis !== "none");
+  const oldestIdentityBearing = identityBearing.reduce<Date | null>(
+    (oldest, event) => (!oldest || event.createdAt < oldest ? event.createdAt : oldest),
+    null,
+  );
+  const observedDays = oldestIdentityBearing
+    ? Math.min(7, Math.max(0, (input.now.getTime() - oldestIdentityBearing.getTime()) / 86_400_000))
+    : 0;
+  const hasFullWindow =
+    oldestIdentityBearing !== null && oldestIdentityBearing.getTime() <= cutoff + 60_000;
+  const hasMinimumIdentityBearingEvents = identityBearing.length >= 200;
+  const newUnresolvedCount = repositoryEntityKindValues.reduce(
+    (total, kind) => total + input.newUnresolvedByEntity[kind],
+    0,
+  );
+  return {
+    requestedWindowDays: 7,
+    minimumIdentityBearingEvents: 200,
+    oldestIdentityBearingEventAt: oldestIdentityBearing?.toISOString() ?? null,
+    observedDays,
+    validatedCount: validated.length,
+    persistedCount: persisted.length,
+    identityBearingPersistedCount: identityBearing.length,
+    rejectedCount: rejected.length,
+    persistedByProducer: sortedCounts(
+      persisted.map((event) =>
+        typeof event.payload.producer === "string" ? event.payload.producer : null,
+      ),
+    ),
+    rejectedByProducer: sortedCounts(
+      rejected.map((event) =>
+        typeof event.payload.producer === "string" ? event.payload.producer : null,
+      ),
+    ),
+    rejectedByCode: sortedCounts(
+      rejected.map((event) =>
+        typeof event.payload.rejectionCode === "string" ? event.payload.rejectionCode : null,
+      ),
+    ),
+    newUnresolvedByEntity: input.newUnresolvedByEntity,
+    newUnresolvedCount,
+    hasFullWindow,
+    hasMinimumIdentityBearingEvents,
+    completionCriteriaMet:
+      hasFullWindow && hasMinimumIdentityBearingEvents && newUnresolvedCount === 0,
+  };
+}
+
 export function buildRepositoryIsolationReport(input: {
   backend: RepositoryIsolationReport["backend"];
   candidates: RepositoryScopeCandidate[];
@@ -280,6 +389,8 @@ export function buildRepositoryIsolationReport(input: {
   recentRunLimit?: number;
   now?: Date;
   schemaCapabilities?: RepositoryIsolationSchemaCapabilities;
+  producerEvents?: RepositoryIdentityProducerEvent[];
+  newUnresolvedByEntity?: Record<RepositoryEntityKind, number>;
 }): RepositoryIsolationReport {
   const previewLimit = Math.min(
     REPOSITORY_ISOLATION_PREVIEW_LIMIT_MAX,
@@ -373,6 +484,15 @@ export function buildRepositoryIsolationReport(input: {
         }
       : null,
     recentRunReevaluation: recentRuns,
+    producerObservation: producerObservation({
+      events: input.producerEvents ?? [],
+      now: input.now ?? new Date(),
+      newUnresolvedByEntity: input.newUnresolvedByEntity ?? {
+        knowledge: 0,
+        source: 0,
+        episode: 0,
+      },
+    }),
     baseline: buildBaseline(runs, input.now ?? new Date()),
   };
 }

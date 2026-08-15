@@ -63,7 +63,7 @@ describeDb("context compiler integration", () => {
         sourceUri: `file:///knowledge/rule-${i}.md`,
         type: "rule",
         status: "active",
-        scope: "repo",
+        scope: "global",
         title: fixtureTerms[i] ?? `Budget fixture ${i}`,
         body: [
           `budget scenario integration source linkage ${(fixtureTerms[i] ?? "").toLowerCase()}`,
@@ -74,6 +74,7 @@ describeDb("context compiler integration", () => {
 
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///sources/budget.md",
       title: "Budget Source",
       body: "budget scenario integration source linkage proof",
@@ -125,7 +126,7 @@ describeDb("context compiler integration", () => {
       sourceUri: "file:///knowledge/procedure.md",
       type: "procedure",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Deploy runbook",
       body: "runbook procedure context command sequence",
     });
@@ -133,7 +134,7 @@ describeDb("context compiler integration", () => {
       sourceUri: "file:///knowledge/rule.md",
       type: "rule",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Deploy rule",
       body: "runbook procedure context command sequence",
     });
@@ -155,7 +156,7 @@ describeDb("context compiler integration", () => {
       sourceUri: "file:///knowledge/draft-proc.md",
       type: "procedure",
       status: "draft",
-      scope: "repo",
+      scope: "global",
       title: "Draft Procedure",
       body: "draft-mode command sequence",
     });
@@ -287,7 +288,7 @@ describeDb("context compiler integration", () => {
     expect(titles).not.toContain("Repo B Draft Rule");
   });
 
-  test("repoPath fallback is explicit when scoped knowledge is missing", async () => {
+  test("does not fall back to another repository when scoped knowledge is missing", async () => {
     await upsertKnowledgeFromSource({
       sourceUri: "file:///legacy/rule.md",
       type: "rule",
@@ -295,6 +296,7 @@ describeDb("context compiler integration", () => {
       scope: "repo",
       title: "Legacy Rule",
       body: "legacy fallback token",
+      repoPath: "/workspace/legacy",
     });
 
     const { pack } = await compileContextPack({
@@ -303,11 +305,11 @@ describeDb("context compiler integration", () => {
       repoPath: "/workspace/repo-a",
     });
 
-    expect(pack.rules.some((item) => item.title === "Legacy Rule")).toBe(true);
-    expect(pack.diagnostics.degradedReasons).toContain("KNOWLEDGE_REPO_SCOPE_FALLBACK");
+    expect(pack.rules.some((item) => item.title === "Legacy Rule")).toBe(false);
+    expect(pack.diagnostics.degradedReasons).not.toContain("KNOWLEDGE_REPO_SCOPE_FALLBACK");
   });
 
-  test("legacy metadata scope fallback is reported when appliesTo is missing", async () => {
+  test("uses canonical repository columns when appliesTo identity is missing", async () => {
     const sourceUri = "file:///legacy-metadata/rule.md";
     await upsertKnowledgeFromSource({
       sourceUri,
@@ -336,11 +338,11 @@ describeDb("context compiler integration", () => {
     });
 
     expect(pack.rules.some((item) => item.title === "Legacy Metadata Rule")).toBe(true);
-    expect(pack.diagnostics.degradedReasons).toContain("KNOWLEDGE_APPLIES_TO_FALLBACK");
+    expect(pack.diagnostics.degradedReasons).not.toContain("KNOWLEDGE_APPLIES_TO_FALLBACK");
     expect(pack.diagnostics.degradedReasons).not.toContain("KNOWLEDGE_REPO_SCOPE_FALLBACK");
   });
 
-  test("appliesTo primary scope wins when legacy-only match also exists", async () => {
+  test("canonical repository columns keep eligible rows independent of appliesTo metadata", async () => {
     const legacySourceUri = "file:///legacy-mixed/rule.md";
     await upsertKnowledgeFromSource({
       sourceUri: "file:///repo-a/primary-rule.md",
@@ -382,7 +384,7 @@ describeDb("context compiler integration", () => {
 
     const titles = pack.rules.map((item) => item.title);
     expect(titles).toContain("Repo A Primary Rule");
-    expect(titles).not.toContain("Repo A Legacy Metadata Rule");
+    expect(titles).toContain("Repo A Legacy Metadata Rule");
     expect(pack.diagnostics.degradedReasons).not.toContain("KNOWLEDGE_APPLIES_TO_FALLBACK");
   });
 });

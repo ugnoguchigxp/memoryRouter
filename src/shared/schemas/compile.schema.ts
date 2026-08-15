@@ -64,6 +64,15 @@ export const compileInputSchema = z
     includeDraft: z.boolean().optional(),
     tokenBudget: z.number().int().positive().optional(),
     queryEmbedding: z.array(z.number()).optional(),
+    securityIntelligenceShadow: z
+      .object({
+        enabled: z.literal(true),
+        taskRef: compileIdentityTextSchema("securityIntelligenceShadow.taskRef", 256),
+        runRef: compileIdentityTextSchema("securityIntelligenceShadow.runRef", 256),
+        projectRef: z.string().regex(/^project:[A-Za-z0-9._:-]{1,247}$/),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

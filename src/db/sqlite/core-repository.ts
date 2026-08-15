@@ -17,6 +17,10 @@ export type SqliteKnowledgeItemInput = {
   type: string;
   status: string;
   scope?: string;
+  classificationStatus?: string;
+  projectRef?: string | null;
+  repoKey?: string | null;
+  repoPath?: string | null;
   polarity?: string;
   intentTags?: unknown[];
   title: string;
@@ -33,6 +37,11 @@ export type SqliteKnowledgeItemInput = {
 export type SqliteSourceInput = {
   id: string;
   sourceKind: string;
+  classificationStatus?: string;
+  scope?: string;
+  projectRef?: string | null;
+  repoKey?: string | null;
+  repoPath?: string | null;
   uri: string;
   title?: string | null;
   body: string;
@@ -115,6 +124,10 @@ export class SqliteCoreRepository {
       type: input.type,
       status: input.status,
       scope: input.scope ?? "repo",
+      classificationStatus: input.classificationStatus ?? "unresolved",
+      projectRef: input.projectRef ?? null,
+      repoKey: input.repoKey ?? null,
+      repoPath: input.repoPath ?? null,
       polarity: input.polarity ?? "positive",
       intentTags: Array.isArray(input.intentTags) ? input.intentTags : [],
       title: input.title,
@@ -135,6 +148,10 @@ export class SqliteCoreRepository {
           type: values.type,
           status: values.status,
           scope: values.scope,
+          classificationStatus: values.classificationStatus,
+          projectRef: values.projectRef,
+          repoKey: values.repoKey,
+          repoPath: values.repoPath,
           polarity: values.polarity,
           intentTags: values.intentTags,
           title: values.title,
@@ -159,6 +176,11 @@ export class SqliteCoreRepository {
     const values = {
       id: input.id,
       sourceKind: input.sourceKind,
+      classificationStatus: input.classificationStatus ?? "unresolved",
+      scope: input.scope ?? "repo",
+      projectRef: input.projectRef ?? null,
+      repoKey: input.repoKey ?? null,
+      repoPath: input.repoPath ?? null,
       uri: input.uri,
       title: input.title ?? null,
       body: input.body,
@@ -174,6 +196,11 @@ export class SqliteCoreRepository {
         target: sqliteSources.id,
         set: {
           sourceKind: values.sourceKind,
+          classificationStatus: values.classificationStatus,
+          scope: values.scope,
+          projectRef: values.projectRef,
+          repoKey: values.repoKey,
+          repoPath: values.repoPath,
           uri: values.uri,
           title: values.title,
           body: values.body,

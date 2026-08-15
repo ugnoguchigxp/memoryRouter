@@ -30,6 +30,7 @@ const listEpisodesQuerySchema = z.object({
   technologies: z.preprocess(csvArray, z.array(z.string()).optional()),
   changeTypes: z.preprocess(csvArray, z.array(z.string()).optional()),
   tools: z.preprocess(csvArray, z.array(z.string()).optional()),
+  projectRef: z.string().trim().min(1).max(256).optional(),
   repoPath: z.string().trim().optional(),
   repoKey: z.string().trim().optional(),
   outcomeKinds: z.preprocess(
@@ -53,6 +54,7 @@ export const episodesRouter = new Hono()
       technologies: query.technologies,
       changeTypes: query.changeTypes,
       tools: query.tools,
+      projectRef: query.projectRef,
       repoPath: query.repoPath,
       repoKey: query.repoKey,
       outcomeKinds: query.outcomeKinds,

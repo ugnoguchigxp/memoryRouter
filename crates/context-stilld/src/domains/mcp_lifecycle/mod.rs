@@ -16,7 +16,8 @@ mod native_resources;
 mod native_tools;
 #[cfg(test)]
 mod native_tools_tests;
-mod project_identity;
+pub(crate) mod project_identity;
+mod repository_scope;
 pub mod routing;
 pub mod service;
 #[cfg(test)]

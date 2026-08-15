@@ -30,7 +30,6 @@ function assertNoRemovedFlags(argv: string[]): void {
   const removedFlags = [
     "--intent",
     "--retrieval-mode",
-    "--repo-path",
     "--files",
     "--file",
     "--token-budget",
@@ -42,7 +41,7 @@ function assertNoRemovedFlags(argv: string[]): void {
   const found = removedFlags.find((flag) => argv.includes(flag));
   if (!found) return;
   throw new Error(
-    `${found} is no longer supported. Use only --goal, --change-types, --technologies, --domains, --json.`,
+    `${found} is no longer supported. Use only --goal, --repo-path (or --global), --change-types, --technologies, --domains, --json.`,
   );
 }
 
@@ -56,6 +55,7 @@ async function main(): Promise<void> {
         "[--change-types backend,api]",
         "[--technologies bun,typescript]",
         "[--domains context-compiler,knowledge]",
+        "[--repo-path /absolute/workspace/root | --global]",
         "[--json]",
       ].join(" "),
     );
@@ -67,12 +67,23 @@ async function main(): Promise<void> {
   const technologies = parseCsvArgs([...readArgs("--technologies"), ...readArgs("--technology")]);
   const domains = parseCsvArgs([...readArgs("--domains"), ...readArgs("--domain")]);
   const asJson = process.argv.includes("--json");
+  const repoPath = readArg("--repo-path");
+  const globalOnly = process.argv.includes("--global");
+  if (repoPath && globalOnly) {
+    throw new Error("Use either --repo-path or --global, not both.");
+  }
+  if (!repoPath && !globalOnly) {
+    throw new Error(
+      "Repository identity is required. Pass the absolute workspace root with --repo-path, or explicitly request global-only retrieval with --global.",
+    );
+  }
 
   const compileInput: CompileInput = {
     goal,
     ...(changeTypes.length > 0 ? { changeTypes } : {}),
     ...(technologies.length > 0 ? { technologies } : {}),
     ...(domains.length > 0 ? { domains } : {}),
+    ...(repoPath ? { repoPath } : {}),
   };
 
   const result = await compileContextPack(compileInput, { source: "cli" });

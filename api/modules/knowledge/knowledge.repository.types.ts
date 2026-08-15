@@ -7,7 +7,7 @@ import type { KnowledgeStatus } from "../../../src/shared/schemas/knowledge.sche
 export type KnowledgeCreateInput = {
   type: string;
   status: string;
-  scope: string;
+  scope: "repo" | "global";
   polarity?: string;
   intentTags?: string[];
   title: string;
@@ -19,6 +19,7 @@ export type KnowledgeCreateInput = {
   technologies?: string[];
   changeTypes?: string[];
   domains?: string[];
+  projectRef?: string;
   repoPath?: string;
   repoKey?: string;
   metadata?: Record<string, unknown>;
@@ -27,7 +28,7 @@ export type KnowledgeCreateInput = {
 export type KnowledgeUpdateInput = {
   type?: string;
   status?: string;
-  scope?: string;
+  scope?: "repo" | "global";
   polarity?: string;
   intentTags?: string[];
   title?: string;
@@ -39,6 +40,7 @@ export type KnowledgeUpdateInput = {
   technologies?: string[];
   changeTypes?: string[];
   domains?: string[];
+  projectRef?: string;
   repoPath?: string;
   repoKey?: string;
   metadata?: Record<string, unknown>;

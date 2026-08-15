@@ -8,7 +8,6 @@ import { auditLogsRouter } from "../api/modules/audit/audit.routes.js";
 import { listCandidateItems } from "../api/modules/candidates/candidates.repository.js";
 import { candidatesRouter } from "../api/modules/candidates/candidates.routes.js";
 import { contextCompilerRouter } from "../api/modules/context-compiler/context-compiler.routes.js";
-import { episodesRouter } from "../api/modules/episodes/episodes.routes.js";
 import {
   compilePackForApi,
   getRunDetailForApi,
@@ -21,6 +20,7 @@ import {
   getDoctorDomainForApi,
   getDoctorReportForApi,
 } from "../api/modules/doctor/doctor.service.js";
+import { episodesRouter } from "../api/modules/episodes/episodes.routes.js";
 import {
   bulkUpdateKnowledgeStatus,
   countKnowledgeItems,
@@ -356,6 +356,8 @@ describe("API route contract tests", () => {
       technologies: ["typescript"],
       changeTypes: [],
       tools: [],
+      scope: "global",
+      classificationStatus: "classified",
       repoPath: null,
       repoKey: null,
       sourceKind: "manual",
@@ -390,6 +392,8 @@ describe("API route contract tests", () => {
         technologies: ["typescript"],
         changeTypes: ["schema"],
         tools: [],
+        scope: "global",
+        classificationStatus: "classified",
         repoPath: null,
         repoKey: null,
         sourceKind: "manual",

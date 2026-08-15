@@ -4,29 +4,30 @@ import type {
   EpisodeCard,
   EpisodeCardCreateInput,
 } from "../../shared/schemas/episode-card.schema.js";
-import {
-  createEpisodeCard,
-  getEpisodeCardBySource,
-  searchEpisodeCards,
-} from "../episodic-memory/episode-card.repository.js";
+import { resolveAuditedStoredProjectScopedWriteIdentity } from "../context-compiler/project-scoped-write.js";
 import {
   type DistillationMessage,
   resolveRouteModelForProvider,
   runDistillationCompletion,
 } from "../distillation/distillation-runtime.service.js";
 import {
-  buildBoundedSourceWindows,
-  deterministicSemanticChunksFromWindows,
   type BoundedSourceWindow,
   type SemanticChunk,
+  buildBoundedSourceWindows,
+  deterministicSemanticChunksFromWindows,
   validateSemanticChunks,
 } from "../distillation/source-window.js";
+import {
+  createEpisodeCard,
+  getEpisodeCardBySource,
+  searchEpisodeCards,
+} from "../episodic-memory/episode-card.repository.js";
+import { appendQueueEvent } from "../queue/core/events.js";
 import {
   ensureRuntimeSettingsLoaded,
   resolveEpisodeDistillerRoute,
 } from "../settings/settings.service.js";
-import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
-import { appendQueueEvent } from "../queue/core/events.js";
+import { promptMessage, renderPrompt } from "../system-context/system-context.service.js";
 import {
   type EpisodeDistillerJob,
   getEpisodeDistillerJobById,
@@ -34,17 +35,17 @@ import {
   markEpisodeDistillerFailed,
 } from "./repository.js";
 import {
+  type EpisodeDistillerCanonical,
   calibrateEpisodeCanonical,
   canonicalEpisodeToCardInput,
-  type EpisodeDistillerCanonical,
   episodeDistillerCanonicalArraySchema,
 } from "./schema.js";
-import { readEpisodeSourceDocument, type EpisodeSourceDocument } from "./source-reader.js";
 import {
   EPISODE_DISTILLATION_VERSION,
-  episodeSourceFragmentKey,
   type EpisodeGenerationKind,
+  episodeSourceFragmentKey,
 } from "./source-key.js";
+import { type EpisodeSourceDocument, readEpisodeSourceDocument } from "./source-reader.js";
 
 type Segment = {
   text: string;
@@ -137,14 +138,6 @@ export function setEpisodeDistillerTestHooksForTests(hooks: EpisodeDistillerTest
 
 function textForByteRange(content: string, startOffset: number, endOffset: number): string {
   return Buffer.from(content, "utf8").subarray(startOffset, endOffset).toString("utf8");
-}
-
-function metadataString(metadata: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const key of keys) {
-    const value = metadata[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return undefined;
 }
 
 function recordFromUnknown(value: unknown): Record<string, unknown> {
@@ -477,17 +470,12 @@ function buildDeterministicSegments(document: EpisodeSourceDocument): Segment[] 
 }
 
 function buildMessages(segment: Segment, document: EpisodeSourceDocument): DistillationMessage[] {
-  const metadata = document.metadata;
-  const cwd = metadataString(metadata, ["cwd", "repoPath", "workspacePath"]);
-  const project = metadataString(metadata, ["project", "projectName", "repoKey"]);
   return [
     {
       role: "user",
       content: [
         `Vibe memory id: ${document.vibeMemoryId}`,
         `Session id: ${document.sessionId}`,
-        cwd ? `cwd: ${cwd}` : undefined,
-        project ? `project: ${project}` : undefined,
         `Source byte range: ${segment.startOffset}-${segment.endOffset}`,
         `Source events: ${segment.eventIds.join(", ") || "-"}`,
         "",
@@ -519,6 +507,13 @@ function buildMessages(segment: Segment, document: EpisodeSourceDocument): Disti
         .join("\n"),
     },
   ];
+}
+
+function projectIdentityFromSourceMetadata(metadata: Record<string, unknown>) {
+  return resolveAuditedStoredProjectScopedWriteIdentity(metadata.projectIdentity, {
+    producer: "episode-distiller.typescript",
+    entityKind: "episode",
+  });
 }
 
 function buildSemanticChunkMessages(
@@ -771,8 +766,7 @@ export async function processEpisodeDistillerJob(
   const segmentPlan = await buildSegmentPlan({ document, job, signal });
   const segments = segmentPlan.segments;
   const metadata = document.metadata;
-  const cwd = metadataString(metadata, ["cwd", "repoPath", "workspacePath"]);
-  const project = metadataString(metadata, ["project", "projectName", "repoKey"]);
+  const projectIdentity = await projectIdentityFromSourceMetadata(metadata);
   let generated = 0;
   let deduped = 0;
   let skipped = 0;
@@ -877,8 +871,7 @@ export async function processEpisodeDistillerJob(
         eventEnd: segment.eventEnd,
         readRanges: [{ from: segment.startOffset, toExclusive: segment.endOffset }],
         sessionId: document.sessionId,
-        cwd,
-        project,
+        projectIdentity,
         distillationVersion: EPISODE_DISTILLATION_VERSION,
       });
       const inputMetadata = recordFromUnknown(input.metadata);

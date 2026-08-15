@@ -271,6 +271,25 @@ CREATE UNIQUE INDEX IF NOT EXISTS project_identity_aliases_active_alias_unique
 CREATE INDEX IF NOT EXISTS project_identity_aliases_project_status_idx
   ON project_identity_aliases(project_ref, status);
 
+CREATE TABLE IF NOT EXISTS repository_identity_migration_audits (
+  id TEXT PRIMARY KEY,
+  migration_version TEXT NOT NULL,
+  entity_kind TEXT NOT NULL CHECK(entity_kind IN ('knowledge', 'source', 'episode')),
+  entity_id TEXT NOT NULL,
+  before_fingerprint TEXT NOT NULL,
+  after_fingerprint TEXT NOT NULL,
+  reason_code TEXT NOT NULL,
+  provenance_source TEXT NOT NULL,
+  outcome TEXT NOT NULL CHECK(outcome IN ('backfilled', 'unresolved', 'conflict', 'malformed', 'global_promoted')),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(migration_version, entity_kind, entity_id, after_fingerprint)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS repository_identity_migration_audits_version_outcome_idx
+  ON repository_identity_migration_audits(migration_version, outcome);
+CREATE INDEX IF NOT EXISTS repository_identity_migration_audits_entity_idx
+  ON repository_identity_migration_audits(entity_kind, entity_id);
+
 CREATE TABLE IF NOT EXISTS context_pack_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   postgres_id TEXT,
@@ -1199,6 +1218,7 @@ CREATE TABLE IF NOT EXISTS security_candidate_batch_items (
   candidate_ref TEXT NOT NULL,
   fingerprint TEXT,
   payload_digest TEXT,
+  provenance_json TEXT,
   status TEXT NOT NULL,
   reason_code TEXT,
   target_state_ref TEXT,

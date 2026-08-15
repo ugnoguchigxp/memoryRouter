@@ -166,6 +166,35 @@ export const sqliteProjectIdentityAliases = sqliteTable(
   ],
 );
 
+export const sqliteRepositoryIdentityMigrationAudits = sqliteTable(
+  "repository_identity_migration_audits",
+  {
+    id: text("id").primaryKey(),
+    migrationVersion: text("migration_version").notNull(),
+    entityKind: text("entity_kind").notNull(),
+    entityId: text("entity_id").notNull(),
+    beforeFingerprint: text("before_fingerprint").notNull(),
+    afterFingerprint: text("after_fingerprint").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    provenanceSource: text("provenance_source").notNull(),
+    outcome: text("outcome").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("repository_identity_migration_audits_replay_unique_idx").on(
+      table.migrationVersion,
+      table.entityKind,
+      table.entityId,
+      table.afterFingerprint,
+    ),
+    index("repository_identity_migration_audits_version_outcome_idx").on(
+      table.migrationVersion,
+      table.outcome,
+    ),
+    index("repository_identity_migration_audits_entity_idx").on(table.entityKind, table.entityId),
+  ],
+);
+
 export const sqliteSourceFragments = sqliteTable(
   "source_fragments",
   {

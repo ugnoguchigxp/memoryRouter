@@ -57,7 +57,7 @@ describeDb("repositories integration", () => {
       sourceUri: "file:///active.md",
       type: "rule",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Repository Integration Rule",
       body: "Always keep source refs attached to source-backed claims.",
     });
@@ -66,7 +66,7 @@ describeDb("repositories integration", () => {
       sourceUri: "file:///draft.md",
       type: "procedure",
       status: "draft",
-      scope: "repo",
+      scope: "global",
       title: "Repository Integration Skill",
       body: "Use runbook command sequence for integration checks.",
     });
@@ -95,6 +95,7 @@ describeDb("repositories integration", () => {
   test("source document upsert creates searchable source content", async () => {
     const sourceId = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///docs/source.md",
       title: "Source",
       body: "compile command failed because vector extension was missing.",
@@ -114,12 +115,14 @@ describeDb("repositories integration", () => {
     const uri = "/tmp/wiki/single-source.md";
     const firstId = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri,
       title: "Single Source",
       body: "old-token source body",
     });
     const secondId = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri,
       title: "Single Source",
       body: "new-token source body",
@@ -135,27 +138,35 @@ describeDb("repositories integration", () => {
   test("deleteStaleSourcesForRoot removes stale rows under the root only", async () => {
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "/tmp/wiki/keep.md",
       title: "Keep",
       body: "keep body",
+      metadata: { sourceRootPath: "/tmp/wiki" },
     });
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "/tmp/wiki/stale.md",
       title: "Stale",
       body: "stale body",
+      metadata: { sourceRootPath: "/tmp/wiki" },
     });
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "/tmp/other/outside.md",
       title: "Outside",
       body: "outside body",
+      metadata: { sourceRootPath: "/tmp/other" },
     });
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "/tmp/wiki-archive/keep-by-boundary.md",
       title: "Boundary Outside",
       body: "boundary outside body",
+      metadata: { sourceRootPath: "/tmp/wiki-archive" },
     });
 
     const removed = await deleteStaleSourcesForRoot({
@@ -176,6 +187,7 @@ describeDb("repositories integration", () => {
   test("source search scope keeps boundary and repoKey constraints", async () => {
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "repo",
       uri: "/workspace/repo-a/wiki/rule.md",
       title: "Repo A Rule",
       body: "repo-scope-token",
@@ -186,6 +198,7 @@ describeDb("repositories integration", () => {
     });
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "repo",
       uri: "/workspace/repo-a-archive/wiki/rule.md",
       title: "Repo A Archive Rule",
       body: "repo-scope-token",
@@ -262,6 +275,7 @@ describeDb("repositories integration", () => {
 
   test("vibe memory recording persists agent diffs and extracted symbols", async () => {
     const result = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "integration-agent-diff-session",
       content: "AI generated repository diff",
       memoryType: "action",
@@ -296,6 +310,7 @@ index 0000000..1111111
 
   test("vibe memory recording moves embedded content diffs into agent_diff_entries", async () => {
     const result = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "integration-embedded-agent-diff-session",
       content: `差分を作りました。
 
@@ -324,6 +339,7 @@ index 0000000..1111111
 
   test("graph relation view enforces global per-node cap and supports axis filtering", async () => {
     await recordVibeMemory({
+      scope: "global",
       sessionId: "graph-session-fallback",
       content: "project fallback context",
       memoryType: "chat",
@@ -360,6 +376,7 @@ index 0000000..1111111
       body: "graph fallback body",
       metadata: {
         sourceSessionId: "graph-session-fallback",
+        repoPath: "/workspace/graph-fallback",
       },
     });
     const fallbackB = await upsertKnowledgeFromSource({
@@ -371,6 +388,7 @@ index 0000000..1111111
       body: "graph fallback body",
       metadata: {
         sourceSessionId: "graph-session-fallback",
+        repoPath: "/workspace/graph-fallback",
       },
     });
 
@@ -424,6 +442,7 @@ index 0000000..1111111
       body: "graph legacy source body",
       metadata: {
         sourceDocumentUri: "file:///workspace/wiki/shared-source.md",
+        repoPath: "/workspace/wiki",
       },
     });
     const legacySourceB = await upsertKnowledgeFromSource({
@@ -435,6 +454,7 @@ index 0000000..1111111
       body: "graph legacy source body",
       metadata: {
         sourceDocumentUri: "file:///workspace/wiki/shared-source.md",
+        repoPath: "/workspace/wiki",
       },
     });
     const sourceOnly = await buildGraphSnapshot({
@@ -480,6 +500,7 @@ index 0000000..1111111
       title: "Semantic A",
       body: "semantic edge test",
       embedding: vectorA,
+      repoPath: "/workspace/semantic",
     });
     const idB = await upsertKnowledgeFromSource({
       sourceUri: "file:///semantic-b.md",
@@ -489,6 +510,7 @@ index 0000000..1111111
       title: "Semantic B",
       body: "semantic edge test",
       embedding: vectorB,
+      repoPath: "/workspace/semantic",
     });
     await upsertKnowledgeFromSource({
       sourceUri: "file:///semantic-c.md",
@@ -498,6 +520,7 @@ index 0000000..1111111
       title: "Semantic C",
       body: "semantic edge test",
       embedding: vectorC,
+      repoPath: "/workspace/semantic",
     });
 
     const semanticSnapshot = await buildGraphSnapshot({
@@ -528,6 +551,7 @@ index 0000000..1111111
       body: "community source shared body",
       metadata: {
         sourceDocumentUri: "file:///workspace/wiki/community-shared.md",
+        repoPath: "/workspace/wiki",
       },
     });
     const sharedB = await upsertKnowledgeFromSource({
@@ -539,6 +563,7 @@ index 0000000..1111111
       body: "community source shared body",
       metadata: {
         sourceDocumentUri: "file:///workspace/wiki/community-shared.md",
+        repoPath: "/workspace/wiki",
       },
     });
     const orphan = await upsertKnowledgeFromSource({
@@ -550,6 +575,7 @@ index 0000000..1111111
       body: "community orphan body",
       metadata: {
         sourceDocumentUri: "file:///workspace/wiki/community-orphan.md",
+        repoPath: "/workspace/wiki",
       },
     });
 

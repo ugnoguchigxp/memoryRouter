@@ -1,11 +1,15 @@
-import { db } from "../../db/client.js";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
+import { db } from "../../db/client.js";
 import { agentDiffEntries, vibeMemories } from "../../db/schema.js";
 import {
   type RecordVibeMemoryInput,
   recordVibeMemoryInputSchema,
 } from "../../shared/schemas/vibe-memory.schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 import {
   extractAgentDiffContentFromText,
   normalizeAgentDiffEntries,
@@ -37,6 +41,23 @@ export async function recordVibeMemoryWithDiffEntries(
   input: RecordVibeMemoryInput,
 ): Promise<RecordedVibeMemory> {
   const parsed = recordVibeMemoryInputSchema.parse(input);
+  const projectIdentity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: parsed.scope,
+      projectRef: parsed.projectRef,
+      repoKey: parsed.repoKey,
+      repoPath: parsed.repoPath,
+    },
+    {
+      producer: "vibe-memory.capture",
+      entityKind: "vibe_memory",
+      actor: "agent",
+    },
+  );
+  const memoryMetadata = redactSecretRecord({
+    ...parsed.metadata,
+    projectIdentity,
+  });
   const redactedContent = redactSecrets(parsed.content);
   const embeddedDiff = extractAgentDiffContentFromText(redactedContent);
   const normalizedEntries = normalizeAgentDiffEntries({
@@ -72,7 +93,7 @@ export async function recordVibeMemoryWithDiffEntries(
           parsed.sessionId,
           content,
           parsed.memoryType,
-          JSON.stringify(redactSecretRecord(parsed.metadata)),
+          JSON.stringify(memoryMetadata),
           now,
         );
       sqlite.db
@@ -130,7 +151,7 @@ export async function recordVibeMemoryWithDiffEntries(
         };
       });
       sqlite.db.query("COMMIT").run();
-      return {
+      const recorded = {
         memory: {
           id: memoryId,
           sessionId: parsed.sessionId,
@@ -138,7 +159,7 @@ export async function recordVibeMemoryWithDiffEntries(
           memoryType: parsed.memoryType,
           dedupeKey: null,
           embedding: null,
-          metadata: redactSecretRecord(parsed.metadata),
+          metadata: memoryMetadata,
           createdAt: new Date(now),
           goalId: null,
           parentId: null,
@@ -153,20 +174,27 @@ export async function recordVibeMemoryWithDiffEntries(
         },
         diffEntries,
       } as RecordedVibeMemory;
+      await recordProjectScopedWritePersisted(projectIdentity, {
+        producer: "vibe-memory.capture",
+        entityKind: "vibe_memory",
+        entityId: memoryId,
+        actor: "agent",
+      });
+      return recorded;
     } catch (error) {
       sqlite.db.query("ROLLBACK").run();
       throw error;
     }
   }
 
-  return db.transaction(async (tx) => {
+  const recorded = await db.transaction(async (tx) => {
     const [memory] = await tx
       .insert(vibeMemories)
       .values({
         sessionId: parsed.sessionId,
         content,
         memoryType: parsed.memoryType,
-        metadata: redactSecretRecord(parsed.metadata),
+        metadata: memoryMetadata,
       })
       .returning();
 
@@ -194,6 +222,13 @@ export async function recordVibeMemoryWithDiffEntries(
 
     return { memory, diffEntries };
   });
+  await recordProjectScopedWritePersisted(projectIdentity, {
+    producer: "vibe-memory.capture",
+    entityKind: "vibe_memory",
+    entityId: recorded.memory.id,
+    actor: "agent",
+  });
+  return recorded;
 }
 
 /**

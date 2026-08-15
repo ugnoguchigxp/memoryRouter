@@ -29,6 +29,7 @@ describe("Vibe Memory Repository", () => {
 
   test("insertVibeMemory inserts and returns record", async () => {
     const record = await insertVibeMemory({
+      scope: "global",
       sessionId: "s1",
       content: "test",
       memoryType: "chat",

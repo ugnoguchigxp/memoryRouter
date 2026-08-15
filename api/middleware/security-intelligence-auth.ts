@@ -28,6 +28,12 @@ function integrationKind(path: string): IntegrationKind | null {
 }
 
 function configuredToken(kind: IntegrationKind) {
+  const enabled = readProjectEnv(
+    kind === "candidate"
+      ? "SECURITY_INTELLIGENCE_CANDIDATE_ENABLED"
+      : "SECURITY_INTELLIGENCE_FEEDBACK_ENABLED",
+  )?.trim();
+  if (enabled !== "true" && enabled !== "1") return undefined;
   return readProjectEnv(
     kind === "candidate"
       ? "SECURITY_INTELLIGENCE_CANDIDATE_TOKEN"
@@ -52,6 +58,7 @@ export function apiAuthenticationDispatcher(): MiddlewareHandler {
     if (ctx.req.method === "OPTIONS" || isPublicHealthPath(ctx.req.path)) return next();
     const kind = integrationKind(ctx.req.path);
     if (!kind) return adminAuth(ctx, next);
+    ctx.header("Cache-Control", "no-store");
     const expected = configuredToken(kind);
     if (!expected) {
       return ctx.json(

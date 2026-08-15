@@ -45,6 +45,9 @@ describe("episode-card.repository.sqlite", () => {
     technologies: '["vitest"]',
     change_types: '["test-change"]',
     tools: '["antigravity"]',
+    classification_status: "classified",
+    scope: "repo",
+    project_ref: null,
     repo_path: "/repo",
     repo_key: "key",
     source_kind: "compile_run",
@@ -154,6 +157,7 @@ describe("episode-card.repository.sqlite", () => {
         technologies: [],
         changeTypes: [],
         tools: [],
+        scope: "global",
         sourceKind: "compile_run",
         sourceKey: "key",
         outcomeKind: "success",
@@ -260,6 +264,9 @@ describe("episode-card.repository.sqlite", () => {
   test("searchEpisodeCardsSqlite returns newest episodes first without search criteria", async () => {
     const olderHighScoreRow = {
       ...dummyEpisodeRow,
+      scope: "global",
+      repo_path: null,
+      repo_key: null,
       id: "older-high-score",
       title: "Older high score episode",
       created_at: "2026-06-26 07:41:01",
@@ -270,6 +277,9 @@ describe("episode-card.repository.sqlite", () => {
     };
     const newestLowScoreRow = {
       ...dummyEpisodeRow,
+      scope: "global",
+      repo_path: null,
+      repo_key: null,
       id: "newest-low-score",
       title: "Newest low score episode",
       created_at: "2026-06-26 08:40:02",

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import pg from "pg";
 import { groupedConfig } from "../../config.js";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
-import { openSqliteCoreDatabase, type SqliteCoreDatabase } from "../../db/sqlite/index.js";
+import { type SqliteCoreDatabase, openSqliteCoreDatabase } from "../../db/sqlite/index.js";
 import { readProjectEnv } from "../../project-identity.js";
 
 export type PostgresToSqliteMigrationMode = "dry-run" | "insert-only" | "replace";
@@ -112,6 +112,7 @@ const migrationTables: MigrationTableSpec[] = [
   { table: "landscape_snapshots" },
   { table: "settings" },
   { table: "audit_logs" },
+  { table: "repository_identity_migration_audits" },
   { table: "llm_usage_logs" },
 ];
 

@@ -311,6 +311,8 @@ describe("Context Compiler Service", () => {
         technologies: ["sqlite", "typescript"],
         changeTypes: ["schema"],
         tools: [],
+        scope: "global",
+        classificationStatus: "classified",
         repoPath: null,
         repoKey: null,
         sourceKind: "manual",
@@ -375,8 +377,8 @@ describe("Context Compiler Service", () => {
         searchFailed: false,
         selectedIds: ["episode-1"],
         selectedTitles: ["SQLite migration recovery"],
-        scopedHitCount: 1,
-        globalHitCount: 0,
+        scopedHitCount: 0,
+        globalHitCount: 1,
         usedFor: "compile_precedent",
       }),
     );
@@ -387,6 +389,20 @@ describe("Context Compiler Service", () => {
       usageKind: "compile",
       episodeIds: ["episode-1"],
     });
+    expect(insertContextPackItems).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.arrayContaining([
+        expect.objectContaining({
+          itemId: "episode-1",
+          scopeSnapshot: expect.objectContaining({
+            matchBasis: "none",
+            candidateScope: "global",
+            decision: "ALLOW_GLOBAL",
+            allowed: true,
+          }),
+        }),
+      ]),
+    );
   });
 
   test("keeps source-only misses non-blocking when knowledge context is usable", async () => {

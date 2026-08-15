@@ -6,31 +6,105 @@ use super::native_common::{
     table_exists, tool_error, usize_arg,
 };
 use super::native_tools::NativeToolContext;
+use super::project_identity::{resolve_compile_project_identity, CompileProjectIdentityTrust};
+use super::repository_scope::{
+    applicability_general, eligible_scope_clause, facets_allow, identity_input_from_args,
+    optional_string_array, parse_json_object, query_params, request_facets_from_args,
+};
 
 pub(crate) fn search_episodes(params: &Value, context: &NativeToolContext) -> Value {
-    let args = params.get("arguments").and_then(Value::as_object);
+    let empty_args = serde_json::Map::new();
+    let args = params
+        .get("arguments")
+        .and_then(Value::as_object)
+        .unwrap_or(&empty_args);
     let connection = match open_database(context) {
         Ok(connection) => connection,
         Err(error) => return tool_error(&error),
     };
+    let query = string_arg(args, "query");
+    let limit = usize_arg(args, "limit").unwrap_or(10).min(100);
+    let statuses = match optional_string_array(args, "statuses") {
+        Ok(values) if !values.is_empty() => values,
+        Ok(_) => vec![string_arg(args, "status").unwrap_or_else(|| "active".to_string())],
+        Err(error) => return tool_error(&error),
+    };
+    let outcome_kinds = match optional_string_array(args, "outcomeKinds") {
+        Ok(values) => values,
+        Err(error) => return tool_error(&error),
+    };
+    let requested_tools = match optional_string_array(args, "tools") {
+        Ok(values) => values,
+        Err(error) => return tool_error(&error),
+    };
+    let identity_input = match identity_input_from_args(args) {
+        Ok(value) => value,
+        Err(error) => return tool_error(&error),
+    };
+    let identity = match resolve_compile_project_identity(
+        &identity_input,
+        CompileProjectIdentityTrust::RequestHint,
+        None,
+    ) {
+        Ok(value) => value,
+        Err(error) => return tool_error(&error.to_string()),
+    };
+    let request_facets = match request_facets_from_args(args) {
+        Ok(value) => value,
+        Err(error) => return tool_error(&error),
+    };
     if !table_exists(&connection, "episode_cards") {
-        return content_json(json!({ "items": [] }));
+        return content_json(json!({
+            "items": [],
+            "diagnostics": {
+                "scopedSearch": identity.match_basis.as_str() != "none",
+                "matchBasis": identity.match_basis.as_str(),
+                "scopeMode": identity.scope_mode,
+                "missingIdentityGlobalOnly": identity.match_basis.as_str() == "none",
+                "repoScopeFallbackUsed": false
+            }
+        }));
     }
-    let query = args.and_then(|args| string_arg(args, "query"));
-    let limit = args
-        .and_then(|args| usize_arg(args, "limit"))
-        .unwrap_or(10)
-        .min(100);
-    let status = args
-        .and_then(|args| string_arg(args, "status"))
-        .unwrap_or_else(|| "active".to_string());
-    let rows = match fetch_episode_rows(&connection, 500) {
+    let rows = match fetch_episode_rows(&connection, &identity) {
         Ok(rows) => rows,
         Err(error) => return tool_error(&error),
     };
     let mut items = Vec::new();
     for row in rows {
-        if row.status != status {
+        if !statuses.iter().any(|status| status == &row.status)
+            || (!outcome_kinds.is_empty()
+                && !outcome_kinds.iter().any(|kind| kind == &row.outcome_kind))
+        {
+            continue;
+        }
+        let technologies = parse_json_array(&row.technologies)
+            .into_iter()
+            .filter_map(|value| value.as_str().map(ToString::to_string))
+            .collect::<Vec<_>>();
+        let change_types = parse_json_array(&row.change_types)
+            .into_iter()
+            .filter_map(|value| value.as_str().map(ToString::to_string))
+            .collect::<Vec<_>>();
+        let domains = parse_json_array(&row.domains)
+            .into_iter()
+            .filter_map(|value| value.as_str().map(ToString::to_string))
+            .collect::<Vec<_>>();
+        let tools = parse_json_array(&row.tools)
+            .into_iter()
+            .filter_map(|value| value.as_str().map(ToString::to_string))
+            .collect::<Vec<_>>();
+        let applicability = parse_json_object(&row.applicability);
+        if !facets_allow(
+            &request_facets,
+            &technologies,
+            &change_types,
+            &domains,
+            applicability_general(&applicability, &technologies, &change_types, &domains),
+        ) || (!requested_tools.is_empty()
+            && !requested_tools
+                .iter()
+                .any(|requested| tools.iter().any(|candidate| candidate == requested)))
+        {
             continue;
         }
         let refs = fetch_episode_refs(&connection, &row.id);
@@ -50,7 +124,14 @@ pub(crate) fn search_episodes(params: &Value, context: &NativeToolContext) -> Va
     }
     items.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
     content_json(json!({
-        "items": items.into_iter().take(limit).map(|(_, _, item)| item).collect::<Vec<_>>()
+        "items": items.into_iter().take(limit).map(|(_, _, item)| item).collect::<Vec<_>>(),
+        "diagnostics": {
+            "scopedSearch": identity.match_basis.as_str() != "none",
+            "matchBasis": identity.match_basis.as_str(),
+            "scopeMode": identity.scope_mode,
+            "missingIdentityGlobalOnly": identity.match_basis.as_str() == "none",
+            "repoScopeFallbackUsed": false
+        }
     }))
 }
 
@@ -92,6 +173,9 @@ struct EpisodeRow {
     technologies: String,
     change_types: String,
     tools: String,
+    classification_status: String,
+    scope: String,
+    project_ref: Option<String>,
     repo_path: Option<String>,
     repo_key: Option<String>,
     source_kind: String,
@@ -117,12 +201,21 @@ struct EpisodeRef {
     query_hint: Option<String>,
 }
 
-fn fetch_episode_rows(connection: &Connection, limit: usize) -> Result<Vec<EpisodeRow>, String> {
+const EPISODE_SELECT_COLUMNS: &str = "id, title, situation, observations, action, outcome, lesson, applicability, anti_applicability, domains, technologies, change_types, tools, classification_status, scope, project_ref, repo_path, repo_key, source_kind, source_key, outcome_kind, importance, confidence, compile_use_count, decision_use_count, status, stale_at, metadata, created_at, updated_at";
+
+fn fetch_episode_rows(
+    connection: &Connection,
+    identity: &super::project_identity::ResolvedCompileProjectIdentity,
+) -> Result<Vec<EpisodeRow>, String> {
+    let (scope_clause, values) = eligible_scope_clause(identity);
+    let sql = format!(
+        "select {EPISODE_SELECT_COLUMNS} from episode_cards where {scope_clause} order by created_at desc"
+    );
     let mut statement = connection
-        .prepare("select * from episode_cards order by created_at desc limit ?1")
+        .prepare(&sql)
         .map_err(|error| format!("failed to search episodes: {error}"))?;
     let rows = statement
-        .query_map([limit as i64], map_episode_row)
+        .query_map(query_params(&values), map_episode_row)
         .map_err(|error| format!("failed to search episodes: {error}"))?;
     Ok(rows.flatten().collect())
 }
@@ -130,7 +223,7 @@ fn fetch_episode_rows(connection: &Connection, limit: usize) -> Result<Vec<Episo
 fn fetch_episode_row(connection: &Connection, id: &str) -> Result<Option<EpisodeRow>, String> {
     connection
         .query_row(
-            "select * from episode_cards where id = ?1 limit 1",
+            &format!("select {EPISODE_SELECT_COLUMNS} from episode_cards where id = ?1 limit 1"),
             [id],
             map_episode_row,
         )
@@ -153,20 +246,23 @@ fn map_episode_row(row: &rusqlite::Row<'_>) -> Result<EpisodeRow, rusqlite::Erro
         technologies: row.get(10)?,
         change_types: row.get(11)?,
         tools: row.get(12)?,
-        repo_path: row.get(13)?,
-        repo_key: row.get(14)?,
-        source_kind: row.get(15)?,
-        source_key: row.get(16)?,
-        outcome_kind: row.get(17)?,
-        importance: row.get(18)?,
-        confidence: row.get(19)?,
-        compile_use_count: row.get(20)?,
-        decision_use_count: row.get(21)?,
-        status: row.get(22)?,
-        stale_at: row.get(23)?,
-        metadata: row.get(25)?,
-        created_at: row.get(26)?,
-        updated_at: row.get(27)?,
+        classification_status: row.get(13)?,
+        scope: row.get(14)?,
+        project_ref: row.get(15)?,
+        repo_path: row.get(16)?,
+        repo_key: row.get(17)?,
+        source_kind: row.get(18)?,
+        source_key: row.get(19)?,
+        outcome_kind: row.get(20)?,
+        importance: row.get(21)?,
+        confidence: row.get(22)?,
+        compile_use_count: row.get(23)?,
+        decision_use_count: row.get(24)?,
+        status: row.get(25)?,
+        stale_at: row.get(26)?,
+        metadata: row.get(27)?,
+        created_at: row.get(28)?,
+        updated_at: row.get(29)?,
     })
 }
 
@@ -203,6 +299,9 @@ fn episode_search_payload(row: EpisodeRow, refs: Vec<EpisodeRef>, score: Option<
         "compileUseCount": row.compile_use_count,
         "decisionUseCount": row.decision_use_count,
         "status": row.status,
+        "classificationStatus": row.classification_status,
+        "scope": row.scope,
+        "projectRef": row.project_ref,
         "score": score,
         "domains": parse_json_array(&row.domains),
         "technologies": parse_json_array(&row.technologies),
@@ -231,6 +330,9 @@ fn episode_full_payload(row: EpisodeRow, refs: Vec<EpisodeRef>) -> Value {
         "tools": parse_json_array(&row.tools),
         "repoPath": row.repo_path,
         "repoKey": row.repo_key,
+        "classificationStatus": row.classification_status,
+        "scope": row.scope,
+        "projectRef": row.project_ref,
         "sourceKind": row.source_kind,
         "sourceKey": row.source_key,
         "outcomeKind": row.outcome_kind,
@@ -316,6 +418,9 @@ mod tests {
                   technologies text not null default '[]',
                   change_types text not null default '[]',
                   tools text not null default '[]',
+                  classification_status text not null default 'classified',
+                  scope text not null default 'global',
+                  project_ref text,
                   repo_path text,
                   repo_key text,
                   source_kind text not null default 'distilled',
@@ -420,6 +525,10 @@ mod tests {
         let payload = extract_content_json(&result);
 
         assert_eq!(payload["items"], json!([]));
+        assert_eq!(
+            payload["diagnostics"]["missingIdentityGlobalOnly"],
+            json!(true)
+        );
 
         let _ = std::fs::remove_file(&db_path);
     }
@@ -436,6 +545,10 @@ mod tests {
         let payload = extract_content_json(&result);
 
         assert_eq!(payload["items"], json!([]));
+        assert_eq!(
+            payload["diagnostics"]["missingIdentityGlobalOnly"],
+            json!(true)
+        );
 
         let _ = std::fs::remove_file(&db_path);
     }
@@ -752,6 +865,9 @@ mod tests {
             technologies: r#"["rust","tokio"]"#.to_string(),
             change_types: r#"["bugfix"]"#.to_string(),
             tools: r#"["cargo"]"#.to_string(),
+            classification_status: "classified".to_string(),
+            scope: "global".to_string(),
+            project_ref: None,
             repo_path: None,
             repo_key: None,
             source_kind: "distilled".to_string(),

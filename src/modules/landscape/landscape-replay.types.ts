@@ -160,7 +160,8 @@ export type LandscapeReplayComparisonKind =
   | "drifted"
   | "lost_baseline"
   | "new_only"
-  | "no_current_match";
+  | "no_current_match"
+  | "not_comparable";
 
 export type LandscapeReplayRecompilePlan = {
   mode: "current_retrieval_dry_run";
@@ -249,6 +250,7 @@ export type LandscapeReplayComparisonRun = {
   goal: string;
   retrievalMode: string;
   status: LandscapeRunStatus;
+  identityCompatibility: "comparable" | "legacy_identity_unknown";
   taskFacets: LandscapeTaskFacets;
   baselineSelectedKnowledgeIds: string[];
   currentRetrievedKnowledgeIds: string[];

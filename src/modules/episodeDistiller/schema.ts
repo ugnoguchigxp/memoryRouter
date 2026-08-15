@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { EpisodeCardCreateInput } from "../../shared/schemas/episode-card.schema.js";
+import type { ResolvedProjectScopedWriteIdentity } from "../context-compiler/project-scoped-write.js";
 import type { EpisodeGenerationKind } from "./source-key.js";
 
 const episodeDistillerScoreValueSchema = z.coerce
@@ -114,8 +115,7 @@ export function canonicalEpisodeToCardInput(params: {
   eventEnd: string | null;
   readRanges: Array<{ from: number; toExclusive: number }>;
   sessionId?: string;
-  cwd?: string;
-  project?: string;
+  projectIdentity: ResolvedProjectScopedWriteIdentity;
   distillationVersion: string;
 }): EpisodeCardCreateInput {
   const canonical = calibrateEpisodeCanonical(params.canonical);
@@ -134,8 +134,6 @@ export function canonicalEpisodeToCardInput(params: {
       parentVibeMemoryId: params.parentVibeMemoryId,
       generatingQueueName: "episodeDistiller",
       ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-      ...(params.cwd ? { cwd: params.cwd } : {}),
-      ...(params.project ? { project: params.project } : {}),
     },
     triggers: canonical.usefulFutureTriggers,
   };
@@ -167,8 +165,10 @@ export function canonicalEpisodeToCardInput(params: {
     technologies: uniqueStrings(canonical.technologies),
     changeTypes: uniqueStrings(canonical.changeTypes),
     tools: uniqueStrings(canonical.tools),
-    repoPath: params.cwd,
-    repoKey: params.project,
+    scope: params.projectIdentity.scope,
+    projectRef: params.projectIdentity.projectRef,
+    repoPath: params.projectIdentity.repoPath,
+    repoKey: params.projectIdentity.repoKey,
     sourceKind: "vibe_memory",
     sourceKey: params.sourceKey,
     outcomeKind: canonical.outcomeKind,
@@ -190,8 +190,6 @@ export function canonicalEpisodeToCardInput(params: {
           sourceEventEnd: params.eventEnd,
           readRanges: params.readRanges,
           ...(params.sessionId ? { sessionId: params.sessionId } : {}),
-          ...(params.cwd ? { cwd: params.cwd } : {}),
-          ...(params.project ? { project: params.project } : {}),
         },
       },
     ],

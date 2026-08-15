@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { db } from "../../db/index.js";
 import {
+  auditLogs,
   coveringEvidenceQueue,
   distillationTargetStates,
   findCandidateResults,
@@ -17,20 +18,23 @@ import {
   SECURITY_KNOWLEDGE_CANDIDATE_CONTRACT_VERSION,
   type SecurityKnowledgeCandidateBatch,
   canonicalStringifySecurityIntelligenceValue,
+  securityIntelligenceSafeBoundedTextSchema,
   securityIntelligenceSha256,
   securityKnowledgeCandidateBatchResponseSchema,
   securityKnowledgeCandidateItemSchema,
 } from "../../shared/schemas/security-knowledge-candidate-batch.schema.js";
+import { auditEventTypes } from "../audit/audit-log.service.js";
 import { DEFAULT_DISTILLATION_TARGET_VERSION } from "../distillationTarget/repository.js";
 
 const ENDPOINT = "/api/integrations/security-intelligence/v1/candidate-batches";
 const candidateRefSchema = z.string().regex(/^skc:v1:[a-f0-9]{64}$/);
 const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const opaqueRefSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/);
 const envelopeSchema = z
   .object({
     contractVersion: z.literal(SECURITY_KNOWLEDGE_CANDIDATE_CONTRACT_VERSION),
     batchRef: z.string().regex(/^skcb:v1:[a-f0-9]{64}$/),
-    idempotencyKey: z.string().min(1).max(256),
+    idempotencyKey: securityIntelligenceSafeBoundedTextSchema(256),
     batchPayloadDigest: digestSchema,
     producer: z
       .object({
@@ -38,9 +42,7 @@ const envelopeSchema = z
         version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/),
       })
       .strict(),
-    correlation: z
-      .object({ taskRef: z.string().min(1).max(256), runRef: z.string().min(1).max(256) })
-      .strict(),
+    correlation: z.object({ taskRef: opaqueRefSchema, runRef: opaqueRefSchema }).strict(),
     items: z
       .array(z.object({ candidateRef: candidateRefSchema }).passthrough())
       .min(1)
@@ -168,6 +170,24 @@ function candidatePipelineValues(item: z.infer<typeof securityKnowledgeCandidate
   };
 }
 
+function candidateProvenance(
+  batch: SecurityKnowledgeCandidateBatch,
+  item: z.infer<typeof securityKnowledgeCandidateItemSchema>,
+) {
+  return {
+    contractVersion: batch.contractVersion,
+    batchRef: batch.batchRef,
+    producer: batch.producer,
+    correlation: batch.correlation,
+    candidateRef: item.candidateRef,
+    fingerprint: item.fingerprint,
+    payloadDigest: item.payloadDigest,
+    evidenceRefs: item.evidenceRefs,
+    confidence: item.confidence,
+    limitations: item.limitations,
+  };
+}
+
 export async function receiveSecurityKnowledgeCandidateBatch(input: {
   producerPrincipal: string;
   rawBatch: unknown;
@@ -217,7 +237,40 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
         batchPayloadDigest: batch.batchPayloadDigest,
         receiptJson: {},
       })
+      .onConflictDoNothing()
       .returning();
+    if (!receiptRow) {
+      const [concurrent] = await tx
+        .select()
+        .from(securityCandidateBatchReceipts)
+        .where(
+          and(
+            eq(securityCandidateBatchReceipts.producerPrincipal, producerPrincipal),
+            eq(securityCandidateBatchReceipts.endpoint, ENDPOINT),
+            eq(securityCandidateBatchReceipts.contractVersion, String(batch.contractVersion)),
+            eq(securityCandidateBatchReceipts.idempotencyKey, batch.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (!concurrent) {
+        throw new SecurityIntelligenceIngressError(
+          409,
+          "receipt_conflict",
+          "candidate receipt conflicted with another persisted batch",
+        );
+      }
+      if (concurrent.batchPayloadDigest !== batch.batchPayloadDigest) {
+        throw new SecurityIntelligenceIngressError(
+          409,
+          "idempotency_conflict",
+          "idempotency key was reused with different payload",
+        );
+      }
+      return securityKnowledgeCandidateBatchResponseSchema.parse({
+        replayed: true,
+        receipt: concurrent.receiptJson,
+      });
+    }
     const itemReceipts: Array<Record<string, unknown>> = [];
     for (const rawItem of batch.items) {
       const parsed = securityKnowledgeCandidateItemSchema.safeParse(rawItem);
@@ -232,9 +285,16 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
         });
         continue;
       }
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${parsed.data.fingerprint}))`);
       const [duplicate] = await tx
-        .select()
+        .select({
+          targetStateRef: securityCandidateBatchItems.targetStateRef,
+        })
         .from(securityCandidateBatchItems)
+        .innerJoin(
+          distillationTargetStates,
+          sql`${securityCandidateBatchItems.targetStateRef} = ${"candidate-target:"} || ${distillationTargetStates.id}`,
+        )
         .where(eq(securityCandidateBatchItems.fingerprint, parsed.data.fingerprint))
         .limit(1);
       if (duplicate?.targetStateRef) {
@@ -248,6 +308,7 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
           candidateRef: parsed.data.candidateRef,
           fingerprint: parsed.data.fingerprint,
           payloadDigest: parsed.data.payloadDigest,
+          provenanceJson: candidateProvenance(batch, parsed.data),
           status: "duplicate",
           targetStateRef: duplicate.targetStateRef,
         });
@@ -325,6 +386,7 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
         candidateRef: parsed.data.candidateRef,
         fingerprint: parsed.data.fingerprint,
         payloadDigest: parsed.data.payloadDigest,
+        provenanceJson: candidateProvenance(batch, parsed.data),
         status: "accepted",
         targetStateRef,
       });
@@ -343,6 +405,17 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
       .update(securityCandidateBatchReceipts)
       .set({ receiptJson: response.receipt })
       .where(eq(securityCandidateBatchReceipts.id, receiptRow.id));
+    await tx.insert(auditLogs).values({
+      eventType: auditEventTypes.securityIntelligenceCandidateBatchReceived,
+      actor: "system",
+      payload: {
+        producerPrincipal,
+        scope: "security-intelligence:candidates:write",
+        endpoint: ENDPOINT,
+        batchRef: batch.batchRef,
+        receiptRef: receiptRow.receiptRef,
+      },
+    });
     return response;
   });
 }
@@ -350,33 +423,35 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
 async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledgeCandidateBatch) {
   const { getRuntimeSqliteCoreDatabase } = await import("../../db/sqlite/runtime.js");
   const sqlite = await getRuntimeSqliteCoreDatabase();
-  const existing = sqlite.db
-    .query<
-      { batch_payload_digest: string; receipt_json: string },
-      [string, string, string, string]
-    >(
-      `select batch_payload_digest, receipt_json from security_candidate_batch_receipts
-       where producer_principal = ? and endpoint = ? and contract_version = ? and idempotency_key = ? limit 1`,
-    )
-    .get(producerPrincipal, ENDPOINT, String(batch.contractVersion), batch.idempotencyKey);
-  if (existing) {
-    if (existing.batch_payload_digest !== batch.batchPayloadDigest) {
-      throw new SecurityIntelligenceIngressError(
-        409,
-        "idempotency_conflict",
-        "idempotency key was reused with different payload",
-      );
-    }
-    return securityKnowledgeCandidateBatchResponseSchema.parse({
-      replayed: true,
-      receipt: JSON.parse(existing.receipt_json),
-    });
-  }
   const receiptId = randomUUID();
   const ref = receiptRef({ producerPrincipal, batch });
   const itemReceipts: Array<Record<string, unknown>> = [];
   sqlite.db.exec("BEGIN IMMEDIATE");
   try {
+    const existing = sqlite.db
+      .query<
+        { batch_payload_digest: string; receipt_json: string },
+        [string, string, string, string]
+      >(
+        `select batch_payload_digest, receipt_json from security_candidate_batch_receipts
+         where producer_principal = ? and endpoint = ? and contract_version = ? and idempotency_key = ? limit 1`,
+      )
+      .get(producerPrincipal, ENDPOINT, String(batch.contractVersion), batch.idempotencyKey);
+    if (existing) {
+      if (existing.batch_payload_digest !== batch.batchPayloadDigest) {
+        throw new SecurityIntelligenceIngressError(
+          409,
+          "idempotency_conflict",
+          "idempotency key was reused with different payload",
+        );
+      }
+      const response = securityKnowledgeCandidateBatchResponseSchema.parse({
+        replayed: true,
+        receipt: JSON.parse(existing.receipt_json),
+      });
+      sqlite.db.exec("COMMIT");
+      return response;
+    }
     sqlite.db
       .query(
         `insert into security_candidate_batch_receipts (
@@ -408,8 +483,13 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
         continue;
       }
       const duplicate = sqlite.db
-        .query<{ target_state_ref: string | null }, [string]>(
-          "select target_state_ref from security_candidate_batch_items where fingerprint = ? and target_state_ref is not null limit 1",
+        .query<{ target_state_ref: string }, [string]>(
+          `select i.target_state_ref
+           from security_candidate_batch_items i
+           inner join distillation_target_states d
+             on i.target_state_ref = 'candidate-target:' || d.id
+           where i.fingerprint = ?
+           limit 1`,
         )
         .get(parsed.data.fingerprint);
       if (duplicate?.target_state_ref) {
@@ -420,7 +500,7 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
         });
         sqlite.db
           .query(
-            `insert into security_candidate_batch_items (id, receipt_id, candidate_ref, fingerprint, payload_digest, status, target_state_ref) values (?, ?, ?, ?, ?, 'duplicate', ?)`,
+            `insert into security_candidate_batch_items (id, receipt_id, candidate_ref, fingerprint, payload_digest, provenance_json, status, target_state_ref) values (?, ?, ?, ?, ?, ?, 'duplicate', ?)`,
           )
           .run(
             randomUUID(),
@@ -428,6 +508,7 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
             parsed.data.candidateRef,
             parsed.data.fingerprint,
             parsed.data.payloadDigest,
+            canonicalStringifySecurityIntelligenceValue(candidateProvenance(batch, parsed.data)),
             duplicate.target_state_ref,
           );
         continue;
@@ -510,7 +591,7 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
       });
       sqlite.db
         .query(
-          `insert into security_candidate_batch_items (id, receipt_id, candidate_ref, fingerprint, payload_digest, status, target_state_ref) values (?, ?, ?, ?, ?, 'accepted', ?)`,
+          `insert into security_candidate_batch_items (id, receipt_id, candidate_ref, fingerprint, payload_digest, provenance_json, status, target_state_ref) values (?, ?, ?, ?, ?, ?, 'accepted', ?)`,
         )
         .run(
           randomUUID(),
@@ -518,6 +599,7 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
           parsed.data.candidateRef,
           parsed.data.fingerprint,
           parsed.data.payloadDigest,
+          canonicalStringifySecurityIntelligenceValue(candidateProvenance(batch, parsed.data)),
           targetStateRef,
         );
     }
@@ -533,6 +615,22 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
     sqlite.db
       .query("update security_candidate_batch_receipts set receipt_json = ? where id = ?")
       .run(canonicalStringifySecurityIntelligenceValue(response.receipt), receiptId);
+    sqlite.db
+      .query(
+        "insert into audit_logs (id, event_type, actor, payload, created_at) values (?, ?, 'system', ?, ?)",
+      )
+      .run(
+        randomUUID(),
+        auditEventTypes.securityIntelligenceCandidateBatchReceived,
+        canonicalStringifySecurityIntelligenceValue({
+          producerPrincipal,
+          scope: "security-intelligence:candidates:write",
+          endpoint: ENDPOINT,
+          batchRef: batch.batchRef,
+          receiptRef: ref,
+        }),
+        new Date().toISOString(),
+      );
     sqlite.db.exec("COMMIT");
     return response;
   } catch (error) {

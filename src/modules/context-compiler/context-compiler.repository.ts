@@ -139,6 +139,7 @@ export async function insertContextPackItems(
     score: number;
     rankingReason: string;
     sourceRefs: string[];
+    scopeSnapshot?: Record<string, unknown>;
   }>,
 ): Promise<void> {
   if (items.length === 0) return;
@@ -156,6 +157,7 @@ export async function insertContextPackItems(
       score: item.score,
       rankingReason: item.rankingReason,
       sourceRefs: item.sourceRefs,
+      scopeSnapshot: item.scopeSnapshot ?? {},
     })),
   );
 }

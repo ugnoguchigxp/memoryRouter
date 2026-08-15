@@ -333,6 +333,7 @@ export const mockReplayComparisonData: LandscapeReplayComparisonResponse = {
     lost_baseline: 0,
     new_only: 0,
     no_current_match: 0,
+    not_comparable: 0,
   },
   recompilePlan: {
     mode: "current_retrieval_dry_run",
@@ -415,6 +416,7 @@ export const mockReplayComparisonData: LandscapeReplayComparisonResponse = {
       goal: "Replay risky graph UI task",
       retrievalMode: "task_context",
       status: "ok",
+      identityCompatibility: "comparable",
       taskFacets: {
         retrievalMode: "task_context",
         technologies: ["typescript"],

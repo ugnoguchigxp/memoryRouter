@@ -36,6 +36,7 @@ describe("Vibe Memory Service", () => {
 
   test("records vibe memory without diff entries", async () => {
     const result = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "s1",
       content: "Hello world",
       memoryType: "chat",
@@ -63,6 +64,7 @@ describe("Vibe Memory Service", () => {
     vi.mocked(db.transaction).mockImplementation(async (cb) => cb(mockTx as any));
 
     const result = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "s1",
       content: "Changes made",
       memoryType: "action",
@@ -94,6 +96,7 @@ describe("Vibe Memory Service", () => {
     vi.mocked(db.transaction).mockImplementation(async (cb) => cb(mockTx as any));
 
     await recordVibeMemoryWithDiffEntries({
+      scope: "global",
       sessionId: "s1",
       content: "api_key=sk-abcdefghijklmnopqrstuvwxyz0123456789\nnormal",
       memoryType: "action",

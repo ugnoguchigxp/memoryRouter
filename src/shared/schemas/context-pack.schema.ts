@@ -15,6 +15,7 @@ const contextPackItemSchema = z.object({
   score: z.number(),
   rankingReason: z.string().min(1),
   sourceRefs: z.array(z.string()).default([]),
+  scopeSnapshot: z.record(z.unknown()).optional(),
   changeTypes: z.array(z.string()).optional(),
   technologies: z.array(z.string()).optional(),
   domains: z.array(z.string()).optional(),

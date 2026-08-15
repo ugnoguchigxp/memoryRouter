@@ -8,7 +8,7 @@ use crate::domains::vector_index;
 // additive schema revision, so keeping this at v1 allows a v1 binary to open a database after a
 // rollback. Additive revisions are tracked independently in `schema_migrations`.
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
-pub const CURRENT_SCHEMA_REVISION: i64 = 3;
+pub const CURRENT_SCHEMA_REVISION: i64 = 5;
 
 const TYPESCRIPT_SCHEMA_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -65,7 +65,11 @@ pub fn migrate(connection: &mut Connection, vector_dimension: usize) -> Result<i
             INSERT OR IGNORE INTO schema_migrations(version, name)
             VALUES (2, 'repository_identity_contract_v1');
             INSERT OR IGNORE INTO schema_migrations(version, name)
-            VALUES ({CURRENT_SCHEMA_REVISION}, 'security_intelligence_ingress_v1');
+            VALUES (3, 'security_intelligence_ingress_v1');
+            INSERT OR IGNORE INTO schema_migrations(version, name)
+            VALUES (4, 'repository_identity_backfill_audit_v1');
+            INSERT OR IGNORE INTO schema_migrations(version, name)
+            VALUES ({CURRENT_SCHEMA_REVISION}, 'security_candidate_item_provenance_v1');
             PRAGMA user_version = {CURRENT_SCHEMA_VERSION};
             "#
         ))
@@ -187,6 +191,14 @@ fn apply_legacy_migrations(connection: &Connection) -> Result<(), String> {
                 "#,
             )
             .map_err(|error| format!("failed to migrate escalation uniqueness index: {error}"))?;
+    }
+    if table_exists(connection, "security_candidate_batch_items")? {
+        add_column_if_missing(
+            connection,
+            "security_candidate_batch_items",
+            "provenance_json",
+            "ALTER TABLE security_candidate_batch_items ADD COLUMN provenance_json TEXT",
+        )?;
     }
     Ok(())
 }

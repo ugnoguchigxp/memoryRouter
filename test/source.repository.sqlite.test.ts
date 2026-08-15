@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { getRuntimeSqliteCoreDatabase } from "../src/db/sqlite/runtime.js";
 import { SqliteCoreRepository } from "../src/db/sqlite/core-repository.js";
+import { getRuntimeSqliteCoreDatabase } from "../src/db/sqlite/runtime.js";
 import { embedOne } from "../src/modules/embedding/embedding.service.js";
 import {
-  upsertSourceDocumentSqlite,
   deleteStaleSourcesForRootSqlite,
   searchSourceContentSqlite,
+  upsertSourceDocumentSqlite,
   vectorSearchSourceContentSqlite,
 } from "../src/modules/sources/source.repository.sqlite.js";
 
@@ -80,6 +80,11 @@ describe("source.repository.sqlite", () => {
   const dummySource = {
     id: "source-id",
     sourceKind: "wiki",
+    classificationStatus: "classified",
+    scope: "repo",
+    projectRef: null,
+    repoKey: "contextstill",
+    repoPath: null,
     uri: "file:///sqlite.md",
     title: "SQLite Notes",
     body: "This is a body of SQLite notes",
@@ -104,6 +109,7 @@ describe("source.repository.sqlite", () => {
 
     const sourceId = await upsertSourceDocumentSqlite({
       sourceKind: "wiki",
+      scope: "repo",
       uri: "file:///sqlite.md",
       title: "SQLite Notes",
       body: "This is a body of SQLite notes",
@@ -163,7 +169,7 @@ describe("source.repository.sqlite", () => {
     expect(results[0].sourceUri).toBe("file:///sqlite.md");
   });
 
-  test("vectorSearchSourceContentSqlite performs vector search", async () => {
+  test("vectorSearchSourceContentSqlite is disabled until scope can be filtered before top-K", async () => {
     mockOrm.all.mockReturnValue([dummySource]);
     mockRepo.vectorSearchSourceFragments.mockReturnValue([
       {
@@ -181,7 +187,6 @@ describe("source.repository.sqlite", () => {
       repoKey: "contextstill",
     });
 
-    expect(results).toHaveLength(1);
-    expect(results[0].sourceUri).toBe("file:///sqlite.md");
+    expect(results).toEqual([]);
   });
 });

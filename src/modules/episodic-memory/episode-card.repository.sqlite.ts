@@ -8,6 +8,12 @@ import {
   episodeCardSearchInputSchema,
 } from "../../shared/schemas/episode-card.schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
+import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
+import { evaluateRepositoryScope } from "../context-compiler/repository-scope.js";
 
 async function getSqliteCoreDatabase() {
   const { getRuntimeSqliteCoreDatabase } = await import("../../db/sqlite/runtime.js");
@@ -28,6 +34,9 @@ type SqliteEpisodeCardRow = {
   technologies: string;
   change_types: string;
   tools: string;
+  classification_status: string;
+  scope: string;
+  project_ref: string | null;
   repo_path: string | null;
   repo_key: string | null;
   source_kind: string;
@@ -177,8 +186,11 @@ function mapEpisode(
     technologies: asStringArray(parseJson(row.technologies)),
     changeTypes: asStringArray(parseJson(row.change_types)),
     tools: asStringArray(parseJson(row.tools)),
-    repoPath: row.repo_path,
-    repoKey: row.repo_key,
+    classificationStatus: row.classification_status ?? "unresolved",
+    scope: row.scope ?? "repo",
+    projectRef: row.project_ref ?? null,
+    repoPath: row.repo_path ?? null,
+    repoKey: row.repo_key ?? null,
     sourceKind: row.source_kind,
     sourceKey: row.source_key,
     outcomeKind: row.outcome_kind,
@@ -231,6 +243,11 @@ function normalizeSearchInput(rawInput: EpisodeCardSearchInput) {
         : ["active"];
   return {
     ...input,
+    projectIdentity: resolveCompileProjectIdentity({
+      projectRef: input.projectRef,
+      repoKey: input.repoKey,
+      repoPath: input.repoPath,
+    }),
     query: input.query?.trim(),
     statuses,
     domains: uniqueFacets(input.domains),
@@ -243,14 +260,42 @@ function normalizeSearchInput(rawInput: EpisodeCardSearchInput) {
 
 function matchesSearchInput(episode: EpisodeCard, input: ReturnType<typeof normalizeSearchInput>) {
   if (!input.statuses.includes(episode.status)) return false;
-  if (input.repoPath && episode.repoPath !== input.repoPath) return false;
-  if (input.repoKey && episode.repoKey !== input.repoKey) return false;
+  if (
+    !evaluateRepositoryScope(
+      {
+        id: episode.id,
+        entityKind: "episode",
+        status: episode.status,
+        classificationStatus: episode.classificationStatus,
+        scope: episode.scope,
+        projectRef: episode.projectRef ?? null,
+        repoKey: episode.repoKey ?? null,
+        repoPath: episode.repoPath ?? null,
+        general:
+          asRecord(episode.applicability).general === true ||
+          (episode.technologies.length === 0 &&
+            episode.changeTypes.length === 0 &&
+            episode.domains.length === 0),
+        facets: {
+          technologies: episode.technologies,
+          changeTypes: episode.changeTypes,
+          domains: episode.domains,
+        },
+        producer: episode.sourceKind,
+      },
+      input.projectIdentity,
+      {
+        technologies: input.technologies,
+        changeTypes: input.changeTypes,
+        domains: input.domains,
+      },
+    ).allowed
+  ) {
+    return false;
+  }
   if (input.outcomeKinds.length > 0 && !input.outcomeKinds.includes(episode.outcomeKind)) {
     return false;
   }
-  if (!intersects(input.domains, episode.domains)) return false;
-  if (!intersects(input.technologies, episode.technologies)) return false;
-  if (!intersects(input.changeTypes, episode.changeTypes)) return false;
   if (!intersects(input.tools, episode.tools)) return false;
   return true;
 }
@@ -274,8 +319,7 @@ function scoreEpisode(
 function hasRankingCriteria(input: ReturnType<typeof normalizeSearchInput>): boolean {
   return Boolean(
     input.query ||
-      input.repoPath ||
-      input.repoKey ||
+      input.projectIdentity.matchBasis !== "none" ||
       input.outcomeKinds.length > 0 ||
       input.domains.length > 0 ||
       input.technologies.length > 0 ||
@@ -306,6 +350,18 @@ export async function createEpisodeCardSqlite(
   rawInput: EpisodeCardCreateInput,
 ): Promise<EpisodeCard> {
   const input = episodeCardCreateSchema.parse(rawInput);
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: input.scope,
+      projectRef: input.projectRef,
+      repoKey: input.repoKey,
+      repoPath: input.repoPath,
+    },
+    {
+      producer: `episode.${input.sourceKind}`,
+      entityKind: "episode",
+    },
+  );
   const sqlite = await getSqliteCoreDatabase();
   const id = crypto.randomUUID();
   const now = nowIso();
@@ -317,10 +373,11 @@ export async function createEpisodeCardSqlite(
         insert into episode_cards (
           id, title, situation, observations, action, outcome, lesson,
           applicability, anti_applicability, domains, technologies, change_types, tools,
-          repo_path, repo_key, source_kind, source_key, outcome_kind, importance, confidence,
+          classification_status, scope, project_ref, repo_path, repo_key,
+          source_kind, source_key, outcome_kind, importance, confidence,
           compile_use_count, decision_use_count, status, stale_at, metadata,
           created_at, updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       )
       .run(
@@ -337,8 +394,11 @@ export async function createEpisodeCardSqlite(
         json(uniqueFacets(input.technologies)),
         json(uniqueFacets(input.changeTypes)),
         json(uniqueFacets(input.tools)),
-        input.repoPath ?? null,
-        input.repoKey ?? null,
+        identity.classificationStatus,
+        identity.scope,
+        identity.projectRef,
+        identity.repoPath,
+        identity.repoKey,
         input.sourceKind,
         input.sourceKey,
         input.outcomeKind,
@@ -405,7 +465,13 @@ export async function createEpisodeCardSqlite(
     sqlite.db.query("COMMIT").run();
     const row = await getEpisodeCardRow(id);
     if (!row) throw new Error("EpisodeCard insert did not return a row");
-    return mapEpisode(row, refs);
+    const episode = mapEpisode(row, refs);
+    await recordProjectScopedWritePersisted(identity, {
+      producer: `episode.${input.sourceKind}`,
+      entityKind: "episode",
+      entityId: id,
+    });
+    return episode;
   } catch (error) {
     sqlite.db.query("ROLLBACK").run();
     throw error;
@@ -446,16 +512,32 @@ export async function searchEpisodeCardsSqlite(
 ): Promise<EpisodeCard[]> {
   const input = normalizeSearchInput(rawInput);
   const sqlite = await getSqliteCoreDatabase();
+  const statusPlaceholders = input.statuses.map(() => "?").join(", ");
+  const matchColumn =
+    input.projectIdentity.matchBasis === "project_ref"
+      ? "project_ref"
+      : input.projectIdentity.matchBasis === "repo_key"
+        ? "repo_key"
+        : input.projectIdentity.matchBasis === "repo_path"
+          ? "repo_path"
+          : null;
+  const repoClause = matchColumn ? ` OR (scope = 'repo' AND ${matchColumn} = ?)` : "";
+  const bindings: string[] = [...input.statuses];
+  if (matchColumn && input.projectIdentity.matchValue) {
+    bindings.push(input.projectIdentity.matchValue);
+  }
   const rows = sqlite.db
-    .query<SqliteEpisodeCardRow, [number]>(
+    .query<SqliteEpisodeCardRow, string[]>(
       `
       select *
       from episode_cards
+      where status in (${statusPlaceholders})
+        and classification_status = 'classified'
+        and ((scope = 'global' and project_ref is null and repo_key is null and repo_path is null)${repoClause})
       order by created_at desc
-      limit ?
     `,
     )
-    .all(500);
+    .all(...bindings);
   const refs = await refsByEpisodeIds(rows.map((row) => row.id));
   return rows
     .map((row) => mapEpisode(row, refs.get(row.id) ?? []))

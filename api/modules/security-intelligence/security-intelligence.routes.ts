@@ -8,8 +8,19 @@ import { receiveSecurityKnowledgeFeedbackBatch } from "../../../src/modules/secu
 import { SECURITY_KNOWLEDGE_CANDIDATE_BATCH_MAX_BYTES } from "../../../src/shared/schemas/security-knowledge-candidate-batch.schema.js";
 import { SECURITY_KNOWLEDGE_FEEDBACK_BATCH_MAX_BYTES } from "../../../src/shared/schemas/security-knowledge-feedback-batch.schema.js";
 import { securityIntelligenceProducerPrincipal } from "../../middleware/security-intelligence-auth.js";
+import {
+  securityIntelligenceRateLimit,
+  securityIntelligenceRequestTimeout,
+} from "../../middleware/security-intelligence-traffic.js";
 
 const router = new Hono();
+
+router.use("*", async (c, next) => {
+  c.header("Cache-Control", "no-store");
+  await next();
+});
+router.use("*", securityIntelligenceRateLimit());
+router.use("*", securityIntelligenceRequestTimeout());
 
 router.use(
   "/candidate-batches",

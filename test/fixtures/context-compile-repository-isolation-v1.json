@@ -548,20 +548,10 @@
     "identityId": "identity-project-a",
     "wrongProjectKnowledgeId": "knowledge-repo-b-general",
     "unresolvedKnowledgeId": "knowledge-unresolved",
-    "expectedLegacySelectedAny": [
-      "knowledge-repo-b-general",
-      "knowledge-unresolved"
-    ]
+    "expectedLegacySelectedAny": ["knowledge-repo-b-general", "knowledge-unresolved"]
   },
   "privacy": {
     "maxPreviewIds": 20,
-    "forbiddenOutputFields": [
-      "title",
-      "body",
-      "situation",
-      "lesson",
-      "repoPath",
-      "matchValue"
-    ]
+    "forbiddenOutputFields": ["title", "body", "situation", "lesson", "repoPath", "matchValue"]
   }
 }

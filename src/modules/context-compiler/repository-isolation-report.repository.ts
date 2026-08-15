@@ -1,6 +1,7 @@
-import { gte, inArray } from "drizzle-orm";
+import { and, gte, inArray } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import {
+  auditLogs,
   contextCompileRuns,
   contextPackItems,
   episodeCards,
@@ -16,6 +17,7 @@ import {
   resolveCompileProjectIdentity,
 } from "./compile-project-identity.js";
 import {
+  type RepositoryIdentityProducerEvent,
   type RepositoryIsolationReport,
   type RepositoryIsolationRunObservation,
   type RepositoryIsolationSchemaCapabilities,
@@ -430,6 +432,66 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
   return normalizeRuns(rows, packItems);
 }
 
+function sqliteProducerEvents(db: SqliteReader, now: Date): RepositoryIdentityProducerEvent[] {
+  if (!sqliteTableExists(db, "audit_logs")) return [];
+  const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  return db
+    .query<Record<string, unknown>, [string, string, string, string]>(
+      `select event_type, payload, created_at
+         from audit_logs
+        where event_type in (?, ?, ?)
+          and created_at >= ?`,
+    )
+    .all(
+      "PROJECT_IDENTITY_PRODUCER_VALIDATED",
+      "PROJECT_IDENTITY_PRODUCER_PERSISTED",
+      "PROJECT_IDENTITY_PRODUCER_REJECTED",
+      cutoff,
+    )
+    .flatMap((row) => {
+      const eventType = row.event_type;
+      if (
+        eventType !== "PROJECT_IDENTITY_PRODUCER_VALIDATED" &&
+        eventType !== "PROJECT_IDENTITY_PRODUCER_PERSISTED" &&
+        eventType !== "PROJECT_IDENTITY_PRODUCER_REJECTED"
+      ) {
+        return [];
+      }
+      return [
+        {
+          eventType,
+          createdAt: dateFromUnknown(row.created_at),
+          payload: asRecord(parseJson(row.payload)),
+        },
+      ];
+    });
+}
+
+function sqliteNewUnresolvedCounts(
+  db: SqliteReader,
+  now: Date,
+): Record<RepositoryEntityKind, number> {
+  const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const count = (table: string): number => {
+    const columns = sqliteTableColumns(db, table);
+    if (!columns.has("classification_status") || !columns.has("created_at")) return 0;
+    const row = db
+      .query<{ count: number }, [string]>(
+        `select count(*) as count
+           from ${table}
+          where created_at >= ?
+            and coalesce(classification_status, 'unresolved') <> 'classified'`,
+      )
+      .all(cutoff)[0];
+    return Math.max(0, Number(row?.count ?? 0));
+  };
+  return {
+    knowledge: count("knowledge_items"),
+    source: count("sources"),
+    episode: count("episode_cards"),
+  };
+}
+
 export function collectRepositoryIsolationReportFromSqlite(input: {
   db: SqliteReader;
   identityInput?: CompileProjectIdentityInput;
@@ -447,6 +509,8 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
     backend: "sqlite",
     candidates: sqliteCandidates(input.db),
     runs: sqliteRuns(input.db, now),
+    producerEvents: sqliteProducerEvents(input.db, now),
+    newUnresolvedByEntity: sqliteNewUnresolvedCounts(input.db, now),
     requestIdentity,
     requestFacets: input.requestFacets,
     previewLimit: input.previewLimit,
@@ -460,76 +524,100 @@ async function collectPostgresData(now: Date): Promise<{
   candidates: RepositoryScopeCandidate[];
   aliases: CompileProjectIdentityAlias[];
   runs: RepositoryIsolationRunObservation[];
+  producerEvents: RepositoryIdentityProducerEvent[];
+  newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
 }> {
   const db = getDefaultDbSession().db;
   const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const [knowledgeRows, sourceRows, episodeRows, aliasRows, runRows] = await Promise.all([
-    db
-      .select({
-        id: knowledgeItems.id,
-        status: knowledgeItems.status,
-        classificationStatus: knowledgeItems.classificationStatus,
-        scope: knowledgeItems.scope,
-        projectRef: knowledgeItems.projectRef,
-        repoKey: knowledgeItems.repoKey,
-        repoPath: knowledgeItems.repoPath,
-        metadata: knowledgeItems.metadata,
-        facets: knowledgeItems.appliesTo,
-      })
-      .from(knowledgeItems),
-    db
-      .select({
-        id: sources.id,
-        sourceKind: sources.sourceKind,
-        classificationStatus: sources.classificationStatus,
-        scope: sources.scope,
-        projectRef: sources.projectRef,
-        repoKey: sources.repoKey,
-        repoPath: sources.repoPath,
-        metadata: sources.metadata,
-      })
-      .from(sources),
-    db
-      .select({
-        id: episodeCards.id,
-        status: episodeCards.status,
-        sourceKind: episodeCards.sourceKind,
-        classificationStatus: episodeCards.classificationStatus,
-        scope: episodeCards.scope,
-        projectRef: episodeCards.projectRef,
-        repoKey: episodeCards.repoKey,
-        repoPath: episodeCards.repoPath,
-        metadata: episodeCards.metadata,
-        technologies: episodeCards.technologies,
-        changeTypes: episodeCards.changeTypes,
-        domains: episodeCards.domains,
-        applicability: episodeCards.applicability,
-      })
-      .from(episodeCards),
-    db
-      .select({
-        projectRef: projectIdentityAliases.projectRef,
-        aliasKind: projectIdentityAliases.aliasKind,
-        normalizedValue: projectIdentityAliases.normalizedValue,
-      })
-      .from(projectIdentityAliases),
-    db
-      .select({
-        id: contextCompileRuns.id,
-        createdAt: contextCompileRuns.createdAt,
-        durationMs: contextCompileRuns.durationMs,
-        status: contextCompileRuns.status,
-        degradedReasons: contextCompileRuns.degradedReasons,
-        matchBasis: contextCompileRuns.matchBasis,
-        projectRef: contextCompileRuns.projectRef,
-        repoKey: contextCompileRuns.repoKey,
-        repoPath: contextCompileRuns.repoPath,
-        identityContractVersion: contextCompileRuns.identityContractVersion,
-        packSnapshot: contextCompileRuns.packSnapshot,
-      })
-      .from(contextCompileRuns)
-      .where(gte(contextCompileRuns.createdAt, cutoff)),
-  ]);
+  const producerCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const [knowledgeRows, sourceRows, episodeRows, aliasRows, runRows, producerRows] =
+    await Promise.all([
+      db
+        .select({
+          id: knowledgeItems.id,
+          status: knowledgeItems.status,
+          classificationStatus: knowledgeItems.classificationStatus,
+          scope: knowledgeItems.scope,
+          projectRef: knowledgeItems.projectRef,
+          repoKey: knowledgeItems.repoKey,
+          repoPath: knowledgeItems.repoPath,
+          metadata: knowledgeItems.metadata,
+          facets: knowledgeItems.appliesTo,
+          createdAt: knowledgeItems.createdAt,
+        })
+        .from(knowledgeItems),
+      db
+        .select({
+          id: sources.id,
+          sourceKind: sources.sourceKind,
+          classificationStatus: sources.classificationStatus,
+          scope: sources.scope,
+          projectRef: sources.projectRef,
+          repoKey: sources.repoKey,
+          repoPath: sources.repoPath,
+          metadata: sources.metadata,
+          createdAt: sources.createdAt,
+        })
+        .from(sources),
+      db
+        .select({
+          id: episodeCards.id,
+          status: episodeCards.status,
+          sourceKind: episodeCards.sourceKind,
+          classificationStatus: episodeCards.classificationStatus,
+          scope: episodeCards.scope,
+          projectRef: episodeCards.projectRef,
+          repoKey: episodeCards.repoKey,
+          repoPath: episodeCards.repoPath,
+          metadata: episodeCards.metadata,
+          technologies: episodeCards.technologies,
+          changeTypes: episodeCards.changeTypes,
+          domains: episodeCards.domains,
+          applicability: episodeCards.applicability,
+          createdAt: episodeCards.createdAt,
+        })
+        .from(episodeCards),
+      db
+        .select({
+          projectRef: projectIdentityAliases.projectRef,
+          aliasKind: projectIdentityAliases.aliasKind,
+          normalizedValue: projectIdentityAliases.normalizedValue,
+        })
+        .from(projectIdentityAliases),
+      db
+        .select({
+          id: contextCompileRuns.id,
+          createdAt: contextCompileRuns.createdAt,
+          durationMs: contextCompileRuns.durationMs,
+          status: contextCompileRuns.status,
+          degradedReasons: contextCompileRuns.degradedReasons,
+          matchBasis: contextCompileRuns.matchBasis,
+          projectRef: contextCompileRuns.projectRef,
+          repoKey: contextCompileRuns.repoKey,
+          repoPath: contextCompileRuns.repoPath,
+          identityContractVersion: contextCompileRuns.identityContractVersion,
+          packSnapshot: contextCompileRuns.packSnapshot,
+        })
+        .from(contextCompileRuns)
+        .where(gte(contextCompileRuns.createdAt, cutoff)),
+      db
+        .select({
+          eventType: auditLogs.eventType,
+          payload: auditLogs.payload,
+          createdAt: auditLogs.createdAt,
+        })
+        .from(auditLogs)
+        .where(
+          and(
+            gte(auditLogs.createdAt, producerCutoff),
+            inArray(auditLogs.eventType, [
+              "PROJECT_IDENTITY_PRODUCER_VALIDATED",
+              "PROJECT_IDENTITY_PRODUCER_PERSISTED",
+              "PROJECT_IDENTITY_PRODUCER_REJECTED",
+            ]),
+          ),
+        ),
+    ]);
 
   const runIds = runRows.map((run) => run.id);
   const packRows =
@@ -588,6 +676,31 @@ async function collectPostgresData(now: Date): Promise<{
       runRows.map((row) => ({ ...row })),
       packRows.map((row) => ({ ...row })),
     ),
+    producerEvents: producerRows.flatMap((row) =>
+      row.createdAt >= producerCutoff &&
+      (row.eventType === "PROJECT_IDENTITY_PRODUCER_VALIDATED" ||
+        row.eventType === "PROJECT_IDENTITY_PRODUCER_PERSISTED" ||
+        row.eventType === "PROJECT_IDENTITY_PRODUCER_REJECTED")
+        ? [
+            {
+              eventType: row.eventType,
+              createdAt: row.createdAt,
+              payload: asRecord(row.payload),
+            },
+          ]
+        : [],
+    ),
+    newUnresolvedByEntity: {
+      knowledge: knowledgeRows.filter(
+        (row) => row.createdAt >= producerCutoff && row.classificationStatus !== "classified",
+      ).length,
+      source: sourceRows.filter(
+        (row) => row.createdAt >= producerCutoff && row.classificationStatus !== "classified",
+      ).length,
+      episode: episodeRows.filter(
+        (row) => row.createdAt >= producerCutoff && row.classificationStatus !== "classified",
+      ).length,
+    },
   };
 }
 
@@ -619,6 +732,8 @@ export async function collectRepositoryIsolationReport(
     backend: "postgres",
     candidates: data.candidates,
     runs: data.runs,
+    producerEvents: data.producerEvents,
+    newUnresolvedByEntity: data.newUnresolvedByEntity,
     requestIdentity,
     requestFacets: input.requestFacets,
     previewLimit: input.previewLimit,

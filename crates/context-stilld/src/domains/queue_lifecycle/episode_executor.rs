@@ -15,6 +15,11 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::domains::mcp_lifecycle::project_identity::{
+    resolve_compile_project_identity, CompileProjectIdentityInput,
+    CompileProjectIdentityMatchBasis, CompileProjectIdentityTrust, ResolvedCompileProjectIdentity,
+    CONTRACT_VERSION,
+};
 use crate::shared::errors::CliError;
 
 use super::events::append_queue_event_for_connection;
@@ -69,6 +74,23 @@ struct SourceEvent {
     file_path: Option<String>,
     start_offset: usize,
     end_offset: usize,
+}
+
+#[derive(Debug, Clone)]
+struct EpisodeWriteIdentity {
+    scope: String,
+    resolved: ResolvedCompileProjectIdentity,
+}
+
+impl EpisodeWriteIdentity {
+    fn snapshot(&self) -> Value {
+        let mut snapshot = serde_json::to_value(&self.resolved).unwrap_or_else(|_| json!({}));
+        if let Some(object) = snapshot.as_object_mut() {
+            object.insert("classificationStatus".to_string(), json!("classified"));
+            object.insert("scope".to_string(), json!(self.scope));
+        }
+        snapshot
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -406,9 +428,23 @@ fn process_episode_distiller_job(
         )));
     }
     let document = read_source_document(connection, &job.source_key)?;
+    let write_identity = match resolve_episode_write_identity(&document.metadata) {
+        Ok(identity) => identity,
+        Err(error) => {
+            let error_text = error.to_string();
+            record_episode_identity_event(
+                connection,
+                "PROJECT_IDENTITY_PRODUCER_REJECTED",
+                json!({
+                    "producer": "episode-distiller.rust",
+                    "entityKind": "episode",
+                    "rejectionCode": error_text.split(':').next().unwrap_or(&error_text)
+                }),
+            );
+            return Err(error);
+        }
+    };
     let segments = build_deterministic_segments(&document);
-    let cwd = metadata_string(&document.metadata, &["cwd", "repoPath", "workspacePath"]);
-    let project = metadata_string(&document.metadata, &["project", "projectName", "repoKey"]);
     let mut counters = counters_from_metadata(&job.metadata);
     let mut segment_errors = Vec::new();
     let mut skipped_duplicate_generation_kinds = json_array_at(
@@ -689,8 +725,7 @@ fn process_episode_distiller_job(
                 connection,
                 item,
                 &document,
-                cwd.as_deref(),
-                project.as_deref(),
+                &write_identity,
                 target,
                 api_key,
                 timeout_seconds,
@@ -1250,8 +1285,6 @@ fn distill_segment(
 }
 
 fn build_messages(segment: &Segment, document: &SourceDocument) -> Value {
-    let cwd = metadata_string(&document.metadata, &["cwd", "repoPath", "workspacePath"]);
-    let project = metadata_string(&document.metadata, &["project", "projectName", "repoKey"]);
     let system_content = [
         "あなたは ContextStill の episodeDistiller です。",
         "source evidence から、将来の作業判断に再利用できる task-oriented EpisodeCard だけを作ります。",
@@ -1267,11 +1300,6 @@ fn build_messages(segment: &Segment, document: &SourceDocument) -> Value {
     let user_content = [
         format!("Vibe memory id: {}", document.vibe_memory_id),
         format!("Session id: {}", document.session_id),
-        cwd.map(|value| format!("cwd: {value}"))
-            .unwrap_or_default(),
-        project
-            .map(|value| format!("project: {value}"))
-            .unwrap_or_default(),
         format!(
             "Source byte range: {}-{}",
             segment.start_offset, segment.end_offset
@@ -1399,8 +1427,7 @@ fn find_near_duplicate_candidates(
     connection: &Connection,
     item: &PendingEpisode,
     document: &SourceDocument,
-    cwd: Option<&str>,
-    project: Option<&str>,
+    identity: &EpisodeWriteIdentity,
 ) -> Result<Vec<NearDuplicateCandidate>, CliError> {
     let canonical = calibrate_episode(item.canonical.clone());
     let generation_kind = normalize_generation_kind(&canonical.generation_kind);
@@ -1416,10 +1443,13 @@ fn find_near_duplicate_candidates(
             from episode_cards
             where source_kind = 'vibe_memory'
               and status = 'active'
+              and classification_status = 'classified'
+              and scope = ?3
               and source_key <> ?1
               and json_extract(metadata, '$.episodeDistillation.parentVibeMemoryId') = ?2
-              and (?3 is null or repo_path = ?3)
-              and (?4 is null or repo_key = ?4)
+              and (?4 is null or project_ref = ?4)
+              and (?5 is null or repo_path = ?5)
+              and (?6 is null or repo_key = ?6)
             order by created_at desc
             limit 25
             ",
@@ -1429,7 +1459,14 @@ fn find_near_duplicate_candidates(
         })?;
     let rows = statement
         .query_map(
-            params![item.source_key, document.vibe_memory_id, cwd, project],
+            params![
+                item.source_key,
+                document.vibe_memory_id,
+                identity.scope,
+                identity.resolved.project_ref,
+                identity.resolved.repo_path,
+                identity.resolved.repo_key
+            ],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1700,8 +1737,7 @@ fn create_episode_idempotently(
     connection: &Connection,
     item: &PendingEpisode,
     document: &SourceDocument,
-    cwd: Option<&str>,
-    project: Option<&str>,
+    identity: &EpisodeWriteIdentity,
     target: &LocalLlmTargetConfig,
     api_key: Option<&str>,
     timeout_seconds: u64,
@@ -1709,7 +1745,7 @@ fn create_episode_idempotently(
     if let Some(existing) = existing_episode_id(connection, &item.source_key)? {
         return Ok(EpisodePersistOutcome::SourceDeduped(existing));
     }
-    let candidates = find_near_duplicate_candidates(connection, item, document, cwd, project)?;
+    let candidates = find_near_duplicate_candidates(connection, item, document, identity)?;
     if !candidates.is_empty() {
         let review =
             review_near_duplicate_episode(item, &candidates, target, api_key, timeout_seconds)?;
@@ -1722,8 +1758,7 @@ fn create_episode_idempotently(
         .map_err(|error| {
             CliError::io(format!("failed to begin episode card transaction: {error}"))
         })?;
-    let result =
-        create_episode_idempotently_in_transaction(connection, item, document, cwd, project);
+    let result = create_episode_idempotently_in_transaction(connection, item, document, identity);
     match result {
         Ok(value) => {
             connection.execute_batch("COMMIT").map_err(|error| {
@@ -1748,8 +1783,7 @@ fn create_episode_idempotently_in_transaction(
     connection: &Connection,
     item: &PendingEpisode,
     document: &SourceDocument,
-    cwd: Option<&str>,
-    project: Option<&str>,
+    identity: &EpisodeWriteIdentity,
 ) -> Result<EpisodePersistOutcome, CliError> {
     if let Some(existing) = existing_episode_id(connection, &item.source_key)? {
         return Ok(EpisodePersistOutcome::SourceDeduped(existing));
@@ -1773,6 +1807,7 @@ fn create_episode_idempotently_in_transaction(
         )
     };
     let source_fragment_key = item.source_key.clone();
+    let project_identity = identity.snapshot();
     let metadata = json!({
         "source": "episodeDistiller",
         "episodeDistillation": {
@@ -1788,8 +1823,7 @@ fn create_episode_idempotently_in_transaction(
             "parentVibeMemoryId": document.vibe_memory_id,
             "generatingQueueName": "episodeDistiller",
             "sessionId": document.session_id,
-            "cwd": cwd,
-            "project": project,
+            "projectIdentity": project_identity,
             "valueReview": value_review_json(&value_review)
         },
         "triggers": canonical.useful_future_triggers
@@ -1809,10 +1843,11 @@ fn create_episode_idempotently_in_transaction(
             insert into episode_cards (
               id, title, situation, observations, action, outcome, lesson,
               applicability, anti_applicability, domains, technologies, change_types, tools,
-              repo_path, repo_key, source_kind, source_key, outcome_kind, importance, confidence,
+              classification_status, scope, project_ref, repo_path, repo_key,
+              source_kind, source_key, outcome_kind, importance, confidence,
               compile_use_count, decision_use_count, status, stale_at, metadata,
               created_at, updated_at
-            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, 'vibe_memory', ?16, ?17, ?18, ?19, 0, 0, 'active', null, ?20, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 'classified', ?14, ?15, ?16, ?17, 'vibe_memory', ?18, ?19, ?20, ?21, 0, 0, 'active', null, ?22, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ",
             params![
                 id,
@@ -1828,8 +1863,10 @@ fn create_episode_idempotently_in_transaction(
                 json!(unique_strings(&canonical.technologies)).to_string(),
                 json!(unique_strings(&canonical.change_types)).to_string(),
                 json!(unique_strings(&canonical.tools)).to_string(),
-                cwd,
-                project,
+                identity.scope,
+                identity.resolved.project_ref,
+                identity.resolved.repo_path,
+                identity.resolved.repo_key,
                 item.source_key,
                 normalize_outcome_kind(&canonical.outcome_kind),
                 clamp_score(canonical.scores.importance),
@@ -1886,12 +1923,24 @@ fn create_episode_idempotently_in_transaction(
                     "sourceEventEnd": item.event_end,
                     "readRanges": [{"from": item.source_start_offset, "toExclusive": item.source_end_offset}],
                     "sessionId": document.session_id,
-                    "cwd": cwd,
-                    "project": project
+                    "projectIdentity": project_identity
                 }).to_string()
             ],
         )
         .map_err(|error| CliError::io(format!("failed to insert episode ref: {error}")))?;
+    record_episode_identity_event(
+        connection,
+        "PROJECT_IDENTITY_PRODUCER_PERSISTED",
+        json!({
+            "producer": "episode-distiller.rust",
+            "entityKind": "episode",
+            "entityId": id,
+            "scope": identity.scope,
+            "matchBasis": identity.resolved.match_basis.as_str(),
+            "identityFingerprint": identity.resolved.identity_fingerprint,
+            "bindingStatus": identity.resolved.binding_status.as_str()
+        }),
+    );
     Ok(EpisodePersistOutcome::Created(id))
 }
 
@@ -2393,15 +2442,81 @@ fn join_list(values: &[String], fallback: &str) -> String {
     }
 }
 
-fn metadata_string(metadata: &Value, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        metadata
-            .get(*key)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-    })
+fn project_identity_snapshot_string(
+    snapshot: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, CliError> {
+    match snapshot.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(CliError::io(format!(
+            "PROJECT_IDENTITY_SNAPSHOT_INVALID: projectIdentity.{key} must be a string or null"
+        ))),
+    }
+}
+
+fn resolve_episode_write_identity(metadata: &Value) -> Result<EpisodeWriteIdentity, CliError> {
+    let snapshot = metadata
+        .get("projectIdentity")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            CliError::io(
+                "PROJECT_IDENTITY_REQUIRED: episodeDistiller requires metadata.projectIdentity",
+            )
+        })?;
+    if snapshot.get("contractVersion").and_then(Value::as_u64) != Some(CONTRACT_VERSION.into()) {
+        return Err(CliError::io(format!(
+            "PROJECT_IDENTITY_SNAPSHOT_INVALID: projectIdentity.contractVersion must be {CONTRACT_VERSION}"
+        )));
+    }
+    if snapshot.get("classificationStatus").and_then(Value::as_str) != Some("classified") {
+        return Err(CliError::io(
+            "PROJECT_IDENTITY_SNAPSHOT_INVALID: projectIdentity.classificationStatus must be classified",
+        ));
+    }
+    let scope = snapshot
+        .get("scope")
+        .and_then(Value::as_str)
+        .filter(|scope| matches!(*scope, "repo" | "global"))
+        .ok_or_else(|| {
+            CliError::io(
+                "PROJECT_IDENTITY_SNAPSHOT_INVALID: projectIdentity.scope must be repo or global",
+            )
+        })?
+        .to_string();
+    let resolved = resolve_compile_project_identity(
+        &CompileProjectIdentityInput {
+            project_ref: project_identity_snapshot_string(snapshot, "projectRef")?,
+            repo_key: project_identity_snapshot_string(snapshot, "repoKey")?,
+            repo_path: project_identity_snapshot_string(snapshot, "repoPath")?,
+        },
+        CompileProjectIdentityTrust::TrustedAdapter,
+        None,
+    )
+    .map_err(|error| CliError::io(error.to_string()))?;
+    if scope == "repo" && resolved.match_basis == CompileProjectIdentityMatchBasis::None {
+        return Err(CliError::io(
+            "PROJECT_IDENTITY_REQUIRED: repo-scoped episode writes require projectRef, repoKey, or an absolute repoPath",
+        ));
+    }
+    if scope == "global" && resolved.match_basis != CompileProjectIdentityMatchBasis::None {
+        return Err(CliError::io(
+            "PROJECT_IDENTITY_FORBIDDEN: global episode writes must not carry project identity",
+        ));
+    }
+    if snapshot.get("scopeMode").and_then(Value::as_str) != Some(resolved.scope_mode) {
+        return Err(CliError::io(
+            "PROJECT_IDENTITY_SNAPSHOT_INVALID: projectIdentity.scopeMode does not match its canonical identity",
+        ));
+    }
+    Ok(EpisodeWriteIdentity { scope, resolved })
+}
+
+fn record_episode_identity_event(connection: &Connection, event_type: &str, payload: Value) {
+    let _ = connection.execute(
+        "insert into audit_logs (id, event_type, actor, payload, created_at) values (?1, ?2, 'agent', ?3, ?4)",
+        (pseudo_uuid(), event_type, payload.to_string(), now_timestamp()),
+    );
 }
 
 fn metadata_string_at(metadata: &Value, pointer: &str) -> Option<String> {
@@ -2676,7 +2791,7 @@ mod tests {
             .execute(
                 "
                 insert into vibe_memories (id, session_id, content, metadata, created_at)
-                values ('memory-1', 'session-1', 'Rust queue executor implemented native EpisodeDistiller processing with LocalLLM and SQLite persistence.', '{\"cwd\":\"/repo\",\"project\":\"contextStill\"}', '2026-06-23T00:00:00.000Z')
+                values ('memory-1', 'session-1', 'Rust queue executor implemented native EpisodeDistiller processing with LocalLLM and SQLite persistence.', '{\"projectIdentity\":{\"contractVersion\":1,\"classificationStatus\":\"classified\",\"scope\":\"repo\",\"scopeMode\":\"project\",\"repoKey\":\"contextstill\",\"repoPath\":\"/repo\"}}', '2026-06-23T00:00:00.000Z')
                 ",
                 [],
             )
@@ -2769,6 +2884,25 @@ mod tests {
             .query_row("select count(*) from episode_refs", [], |row| row.get(0))
             .unwrap();
         assert_eq!(ref_count, 1);
+        let identity_columns: (String, String, Option<String>, Option<String>) = connection
+            .query_row(
+                "select classification_status, scope, repo_path, repo_key from episode_cards limit 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(identity_columns.0, "classified");
+        assert_eq!(identity_columns.1, "repo");
+        assert_eq!(identity_columns.2.as_deref(), Some("/repo"));
+        assert_eq!(identity_columns.3.as_deref(), Some("contextstill"));
+        let persisted_audit_count: i64 = connection
+            .query_row(
+                "select count(*) from audit_logs where event_type = 'PROJECT_IDENTITY_PRODUCER_PERSISTED'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted_audit_count, 1);
         let metadata: String = connection
             .query_row(
                 "select metadata from episode_distiller_queue where id = 'job-1'",
@@ -2916,12 +3050,12 @@ mod tests {
             api_path: "/v1/chat/completions".to_string(),
             model: "qwen".to_string(),
         };
+        let write_identity = resolve_episode_write_identity(&document.metadata).unwrap();
         let saved_episode_id = match create_episode_idempotently(
             &connection,
             &pending,
             &document,
-            None,
-            None,
+            &write_identity,
             &target,
             None,
             30,
@@ -3021,7 +3155,7 @@ mod tests {
             .execute(
                 "
                 insert into vibe_memories (id, session_id, content, metadata, created_at)
-                values ('memory-1', 'session-1', 'LocalLLM is still loading while the Rust executor owns queue processing.', '{}', '2026-06-23T00:00:00.000Z')
+                values ('memory-1', 'session-1', 'LocalLLM is still loading while the Rust executor owns queue processing.', '{\"projectIdentity\":{\"contractVersion\":1,\"classificationStatus\":\"classified\",\"scope\":\"global\",\"scopeMode\":\"global_only\"}}', '2026-06-23T00:00:00.000Z')
                 ",
                 [],
             )
@@ -3103,7 +3237,7 @@ mod tests {
             .execute(
                 "
                 insert into vibe_memories (id, session_id, content, metadata, created_at)
-                values ('memory-1', 'session-1', 'LocalLLM transport is down while the Rust executor owns queue processing.', '{}', '2026-06-23T00:00:00.000Z')
+                values ('memory-1', 'session-1', 'LocalLLM transport is down while the Rust executor owns queue processing.', '{\"projectIdentity\":{\"contractVersion\":1,\"classificationStatus\":\"classified\",\"scope\":\"global\",\"scopeMode\":\"global_only\"}}', '2026-06-23T00:00:00.000Z')
                 ",
                 [],
             )
@@ -3169,6 +3303,53 @@ mod tests {
     }
 
     #[test]
+    fn rust_episode_distiller_rejects_legacy_identityless_memory() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_episode_runtime_tables(&connection);
+        connection
+            .execute(
+                "insert into vibe_memories (id, session_id, content, metadata, created_at) values ('memory-1', 'session-1', 'Legacy memory has enough content to distill.', '{\"cwd\":\"/legacy/repo\",\"project\":\"legacy\"}', CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+        insert_episode_job(&connection, "job-1", json!({}));
+        let target = LocalLlmTargetConfig {
+            target_id: "local-a".to_string(),
+            api_base_url: "http://127.0.0.1:1".to_string(),
+            api_path: "/v1/chat/completions".to_string(),
+            model: "qwen".to_string(),
+        };
+
+        let status = run_episode_distiller_job_for_connection(
+            &connection,
+            "job-1",
+            "worker-1",
+            &target,
+            None,
+            30,
+        )
+        .unwrap();
+
+        assert_eq!(status, EpisodeExecutionStatus::Failed);
+        let last_error: String = connection
+            .query_row(
+                "select last_error from episode_distiller_queue where id = 'job-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(last_error.starts_with("PROJECT_IDENTITY_REQUIRED:"));
+        let rejected_audit_count: i64 = connection
+            .query_row(
+                "select count(*) from audit_logs where event_type = 'PROJECT_IDENTITY_PRODUCER_REJECTED' and json_extract(payload, '$.rejectionCode') = 'PROJECT_IDENTITY_REQUIRED'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rejected_audit_count, 1);
+    }
+
+    #[test]
     fn rust_episode_card_insert_rolls_back_when_ref_or_fts_insert_fails() {
         let connection = Connection::open_in_memory().unwrap();
         create_episode_runtime_tables(&connection);
@@ -3179,7 +3360,14 @@ mod tests {
             vibe_memory_id: "memory-1".to_string(),
             session_id: "session-1".to_string(),
             content: "source".to_string(),
-            metadata: json!({}),
+            metadata: json!({
+                "projectIdentity": {
+                    "contractVersion": 1,
+                    "classificationStatus": "classified",
+                    "scope": "global",
+                    "scopeMode": "global_only"
+                }
+            }),
             events: Vec::new(),
         };
         let pending = PendingEpisode {
@@ -3197,12 +3385,12 @@ mod tests {
             api_path: "/v1/chat/completions".to_string(),
             model: "qwen".to_string(),
         };
+        let write_identity = resolve_episode_write_identity(&document.metadata).unwrap();
         let error = create_episode_idempotently(
             &connection,
             &pending,
             &document,
-            None,
-            None,
+            &write_identity,
             &target,
             None,
             30,
@@ -3218,8 +3406,16 @@ mod tests {
         let ref_count: i64 = connection
             .query_row("select count(*) from episode_refs", [], |row| row.get(0))
             .unwrap();
+        let persisted_audit_count: i64 = connection
+            .query_row(
+                "select count(*) from audit_logs where event_type = 'PROJECT_IDENTITY_PRODUCER_PERSISTED'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(card_count, 0);
         assert_eq!(ref_count, 0);
+        assert_eq!(persisted_audit_count, 0);
     }
 
     fn insert_two_segment_memory(connection: &Connection) {
@@ -3227,7 +3423,7 @@ mod tests {
             .execute(
                 "
                 insert into vibe_memories (id, session_id, content, metadata, created_at)
-                values ('memory-1', 'session-1', 'Rust queue executor should save each completed episode segment before continuing to later LocalLLM calls.', '{\"cwd\":\"/repo\",\"project\":\"contextStill\"}', '2026-06-23T00:00:00.000Z')
+                values ('memory-1', 'session-1', 'Rust queue executor should save each completed episode segment before continuing to later LocalLLM calls.', '{\"projectIdentity\":{\"contractVersion\":1,\"classificationStatus\":\"classified\",\"scope\":\"repo\",\"scopeMode\":\"project\",\"repoKey\":\"contextstill\",\"repoPath\":\"/repo\"}}', '2026-06-23T00:00:00.000Z')
                 ",
                 [],
             )
@@ -3325,6 +3521,9 @@ mod tests {
                   technologies text not null,
                   change_types text not null,
                   tools text not null,
+                  classification_status text not null,
+                  scope text not null,
+                  project_ref text,
                   repo_path text,
                   repo_key text,
                   source_kind text not null,
@@ -3358,6 +3557,13 @@ mod tests {
                   message text,
                   metadata text not null default '{}',
                   created_at text not null default CURRENT_TIMESTAMP
+                );
+                create table audit_logs (
+                  id text primary key,
+                  event_type text not null,
+                  actor text not null,
+                  payload text not null default '{}',
+                  created_at text not null
                 );
                 create table agent_diff_entries (
                   id text primary key,

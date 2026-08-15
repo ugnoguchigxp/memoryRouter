@@ -1,4 +1,3 @@
-import { normalizeRepoKey } from "../context-compiler/query-context.js";
 import type {
   LandscapeRunStatus,
   LandscapeTaskFacetEntry,
@@ -10,7 +9,12 @@ const UNKNOWN = "unknown";
 export type LandscapeReplayCompileRunInput = {
   goal: string;
   runInput: unknown;
+  projectRef: string | null;
+  repoKey: string | null;
   repoPath: string | null;
+  matchBasis: string;
+  identityContractVersion: number;
+  scopeMode: string;
   retrievalMode: string;
   source: string;
   runStatus: LandscapeRunStatus;
@@ -86,8 +90,7 @@ export function extractLandscapeTaskFacets(input: {
   const repoKey =
     pickString(record, ["repoKey"]) ??
     pickString(appliesTo, ["repoKey"]) ??
-    pickString(metadata, ["repoKey", "sourceProject"]) ??
-    normalizeRepoKey(repoPath);
+    pickString(metadata, ["repoKey", "sourceProject"]);
 
   return {
     ...(repoKey ? { repoKey: normalizeFacetValue(repoKey) } : {}),

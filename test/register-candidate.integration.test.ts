@@ -34,6 +34,8 @@ describeDb("registerCandidate", () => {
 
   test("stores a distillation target and find-candidate row without creating knowledge", async () => {
     const result = await registerCandidate({
+      scope: "repo",
+      repoKey: "test/register-candidate",
       text: JSON.stringify({
         type: "procedure",
         title: "Verify before reporting fixed",
@@ -76,6 +78,14 @@ describeDb("registerCandidate", () => {
       targetKind: "knowledge_candidate",
       priorityGroup: "knowledge_candidate",
       status: "pending",
+      metadata: {
+        projectIdentity: {
+          classificationStatus: "classified",
+          scope: "repo",
+          matchBasis: "repo_key",
+          repoKey: "test/register-candidate",
+        },
+      },
     });
     expect(candidate).toMatchObject({
       targetStateId: result.targetStateId,
@@ -113,6 +123,7 @@ describeDb("registerCandidate", () => {
 
   test("preserves negative polarity and intent tags through provided candidate rows", async () => {
     const result = await registerCandidate({
+      scope: "global",
       title: "Do not trust stale queue status alone",
       body: "Stale queue status alone is not enough evidence for diagnosis.",
       type: "procedure",
@@ -187,6 +198,7 @@ describeDb("registerCandidate", () => {
 
   test("sets wiki priority when metadata indicates wiki parent", async () => {
     const result = await registerCandidate({
+      scope: "global",
       title: "Keep wiki priority",
       body: "Use when:\n- From wiki parent",
       type: "rule",

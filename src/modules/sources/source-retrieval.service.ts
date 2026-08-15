@@ -1,5 +1,7 @@
 import { groupedConfig } from "../../config.js";
+import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import type { CompileInput, RetrievalMode } from "../../shared/schemas/compile.schema.js";
+import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
 import { buildRetrievalQueryText } from "../context-compiler/query-context.js";
 import { embedOne } from "../embedding/embedding.service.js";
 import {
@@ -67,6 +69,12 @@ export async function retrieveSources(
   const primaryQuery = input.goal.trim();
   const queryText = buildRetrievalQueryText(input);
   const degradedReasons: string[] = [];
+  const identity = resolveCompileProjectIdentity({
+    projectRef: input.projectRef,
+    repoKey: input.repoKey,
+    repoPath: input.repoPath,
+  });
+  const searchOptions = { projectIdentity: identity } as const;
 
   const runSearch = async (): Promise<{
     items: SourceSearchResult[];
@@ -86,7 +94,7 @@ export async function retrieveSources(
         primaryQuery,
         profile.limit,
         profile.sourceKinds,
-        undefined,
+        searchOptions,
       );
       const enrichedHits =
         queryText !== primaryQuery
@@ -94,13 +102,19 @@ export async function retrieveSources(
               queryText,
               Math.max(3, Math.floor(profile.limit / 2)),
               profile.sourceKinds,
-              undefined,
+              searchOptions,
             )
           : [];
       const mergedBaseHits = mergeSourceHits(baseHits, enrichedHits, profile.limit);
       textHits = mergedBaseHits;
 
-      if (groupedConfig.compile.enableVectorSearch) {
+      if (
+        groupedConfig.compile.enableVectorSearch &&
+        resolveDatabaseBackendConfig().kind === "sqlite"
+      ) {
+        embeddingStatus = "disabled";
+        degradedReasons.push("SOURCE_VECTOR_SCOPE_PREFILTER_UNAVAILABLE");
+      } else if (groupedConfig.compile.enableVectorSearch) {
         try {
           const queryEmbedding = await embedOne(primaryQuery, "query");
           embeddingStatus = "generated";
@@ -108,7 +122,7 @@ export async function retrieveSources(
             queryEmbedding,
             profile.limit,
             profile.sourceKinds,
-            undefined,
+            searchOptions,
           );
         } catch {
           embeddingStatus = "unavailable";
@@ -138,7 +152,7 @@ export async function retrieveSources(
       vectorHitCount: result.vectorHits.length,
       searchFailed: result.searchFailed,
       embeddingStatus: result.embeddingStatus,
-      scopedSearch: false,
+      scopedSearch: identity.matchBasis !== "none",
       repoScopeFallbackUsed: false,
       queryText,
     },

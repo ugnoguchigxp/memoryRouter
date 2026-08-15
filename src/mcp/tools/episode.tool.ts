@@ -12,6 +12,7 @@ const searchEpisodesArgsSchema = z.object({
   technologies: z.array(z.string()).optional(),
   changeTypes: z.array(z.string()).optional(),
   tools: z.array(z.string()).optional(),
+  projectRef: z.string().trim().min(1).max(256).optional(),
   repoPath: z.string().trim().optional(),
   repoKey: z.string().trim().optional(),
   outcomeKinds: z.array(z.enum(["success", "failure", "mixed", "unknown"])).optional(),
@@ -43,6 +44,7 @@ export const searchEpisodesTool = {
       technologies: { type: "array", items: { type: "string" } },
       changeTypes: { type: "array", items: { type: "string" } },
       tools: { type: "array", items: { type: "string" } },
+      projectRef: { type: "string", minLength: 1, maxLength: 256 },
       repoPath: { type: "string" },
       repoKey: { type: "string" },
       outcomeKinds: {

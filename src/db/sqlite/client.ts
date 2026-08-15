@@ -48,8 +48,10 @@ export async function openSqliteCoreDatabase(input: {
   path: string;
   vectorDimension?: number;
   loadVectorExtension?: boolean;
+  /** Reserved for guarded offline maintenance commands while the resident writer is stopped. */
+  directWrite?: boolean;
 }): Promise<SqliteCoreDatabase> {
-  if (!isDirectWriteTestRuntime()) {
+  if (!input.directWrite && !isDirectWriteTestRuntime()) {
     const sqlite = await import("bun:sqlite");
     const readOnly = new sqlite.Database(input.path, {
       readonly: true,
@@ -78,6 +80,7 @@ export async function openSqliteCoreDatabase(input: {
 
   const vector =
     input.loadVectorExtension === false ? disabledVectorCapability() : await loadVec(db);
+  migrateRepositoryIdentityColumns(db);
   db.exec(
     createSqliteCoreSchemaSql({
       vectorDimension: input.vectorDimension ?? groupedConfig.embedding.dimension,
@@ -106,6 +109,63 @@ function hasColumn(db: BunSqliteDatabase, tableName: string, columnName: string)
     .some((row) => row.name === columnName);
 }
 
+function hasTable(db: BunSqliteDatabase, tableName: string): boolean {
+  return Boolean(
+    db
+      .query<{ name: string }, [string]>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+      )
+      .get(tableName),
+  );
+}
+
+function addColumnIfMissing(
+  db: BunSqliteDatabase,
+  tableName: string,
+  columnName: string,
+  definition: string,
+): void {
+  if (hasTable(db, tableName) && !hasColumn(db, tableName, columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${definition};`);
+  }
+}
+
+function migrateRepositoryIdentityColumns(db: BunSqliteDatabase): void {
+  for (const tableName of ["knowledge_items", "sources", "episode_cards"]) {
+    addColumnIfMissing(
+      db,
+      tableName,
+      "classification_status",
+      "classification_status TEXT NOT NULL DEFAULT 'unresolved'",
+    );
+    addColumnIfMissing(db, tableName, "scope", "scope TEXT NOT NULL DEFAULT 'repo'");
+    addColumnIfMissing(db, tableName, "project_ref", "project_ref TEXT");
+    addColumnIfMissing(db, tableName, "repo_key", "repo_key TEXT");
+    addColumnIfMissing(db, tableName, "repo_path", "repo_path TEXT");
+  }
+  addColumnIfMissing(db, "context_compile_runs", "project_ref", "project_ref TEXT");
+  addColumnIfMissing(db, "context_compile_runs", "repo_key", "repo_key TEXT");
+  addColumnIfMissing(db, "context_compile_runs", "repo_path", "repo_path TEXT");
+  addColumnIfMissing(
+    db,
+    "context_compile_runs",
+    "match_basis",
+    "match_basis TEXT NOT NULL DEFAULT 'none'",
+  );
+  addColumnIfMissing(
+    db,
+    "context_compile_runs",
+    "identity_contract_version",
+    "identity_contract_version INTEGER NOT NULL DEFAULT 1",
+  );
+  addColumnIfMissing(
+    db,
+    "context_compile_runs",
+    "scope_mode",
+    "scope_mode TEXT NOT NULL DEFAULT 'global_only'",
+  );
+}
+
 function migrateSqliteCoreSchema(db: BunSqliteDatabase): void {
   db.exec("UPDATE episode_cards SET status = 'active' WHERE status = 'draft';");
   if (!hasColumn(db, "episode_cards", "importance")) {
@@ -128,6 +188,9 @@ ALTER TABLE episode_cards DROP COLUMN evidence_status;
 ALTER TABLE finding_candidate_escalations
   ADD COLUMN distillation_version TEXT NOT NULL DEFAULT 'v1';
 `);
+  }
+  if (!hasColumn(db, "security_candidate_batch_items", "provenance_json")) {
+    db.exec("ALTER TABLE security_candidate_batch_items ADD COLUMN provenance_json TEXT;");
   }
   db.exec(`
 DROP INDEX IF EXISTS finding_candidate_escalations_source_provider_model_unique_idx;

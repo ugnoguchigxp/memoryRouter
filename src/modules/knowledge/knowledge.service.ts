@@ -1,4 +1,5 @@
 import { groupedConfig } from "../../config.js";
+import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import type { CompileInput, RetrievalMode } from "../../shared/schemas/compile.schema.js";
 import {
   type KnowledgeItem,
@@ -6,10 +7,10 @@ import {
   knowledgeSearchInputSchema,
 } from "../../shared/schemas/knowledge.schema.js";
 import {
-  buildRetrievalQueryText,
-  normalizeRepoKey,
-  normalizeRepoPath,
-} from "../context-compiler/query-context.js";
+  type ResolvedCompileProjectIdentity,
+  resolveCompileProjectIdentity,
+} from "../context-compiler/compile-project-identity.js";
+import { buildRetrievalQueryText } from "../context-compiler/query-context.js";
 import { embedOne } from "../embedding/embedding.service.js";
 import { resolveKnowledgeSearchStatuses } from "./knowledge-lifecycle.service.js";
 import {
@@ -87,10 +88,7 @@ function getKnowledgeRetrievalProfile(retrievalMode: RetrievalMode): {
 }
 
 type KnowledgeSearchScope = {
-  repoPath?: string;
-  repoKey?: string;
-  allowGlobalScope?: boolean;
-  scopeMatchMode?: "primary" | "legacy";
+  projectIdentity: ResolvedCompileProjectIdentity;
 };
 
 type InternalKnowledgeSearchParams = {
@@ -104,13 +102,11 @@ type InternalKnowledgeSearchParams = {
   types?: KnowledgeItem["type"][];
   polarities?: Array<"positive" | "negative" | "neutral">;
   intentTags?: string[];
-  repoPath?: string;
-  repoKey?: string;
+  projectIdentity: ResolvedCompileProjectIdentity;
   scopedSearch: boolean;
   queryEmbedding?: number[];
   generateEmbeddingIfMissing: boolean;
   noMatchReason: string;
-  repoScopeFallbackReason: string;
   technologies?: string[];
   changeTypes?: string[];
   domains?: string[];
@@ -422,7 +418,7 @@ async function executeKnowledgeSearch(
   let embeddingDimensions: number | undefined =
     workingEmbedding && workingEmbedding.length > 0 ? workingEmbedding.length : undefined;
 
-  const buildSearchInput = (query: string, limit: number, repoPath?: string) =>
+  const buildSearchInput = (query: string, limit: number, scope: KnowledgeSearchScope) =>
     knowledgeSearchInputSchema.parse({
       query,
       limit,
@@ -436,7 +432,9 @@ async function executeKnowledgeSearch(
       changeTypes: params.changeTypes,
       domains: params.domains,
       includeGeneral: params.includeGeneral ?? true,
-      ...(repoPath ? { repoPath } : {}),
+      ...(scope.projectIdentity.projectRef ? { projectRef: scope.projectIdentity.projectRef } : {}),
+      ...(scope.projectIdentity.repoKey ? { repoKey: scope.projectIdentity.repoKey } : {}),
+      ...(scope.projectIdentity.repoPath ? { repoPath: scope.projectIdentity.repoPath } : {}),
     });
 
   const normalizedTextQueries =
@@ -465,13 +463,10 @@ async function executeKnowledgeSearch(
     let vectorFailed = false;
 
     const searchOptions = {
-      repoPath: scope.repoPath,
-      repoKey: scope.repoKey,
-      allowGlobalScope: scope.allowGlobalScope,
+      projectIdentity: scope.projectIdentity,
       types: params.types,
       polarities: params.polarities,
       intentTags: params.intentTags,
-      scopeMatchMode: scope.scopeMatchMode,
       technologies: params.technologies,
       changeTypes: params.changeTypes,
       domains: params.domains,
@@ -482,11 +477,7 @@ async function executeKnowledgeSearch(
       normalizedTextQueries.map(async (query, index) => {
         try {
           return await searchKnowledge(
-            buildSearchInput(
-              query,
-              index === 0 ? params.limit : secondaryQueryLimit,
-              scope.repoPath,
-            ),
+            buildSearchInput(query, index === 0 ? params.limit : secondaryQueryLimit, scope),
             searchOptions,
           );
         } catch {
@@ -498,7 +489,17 @@ async function executeKnowledgeSearch(
     );
     textHits = [...new Map(textResults.flat().map((item) => [item.id, item])).values()];
 
-    if (groupedConfig.compile.enableVectorSearch) {
+    if (
+      groupedConfig.compile.enableVectorSearch &&
+      resolveDatabaseBackendConfig().kind === "sqlite"
+    ) {
+      embeddingStatus = "disabled";
+      workingEmbedding = undefined;
+      embeddingProvider = undefined;
+      embeddingModel = undefined;
+      embeddingDimensions = undefined;
+      appendDegradedReason(degradedReasons, "KNOWLEDGE_VECTOR_SCOPE_PREFILTER_UNAVAILABLE");
+    } else if (groupedConfig.compile.enableVectorSearch) {
       if (
         (!workingEmbedding || workingEmbedding.length === 0) &&
         params.generateEmbeddingIfMissing
@@ -524,13 +525,10 @@ async function executeKnowledgeSearch(
             params.limit,
             params.statuses,
             {
-              repoPath: scope.repoPath,
-              repoKey: scope.repoKey,
-              allowGlobalScope: scope.allowGlobalScope,
+              projectIdentity: scope.projectIdentity,
               types: params.types,
               polarities: params.polarities,
               intentTags: params.intentTags,
-              scopeMatchMode: scope.scopeMatchMode,
               technologies: params.technologies,
               changeTypes: params.changeTypes,
               domains: params.domains,
@@ -552,55 +550,12 @@ async function executeKnowledgeSearch(
     };
   };
 
-  let searchResult = await runScopedSearch({
-    repoPath: params.repoPath,
-    repoKey: params.repoKey,
-    allowGlobalScope: true,
-    scopeMatchMode: "primary",
-  });
-  let merged = mergeKnowledgeHits(
+  const searchResult = await runScopedSearch({ projectIdentity: params.projectIdentity });
+  const merged = mergeKnowledgeHits(
     [...searchResult.textHits, ...searchResult.vectorHits],
     params.limit,
   );
-  let repoScopeFallbackUsed = false;
-
-  if (
-    params.scopedSearch &&
-    merged.length === 0 &&
-    !searchResult.textFailed &&
-    !searchResult.vectorFailed
-  ) {
-    const legacyScopedResult = await runScopedSearch({
-      repoPath: params.repoPath,
-      repoKey: params.repoKey,
-      allowGlobalScope: false,
-      scopeMatchMode: "legacy",
-    });
-    const legacyMerged = mergeKnowledgeHits(
-      [...legacyScopedResult.textHits, ...legacyScopedResult.vectorHits],
-      params.limit,
-    );
-    if (legacyMerged.length > 0) {
-      searchResult = legacyScopedResult;
-      merged = legacyMerged;
-      appendDegradedReason(degradedReasons, "KNOWLEDGE_APPLIES_TO_FALLBACK");
-    }
-  }
-
-  if (
-    params.scopedSearch &&
-    merged.length === 0 &&
-    !searchResult.textFailed &&
-    !searchResult.vectorFailed
-  ) {
-    repoScopeFallbackUsed = true;
-    appendDegradedReason(degradedReasons, params.repoScopeFallbackReason);
-    searchResult = await runScopedSearch({});
-    merged = mergeKnowledgeHits(
-      [...searchResult.textHits, ...searchResult.vectorHits],
-      params.limit,
-    );
-  }
+  const repoScopeFallbackUsed = false;
 
   if (merged.length === 0 && !searchResult.textFailed && !searchResult.vectorFailed) {
     appendDegradedReason(degradedReasons, params.noMatchReason);
@@ -670,9 +625,12 @@ export async function retrieveKnowledge(
     retrievalMode: options.retrievalMode,
     includeDraft: input.includeDraft === true,
   });
-  const repoPath = normalizeRepoPath(input.repoPath);
-  const repoKey = (input.repoKey?.trim() || normalizeRepoKey(input.repoPath))?.toLowerCase();
-  const scopedSearch = Boolean(repoPath || repoKey);
+  const identity = resolveCompileProjectIdentity({
+    projectRef: input.projectRef,
+    repoKey: input.repoKey,
+    repoPath: input.repoPath,
+  });
+  const scopedSearch = identity.matchBasis !== "none";
   const retrievalInput: CompileInput = {
     ...input,
     technologies: options.facetFilters?.technologies ?? input.technologies,
@@ -701,12 +659,10 @@ export async function retrieveKnowledge(
       types: profile.types,
       polarities: options.polarities,
       intentTags: options.intentTags,
-      repoPath,
-      repoKey,
+      projectIdentity: identity,
       scopedSearch,
       generateEmbeddingIfMissing: true,
       noMatchReason: "NO_ACTIVE_KNOWLEDGE_MATCH",
-      repoScopeFallbackReason: "KNOWLEDGE_REPO_SCOPE_FALLBACK",
       technologies: retrievalInput.technologies,
       changeTypes: retrievalInput.changeTypes,
       domains: retrievalInput.domains,
@@ -738,12 +694,10 @@ export async function retrieveKnowledge(
       types: profile.types,
       polarities: options.polarities,
       intentTags: options.intentTags,
-      repoPath,
-      repoKey,
+      projectIdentity: identity,
       scopedSearch,
       generateEmbeddingIfMissing: true,
       noMatchReason: "NO_ACTIVE_KNOWLEDGE_MATCH",
-      repoScopeFallbackReason: "KNOWLEDGE_REPO_SCOPE_FALLBACK",
       technologies: retrievalInput.technologies,
       changeTypes: retrievalInput.changeTypes,
       domains: retrievalInput.domains,
@@ -820,8 +774,11 @@ export async function searchKnowledgeCandidates(
       : parsed.includeDraft
         ? (["active", "draft"] as KnowledgeStatus[])
         : ([parsed.status] as KnowledgeStatus[]);
-  const repoPath = normalizeRepoPath(parsed.repoPath);
-  const repoKey = normalizeRepoKey(parsed.repoPath);
+  const identity = resolveCompileProjectIdentity({
+    projectRef: parsed.projectRef,
+    repoKey: parsed.repoKey,
+    repoPath: parsed.repoPath,
+  });
   const primaryQuery = parsed.query.trim();
   return executeKnowledgeSearch({
     primaryQuery,
@@ -838,12 +795,10 @@ export async function searchKnowledgeCandidates(
     intentTags: parsed.intentTags,
     includeDraft: parsed.includeDraft,
     types: parsed.types,
-    repoPath,
-    repoKey,
-    scopedSearch: Boolean(repoPath || repoKey),
+    projectIdentity: identity,
+    scopedSearch: identity.matchBasis !== "none",
     generateEmbeddingIfMissing: true,
     noMatchReason: "NO_ACTIVE_KNOWLEDGE_MATCH",
-    repoScopeFallbackReason: "KNOWLEDGE_REPO_SCOPE_FALLBACK",
     technologies: parsed.technologies,
     changeTypes: parsed.changeTypes,
     domains: parsed.domains,
@@ -867,6 +822,7 @@ export async function registerKnowledgeFromMarkdown(params: {
   technologies?: string[];
   changeTypes?: string[];
   domains?: string[];
+  projectRef?: string;
   repoPath?: string;
   repoKey?: string;
   metadata?: Record<string, unknown>;
@@ -881,6 +837,10 @@ export async function registerKnowledgeFromMarkdown(params: {
     type: params.type ?? "rule",
     status: params.status ?? "draft",
     scope: params.scope ?? "repo",
+    projectRef: params.projectRef,
+    repoPath: params.repoPath,
+    repoKey: params.repoKey,
+    identityProducer: "knowledge.register-markdown",
     polarity: params.polarity,
     intentTags: params.intentTags,
     title: params.title,

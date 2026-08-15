@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { sql } from "drizzle-orm";
+import { resolveProjectScopedWriteIdentity } from "../modules/context-compiler/project-scoped-write.js";
 import { redactSecretRecord, redactSecretsFromValue } from "../shared/utils/secret-redaction.js";
 import { closeDbPool, db } from "./index.js";
 import {
@@ -71,6 +72,22 @@ function asDate(value: unknown): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+function resolveSeedProjectIdentity(
+  row: JsonRecord,
+  fallback: { repoKey?: unknown; repoPath?: unknown },
+) {
+  const rawScope = asString(row.scope) ?? "repo";
+  if (rawScope !== "repo" && rawScope !== "global") {
+    throw new Error(`Invalid seed project identity scope for row ${asString(row.id) ?? "unknown"}`);
+  }
+  return resolveProjectScopedWriteIdentity({
+    scope: rawScope,
+    projectRef: asString(row.project_ref),
+    repoKey: asString(row.repo_key) ?? asString(fallback.repoKey),
+    repoPath: asString(row.repo_path) ?? asString(fallback.repoPath),
+  });
+}
+
 function asSeedPayload(value: unknown): SeedPayload {
   const record = asRecord(value);
   return {
@@ -107,17 +124,29 @@ async function main(): Promise<void> {
     throw new Error(`Unsupported seed schemaVersion: ${payload.schemaVersion}`);
   }
 
-  const mappedSources = payload.sources.map((row) => ({
-    id: asString(row.id) ?? "",
-    sourceKind: asString(row.source_kind) ?? "wiki",
-    uri: asString(row.uri) ?? "",
-    title: asString(row.title),
-    body: asString(row.body) ?? "",
-    metadata: asRecord(row.metadata),
-    createdAt: asDate(row.created_at) ?? new Date(),
-    updatedAt: asDate(row.updated_at) ?? new Date(),
-    lastIndexedAt: asDate(row.last_indexed_at),
-  }));
+  const mappedSources = payload.sources.map((row) => {
+    const metadata = asRecord(row.metadata);
+    const identity = resolveSeedProjectIdentity(row, {
+      repoKey: metadata.repoKey,
+      repoPath: metadata.repoPath,
+    });
+    return {
+      id: asString(row.id) ?? "",
+      sourceKind: asString(row.source_kind) ?? "wiki",
+      classificationStatus: identity.classificationStatus,
+      scope: identity.scope,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
+      uri: asString(row.uri) ?? "",
+      title: asString(row.title),
+      body: asString(row.body) ?? "",
+      metadata,
+      createdAt: asDate(row.created_at) ?? new Date(),
+      updatedAt: asDate(row.updated_at) ?? new Date(),
+      lastIndexedAt: asDate(row.last_indexed_at),
+    };
+  });
 
   const mappedSourceFragments = payload.sourceFragments.map((row) => ({
     id: asString(row.id) ?? "",
@@ -129,29 +158,40 @@ async function main(): Promise<void> {
     createdAt: asDate(row.created_at) ?? new Date(),
   }));
 
-  const mappedKnowledgeItems = payload.knowledgeItems.map((row) => ({
-    id: asString(row.id) ?? "",
-    type: asString(row.type) ?? "rule",
-    status: asString(row.status) ?? "active",
-    scope: asString(row.scope) ?? "repo",
-    polarity: asString(row.polarity) ?? "positive",
-    intentTags: asArray(row.intent_tags ?? row.intentTags).map(String),
-    title: asString(row.title) ?? "",
-    body: asString(row.body) ?? "",
-    appliesTo: asRecord(row.applies_to),
-    confidence: asNumber(row.confidence, 70),
-    importance: asNumber(row.importance, 70),
-    compileSelectCount: Math.max(0, Math.floor(asNumber(row.compile_select_count, 0))),
-    lastCompiledAt: asDate(row.last_compiled_at),
-    agenticAcceptCount: Math.max(0, Math.floor(asNumber(row.agentic_accept_count, 0))),
-    explicitUpvoteCount: Math.max(0, Math.floor(asNumber(row.explicit_upvote_count, 0))),
-    explicitDownvoteCount: Math.max(0, Math.floor(asNumber(row.explicit_downvote_count, 0))),
-    dynamicScore: asNumber(row.dynamic_score, 0),
-    metadata: asRecord(row.metadata),
-    createdAt: asDate(row.created_at) ?? new Date(),
-    updatedAt: asDate(row.updated_at) ?? new Date(),
-    lastVerifiedAt: asDate(row.last_verified_at),
-  }));
+  const mappedKnowledgeItems = payload.knowledgeItems.map((row) => {
+    const appliesTo = asRecord(row.applies_to);
+    const identity = resolveSeedProjectIdentity(row, {
+      repoKey: appliesTo.repoKey,
+      repoPath: appliesTo.repoPath,
+    });
+    return {
+      id: asString(row.id) ?? "",
+      type: asString(row.type) ?? "rule",
+      status: asString(row.status) ?? "active",
+      classificationStatus: identity.classificationStatus,
+      scope: identity.scope,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
+      polarity: asString(row.polarity) ?? "positive",
+      intentTags: asArray(row.intent_tags ?? row.intentTags).map(String),
+      title: asString(row.title) ?? "",
+      body: asString(row.body) ?? "",
+      appliesTo,
+      confidence: asNumber(row.confidence, 70),
+      importance: asNumber(row.importance, 70),
+      compileSelectCount: Math.max(0, Math.floor(asNumber(row.compile_select_count, 0))),
+      lastCompiledAt: asDate(row.last_compiled_at),
+      agenticAcceptCount: Math.max(0, Math.floor(asNumber(row.agentic_accept_count, 0))),
+      explicitUpvoteCount: Math.max(0, Math.floor(asNumber(row.explicit_upvote_count, 0))),
+      explicitDownvoteCount: Math.max(0, Math.floor(asNumber(row.explicit_downvote_count, 0))),
+      dynamicScore: asNumber(row.dynamic_score, 0),
+      metadata: asRecord(row.metadata),
+      createdAt: asDate(row.created_at) ?? new Date(),
+      updatedAt: asDate(row.updated_at) ?? new Date(),
+      lastVerifiedAt: asDate(row.last_verified_at),
+    };
+  });
 
   const mappedKnowledgeSourceLinks = payload.knowledgeSourceLinks.map((row) => ({
     id: asString(row.id) ?? "",
@@ -192,6 +232,11 @@ async function main(): Promise<void> {
           target: sources.id,
           set: {
             sourceKind: sql`excluded.source_kind`,
+            classificationStatus: sql`excluded.classification_status`,
+            scope: sql`excluded.scope`,
+            projectRef: sql`excluded.project_ref`,
+            repoKey: sql`excluded.repo_key`,
+            repoPath: sql`excluded.repo_path`,
             uri: sql`excluded.uri`,
             title: sql`excluded.title`,
             body: sql`excluded.body`,
@@ -230,6 +275,10 @@ async function main(): Promise<void> {
             type: sql`excluded.type`,
             status: sql`excluded.status`,
             scope: sql`excluded.scope`,
+            classificationStatus: sql`excluded.classification_status`,
+            projectRef: sql`excluded.project_ref`,
+            repoKey: sql`excluded.repo_key`,
+            repoPath: sql`excluded.repo_path`,
             polarity: sql`excluded.polarity`,
             intentTags: sql`excluded.intent_tags`,
             title: sql`excluded.title`,

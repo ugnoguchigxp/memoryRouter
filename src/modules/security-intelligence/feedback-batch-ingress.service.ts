@@ -3,14 +3,23 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { db } from "../../db/index.js";
-import { securityFeedbackBatchReceipts, securityFeedbackEvents } from "../../db/schema.js";
-import { securityIntelligenceSha256 } from "../../shared/schemas/security-knowledge-candidate-batch.schema.js";
+import {
+  auditLogs,
+  securityFeedbackBatchReceipts,
+  securityFeedbackEvents,
+} from "../../db/schema.js";
+import {
+  canonicalStringifySecurityIntelligenceValue,
+  securityIntelligenceSafeBoundedTextSchema,
+  securityIntelligenceSha256,
+} from "../../shared/schemas/security-knowledge-candidate-batch.schema.js";
 import {
   SECURITY_KNOWLEDGE_FEEDBACK_BATCH_MAX_BYTES,
   type SecurityKnowledgeFeedbackBatch,
   securityKnowledgeFeedbackBatchResponseSchema,
   securityKnowledgeFeedbackEventSchema,
 } from "../../shared/schemas/security-knowledge-feedback-batch.schema.js";
+import { auditEventTypes } from "../audit/audit-log.service.js";
 import { SecurityIntelligenceIngressError } from "./candidate-batch-ingress.service.js";
 
 const ENDPOINT = "/api/integrations/security-intelligence/v1/feedback-batches";
@@ -18,7 +27,7 @@ const envelopeSchema = z
   .object({
     contractVersion: z.literal(1),
     batchRef: z.string().regex(/^skfb:v1:[a-f0-9]{64}$/),
-    idempotencyKey: z.string().min(1).max(256),
+    idempotencyKey: securityIntelligenceSafeBoundedTextSchema(256),
     batchPayloadDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     producer: z
       .object({
@@ -148,7 +157,40 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
         batchPayloadDigest: batch.batchPayloadDigest,
         receiptJson: {},
       })
+      .onConflictDoNothing()
       .returning();
+    if (!receiptRow) {
+      const [concurrent] = await tx
+        .select()
+        .from(securityFeedbackBatchReceipts)
+        .where(
+          and(
+            eq(securityFeedbackBatchReceipts.producerPrincipal, producerPrincipal),
+            eq(securityFeedbackBatchReceipts.endpoint, ENDPOINT),
+            eq(securityFeedbackBatchReceipts.contractVersion, String(batch.contractVersion)),
+            eq(securityFeedbackBatchReceipts.idempotencyKey, batch.idempotencyKey),
+          ),
+        )
+        .limit(1);
+      if (!concurrent) {
+        throw new SecurityIntelligenceIngressError(
+          409,
+          "receipt_conflict",
+          "feedback receipt conflicted with another persisted batch",
+        );
+      }
+      if (concurrent.batchPayloadDigest !== batch.batchPayloadDigest) {
+        throw new SecurityIntelligenceIngressError(
+          409,
+          "idempotency_conflict",
+          "idempotency key was reused with different feedback payload",
+        );
+      }
+      return securityKnowledgeFeedbackBatchResponseSchema.parse({
+        replayed: true,
+        receipt: concurrent.receiptJson,
+      });
+    }
     const acceptedEventRefs: string[] = [];
     const duplicateEventRefs: string[] = [];
     const rejectedEvents: Array<{ eventRef: string; reasonCode: string }> = [];
@@ -167,15 +209,20 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
         duplicateEventRefs.push(parsed.data.eventRef);
         continue;
       }
-      await tx.insert(securityFeedbackEvents).values({
-        eventRef: parsed.data.eventRef,
-        receiptId: receiptRow.id,
-        eventType: parsed.data.eventType,
-        knowledgeRef: parsed.data.knowledgeRef,
-        knowledgeRevision: String(parsed.data.knowledgeRevision),
-        payloadJson: parsed.data,
-      });
-      acceptedEventRefs.push(parsed.data.eventRef);
+      const [inserted] = await tx
+        .insert(securityFeedbackEvents)
+        .values({
+          eventRef: parsed.data.eventRef,
+          receiptId: receiptRow.id,
+          eventType: parsed.data.eventType,
+          knowledgeRef: parsed.data.knowledgeRef,
+          knowledgeRevision: String(parsed.data.knowledgeRevision),
+          payloadJson: parsed.data,
+        })
+        .onConflictDoNothing()
+        .returning({ eventRef: securityFeedbackEvents.eventRef });
+      if (inserted) acceptedEventRefs.push(parsed.data.eventRef);
+      else duplicateEventRefs.push(parsed.data.eventRef);
     }
     const response = securityKnowledgeFeedbackBatchResponseSchema.parse({
       replayed: false,
@@ -192,6 +239,17 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
       .update(securityFeedbackBatchReceipts)
       .set({ receiptJson: response.receipt })
       .where(eq(securityFeedbackBatchReceipts.id, receiptRow.id));
+    await tx.insert(auditLogs).values({
+      eventType: auditEventTypes.securityIntelligenceFeedbackBatchReceived,
+      actor: "system",
+      payload: {
+        producerPrincipal,
+        scope: "security-intelligence:feedback:write",
+        endpoint: ENDPOINT,
+        batchRef: batch.batchRef,
+        receiptRef: receiptRow.receiptRef,
+      },
+    });
     return response;
   });
 }
@@ -199,28 +257,6 @@ async function receivePostgres(producerPrincipal: string, batch: SecurityKnowled
 async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledgeFeedbackBatch) {
   const { getRuntimeSqliteCoreDatabase } = await import("../../db/sqlite/runtime.js");
   const sqlite = await getRuntimeSqliteCoreDatabase();
-  const existing = sqlite.db
-    .query<
-      { batch_payload_digest: string; receipt_json: string },
-      [string, string, string, string]
-    >(
-      `select batch_payload_digest, receipt_json from security_feedback_batch_receipts
-       where producer_principal = ? and endpoint = ? and contract_version = ? and idempotency_key = ? limit 1`,
-    )
-    .get(producerPrincipal, ENDPOINT, String(batch.contractVersion), batch.idempotencyKey);
-  if (existing) {
-    if (existing.batch_payload_digest !== batch.batchPayloadDigest) {
-      throw new SecurityIntelligenceIngressError(
-        409,
-        "idempotency_conflict",
-        "idempotency key was reused with different feedback payload",
-      );
-    }
-    return securityKnowledgeFeedbackBatchResponseSchema.parse({
-      replayed: true,
-      receipt: JSON.parse(existing.receipt_json),
-    });
-  }
   const receiptId = randomUUID();
   const ref = receiptRef(producerPrincipal, batch);
   const acceptedEventRefs: string[] = [];
@@ -228,6 +264,30 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
   const rejectedEvents: Array<{ eventRef: string; reasonCode: string }> = [];
   sqlite.db.exec("BEGIN IMMEDIATE");
   try {
+    const existing = sqlite.db
+      .query<
+        { batch_payload_digest: string; receipt_json: string },
+        [string, string, string, string]
+      >(
+        `select batch_payload_digest, receipt_json from security_feedback_batch_receipts
+         where producer_principal = ? and endpoint = ? and contract_version = ? and idempotency_key = ? limit 1`,
+      )
+      .get(producerPrincipal, ENDPOINT, String(batch.contractVersion), batch.idempotencyKey);
+    if (existing) {
+      if (existing.batch_payload_digest !== batch.batchPayloadDigest) {
+        throw new SecurityIntelligenceIngressError(
+          409,
+          "idempotency_conflict",
+          "idempotency key was reused with different feedback payload",
+        );
+      }
+      const response = securityKnowledgeFeedbackBatchResponseSchema.parse({
+        replayed: true,
+        receipt: JSON.parse(existing.receipt_json),
+      });
+      sqlite.db.exec("COMMIT");
+      return response;
+    }
     sqlite.db
       .query(
         `insert into security_feedback_batch_receipts (id, receipt_ref, producer_principal, endpoint, contract_version, idempotency_key, batch_ref, batch_payload_digest, receipt_json, created_at) values (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?)`,
@@ -288,6 +348,22 @@ async function receiveSqlite(producerPrincipal: string, batch: SecurityKnowledge
     sqlite.db
       .query("update security_feedback_batch_receipts set receipt_json = ? where id = ?")
       .run(JSON.stringify(response.receipt), receiptId);
+    sqlite.db
+      .query(
+        "insert into audit_logs (id, event_type, actor, payload, created_at) values (?, ?, 'system', ?, ?)",
+      )
+      .run(
+        randomUUID(),
+        auditEventTypes.securityIntelligenceFeedbackBatchReceived,
+        canonicalStringifySecurityIntelligenceValue({
+          producerPrincipal,
+          scope: "security-intelligence:feedback:write",
+          endpoint: ENDPOINT,
+          batchRef: batch.batchRef,
+          receiptRef: ref,
+        }),
+        new Date().toISOString(),
+      );
     sqlite.db.exec("COMMIT");
     return response;
   } catch (error) {

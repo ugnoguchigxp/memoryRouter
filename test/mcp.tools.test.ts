@@ -36,9 +36,14 @@ import {
   listKnowledgeItems,
   updateKnowledgeItem,
 } from "../api/modules/knowledge/knowledge.repository.js";
+import type { ToolHandlerContext } from "../src/mcp/registry.js";
 import { compileEvalTool } from "../src/mcp/tools/compile-eval.tool.js";
 import { contextCompileTool } from "../src/mcp/tools/context-compile.tool.js";
-import type { ToolHandlerContext } from "../src/mcp/registry.js";
+import {
+  contextDecisionFeedbackTool,
+  contextDecisionTool,
+} from "../src/mcp/tools/context-decision.tool.js";
+import { fetchEpisodeTool, searchEpisodesTool } from "../src/mcp/tools/episode.tool.js";
 import {
   listKnowledgeTool,
   registerCandidateTool,
@@ -46,34 +51,29 @@ import {
   searchKnowledgeTool,
   updateKnowledgeTool,
 } from "../src/mcp/tools/knowledge.tool.js";
-import { fetchEpisodeTool, searchEpisodesTool } from "../src/mcp/tools/episode.tool.js";
 import {
   memoryFetchTool as fetchMemoryLegacyTool,
   fetchMemoryTool as fetchMemoryPrimaryTool,
   memorySearchTool as searchMemoryLegacyTool,
   searchMemoryTool as searchMemoryPrimaryTool,
 } from "../src/mcp/tools/memory.tool.js";
+import { readFileTool } from "../src/mcp/tools/read-file.tool.js";
 import { doctorTool, initialInstructionsTool } from "../src/mcp/tools/system.tool.js";
 import { recordCompileEval } from "../src/modules/context-compiler/context-compile-eval.service.js";
 import { compileContextPack } from "../src/modules/context-compiler/context-compiler.service.js";
+import { recordContextDecisionFeedback } from "../src/modules/context-decision/context-decision.feedback.service.js";
+import { decideContext } from "../src/modules/context-decision/context-decision.service.js";
 import { runDoctor } from "../src/modules/doctor/doctor.service.js";
 import {
   fetchEpisode,
   searchEpisodes,
 } from "../src/modules/episodic-memory/episode-card.service.js";
 import { searchKnowledgeCandidates } from "../src/modules/knowledge/knowledge.service.js";
+import { readFileDomain } from "../src/modules/readFile/domain.js";
 import { registerCandidate } from "../src/modules/registerCandidate/register-candidate.service.js";
 import { registerCandidatesBulk } from "../src/modules/registerCandidate/register-candidate.service.js";
 import { reloadRuntimeSettingsCache } from "../src/modules/settings/settings.service.js";
 import { retrieveVibeMemoryContext } from "../src/modules/vibe-memory/vibe-memory.service.js";
-import {
-  contextDecisionTool,
-  contextDecisionFeedbackTool,
-} from "../src/mcp/tools/context-decision.tool.js";
-import { readFileTool } from "../src/mcp/tools/read-file.tool.js";
-import { decideContext } from "../src/modules/context-decision/context-decision.service.js";
-import { recordContextDecisionFeedback } from "../src/modules/context-decision/context-decision.feedback.service.js";
-import { readFileDomain } from "../src/modules/readFile/domain.js";
 
 describe("MCP Tools Handlers", () => {
   beforeEach(() => {
@@ -164,6 +164,8 @@ describe("MCP Tools Handlers", () => {
           technologies: ["typescript"],
           changeTypes: ["schema"],
           tools: [],
+          scope: "global",
+          classificationStatus: "classified",
           repoPath: null,
           repoKey: null,
           sourceKind: "manual",
@@ -226,6 +228,8 @@ describe("MCP Tools Handlers", () => {
         technologies: [],
         changeTypes: [],
         tools: [],
+        scope: "global",
+        classificationStatus: "classified",
         repoPath: null,
         repoKey: null,
         sourceKind: "manual",
@@ -402,6 +406,7 @@ describe("MCP Tools Handlers", () => {
         title: "New Rule",
         body: "Detailed body of the rule",
         type: "rule",
+        scope: "global",
       });
 
       expect(registerCandidate).toHaveBeenCalledWith(
@@ -409,6 +414,7 @@ describe("MCP Tools Handlers", () => {
           title: "New Rule",
           body: "Detailed body of the rule",
           type: "rule",
+          scope: "global",
           metadata: {},
         },
         { strictProcedureSections: true },
@@ -434,11 +440,13 @@ describe("MCP Tools Handlers", () => {
 
       await registerCandidateTool.handler({
         text: '{"type":"procedure","title":"Failure note","body":"Use when:\\n- ..."}',
+        scope: "global",
       });
 
       expect(registerCandidate).toHaveBeenCalledWith(
         {
           text: '{"type":"procedure","title":"Failure note","body":"Use when:\\n- ..."}',
+          scope: "global",
           metadata: {},
         },
         { strictProcedureSections: true },
@@ -479,6 +487,7 @@ describe("MCP Tools Handlers", () => {
         technologies: ["sqlite"],
         changeTypes: ["diagnosis"],
         domains: ["queue"],
+        scope: "global",
       });
 
       expect(registerCandidate).toHaveBeenCalledWith(
@@ -490,6 +499,7 @@ describe("MCP Tools Handlers", () => {
           technologies: ["sqlite"],
           changeTypes: ["diagnosis"],
           domains: ["queue"],
+          scope: "global",
           metadata: {},
         },
         { strictProcedureSections: true },
@@ -526,14 +536,17 @@ describe("MCP Tools Handlers", () => {
       } as never);
 
       const response = await registerCandidatesTool.handler({
-        items: [{ body: "A" }, { body: "B" }],
+        items: [
+          { body: "A", scope: "global" },
+          { body: "B", scope: "global" },
+        ],
       });
       const data = JSON.parse(response.content[0].text);
       expect(data.registeredCount).toBe(2);
       expect(registerCandidatesBulk).toHaveBeenCalledWith(
         [
-          { body: "A", metadata: {} },
-          { body: "B", metadata: {} },
+          { body: "A", scope: "global", metadata: {} },
+          { body: "B", scope: "global", metadata: {} },
         ],
         { strictProcedureSections: true },
       );

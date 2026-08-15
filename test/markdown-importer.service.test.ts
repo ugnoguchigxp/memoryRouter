@@ -43,7 +43,7 @@ describe("Markdown Importer Service", () => {
     );
     vi.mocked(upsertSourceDocument).mockResolvedValue("s1");
 
-    const result = await importMarkdownDirectory("/root");
+    const result = await importMarkdownDirectory("/root", { scope: "global" });
 
     expect(result.importedFiles).toBe(1);
     expect(result.files[0].sourceId).toBe("s1");
@@ -62,7 +62,10 @@ describe("Markdown Importer Service", () => {
     vi.mocked(readFile).mockResolvedValue("# Test\nBody content");
     vi.mocked(upsertSourceDocument).mockResolvedValue("s1");
 
-    const result = await importMarkdownDirectory(path.dirname(filePath));
+    const result = await importMarkdownDirectory(path.dirname(filePath), {
+      scope: "repo",
+      projectRoot: "/Users/y.noguchi/Code/contextStill",
+    });
 
     expect(result.enqueuedFindingJobs).toBe(1);
     expect(enqueueFindingJob).toHaveBeenCalledWith(
@@ -84,7 +87,10 @@ describe("Markdown Importer Service", () => {
     vi.mocked(upsertSourceDocument).mockResolvedValue("s1");
     vi.mocked(findFindingJob).mockResolvedValue({ id: "existing-job" } as any);
 
-    const result = await importMarkdownDirectory(path.dirname(filePath));
+    const result = await importMarkdownDirectory(path.dirname(filePath), {
+      scope: "repo",
+      projectRoot: "/Users/y.noguchi/Code/contextStill",
+    });
 
     expect(result.enqueuedFindingJobs).toBe(0);
     expect(result.skippedFindingJobs).toBe(1);
@@ -98,7 +104,7 @@ describe("Markdown Importer Service", () => {
     vi.mocked(readFile).mockResolvedValue("# Heading Title\nBody content");
     vi.mocked(upsertSourceDocument).mockResolvedValue("s1");
 
-    await importMarkdownDirectory("/root");
+    await importMarkdownDirectory("/root", { scope: "global" });
 
     expect(upsertSourceDocument).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -113,9 +119,45 @@ describe("Markdown Importer Service", () => {
     ] as any);
     vi.mocked(readFile).mockResolvedValue("  \n ");
 
-    const result = await importMarkdownDirectory("/root");
+    const result = await importMarkdownDirectory("/root", { scope: "global" });
 
     expect(result.skippedFiles).toBe(1);
+    expect(upsertSourceDocument).not.toHaveBeenCalled();
+  });
+
+  test("keeps content root separate from the captured project root", async () => {
+    vi.mocked(readdir).mockResolvedValue([
+      { isFile: () => true, name: "plan.md", parentPath: "/repo/spec/docs" },
+    ] as any);
+    vi.mocked(readFile).mockResolvedValue("# Plan\nBody");
+    vi.mocked(upsertSourceDocument).mockResolvedValue("s1");
+
+    await importMarkdownDirectory("/repo/spec/docs", {
+      scope: "repo",
+      projectRoot: "/repo",
+    });
+
+    expect(upsertSourceDocument).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: "repo",
+        repoPath: "/repo",
+        metadata: expect.objectContaining({
+          repoPath: "/repo",
+          sourceRootPath: "/repo/spec/docs",
+        }),
+      }),
+    );
+  });
+
+  test("rejects a relative project root instead of resolving it from cwd", async () => {
+    vi.mocked(readdir).mockResolvedValue([] as any);
+
+    await expect(
+      importMarkdownDirectory("/repo/spec/docs", {
+        scope: "repo",
+        projectRoot: "../repo",
+      }),
+    ).rejects.toThrow("repoPath must be absolute");
     expect(upsertSourceDocument).not.toHaveBeenCalled();
   });
 });

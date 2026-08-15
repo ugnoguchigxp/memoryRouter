@@ -4,6 +4,7 @@ import {
   deriveRetrievalModeFromChangeTypes,
   retrievalModeSchema,
 } from "../../shared/schemas/compile.schema.js";
+import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
 import {
   type LandscapeReplayCompileRunInput,
   extractLandscapeTaskFacets,
@@ -84,7 +85,52 @@ export function normalizeRetrievalMode(
   return deriveRetrievalModeFromChangeTypes(fallbackChangeTypes);
 }
 
-export function compileInputFromRun(input: LandscapeReplayCompileRunInput): CompileInput {
+export type LandscapeReplayIdentityCompatibility = "comparable" | "legacy_identity_unknown";
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function replayIdentityCompatibilityFromRun(
+  input: LandscapeReplayCompileRunInput,
+): LandscapeReplayIdentityCompatibility {
+  const snapshot = asRecord(asRecord(input.runInput).projectIdentity);
+  if (input.identityContractVersion !== 1 || snapshot.contractVersion !== 1) {
+    return "legacy_identity_unknown";
+  }
+  if (
+    snapshot.matchBasis !== input.matchBasis ||
+    snapshot.scopeMode !== input.scopeMode ||
+    !["project_ref", "repo_key", "repo_path", "none"].includes(input.matchBasis)
+  ) {
+    return "legacy_identity_unknown";
+  }
+  try {
+    const resolved = resolveCompileProjectIdentity({
+      ...(input.projectRef ? { projectRef: input.projectRef } : {}),
+      ...(input.repoKey ? { repoKey: input.repoKey } : {}),
+      ...(input.repoPath ? { repoPath: input.repoPath } : {}),
+    });
+    if (
+      resolved.matchBasis !== input.matchBasis ||
+      resolved.scopeMode !== input.scopeMode ||
+      snapshot.matchValue !== resolved.matchValue ||
+      snapshot.projectRef !== resolved.projectRef ||
+      snapshot.repoKey !== resolved.repoKey ||
+      snapshot.repoPath !== resolved.repoPath
+    ) {
+      return "legacy_identity_unknown";
+    }
+    return "comparable";
+  } catch {
+    return "legacy_identity_unknown";
+  }
+}
+
+export function compileInputFromRun(input: LandscapeReplayCompileRunInput): CompileInput | null {
+  if (replayIdentityCompatibilityFromRun(input) !== "comparable") return null;
   const facets = extractLandscapeTaskFacets({
     runInput: input.runInput,
     repoPath: input.repoPath,
@@ -95,6 +141,9 @@ export function compileInputFromRun(input: LandscapeReplayCompileRunInput): Comp
   });
   return {
     goal: input.goal,
+    ...(input.projectRef ? { projectRef: input.projectRef } : {}),
+    ...(input.repoKey ? { repoKey: input.repoKey } : {}),
+    ...(input.repoPath ? { repoPath: input.repoPath } : {}),
     ...(facets.changeTypes.length > 0 ? { changeTypes: facets.changeTypes } : {}),
     ...(facets.technologies.length > 0 ? { technologies: facets.technologies } : {}),
     ...(facets.domains.length > 0 ? { domains: facets.domains } : {}),
@@ -108,6 +157,7 @@ export function emptyComparisonCounts(): Record<LandscapeReplayComparisonKind, n
     lost_baseline: 0,
     new_only: 0,
     no_current_match: 0,
+    not_comparable: 0,
   };
 }
 

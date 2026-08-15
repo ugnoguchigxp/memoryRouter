@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import {
-  backfillEpisodeFromCompileRun,
-  buildEpisodeInputFromCompileRun,
-} from "../src/modules/episodic-memory/episode-card.service.js";
 import { getCompileRunDetail } from "../src/modules/context-compiler/context-compiler.repository.js";
 import {
   createEpisodeCard,
   getEpisodeCardBySource,
 } from "../src/modules/episodic-memory/episode-card.repository.js";
+import {
+  backfillEpisodeFromCompileRun,
+  buildEpisodeInputFromCompileRun,
+} from "../src/modules/episodic-memory/episode-card.service.js";
 
 vi.mock("../src/modules/context-compiler/context-compiler.repository.js", () => ({
   getCompileRunDetail: vi.fn(),
@@ -42,8 +42,18 @@ const baseCompileDetail = {
       technologies: ["typescript"],
       changeTypes: ["feature"],
       domains: ["episodic-memory"],
-      repoPath: "/repo/contextStill",
-      repoKey: "contextStill",
+      projectIdentity: {
+        contractVersion: 1,
+        scopeMode: "project",
+        matchBasis: "repo_key",
+        matchValue: "contextstill",
+        projectRef: null,
+        repoPath: "/repo/contextStill",
+        repoKey: "contextstill",
+        identityFingerprint: "fixture",
+        trust: "request_hint",
+        bindingStatus: "unverified",
+      },
     },
   },
   pack: {
@@ -118,6 +128,9 @@ describe("episode-card service", () => {
         technologies: ["typescript"],
         changeTypes: ["feature"],
         domains: ["episodic-memory"],
+        scope: "repo",
+        repoPath: "/repo/contextStill",
+        repoKey: "contextstill",
       }),
     );
     expect(input?.refs?.map((ref) => ref.refKind)).toContain("compile_run");
@@ -127,6 +140,23 @@ describe("episode-card service", () => {
     vi.mocked(getCompileRunDetail).mockResolvedValue(null);
     const input = await buildEpisodeInputFromCompileRun("non-existent");
     expect(input).toBeNull();
+  });
+
+  test("rejects legacy root identity fields when the canonical snapshot is missing", async () => {
+    vi.mocked(getCompileRunDetail).mockResolvedValue({
+      ...baseCompileDetail,
+      run: {
+        ...baseCompileDetail.run,
+        input: {
+          repoPath: "/legacy/daemon-root",
+          repoKey: "legacy",
+        },
+      },
+    } as never);
+
+    await expect(buildEpisodeInputFromCompileRun("legacy-run")).rejects.toThrow(
+      "PROJECT_IDENTITY_REQUIRED",
+    );
   });
 
   describe("compactText bounds and length checking", () => {

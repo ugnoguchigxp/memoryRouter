@@ -55,6 +55,7 @@ describe("Source Repository", () => {
 
     const id = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "test-uri",
       body: "content",
       metadata: {},
@@ -68,14 +69,18 @@ describe("Source Repository", () => {
 
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "https://example.com/docs?token=abcdef0123456789",
       title: "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
       body: "api_key=sk-abcdefghijklmnopqrstuvwxyz0123456789\nnormal",
       metadata: { authToken: "raw-token-value" },
     });
 
-    const insertChain = vi.mocked(db.insert).mock.results[0]?.value as any;
-    const inserted = insertChain.values.mock.calls[0]?.[0];
+    const inserted = vi
+      .mocked(db.insert)
+      .mock.results.flatMap((result) => (result.value as any).values.mock.calls)
+      .map(([value]) => value as Record<string, unknown>)
+      .find((value) => typeof value.body === "string");
     expect(JSON.stringify(inserted)).toContain("[REMOVED SENSITIVE DATA]");
     expect(JSON.stringify(inserted)).toContain("normal");
     expect(JSON.stringify(inserted)).not.toContain("abcdef0123456789");

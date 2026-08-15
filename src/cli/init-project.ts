@@ -381,7 +381,10 @@ async function main(): Promise<void> {
   };
 
   if (options.runImport) {
-    const importResult = await importMarkdownDirectory(options.wikiRoot).catch((error) => {
+    const importResult = await importMarkdownDirectory(options.wikiRoot, {
+      scope: "repo",
+      projectRoot: options.repoPath,
+    }).catch((error) => {
       throw new Error(
         `[init-project/import] ${error instanceof Error ? error.message : String(error)}`,
       );

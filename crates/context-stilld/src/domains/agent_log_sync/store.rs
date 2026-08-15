@@ -5,6 +5,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 
+use crate::domains::mcp_lifecycle::project_identity::{
+    resolve_compile_project_identity, CompileProjectIdentityInput,
+    CompileProjectIdentityMatchBasis, CompileProjectIdentityTrust,
+};
 use crate::domains::process_lifecycle::service::now_timestamp;
 use crate::shared::errors::CliError;
 
@@ -92,13 +96,48 @@ pub(crate) fn store_source_result(
 
             let memory_id = next_id("vibe-memory");
             let now = now_timestamp();
-            let metadata = build_memory_metadata(
+            let mut metadata = build_memory_metadata(
                 source,
                 &sanitized_chunk,
                 chunk.len(),
                 chunk_index,
                 &dedupe_key,
             );
+            let project_identity = match resolve_agent_log_project_identity(&metadata) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    record_project_identity_producer_event(
+                        &tx,
+                        "PROJECT_IDENTITY_PRODUCER_REJECTED",
+                        json!({
+                            "producer": "agent-log-sync.rust",
+                            "entityKind": "vibe_memory",
+                            "scope": "repo",
+                            "rejectionCode": error.split(':').next().unwrap_or(&error)
+                        }),
+                    );
+                    continue;
+                }
+            };
+            record_project_identity_producer_event(
+                &tx,
+                "PROJECT_IDENTITY_PRODUCER_PERSISTED",
+                json!({
+                    "producer": "agent-log-sync.rust",
+                    "entityKind": "vibe_memory",
+                    "scope": "repo",
+                    "matchBasis": project_identity
+                        .get("matchBasis")
+                        .and_then(Value::as_str),
+                    "identityFingerprint": project_identity
+                        .get("identityFingerprint")
+                        .and_then(Value::as_str),
+                    "bindingStatus": project_identity
+                        .get("bindingStatus")
+                        .and_then(Value::as_str)
+                }),
+            );
+            set_metadata_value(&mut metadata, "projectIdentity", project_identity);
             tx.execute(
                 "
                 insert into vibe_memories (
@@ -939,6 +978,41 @@ fn build_memory_metadata(
         }
     }
     metadata
+}
+
+fn resolve_agent_log_project_identity(metadata: &Value) -> Result<Value, String> {
+    let repo_path = metadata_string(metadata, "projectRoot");
+    let resolved = resolve_compile_project_identity(
+        &CompileProjectIdentityInput {
+            project_ref: None,
+            repo_key: None,
+            repo_path,
+        },
+        CompileProjectIdentityTrust::TrustedAdapter,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    if resolved.match_basis == CompileProjectIdentityMatchBasis::None {
+        return Err("PROJECT_IDENTITY_REQUIRED: agent log VibeMemory writes require captured project identity".to_string());
+    }
+    let mut snapshot = serde_json::to_value(&resolved)
+        .map_err(|error| format!("failed to serialize project identity: {error}"))?;
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("classificationStatus".to_string(), json!("classified"));
+        object.insert("scope".to_string(), json!("repo"));
+    }
+    Ok(snapshot)
+}
+
+fn record_project_identity_producer_event(
+    connection: &rusqlite::Transaction<'_>,
+    event_type: &str,
+    payload: Value,
+) {
+    let _ = connection.execute(
+        "insert into audit_logs (id, event_type, actor, payload, created_at) values (?1, ?2, 'system', ?3, ?4)",
+        params![next_id("audit"), event_type, payload.to_string(), now_timestamp()],
+    );
 }
 
 #[cfg(test)]

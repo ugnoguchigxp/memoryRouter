@@ -18,6 +18,52 @@ vi.mock("../src/modules/landscape/landscape-snapshot-cache.service.js", () => ({
   runWithLandscapeSnapshotCache: (options: any) => mockRunWithLandscapeSnapshotCache(options),
 }));
 
+function comparableRepoPathRun(repoPath: string, input: Record<string, unknown> = {}) {
+  return {
+    projectRef: null,
+    repoKey: null,
+    repoPath,
+    matchBasis: "repo_path",
+    identityContractVersion: 1,
+    scopeMode: "project",
+    input: {
+      ...input,
+      projectIdentity: {
+        contractVersion: 1,
+        scopeMode: "project",
+        matchBasis: "repo_path",
+        matchValue: repoPath,
+        projectRef: null,
+        repoKey: null,
+        repoPath,
+      },
+    },
+  };
+}
+
+function comparableGlobalRun(input: Record<string, unknown> = {}) {
+  return {
+    projectRef: null,
+    repoKey: null,
+    repoPath: null,
+    matchBasis: "none",
+    identityContractVersion: 1,
+    scopeMode: "global_only",
+    input: {
+      ...input,
+      projectIdentity: {
+        contractVersion: 1,
+        scopeMode: "global_only",
+        matchBasis: "none",
+        matchValue: null,
+        projectRef: null,
+        repoKey: null,
+        repoPath: null,
+      },
+    },
+  };
+}
+
 describe("landscape-replay-comparison.service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -34,10 +80,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "test goal",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo", { decisionPoint: "test-point" }),
           source: "mcp",
           degradedReasons: [],
-          input: { decisionPoint: "test-point" },
         },
       ],
       packItems: [{ runId: "run-abc", itemId: "kb-1", sortOrder: 0 }],
@@ -91,10 +136,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "test goal",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo", { decisionPoint: "test-point" }),
           source: "mcp",
           degradedReasons: [],
-          input: { decisionPoint: "test-point" },
         },
       ],
       packItems: [{ runId: "run-abc", itemId: "kb-1", sortOrder: 0 }],
@@ -147,11 +191,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "run churn",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo-a",
-          repoKey: "key-a",
+          ...comparableRepoPathRun("/repo-a", { decisionPoint: "pt-1" }),
           source: "mcp",
           degradedReasons: [],
-          input: { decisionPoint: "pt-1" },
         },
         {
           id: "run-nomatch-2",
@@ -159,11 +201,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "run no match",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo-b",
-          repoKey: "key-b",
+          ...comparableRepoPathRun("/repo-b", { decisionPoint: "pt-2" }),
           source: "mcp",
           degradedReasons: [],
-          input: { decisionPoint: "pt-2" },
         },
       ],
       packItems: [
@@ -277,10 +317,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "neg only",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo"),
           source: "mcp",
           degradedReasons: [],
-          input: {},
         },
       ],
       packItems: [
@@ -322,10 +361,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "churn only",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo"),
           source: "mcp",
           degradedReasons: [],
-          input: {},
         },
       ],
       packItems: [
@@ -373,10 +411,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "stable test",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo"),
           source: "mcp",
           degradedReasons: [],
-          input: {},
         },
         {
           id: "run-low-overlap",
@@ -384,10 +421,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "low overlap test",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo"),
           source: "mcp",
           degradedReasons: [],
-          input: {},
         },
       ],
       packItems: [
@@ -480,10 +516,9 @@ describe("landscape-replay-comparison.service", () => {
           goal: "perfect test",
           retrievalMode: "keyword",
           status: "completed",
-          repoPath: "/repo",
+          ...comparableRepoPathRun("/repo"),
           source: "mcp",
           degradedReasons: [],
-          input: {},
         },
       ],
       packItems: [
@@ -518,5 +553,97 @@ describe("landscape-replay-comparison.service", () => {
     expect(result.scoreTuning.recommendations).toContain(
       "Keep score tuning in observe-only mode until more replay drift appears.",
     );
+  });
+
+  test("preserves Repo A/B/global identity and excludes legacy identity-unknown runs", async () => {
+    mockLoadLandscapeReplayCorpus.mockResolvedValue({
+      runs: [
+        {
+          id: "run-repo-a",
+          createdAt: new Date(),
+          goal: "repo a",
+          retrievalMode: "keyword",
+          status: "ok",
+          ...comparableRepoPathRun("/repo-a"),
+          source: "mcp",
+          degradedReasons: [],
+        },
+        {
+          id: "run-repo-b",
+          createdAt: new Date(),
+          goal: "repo b",
+          retrievalMode: "keyword",
+          status: "ok",
+          ...comparableRepoPathRun("/repo-b"),
+          source: "mcp",
+          degradedReasons: [],
+        },
+        {
+          id: "run-global",
+          createdAt: new Date(),
+          goal: "global",
+          retrievalMode: "keyword",
+          status: "ok",
+          ...comparableGlobalRun(),
+          source: "mcp",
+          degradedReasons: [],
+        },
+        {
+          id: "run-legacy",
+          createdAt: new Date(),
+          goal: "legacy",
+          retrievalMode: "keyword",
+          status: "ok",
+          projectRef: null,
+          repoKey: null,
+          repoPath: "/legacy-daemon-root",
+          matchBasis: "none",
+          identityContractVersion: 1,
+          scopeMode: "global_only",
+          input: {},
+          source: "mcp",
+          degradedReasons: [],
+        },
+      ],
+      packItems: [],
+      usageEvents: [],
+    });
+    mockRetrieveKnowledge.mockResolvedValue({
+      items: [],
+      stats: {
+        textHitCount: 0,
+        vectorHitCount: 0,
+        mergedCount: 0,
+        textFailed: false,
+        vectorFailed: false,
+        embeddingStatus: "disabled",
+        repoScopeFallbackUsed: false,
+      },
+      degradedReasons: [],
+    });
+
+    const result = await buildLandscapeReplayComparison({
+      windowDays: 7,
+      limit: 10,
+      currentLimit: 5,
+      runStatus: "all" as const,
+      includeRuns: true,
+    });
+
+    expect(mockRetrieveKnowledge).toHaveBeenCalledTimes(3);
+    expect(mockRetrieveKnowledge.mock.calls.map(([compileInput]) => compileInput)).toEqual([
+      expect.objectContaining({ goal: "repo a", repoPath: "/repo-a" }),
+      expect.objectContaining({ goal: "repo b", repoPath: "/repo-b" }),
+      { goal: "global" },
+    ]);
+    expect(result.replayRunCount).toBe(4);
+    expect(result.comparedRunCount).toBe(3);
+    expect(result.comparisonCounts.not_comparable).toBe(1);
+    expect(result.runs.find((run) => run.runId === "run-legacy")).toMatchObject({
+      identityCompatibility: "legacy_identity_unknown",
+      comparison: "not_comparable",
+      currentDegradedReasons: ["LEGACY_IDENTITY_UNKNOWN"],
+    });
+    expect(result.recompilePlan.blockers.join("\n")).toContain("identity snapshot is unknown");
   });
 });

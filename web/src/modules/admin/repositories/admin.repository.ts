@@ -1489,7 +1489,8 @@ export type LandscapeReplayComparisonKind =
   | "drifted"
   | "lost_baseline"
   | "new_only"
-  | "no_current_match";
+  | "no_current_match"
+  | "not_comparable";
 
 export type LandscapeReplayComparisonRun = {
   runId: string;
@@ -1497,6 +1498,7 @@ export type LandscapeReplayComparisonRun = {
   goal: string;
   retrievalMode: string;
   status: "ok" | "degraded" | "failed";
+  identityCompatibility: "comparable" | "legacy_identity_unknown";
   taskFacets: {
     repoKey?: string;
     repoPath?: string;

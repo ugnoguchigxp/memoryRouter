@@ -51,7 +51,7 @@ describeDb("repositories integration additional", () => {
       sourceUri: "file:///evidence-k1.md",
       type: "rule",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Evidence Linked A",
       body: "evidence linked knowledge a",
     });
@@ -59,7 +59,7 @@ describeDb("repositories integration additional", () => {
       sourceUri: "file:///evidence-k2.md",
       type: "procedure",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Evidence Linked B",
       body: "evidence linked knowledge b",
     });
@@ -67,25 +67,28 @@ describeDb("repositories integration additional", () => {
       sourceUri: "file:///evidence-k3.md",
       type: "rule",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Evidence Unlinked",
       body: "evidence unlinked knowledge",
     });
 
     const sourceA = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///evidence/source-a.md",
       title: "Source A",
       body: "Source A body",
     });
     const sourceB = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///evidence/source-b.md",
       title: "Source B",
       body: "Source B body",
     });
     const sourceC = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///evidence/source-c.md",
       title: "Source C",
       body: "Source C body",
@@ -167,7 +170,7 @@ describeDb("repositories integration additional", () => {
       sourceUri: "file:///vector-1.md",
       type: "rule",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Vector Rule",
       body: "vector search content",
       embedding: vector,
@@ -182,6 +185,7 @@ describeDb("repositories integration additional", () => {
     const vector = Array.from({ length: 384 }, (_, i) => (i === 0 ? 1 : 0));
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///source-v.md",
       title: "Source V",
       body: "source vector content",
@@ -197,7 +201,7 @@ describeDb("repositories integration additional", () => {
       sourceUri: "file:///upsert.md",
       type: "rule" as const,
       status: "active" as const,
-      scope: "repo" as const,
+      scope: "global" as const,
       title: "Initial Title",
       body: "Initial Body",
     };
@@ -221,6 +225,7 @@ describeDb("repositories integration additional", () => {
     const sourceUri = "/workspace/wiki/auto-linking.md";
     const sourceId = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: sourceUri,
       title: "Auto Linking Source",
       body: "auto-linking source body",
@@ -231,7 +236,7 @@ describeDb("repositories integration additional", () => {
       sourceUri: "cover-evidence-result://auto-linking",
       type: "rule",
       status: "draft",
-      scope: "repo",
+      scope: "global",
       title: "Auto Linking Knowledge",
       body: "source link should be added at registration time",
       metadata: {
@@ -267,6 +272,7 @@ describeDb("repositories integration additional", () => {
     const sourceUri = "file:///workspace/wiki/manual-registration.md";
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: sourceUri,
       title: "Manual Registration Source",
       body: "manual registration body",
@@ -275,7 +281,7 @@ describeDb("repositories integration additional", () => {
     const created = await createKnowledgeItem({
       type: "rule",
       status: "draft",
-      scope: "repo",
+      scope: "global",
       title: "Manual registration should auto link",
       body: "knowledge registration should attach source link when possible",
       confidence: 70,
@@ -315,7 +321,7 @@ describeDb("repositories integration additional", () => {
       sourceUri: "file:///metadata-ref.md",
       type: "rule",
       status: "active",
-      scope: "repo",
+      scope: "global",
       title: "Metadata Ref Rule",
       body: "body",
       metadata: {

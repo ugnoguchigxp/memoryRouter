@@ -1,7 +1,7 @@
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { groupedConfig } from "../../config.js";
-import { normalizeRepoKey, normalizeRepoPath } from "../context-compiler/query-context.js";
+import { normalizeCompileRepoPath } from "../context-compiler/compile-project-identity.js";
 import { enqueueFindingJob, findFindingJob } from "../queue/core/index.js";
 import { deleteStaleSourcesForRoot, upsertSourceDocument } from "./source.repository.js";
 
@@ -15,6 +15,10 @@ type MarkdownImportResult = {
   removedSources: number;
   files: Array<{ path: string; sourceId: string }>;
 };
+
+export type MarkdownImportProjectScope =
+  | { scope: "repo"; projectRoot: string }
+  | { scope: "global" };
 
 type FrontmatterParseResult = {
   frontmatter: Record<string, string>;
@@ -78,8 +82,11 @@ export async function collectMarkdownFiles(rootDir: string): Promise<string[]> {
   return files.sort();
 }
 
-export async function importMarkdownDirectory(rootDir: string): Promise<MarkdownImportResult> {
-  const markdownFiles = await collectMarkdownFiles(rootDir);
+export async function importMarkdownDirectory(
+  contentRoot: string,
+  projectScope: MarkdownImportProjectScope,
+): Promise<MarkdownImportResult> {
+  const markdownFiles = await collectMarkdownFiles(contentRoot);
   const results: MarkdownImportResult = {
     importedFiles: 0,
     importedSources: 0,
@@ -90,9 +97,12 @@ export async function importMarkdownDirectory(rootDir: string): Promise<Markdown
     removedSources: 0,
     files: [],
   };
-  const normalizedRootPath = normalizeRepoPath(rootDir) ?? rootDir;
-  const workspaceRepoPath = normalizeRepoPath(process.cwd()) ?? normalizedRootPath;
-  const workspaceRepoKey = normalizeRepoKey(process.cwd()) ?? normalizeRepoKey(rootDir);
+  const normalizedRootPath = path.resolve(contentRoot);
+  const captureRepoPath =
+    projectScope.scope === "repo" ? normalizeCompileRepoPath(projectScope.projectRoot) : null;
+  if (projectScope.scope === "repo" && !captureRepoPath) {
+    throw new Error("projectRoot must be an absolute repository path");
+  }
 
   for (const filePath of markdownFiles) {
     const content = await readFile(filePath, "utf8");
@@ -106,13 +116,14 @@ export async function importMarkdownDirectory(rootDir: string): Promise<Markdown
 
     const sourceId = await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: projectScope.scope,
+      ...(captureRepoPath ? { repoPath: captureRepoPath } : {}),
       uri: filePath,
       title: frontmatter.title ?? inferredTitle,
       body: content,
       metadata: {
         importedAt: new Date().toISOString(),
-        repoPath: workspaceRepoPath,
-        repoKey: workspaceRepoKey,
+        ...(captureRepoPath ? { repoPath: captureRepoPath } : {}),
         sourceRootPath: normalizedRootPath,
       },
     });
@@ -151,8 +162,7 @@ export async function importMarkdownDirectory(rootDir: string): Promise<Markdown
         sourceType: "wiki_markdown_import",
         importedVia: "importMarkdownDirectory",
         sourceRootPath: normalizedRootPath,
-        repoPath: workspaceRepoPath,
-        repoKey: workspaceRepoKey,
+        ...(captureRepoPath ? { repoPath: captureRepoPath } : {}),
       },
     });
     if (findingJob) {

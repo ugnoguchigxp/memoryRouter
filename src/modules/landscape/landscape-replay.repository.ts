@@ -13,7 +13,12 @@ export type LandscapeReplayCompileRunRow = {
   id: string;
   goal: string;
   intent: string;
+  projectRef: string | null;
+  repoKey: string | null;
   repoPath: string | null;
+  matchBasis: string;
+  identityContractVersion: number;
+  scopeMode: string;
   input: Record<string, unknown>;
   retrievalMode: string;
   status: LandscapeRunStatus;
@@ -119,7 +124,12 @@ export async function loadLandscapeReplayCorpus(params: {
       id: contextCompileRuns.id,
       goal: contextCompileRuns.goal,
       intent: contextCompileRuns.intent,
+      projectRef: contextCompileRuns.projectRef,
+      repoKey: contextCompileRuns.repoKey,
       repoPath: contextCompileRuns.repoPath,
+      matchBasis: contextCompileRuns.matchBasis,
+      identityContractVersion: contextCompileRuns.identityContractVersion,
+      scopeMode: contextCompileRuns.scopeMode,
       input: contextCompileRuns.input,
       retrievalMode: contextCompileRuns.retrievalMode,
       status: contextCompileRuns.status,
@@ -178,7 +188,12 @@ export async function loadLandscapeReplayCorpus(params: {
       id: run.id,
       goal: run.goal,
       intent: run.intent,
+      projectRef: run.projectRef,
+      repoKey: run.repoKey,
       repoPath: run.repoPath,
+      matchBasis: run.matchBasis,
+      identityContractVersion: run.identityContractVersion,
+      scopeMode: run.scopeMode,
       input: asRecord(run.input),
       retrievalMode: run.retrievalMode,
       status: normalizeRunStatus(run.status),
@@ -226,7 +241,12 @@ async function loadLandscapeReplayCorpusSqlite(params: {
         id: string;
         goal: string;
         intent: string;
+        project_ref: string | null;
+        repo_key: string | null;
         repo_path: string | null;
+        match_basis: string;
+        identity_contract_version: number;
+        scope_mode: string;
         input: string;
         retrieval_mode: string;
         status: string;
@@ -242,7 +262,12 @@ async function loadLandscapeReplayCorpusSqlite(params: {
           id,
           goal,
           intent,
+          project_ref,
+          repo_key,
           repo_path,
+          match_basis,
+          identity_contract_version,
+          scope_mode,
           input,
           retrieval_mode,
           status,
@@ -330,7 +355,12 @@ async function loadLandscapeReplayCorpusSqlite(params: {
       id: run.id,
       goal: run.goal,
       intent: run.intent,
+      projectRef: run.project_ref,
+      repoKey: run.repo_key,
       repoPath: run.repo_path,
+      matchBasis: run.match_basis,
+      identityContractVersion: run.identity_contract_version,
+      scopeMode: run.scope_mode,
       input: asRecord(run.input),
       retrievalMode: run.retrieval_mode,
       status: normalizeRunStatus(run.status),

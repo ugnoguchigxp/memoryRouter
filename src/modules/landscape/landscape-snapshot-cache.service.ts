@@ -14,6 +14,7 @@ import {
 export type { LandscapeSnapshotCacheType } from "./landscape-snapshot-cache.repository.js";
 
 const DEFAULT_TTL_SECONDS = 5 * 60;
+const LANDSCAPE_CACHE_SEMANTICS_VERSION = 2;
 
 type SnapshotPurgeSummary = {
   purgedAt: string;
@@ -78,7 +79,14 @@ function cacheTtlSeconds(): number {
 }
 
 function cacheHash(params: Record<string, unknown>): string {
-  return createHash("sha1").update(stableStringify(params)).digest("hex");
+  return createHash("sha1")
+    .update(
+      stableStringify({
+        landscapeCacheSemanticsVersion: LANDSCAPE_CACHE_SEMANTICS_VERSION,
+        params,
+      }),
+    )
+    .digest("hex");
 }
 
 function toIsoStringOrNull(value: Date | null): string | null {

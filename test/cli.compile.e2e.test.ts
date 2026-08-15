@@ -63,11 +63,13 @@ describeDb("cli compile e2e", () => {
       type: "rule",
       status: "active",
       scope: "repo",
+      repoPath: process.cwd(),
       title: "CLI rule",
       body: "cli compile goal",
     });
     await upsertSourceDocument({
       sourceKind: "wiki",
+      scope: "global",
       uri: "file:///cli/source.md",
       title: "CLI source",
       body: "cli compile goal source",
@@ -75,7 +77,15 @@ describeDb("cli compile e2e", () => {
 
     const run = spawnSync(
       "bun",
-      ["run", "src/cli/compile.ts", "--goal", "cli compile goal", "--json"],
+      [
+        "run",
+        "src/cli/compile.ts",
+        "--goal",
+        "cli compile goal",
+        "--repo-path",
+        process.cwd(),
+        "--json",
+      ],
       {
         cwd: process.cwd(),
         env: {
@@ -104,6 +114,7 @@ describeDb("cli compile e2e", () => {
       type: "procedure",
       status: "active",
       scope: "repo",
+      repoPath: process.cwd(),
       title: "CLI Procedure",
       body: "draft-mode command sequence",
       appliesTo: {
@@ -126,6 +137,8 @@ describeDb("cli compile e2e", () => {
         "typescript",
         "--domains",
         "context-compiler",
+        "--repo-path",
+        process.cwd(),
         "--json",
       ],
       {
@@ -163,5 +176,23 @@ describeDb("cli compile e2e", () => {
     expect(parsed.diagnostics?.inputFacets?.requested?.changeTypes).toContain("procedure");
     expect(parsed.diagnostics?.inputFacets?.requested?.technologies).toContain("typescript");
     expect(parsed.diagnostics?.inputFacets?.requested?.domains).toContain("context-compiler");
+  });
+
+  test("compile rejects an implicit repository identity", () => {
+    const run = spawnSync(
+      "bun",
+      ["run", "src/cli/compile.ts", "--goal", "identity required", "--json"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          MEMORY_ROUTER_RUN_DB_TESTS: "1",
+        },
+        encoding: "utf8",
+      },
+    );
+
+    expect(run.status).not.toBe(0);
+    expect(run.stderr).toContain("Repository identity is required");
   });
 });

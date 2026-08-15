@@ -12,6 +12,11 @@ import {
 import { parseLlmJsonLike } from "../../lib/llm-output-parser.js";
 import { registerCandidateInputSchema } from "../../shared/schemas/knowledge.schema.js";
 import { registerCandidatesBulkInputSchema } from "../../shared/schemas/knowledge.schema.js";
+import {
+  type ResolvedProjectScopedWriteIdentity,
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 import { hasSkillLikeProcedureBody } from "../distillation/procedure-quality.js";
 import { resolveKnowledgeCandidatePriorityGroup } from "../distillationTarget/priority-group.js";
 import { DEFAULT_DISTILLATION_TARGET_VERSION } from "../distillationTarget/repository.js";
@@ -197,12 +202,14 @@ function compactOrigin(
     intentTags: string[];
     applicability: KnowledgeApplicability;
   },
+  identity: ResolvedProjectScopedWriteIdentity,
 ) {
   const applicability = normalized.applicability;
   return {
     source: "mcp_register_candidate",
     registeredAt: new Date().toISOString(),
     candidateType: normalized.type,
+    projectIdentity: identity,
     ...(normalized.originalType ? { originalCandidateType: normalized.originalType } : {}),
     polarity: normalized.polarity,
     ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
@@ -228,6 +235,19 @@ export async function registerCandidate(
   if (options.strictProcedureSections && normalized.warnings.includes(PROCEDURE_SECTION_WARNING)) {
     throw new Error(PROCEDURE_SECTION_VALIDATION_ERROR);
   }
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: parsed.scope,
+      projectRef: parsed.projectRef,
+      repoKey: normalized.applicability.repoKey,
+      repoPath: normalized.applicability.repoPath,
+    },
+    {
+      producer: "register-candidate.typescript",
+      entityKind: "candidate",
+      actor: "agent",
+    },
+  );
   const candidateId = randomUUID();
   const sourceUri = `agent://candidate/${candidateId}`;
   const now = new Date();
@@ -240,12 +260,13 @@ export async function registerCandidate(
     const findingJobId = randomUUID();
     const foundCandidateId = randomUUID();
     const coveringJobId = randomUUID();
-    const origin = compactOrigin(parsed, normalized);
+    const origin = compactOrigin(parsed, normalized, identity);
     const targetMetadata = {
       ...(parsed.metadata ?? {}),
       source: "mcp_register_candidate",
       registeredAt: now.toISOString(),
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
     } satisfies Record<string, unknown>;
@@ -258,6 +279,7 @@ export async function registerCandidate(
       body: normalized.body,
       type: normalized.type,
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
       origin,
       legacyTargetStateId: targetStateId,
@@ -270,6 +292,7 @@ export async function registerCandidate(
       legacyTargetStateId: targetStateId,
       legacyFindCandidateResultId: findCandidateResultId,
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
     };
@@ -278,6 +301,7 @@ export async function registerCandidate(
       sourceKey: candidateId,
       sourceUri,
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
     };
@@ -357,12 +381,13 @@ export async function registerCandidate(
           `insert into covering_evidence_queue (
              id, found_candidate_id, distillation_version, status, priority,
              provider_policy, payload, metadata, created_at, updated_at
-           ) values (?, ?, ?, 'pending', 90, 'default', '{}', '{}', ?, ?)`,
+           ) values (?, ?, ?, 'pending', 90, 'default', '{}', ?, ?, ?)`,
         )
         .run(
           coveringJobId,
           foundCandidateId,
           DEFAULT_DISTILLATION_TARGET_VERSION,
+          JSON.stringify({ projectIdentity: identity }),
           now.toISOString(),
           now.toISOString(),
         );
@@ -371,6 +396,12 @@ export async function registerCandidate(
       sqlite.db.exec("ROLLBACK");
       throw error;
     }
+    await recordProjectScopedWritePersisted(identity, {
+      producer: "register-candidate.typescript",
+      entityKind: "candidate",
+      entityId: foundCandidateId,
+      actor: "agent",
+    });
     await appendQueueEvent({
       queueName: "findingCandidate",
       queueJobId: findingJobId,
@@ -403,6 +434,7 @@ export async function registerCandidate(
     source: "mcp_register_candidate",
     registeredAt: now.toISOString(),
     polarity: normalized.polarity,
+    projectIdentity: identity,
     ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
     ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
   } satisfies Record<string, unknown>;
@@ -437,7 +469,7 @@ export async function registerCandidate(
         candidateIndex: 0,
         title: normalized.title,
         content: normalized.body,
-        origin: compactOrigin(parsed, normalized),
+        origin: compactOrigin(parsed, normalized, identity),
         status: "selected",
         updatedAt: now,
       })
@@ -450,8 +482,9 @@ export async function registerCandidate(
       body: normalized.body,
       type: normalized.type,
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
-      origin: compactOrigin(parsed, normalized),
+      origin: compactOrigin(parsed, normalized, identity),
       legacyTargetStateId: target.id,
       legacyFindCandidateResultId: candidate.id,
       ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
@@ -463,6 +496,7 @@ export async function registerCandidate(
       legacyTargetStateId: target.id,
       legacyFindCandidateResultId: candidate.id,
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
     };
@@ -505,12 +539,13 @@ export async function registerCandidate(
 
     if (!findingJob) throw new Error("failed to create V2 finding job");
 
-    const origin = compactOrigin(parsed, normalized);
+    const origin = compactOrigin(parsed, normalized, identity);
     const candidateMetadata = {
       sourceKind: "knowledge_candidate",
       sourceKey: candidateId,
       sourceUri,
       polarity: normalized.polarity,
+      projectIdentity: identity,
       ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
       ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
     };
@@ -551,7 +586,7 @@ export async function registerCandidate(
         priority: 90,
         providerPolicy: "default",
         payload: {},
-        metadata: {},
+        metadata: { projectIdentity: identity },
         updatedAt: now,
       })
       .onConflictDoUpdate({
@@ -565,6 +600,7 @@ export async function registerCandidate(
           heartbeatAt: null,
           lastError: null,
           lastOutcomeKind: null,
+          metadata: { projectIdentity: identity },
           updatedAt: now,
         },
       })
@@ -573,6 +609,13 @@ export async function registerCandidate(
     if (!coveringJob) throw new Error("failed to create V2 covering job");
 
     return { target, candidate, findingJob, foundCandidate, coveringJob };
+  });
+
+  await recordProjectScopedWritePersisted(identity, {
+    producer: "register-candidate.typescript",
+    entityKind: "candidate",
+    entityId: result.foundCandidate.id,
+    actor: "agent",
   });
 
   await appendQueueEvent({

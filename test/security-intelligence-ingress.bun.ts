@@ -9,6 +9,7 @@ import {
 import { receiveSecurityKnowledgeCandidateBatch } from "../src/modules/security-intelligence/candidate-batch-ingress.service.js";
 import { auditDirectActiveKnowledge } from "../src/modules/security-intelligence/direct-active-audit.service.js";
 import { receiveSecurityKnowledgeFeedbackBatch } from "../src/modules/security-intelligence/feedback-batch-ingress.service.js";
+import { collectSecurityIntelligenceShadowRetrieval } from "../src/modules/security-intelligence/shadow-retrieval.service.js";
 import { securityIntelligenceSha256 } from "../src/shared/schemas/security-knowledge-candidate-batch.schema.js";
 import {
   deriveSecurityKnowledgeFeedbackBatch,
@@ -85,6 +86,17 @@ describe("Security Intelligence candidate ingress on SQLite", () => {
         )
         .get()?.count,
     ).toBe(1);
+    const audit = sqlite.db
+      .query<{ payload: string }, []>(
+        "select payload from audit_logs where event_type = 'SECURITY_INTELLIGENCE_CANDIDATE_BATCH_RECEIVED'",
+      )
+      .get();
+    expect(JSON.parse(audit?.payload ?? "{}")).toMatchObject({
+      producerPrincipal: "nightworkers:test",
+      scope: "security-intelligence:candidates:write",
+      endpoint: "/api/integrations/security-intelligence/v1/candidate-batches",
+      batchRef: batch.batchRef,
+    });
     expect(
       sqlite.db
         .query<{ count: number }, []>(
@@ -98,6 +110,50 @@ describe("Security Intelligence candidate ingress on SQLite", () => {
       rawBatch: batch,
     });
     expect(replay).toEqual({ ...first, replayed: true });
+    sqlite.db
+      .query(
+        `insert into knowledge_items (
+				   id, type, status, scope, polarity, intent_tags, title, body,
+				   project_ref, applies_to, confidence, importance, metadata, created_at, updated_at
+				 ) values ('unrelated-draft', 'rule', 'draft', 'repo', 'positive', '[]',
+				   'Unrelated', 'Unrelated draft', ?, ?, 70, 70, '{}', ?, ?)`,
+      )
+      .run(
+        "project:11111111-1111-4111-8111-111111111111",
+        JSON.stringify({
+          domains: ["authorization"],
+          technologies: ["typescript"],
+          changeTypes: ["access-control"],
+        }),
+        new Date().toISOString(),
+        new Date().toISOString(),
+      );
+
+    const shadow = await collectSecurityIntelligenceShadowRetrieval({
+      compileRunRef: "compile:test",
+      compileInput: {
+        goal: "authorization boundary",
+        securityIntelligenceShadow: {
+          enabled: true,
+          taskRef: "task:test",
+          runRef: "run:test",
+          projectRef: "project:11111111-1111-4111-8111-111111111111",
+        },
+      },
+      retrievalMode: "task_context",
+      facets: {
+        domains: ["authorization"],
+        technologies: ["typescript"],
+        changeTypes: ["access-control"],
+      },
+    });
+    expect(shadow?.items).toEqual([
+      {
+        knowledgeRef: batch.items[0].candidateRef,
+        knowledgeRevision: 0,
+        lifecycle: "candidate",
+      },
+    ]);
   });
 
   test("commits valid and rejected item receipts together", async () => {
@@ -154,6 +210,74 @@ describe("Security Intelligence candidate ingress on SQLite", () => {
         )
         .get()?.count,
     ).toBe(1);
+  });
+
+  test("preserves new provenance for a duplicate candidate and ignores stale targets", async () => {
+    const firstBatch = await fixtureBatch();
+    await receiveSecurityKnowledgeCandidateBatch({
+      producerPrincipal: "nightworkers:test",
+      rawBatch: firstBatch,
+    });
+
+    const duplicateBatch = structuredClone(firstBatch);
+    duplicateBatch.idempotencyKey = "candidate:duplicate-provenance";
+    duplicateBatch.items[0].evidenceRefs[0].evidenceRef = "evidence:second-review";
+    const { payloadDigest: _payloadDigest, ...itemSemantic } = duplicateBatch.items[0];
+    duplicateBatch.items[0].payloadDigest = securityIntelligenceSha256(itemSemantic);
+    refreshBatchDigest(duplicateBatch);
+
+    const duplicate = await receiveSecurityKnowledgeCandidateBatch({
+      producerPrincipal: "nightworkers:test",
+      rawBatch: duplicateBatch,
+    });
+    expect(duplicate.receipt.items[0]?.status).toBe("duplicate");
+
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const provenanceRows = sqlite.db
+      .query<{ provenance_json: string }, []>(
+        "select provenance_json from security_candidate_batch_items order by created_at, id",
+      )
+      .all()
+      .map((row) => JSON.parse(row.provenance_json));
+    expect(provenanceRows).toHaveLength(2);
+    expect(provenanceRows.map((value) => value.evidenceRefs[0].evidenceRef).sort()).toEqual([
+      "evidence:second-review",
+      "verification:authorization-negative-test",
+    ]);
+    expect(
+      sqlite.db
+        .query<{ count: number }, []>("select count(*) as count from distillation_target_states")
+        .get()?.count,
+    ).toBe(1);
+
+    const targetStateRef = duplicate.receipt.items[0]?.targetStateRef;
+    const targetStateId = targetStateRef?.replace(/^candidate-target:/, "");
+    if (!targetStateId) throw new Error("duplicate receipt must contain a target reference");
+    sqlite.db.query("delete from distillation_target_states where id = ?").run(targetStateId);
+
+    const replacementBatch = structuredClone(duplicateBatch);
+    replacementBatch.idempotencyKey = "candidate:stale-target-replacement";
+    const replacement = await receiveSecurityKnowledgeCandidateBatch({
+      producerPrincipal: "nightworkers:test",
+      rawBatch: replacementBatch,
+    });
+    expect(replacement.receipt.items[0]?.status).toBe("accepted");
+    expect(replacement.receipt.items[0]?.targetStateRef).not.toBe(targetStateRef);
+  });
+
+  test("rejects a multibyte idempotency key beyond the wire byte limit", async () => {
+    const batch = await fixtureBatch();
+    batch.idempotencyKey = "あ".repeat(256);
+
+    await expect(
+      receiveSecurityKnowledgeCandidateBatch({
+        producerPrincipal: "nightworkers:test",
+        rawBatch: batch,
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      reasonCode: "batch_schema_invalid",
+    });
   });
 
   test("stores feedback as append-only observations without mutating Knowledge", async () => {
@@ -213,6 +337,47 @@ describe("Security Intelligence candidate ingress on SQLite", () => {
         .query<{ count: number }, []>("select count(*) as count from security_feedback_events")
         .get()?.count,
     ).toBe(1);
+    const audit = sqlite.db
+      .query<{ payload: string }, []>(
+        "select payload from audit_logs where event_type = 'SECURITY_INTELLIGENCE_FEEDBACK_BATCH_RECEIVED'",
+      )
+      .get();
+    expect(JSON.parse(audit?.payload ?? "{}")).toMatchObject({
+      producerPrincipal: "nightworkers:test",
+      scope: "security-intelligence:feedback:write",
+      endpoint: "/api/integrations/security-intelligence/v1/feedback-batches",
+      batchRef: batch.batchRef,
+    });
+  });
+
+  test("rejects a multibyte feedback idempotency key beyond the wire byte limit", async () => {
+    const event = deriveSecurityKnowledgeFeedbackEvent({
+      eventType: "retrieved",
+      occurredAt: "2026-08-15T00:00:00.000Z",
+      correlation: {
+        taskRef: "task:test",
+        runRef: "run:test",
+        compileRunRef: "compile:test",
+      },
+      knowledgeRef: "knowledge:test",
+      knowledgeRevision: 1,
+      evidenceRefs: [],
+    });
+    const valid = deriveSecurityKnowledgeFeedbackBatch({
+      idempotencyKey: "feedback:valid",
+      producer: { system: "nightworkers", version: "1.0.0" },
+      events: [event],
+    });
+
+    await expect(
+      receiveSecurityKnowledgeFeedbackBatch({
+        producerPrincipal: "nightworkers:test",
+        rawBatch: { ...valid, idempotencyKey: "あ".repeat(256) },
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      reasonCode: "feedback_batch_schema_invalid",
+    });
   });
 
   test("rejects evidence-free verification feedback as an item result", async () => {

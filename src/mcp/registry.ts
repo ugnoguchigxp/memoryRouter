@@ -1,6 +1,7 @@
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
+  _meta?: Record<string, unknown>;
 };
 
 export type ToolHandlerContext = {

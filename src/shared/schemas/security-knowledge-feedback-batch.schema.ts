@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   canonicalStringifySecurityIntelligenceValue,
+  securityIntelligenceSafeBoundedTextSchema,
   securityIntelligenceSha256,
 } from "./security-knowledge-candidate-batch.schema.js";
 
@@ -56,6 +57,16 @@ function validateEvidenceRequirement(
   ctx: z.RefinementCtx,
 ) {
   if (
+    ["retrieved", "selected", "actually_used"].includes(value.eventType) &&
+    value.correlation.compileRunRef === undefined
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["correlation", "compileRunRef"],
+      message: "security_intelligence:compile_run_ref_required",
+    });
+  }
+  if (
     ["verification_outcome", "false_warning", "harm_signal"].includes(value.eventType) &&
     value.evidenceRefs.length === 0 &&
     value.correlation.verificationRef === undefined
@@ -64,6 +75,13 @@ function validateEvidenceRequirement(
       code: "custom",
       path: ["evidenceRefs"],
       message: "security_intelligence:independent_evidence_required",
+    });
+  }
+  if (value.eventType === "user_override" && value.evidenceRefs.length === 0) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["evidenceRefs"],
+      message: "security_intelligence:user_command_ref_required",
     });
   }
 }
@@ -110,7 +128,7 @@ export const securityKnowledgeFeedbackBatchSchema = z
   .object({
     contractVersion: z.literal(SECURITY_KNOWLEDGE_FEEDBACK_CONTRACT_VERSION),
     batchRef: z.string().regex(/^skfb:v1:[a-f0-9]{64}$/),
-    idempotencyKey: z.string().min(1).max(256),
+    idempotencyKey: securityIntelligenceSafeBoundedTextSchema(256),
     batchPayloadDigest: digestSchema,
     producer: z
       .object({
@@ -183,7 +201,20 @@ export const securityKnowledgeFeedbackBatchReceiptSchema = z
       .array(z.object({ eventRef: eventRefSchema, reasonCode: reasonCodeSchema }).strict())
       .max(100),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    const eventRefs = [
+      ...value.acceptedEventRefs,
+      ...value.duplicateEventRefs,
+      ...value.rejectedEvents.map((event) => event.eventRef),
+    ];
+    if (new Set(eventRefs).size !== eventRefs.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "security_intelligence:duplicate_feedback_receipt_event_ref",
+      });
+    }
+  });
 
 export const securityKnowledgeFeedbackBatchResponseSchema = z
   .object({ replayed: z.boolean(), receipt: securityKnowledgeFeedbackBatchReceiptSchema })

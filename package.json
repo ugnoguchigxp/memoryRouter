@@ -40,6 +40,8 @@
     "backfill:knowledge-value": "bun run src/cli/backfill-knowledge-value.ts",
     "backfill:knowledge-source-links": "bun run src/cli/backfill-knowledge-source-links.ts",
     "backfill:knowledge-origin-links": "bun run src/cli/backfill-knowledge-origin-links.ts",
+    "backfill:repository-identity:dry-run": "bun run src/cli/backfill-repository-identity.ts --dry-run",
+    "backfill:repository-identity:write": "bun run src/cli/backfill-repository-identity.ts --write",
     "backfill:episodes:compile": "bun run src/cli/backfill-episodes-from-compile.ts",
     "knowledge:apply-feedback-quality": "bun run src/cli/apply-knowledge-quality.ts",
     "decision:pr-discard-scan": "bun run src/cli/context-decision-pr-discard-scan.ts",

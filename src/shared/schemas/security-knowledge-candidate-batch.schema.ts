@@ -85,7 +85,7 @@ function utf8Bytes(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
-function safeBoundedTextSchema(maxBytes: number) {
+export function securityIntelligenceSafeBoundedTextSchema(maxBytes: number) {
   return z
     .string()
     .min(1)
@@ -114,6 +114,8 @@ function safeBoundedTextSchema(maxBytes: number) {
       "security_intelligence:utf8_byte_limit_exceeded",
     );
 }
+
+const safeBoundedTextSchema = securityIntelligenceSafeBoundedTextSchema;
 
 function canonicalStringArray(maxItems: number, maxItemBytes: number) {
   return z
@@ -212,7 +214,7 @@ export const securityKnowledgeCandidateBatchSchema = z
   .object({
     contractVersion: z.literal(SECURITY_KNOWLEDGE_CANDIDATE_CONTRACT_VERSION),
     batchRef: batchRefSchema,
-    idempotencyKey: z.string().min(1).max(256),
+    idempotencyKey: safeBoundedTextSchema(256),
     batchPayloadDigest: digestSchema,
     producer: z
       .object({
@@ -289,12 +291,28 @@ export const securityKnowledgeCandidateBatchReceiptSchema = z
                 message: "security_intelligence:rejected_item_target_forbidden",
               });
             }
+            if (value.status !== "rejected" && value.targetStateRef === undefined) {
+              ctx.addIssue({
+                code: "custom",
+                path: ["targetStateRef"],
+                message: "security_intelligence:non_rejected_item_target_required",
+              });
+            }
           }),
       )
       .min(1)
       .max(10),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (new Set(value.items.map((item) => item.candidateRef)).size !== value.items.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["items"],
+        message: "security_intelligence:duplicate_candidate_receipt_ref",
+      });
+    }
+  });
 
 export const securityKnowledgeCandidateBatchResponseSchema = z
   .object({

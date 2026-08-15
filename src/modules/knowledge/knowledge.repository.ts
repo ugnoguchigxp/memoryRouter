@@ -9,6 +9,10 @@ import type {
   KnowledgeStatus,
 } from "../../shared/schemas/knowledge.schema.js";
 import { auditEventTypes, recordAuditLogSafe } from "../audit/audit-log.service.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 import { computeDecayFactor } from "./knowledge-value.service.js";
 import {
   type ApplicabilityQuery,
@@ -70,6 +74,10 @@ type KnowledgeSearchRow = {
   type: string;
   status: string;
   scope: string;
+  classificationStatus: string;
+  projectRef: string | null;
+  repoKey: string | null;
+  repoPath: string | null;
   polarity: string;
   intentTags: unknown;
   title: string;
@@ -119,6 +127,10 @@ function mapKnowledgeRowsToResults(
       type: row.type,
       status: row.status,
       scope: row.scope,
+      classificationStatus: row.classificationStatus,
+      projectRef: row.projectRef,
+      repoKey: row.repoKey,
+      repoPath: row.repoPath,
       polarity: String(row.polarity ?? "positive"),
       intentTags: Array.isArray(row.intentTags) ? row.intentTags.map(String) : [],
       title: row.title,
@@ -162,6 +174,17 @@ function buildApplicabilityFilterCondition(query: ApplicabilityQuery): SQL | und
   if (changeTypes) clauses.push(changeTypes);
   const domains = buildJsonbArrayAnyMatch("domains", query.domains);
   if (domains) clauses.push(domains);
+  if (query.includeGeneral) {
+    clauses.push(sql`(
+      ${knowledgeItems.appliesTo} ->> 'general' = 'true'
+      OR (
+        NOT (${knowledgeItems.appliesTo} ? 'general')
+        AND jsonb_array_length(coalesce(${knowledgeItems.appliesTo} -> 'technologies', '[]'::jsonb)) = 0
+        AND jsonb_array_length(coalesce(${knowledgeItems.appliesTo} -> 'changeTypes', '[]'::jsonb)) = 0
+        AND jsonb_array_length(coalesce(${knowledgeItems.appliesTo} -> 'domains', '[]'::jsonb)) = 0
+      )
+    )`);
+  }
   if (clauses.length === 0) return undefined;
   return clauses.length === 1 ? clauses[0] : or(...clauses);
 }
@@ -232,13 +255,21 @@ export async function searchKnowledge(
     ) ?? textMatchExpr;
   const applicabilityQuery = buildApplicabilityQuery(input, options);
   const facetRequested = hasApplicabilityQuery(applicabilityQuery);
-  const searchLimit = facetRequested ? Math.max(input.limit * 12, 120) : input.limit;
+  const applicabilityCondition = facetRequested
+    ? buildApplicabilityFilterCondition(applicabilityQuery)
+    : undefined;
+  if (applicabilityCondition) conditions.push(applicabilityCondition);
+  const searchLimit = input.limit;
 
   const selectFields = {
     id: knowledgeItems.id,
     type: knowledgeItems.type,
     status: knowledgeItems.status,
     scope: knowledgeItems.scope,
+    classificationStatus: knowledgeItems.classificationStatus,
+    projectRef: knowledgeItems.projectRef,
+    repoKey: knowledgeItems.repoKey,
+    repoPath: knowledgeItems.repoPath,
     polarity: knowledgeItems.polarity,
     intentTags: knowledgeItems.intentTags,
     title: knowledgeItems.title,
@@ -267,7 +298,6 @@ export async function searchKnowledge(
 
   let rows: KnowledgeSearchRow[] = [...rankedRows];
   if (facetRequested) {
-    const applicabilityCondition = buildApplicabilityFilterCondition(applicabilityQuery);
     if (applicabilityCondition) {
       const fallbackRows = (await db
         .select({
@@ -287,6 +317,12 @@ export async function searchKnowledge(
 
   const sourceRefsByKnowledgeId = await listKnowledgeSourceRefs(rows.map((row) => row.id));
   return mapKnowledgeRowsToResults(rows, sourceRefsByKnowledgeId, applicabilityQuery)
+    .filter(
+      (item) =>
+        !facetRequested ||
+        item.applicabilityScore > 0 ||
+        (applicabilityQuery.includeGeneral && item.applicabilityMatches.general),
+    )
     .sort((a, b) => b.score - a.score || b.updatedAt.getTime() - a.updatedAt.getTime())
     .slice(0, input.limit);
 }
@@ -305,6 +341,25 @@ export async function upsertKnowledgeFromSource(
 
   const scoped = buildKnowledgeScopeMetadata(params.sourceUri, params.metadata, params.appliesTo);
   const metadata = scoped.metadata;
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: params.scope,
+      projectRef:
+        params.projectRef ??
+        (typeof metadata.projectRef === "string" ? metadata.projectRef : undefined),
+      repoKey:
+        params.repoKey ??
+        (typeof scoped.appliesTo.repoKey === "string" ? scoped.appliesTo.repoKey : undefined),
+      repoPath:
+        params.repoPath ??
+        (typeof scoped.appliesTo.repoPath === "string" ? scoped.appliesTo.repoPath : undefined),
+    },
+    {
+      producer: params.identityProducer ?? "knowledge.upsert-from-source",
+      entityKind: "knowledge",
+      actor: resolveKnowledgeActor(params.sourceUri),
+    },
+  );
 
   if (existing) {
     const now = new Date();
@@ -313,7 +368,11 @@ export async function upsertKnowledgeFromSource(
       .set({
         type: params.type,
         status: params.status,
-        scope: params.scope,
+        scope: identity.scope,
+        classificationStatus: identity.classificationStatus,
+        projectRef: identity.projectRef,
+        repoKey: identity.repoKey,
+        repoPath: identity.repoPath,
         polarity: params.polarity ?? existing.polarity ?? "positive",
         intentTags: params.intentTags ?? existing.intentTags ?? [],
         title: params.title,
@@ -359,6 +418,12 @@ export async function upsertKnowledgeFromSource(
       confidence: params.confidence,
       linkMetadataSource: "upsertKnowledgeFromSource",
     });
+    await recordProjectScopedWritePersisted(identity, {
+      producer: params.identityProducer ?? "knowledge.upsert-from-source",
+      entityKind: "knowledge",
+      entityId: existing.id,
+      actor,
+    });
     return existing.id;
   }
 
@@ -367,7 +432,11 @@ export async function upsertKnowledgeFromSource(
     .values({
       type: params.type,
       status: params.status,
-      scope: params.scope,
+      scope: identity.scope,
+      classificationStatus: identity.classificationStatus,
+      projectRef: identity.projectRef,
+      repoKey: identity.repoKey,
+      repoPath: identity.repoPath,
       polarity: params.polarity ?? "positive",
       intentTags: params.intentTags ?? [],
       title: params.title,
@@ -399,6 +468,12 @@ export async function upsertKnowledgeFromSource(
     confidence: params.confidence,
     linkMetadataSource: "upsertKnowledgeFromSource",
   });
+  await recordProjectScopedWritePersisted(identity, {
+    producer: params.identityProducer ?? "knowledge.upsert-from-source",
+    entityKind: "knowledge",
+    entityId: inserted.id,
+    actor: resolveKnowledgeActor(params.sourceUri),
+  });
 
   return inserted.id;
 }
@@ -421,7 +496,7 @@ export async function vectorSearchKnowledge(
     options,
   );
   const facetRequested = hasApplicabilityQuery(applicabilityQuery);
-  const searchLimit = facetRequested ? Math.max(limit * 3, 30) : limit;
+  const searchLimit = limit;
   const embeddingStr = JSON.stringify(embedding);
   const importanceOrderExpr = normalizedImportanceExpr();
   const similarity = sql<number>`1 - (${knowledgeItems.embedding} <=> ${embeddingStr}::vector)`;
@@ -448,6 +523,10 @@ export async function vectorSearchKnowledge(
       )}]`,
     );
   }
+  if (facetRequested) {
+    const applicabilityCondition = buildApplicabilityFilterCondition(applicabilityQuery);
+    if (applicabilityCondition) conditions.push(applicabilityCondition);
+  }
 
   const rows = await db
     .select({
@@ -455,6 +534,10 @@ export async function vectorSearchKnowledge(
       type: knowledgeItems.type,
       status: knowledgeItems.status,
       scope: knowledgeItems.scope,
+      classificationStatus: knowledgeItems.classificationStatus,
+      projectRef: knowledgeItems.projectRef,
+      repoKey: knowledgeItems.repoKey,
+      repoPath: knowledgeItems.repoPath,
       polarity: knowledgeItems.polarity,
       intentTags: knowledgeItems.intentTags,
       title: knowledgeItems.title,

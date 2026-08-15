@@ -385,14 +385,15 @@ export async function insertContextPackItemsSqlite(
     score: number;
     rankingReason: string;
     sourceRefs: string[];
+    scopeSnapshot?: Record<string, unknown>;
   }>,
 ): Promise<void> {
   if (items.length === 0) return;
   const sqlite = await getSqliteCoreDatabase();
   const stmt = sqlite.db.query(
     `INSERT INTO context_pack_items (
-      run_id, item_kind, item_id, section, score, ranking_reason, source_refs, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      run_id, item_kind, item_id, section, score, ranking_reason, source_refs, scope_snapshot, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const now = new Date().toISOString();
   sqlite.db.query("BEGIN IMMEDIATE").run();
@@ -406,6 +407,7 @@ export async function insertContextPackItemsSqlite(
         Number.isFinite(item.score) ? item.score : 0,
         item.rankingReason,
         json(item.sourceRefs),
+        json(item.scopeSnapshot ?? {}),
         now,
       );
     }

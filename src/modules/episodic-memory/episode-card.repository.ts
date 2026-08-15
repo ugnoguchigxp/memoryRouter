@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { episodeCards, episodeRefs } from "../../db/schema.js";
 import { getDefaultDbSession } from "../../db/session.js";
@@ -12,6 +12,12 @@ import {
   episodeCardSearchInputSchema,
 } from "../../shared/schemas/episode-card.schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
+import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
+import { evaluateRepositoryScope } from "../context-compiler/repository-scope.js";
 
 const db = getDefaultDbSession().db;
 
@@ -110,6 +116,9 @@ function mapEpisode(row: EpisodeCardRow, refs: EpisodeRefRow[], score?: number):
     technologies: asStringArray(row.technologies),
     changeTypes: asStringArray(row.changeTypes),
     tools: asStringArray(row.tools),
+    classificationStatus: row.classificationStatus ?? "unresolved",
+    scope: row.scope ?? "repo",
+    projectRef: row.projectRef,
     repoPath: row.repoPath,
     repoKey: row.repoKey,
     sourceKind: row.sourceKind,
@@ -156,14 +165,42 @@ function searchableText(episode: EpisodeCard): string {
 
 function matchesSearchInput(episode: EpisodeCard, input: ReturnType<typeof normalizeSearchInput>) {
   if (!input.statuses.includes(episode.status)) return false;
-  if (input.repoPath && episode.repoPath !== input.repoPath) return false;
-  if (input.repoKey && episode.repoKey !== input.repoKey) return false;
+  if (
+    !evaluateRepositoryScope(
+      {
+        id: episode.id,
+        entityKind: "episode",
+        status: episode.status,
+        classificationStatus: episode.classificationStatus,
+        scope: episode.scope,
+        projectRef: episode.projectRef ?? null,
+        repoKey: episode.repoKey ?? null,
+        repoPath: episode.repoPath ?? null,
+        general:
+          asRecord(episode.applicability).general === true ||
+          (episode.technologies.length === 0 &&
+            episode.changeTypes.length === 0 &&
+            episode.domains.length === 0),
+        facets: {
+          technologies: episode.technologies,
+          changeTypes: episode.changeTypes,
+          domains: episode.domains,
+        },
+        producer: episode.sourceKind,
+      },
+      input.projectIdentity,
+      {
+        technologies: input.technologies,
+        changeTypes: input.changeTypes,
+        domains: input.domains,
+      },
+    ).allowed
+  ) {
+    return false;
+  }
   if (input.outcomeKinds.length > 0 && !input.outcomeKinds.includes(episode.outcomeKind)) {
     return false;
   }
-  if (!intersects(input.domains, episode.domains)) return false;
-  if (!intersects(input.technologies, episode.technologies)) return false;
-  if (!intersects(input.changeTypes, episode.changeTypes)) return false;
   if (!intersects(input.tools, episode.tools)) return false;
   return true;
 }
@@ -187,8 +224,7 @@ function scoreEpisode(
 function hasRankingCriteria(input: ReturnType<typeof normalizeSearchInput>): boolean {
   return Boolean(
     input.query ||
-      input.repoPath ||
-      input.repoKey ||
+      input.projectIdentity.matchBasis !== "none" ||
       input.outcomeKinds.length > 0 ||
       input.domains.length > 0 ||
       input.technologies.length > 0 ||
@@ -207,6 +243,11 @@ function normalizeSearchInput(rawInput: EpisodeCardSearchInput) {
         : ["active"];
   return {
     ...input,
+    projectIdentity: resolveCompileProjectIdentity({
+      projectRef: input.projectRef,
+      repoKey: input.repoKey,
+      repoPath: input.repoPath,
+    }),
     query: input.query?.trim(),
     statuses,
     domains: uniqueFacets(input.domains),
@@ -236,6 +277,18 @@ export async function createEpisodeCard(rawInput: EpisodeCardCreateInput): Promi
   }
 
   const input = episodeCardCreateSchema.parse(rawInput);
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: input.scope,
+      projectRef: input.projectRef,
+      repoKey: input.repoKey,
+      repoPath: input.repoPath,
+    },
+    {
+      producer: `episode.${input.sourceKind}`,
+      entityKind: "episode",
+    },
+  );
   const now = new Date();
   const episode = await db.transaction(async (tx) => {
     const [inserted] = await tx
@@ -253,8 +306,11 @@ export async function createEpisodeCard(rawInput: EpisodeCardCreateInput): Promi
         technologies: uniqueFacets(input.technologies),
         changeTypes: uniqueFacets(input.changeTypes),
         tools: uniqueFacets(input.tools),
-        repoPath: input.repoPath ?? null,
-        repoKey: input.repoKey ?? null,
+        classificationStatus: identity.classificationStatus,
+        scope: identity.scope,
+        projectRef: identity.projectRef,
+        repoPath: identity.repoPath,
+        repoKey: identity.repoKey,
         sourceKind: input.sourceKind,
         sourceKey: input.sourceKey,
         outcomeKind: input.outcomeKind,
@@ -288,6 +344,12 @@ export async function createEpisodeCard(rawInput: EpisodeCardCreateInput): Promi
         : [];
 
     return mapEpisode(inserted, insertedRefs);
+  });
+
+  await recordProjectScopedWritePersisted(identity, {
+    producer: `episode.${input.sourceKind}`,
+    entityKind: "episode",
+    entityId: episode.id,
   });
 
   return episode;
@@ -333,16 +395,34 @@ export async function searchEpisodeCards(rawInput: EpisodeCardSearchInput): Prom
     return sqlite.searchEpisodeCardsSqlite(rawInput);
   }
   const input = normalizeSearchInput(rawInput);
-  const conditions = [inArray(episodeCards.status, input.statuses)];
-  if (input.repoPath) conditions.push(eq(episodeCards.repoPath, input.repoPath));
-  if (input.repoKey) conditions.push(eq(episodeCards.repoKey, input.repoKey));
+  const globalCondition = and(
+    eq(episodeCards.scope, "global"),
+    isNull(episodeCards.projectRef),
+    isNull(episodeCards.repoKey),
+    isNull(episodeCards.repoPath),
+  );
+  const matchValue = input.projectIdentity.matchValue;
+  const repoCondition =
+    matchValue === null
+      ? undefined
+      : input.projectIdentity.matchBasis === "project_ref"
+        ? and(eq(episodeCards.scope, "repo"), eq(episodeCards.projectRef, matchValue))
+        : input.projectIdentity.matchBasis === "repo_key"
+          ? and(eq(episodeCards.scope, "repo"), eq(episodeCards.repoKey, matchValue))
+          : input.projectIdentity.matchBasis === "repo_path"
+            ? and(eq(episodeCards.scope, "repo"), eq(episodeCards.repoPath, matchValue))
+            : undefined;
+  const conditions = [
+    inArray(episodeCards.status, input.statuses),
+    eq(episodeCards.classificationStatus, "classified"),
+    repoCondition ? or(globalCondition, repoCondition) : globalCondition,
+  ];
 
   const rows = await db
     .select()
     .from(episodeCards)
     .where(and(...conditions))
-    .orderBy(desc(episodeCards.createdAt))
-    .limit(500);
+    .orderBy(desc(episodeCards.createdAt));
   const refs = await refsByEpisodeIds(rows.map((row) => row.id));
   return rows
     .map((row) => mapEpisode(row, refs.get(row.id) ?? []))

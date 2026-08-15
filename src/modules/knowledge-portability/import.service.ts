@@ -1,8 +1,12 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { sql, type SQL } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
+import {
+  ProjectScopedWriteError,
+  resolveProjectScopedWriteIdentity,
+} from "../context-compiler/project-scoped-write.js";
 import {
   PORTABLE_EXPORT_FORMAT,
   PORTABLE_EXPORT_SCHEMA_VERSION,
@@ -12,9 +16,9 @@ import {
   type PortableExportManifest,
 } from "./format.js";
 import {
+  type PortableParsedSqlRow,
   buildPostgresInsertOnlyStatements,
   parsePostgresDataSql,
-  type PortableParsedSqlRow,
 } from "./sql-reader.js";
 
 export type ImportKnowledgeDryRunOptions = {
@@ -453,6 +457,64 @@ function validateReferentialConsistency(
   }
 }
 
+function validateProjectIdentityRows(
+  tables: Map<string, PortableParsedSqlRow[]>,
+  issues: ImportValidationIssue[],
+): void {
+  for (const table of ["knowledge_items", "sources"] as const) {
+    for (const row of rowsByTable(tables, table)) {
+      const id = stringField(row, "id") ?? undefined;
+      const classificationStatus = stringField(row, "classification_status");
+      const scope = stringField(row, "scope");
+      if (classificationStatus !== "classified") {
+        issues.push({
+          severity: "error",
+          code: "project_identity_not_classified",
+          message: `${table} import row must have classification_status=classified`,
+          table,
+          id,
+        });
+        continue;
+      }
+      if (scope !== "repo" && scope !== "global") {
+        issues.push({
+          severity: "error",
+          code: "project_identity_scope_invalid",
+          message: `${table} import row must have scope=repo or scope=global`,
+          table,
+          id,
+        });
+        continue;
+      }
+      try {
+        const identity = resolveProjectScopedWriteIdentity({
+          scope,
+          projectRef: stringField(row, "project_ref"),
+          repoKey: stringField(row, "repo_key"),
+          repoPath: stringField(row, "repo_path"),
+        });
+        if (
+          identity.projectRef !== stringField(row, "project_ref") ||
+          identity.repoKey !== stringField(row, "repo_key") ||
+          identity.repoPath !== stringField(row, "repo_path")
+        ) {
+          throw new Error("canonical identity values are not normalized");
+        }
+      } catch (error) {
+        issues.push({
+          severity: "error",
+          code: "project_identity_contract_violation",
+          message: `${table} import row violates the project identity contract: ${
+            error instanceof ProjectScopedWriteError ? error.code : "NON_CANONICAL_IDENTITY"
+          }`,
+          table,
+          id,
+        });
+      }
+    }
+  }
+}
+
 export async function validateKnowledgeImportArchive(
   options: ImportKnowledgeDryRunOptions,
 ): Promise<ImportKnowledgeDryRunSummary> {
@@ -554,6 +616,7 @@ export async function validateKnowledgeImportArchive(
     parsedCounts = Object.fromEntries(countEntries);
     validateSqlCounts(manifest, parsedCounts, issues);
     validateReferentialConsistency(parsedSql.tables, evidenceIndex, issues);
+    validateProjectIdentityRows(parsedSql.tables, issues);
   } catch (error) {
     issues.push({
       severity: "error",

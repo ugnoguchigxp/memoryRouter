@@ -1,5 +1,5 @@
 import { asRecord } from "../../shared/utils/normalize.js";
-import { normalizeRepoKey, normalizeRepoPath } from "../context-compiler/query-context.js";
+import { normalizeCompileRepoPath } from "../context-compiler/compile-project-identity.js";
 import { type KnowledgeTagKind, listKnowledgeTagDefinitions } from "./knowledge-tags.repository.js";
 
 export type KnowledgeApplicabilityInput = {
@@ -204,8 +204,8 @@ export async function normalizeKnowledgeApplicability(
     warnings,
     unknownTagCandidates,
   });
-  const repoPath = normalizeRepoPath(input.repoPath);
-  const repoKey = (input.repoKey?.trim() || normalizeRepoKey(input.repoPath) || "").toLowerCase();
+  const repoPath = normalizeCompileRepoPath(input.repoPath) ?? undefined;
+  const repoKey = input.repoKey?.trim().toLowerCase();
   const general = Boolean(input.general);
 
   const appliesTo: Record<string, unknown> = {
