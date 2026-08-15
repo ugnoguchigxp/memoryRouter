@@ -2,13 +2,13 @@
 
 ## Status
 
-Status: codebase and live-runtime reassessment complete; implementation not started by this document.
+Status: repository-isolation implementation, live migration, and enforced canary complete; producer observation/final closeout and later architecture/product work pending.
 
 Created: 2026-08-15
 
 この文書は、repository isolation、実装所有権、巨大module、SQLite-first onboarding、release運用を一つのprogramとして並べる上位計画である。個別のidentity contractやmigration手順を重複定義せず、既存計画をどの順で完了させ、次の改善へ進むかを定める。
 
-本書を作成するための調査では、source code、git diff、live resident process、live SQLiteのschema/inventory、active MCP tool ownership、TypeScript/Rustのcompile caller、producer、retrieval、replay/cache、onboarding、CI、release filesを確認した。live DBへのwrite、daemon restart、schema migrationは行っていない。
+本書を作成するための調査では、source code、git diff、live resident process、live SQLiteのschema/inventory、active MCP tool ownership、TypeScript/Rustのcompile caller、producer、retrieval、replay/cache、onboarding、CI、release filesを確認した。その後repository-isolation code、live migration、resident daemon更新、50-call enforced cohortを実施した。実行結果は[Closeout Evidence](context-compile-repository-isolation-closeout-evidence.md)を正本とする。
 
 ## 1. Executive Decision
 
@@ -25,7 +25,7 @@ Created: 2026-08-15
 
 1. repository isolationはDB fileの統合問題ではない。request identity、write、migration、retrieval、traceを一つのlogical boundaryとして閉じる。
 2. working tree上のT1 foundationとlive deploymentを区別する。最終確認時のsource schemaはrevision 5まで進んでいる一方、確認時のresident DBはrevision 1であり、live MCP schemaもidentity fieldを公開していなかった。
-3. current producer observationの「accepted 200件」はdurable writeを証明しないため、そのままcompletion gateに使わない。
+3. producer observationは`PERSISTED`だけを数え、enabled producer manifestが省略・空・未観測を含む場合はcompletion gateをfail closedにする。
 4. isolationのenforcement完了前に、compile engineの大規模統合や巨大fileの全面分割を混ぜない。
 5. MCPのactive ownerはRustだが、CLI、init-project、UI/APIはTypeScript compile serviceを使用している。TypeScript全体をdormantとは扱わない。
 6. TypeScriptのcwd既定、Rust daemonのApplication Support既定、LaunchAgentのrepository data指定は意図した運用profileとして維持する。自動mergeや一つのpathへの統一は行わない。
@@ -78,13 +78,13 @@ Created: 2026-08-15
 
 このbaselineは、identityを受理するschemaを追加しただけでは安全にならず、caller、producer、migration、retrievalの順序が必要であることを示す。
 
-### 3.3 Producer Observation Gap
+### 3.3 Producer Observation Resolution And Remaining Gate
 
-project-scoped-write.tsの現draftはidentity validation直後にPROJECT_IDENTITY_PRODUCER_ACCEPTEDを記録し、その後にrepository insert/upsertを行う。後続writeが失敗してもaccepted eventだけが残る可能性がある。
+実装前draftではidentity validation直後のACCEPTEDをcompletionへ数え、後続write失敗や単一producerへの偏りでfalse completionになる可能性があった。
 
-repository-isolation-report.tsはこのaccepted eventを7日・200件gateへ数えている。また、200件が一つの高頻度producerだけで占められてもcompletion可能であり、低頻度または未実行producerのclosureを証明しない。
+現在はVALIDATED、REJECTED、PERSISTEDを分離し、entity write成功後または同一transaction内のPERSISTEDだけを7日・200件gateへ数える。failure injectionではentityとPERSISTED auditがともにrollbackすることを検証した。
 
-したがってP1の観測gateは次へ変更する。
+P1の観測gateは次のとおりである。
 
 - validation成功とdurable persistence成功を区別する。
 - completion集計はcommit後、または同じtransaction内でcommitされるPERSISTED eventだけを数える。
@@ -93,13 +93,15 @@ repository-isolation-report.tsはこのaccepted eventを7日・200件gateへ数�
 - 7日、identity-bearing persisted 200件、new unresolved 0件に加え、enabled producer coverage 100%を要求する。
 - global writeは別cohortとして扱い、identity-bearing件数を水増ししない。
 
-### 3.4 Retrieval Gap
+reportには`--enabled-producers`でruntime inventoryを渡す。manifest省略、空manifest、未観測producerありのいずれもcompletion falseとなる。2026-08-15のlive auditには旧ACCEPTEDが5件、PERSISTEDが0件であり、7日間のcompletion windowはまだ開始できていない。
 
-active Rust context_compileはrequest identityをparse/resolveしてtraceへ保存するfoundationを持つが、KnowledgeとEpisodeCard searchへidentityを渡していない。Knowledgeは最大500件、EpisodeCardは最大200件のunscoped候補を先に取得する。
+### 3.4 Retrieval Resolution
 
-public Rust search_knowledge/search_episodesもschema上のrepo/facet parameterをeligibilityへ適用していない。
+実装前はactive Rust context_compileがKnowledge最大500件、EpisodeCard最大200件のunscoped候補を先に取得し、public searchと継続TypeScript pathにもpre-limit/fallback gapがあった。
 
-TypeScript側には次の別経路がある。
+現在はRust context_compile/public searchと継続TypeScript pathでcanonical scope/classification/facet eligibilityをrankingとarbitrary limitより前へ移し、legacy/unscoped fallbackを除去した。scope-aware prefilter不能なSQLite vector laneは安全に無効化する。
+
+修正対象としたTypeScript側の旧経路は次のとおりだった。
 
 - knowledge.service.tsはscoped resultが0件ならlegacy metadata、さらにunscoped searchへfallbackする。
 - source-retrieval.service.tsはcompile identityをtext/vector repositoryへ渡さず、scopedSearch=falseを返す。
@@ -107,7 +109,7 @@ TypeScript側には次の別経路がある。
 - replay comparisonはrunのfacetsを読むが、current CompileInputへidentityを戻さない。
 - landscape cache keyはraw input由来で、identity contract/retrieval semantics versionを持たない。
 
-scope/classification/facet predicateがarbitrary limitより後ろにある限り、filterを追加してもcorrectnessは保証できない。
+これらはshared fixture、limit saturation、identity missing、replay/cache testsと50-call enforced cohortで回帰検証した。
 
 ### 3.5 Dual Implementation
 
@@ -634,12 +636,11 @@ PostgreSQLをsupported surfaceとして残す場合は専用test DBで同じisol
 
 ## 12. Immediate Next Actions
 
-1. W0としてcurrent diffのtopic manifestを作り、Security ingress/TS-only shadowをrepository isolation delivery unitから分離する。
-2. producer observationをPERSISTED semanticsとenabled-producer coverageへ修正する。現在の7日・200 accepted gateの観測windowはcompletion用として開始しない。
-3. live effective DBを確定し、copy上でlive revision→対象build宣言revisionのmigrationを2回rehearseする。
-4. controlled daemon deployment後、tools/listと20-call caller adoption evidenceを採る。
-5. producer closureとtop-50 review/backfillを終えてから、active Rust retrieval shadowへ進む。
-6. G4 closeout後にcompile ownership ADRを確定し、Rust single-owner migrationを開始する。
-7. owner convergence後にnative_compile/settings/episode executorを責務単位に分割し、SQLite-first onboardingとrelease automationを完成させる。
+1. runtime producer inventoryを確定し、`--enabled-producers` manifestを保存して7日・200 PERSISTED観測を開始する。
+2. 2026-08-16 22:15 JST以降に24-hour enforced observationのfinal read-only auditを行う。
+3. producer coverage、new unresolved、Safety/Availability/Performance Gateと`bun run verify`を再確認し、closeout evidenceを確定する。
+4. archive gateをすべて満たしたらcloseout plan、T0 evidence、closeout evidenceをarchiveし、READMEを更新する。
+5. G4 closeout後にcompile ownership ADRを確定し、Rust single-owner migrationを開始する。
+6. owner convergence後にnative_compile/settings/episode executorを責務単位に分割し、SQLite-first onboardingとrelease automationを完成させる。
 
 この順序を変える場合は、変える作業がSafety Gate hard zeroを弱めないこと、rollback単位を大きくしないこと、削除予定の二重実装へ新しいsemanticsを追加しないことをdecision recordで示す。

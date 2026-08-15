@@ -106,12 +106,17 @@ export type RepositoryIsolationReport = {
     identityBearingPersistedCount: number;
     rejectedCount: number;
     persistedByProducer: Record<string, number>;
+    enabledProducers: string[];
+    observedEnabledProducers: string[];
+    missingEnabledProducers: string[];
+    enabledProducerCoverageRate: number;
     rejectedByProducer: Record<string, number>;
     rejectedByCode: Record<string, number>;
     newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
     newUnresolvedCount: number;
     hasFullWindow: boolean;
     hasMinimumIdentityBearingEvents: boolean;
+    hasCompleteEnabledProducerCoverage: boolean;
     completionCriteriaMet: boolean;
   };
   baseline: {
@@ -315,6 +320,7 @@ function producerObservation(input: {
   events: RepositoryIdentityProducerEvent[];
   now: Date;
   newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
+  enabledProducers: string[];
 }): RepositoryIsolationReport["producerObservation"] {
   const windowMs = 7 * 24 * 60 * 60 * 1000;
   const cutoff = input.now.getTime() - windowMs;
@@ -331,7 +337,12 @@ function producerObservation(input: {
   const rejected = events.filter(
     (event) => event.eventType === "PROJECT_IDENTITY_PRODUCER_REJECTED",
   );
-  const identityBearing = persisted.filter((event) => event.payload.matchBasis !== "none");
+  const identityBearing = persisted.filter(
+    (event) =>
+      event.payload.matchBasis === "project_ref" ||
+      event.payload.matchBasis === "repo_key" ||
+      event.payload.matchBasis === "repo_path",
+  );
   const oldestIdentityBearing = identityBearing.reduce<Date | null>(
     (oldest, event) => (!oldest || event.createdAt < oldest ? event.createdAt : oldest),
     null,
@@ -342,6 +353,24 @@ function producerObservation(input: {
   const hasFullWindow =
     oldestIdentityBearing !== null && oldestIdentityBearing.getTime() <= cutoff + 60_000;
   const hasMinimumIdentityBearingEvents = identityBearing.length >= 200;
+  const enabledProducers = [...new Set(input.enabledProducers.map((value) => value.trim()))]
+    .filter(Boolean)
+    .sort();
+  const identityBearingProducerSet = new Set(
+    identityBearing.flatMap((event) =>
+      typeof event.payload.producer === "string" && event.payload.producer.trim()
+        ? [event.payload.producer.trim()]
+        : [],
+    ),
+  );
+  const observedEnabledProducers = enabledProducers.filter((producer) =>
+    identityBearingProducerSet.has(producer),
+  );
+  const missingEnabledProducers = enabledProducers.filter(
+    (producer) => !identityBearingProducerSet.has(producer),
+  );
+  const hasCompleteEnabledProducerCoverage =
+    enabledProducers.length > 0 && missingEnabledProducers.length === 0;
   const newUnresolvedCount = repositoryEntityKindValues.reduce(
     (total, kind) => total + input.newUnresolvedByEntity[kind],
     0,
@@ -360,6 +389,10 @@ function producerObservation(input: {
         typeof event.payload.producer === "string" ? event.payload.producer : null,
       ),
     ),
+    enabledProducers,
+    observedEnabledProducers,
+    missingEnabledProducers,
+    enabledProducerCoverageRate: rate(observedEnabledProducers.length, enabledProducers.length),
     rejectedByProducer: sortedCounts(
       rejected.map((event) =>
         typeof event.payload.producer === "string" ? event.payload.producer : null,
@@ -374,8 +407,12 @@ function producerObservation(input: {
     newUnresolvedCount,
     hasFullWindow,
     hasMinimumIdentityBearingEvents,
+    hasCompleteEnabledProducerCoverage,
     completionCriteriaMet:
-      hasFullWindow && hasMinimumIdentityBearingEvents && newUnresolvedCount === 0,
+      hasFullWindow &&
+      hasMinimumIdentityBearingEvents &&
+      hasCompleteEnabledProducerCoverage &&
+      newUnresolvedCount === 0,
   };
 }
 
@@ -390,6 +427,7 @@ export function buildRepositoryIsolationReport(input: {
   now?: Date;
   schemaCapabilities?: RepositoryIsolationSchemaCapabilities;
   producerEvents?: RepositoryIdentityProducerEvent[];
+  enabledProducers?: string[];
   newUnresolvedByEntity?: Record<RepositoryEntityKind, number>;
 }): RepositoryIsolationReport {
   const previewLimit = Math.min(
@@ -492,6 +530,7 @@ export function buildRepositoryIsolationReport(input: {
         source: 0,
         episode: 0,
       },
+      enabledProducers: input.enabledProducers ?? [],
     }),
     baseline: buildBaseline(runs, input.now ?? new Date()),
   };

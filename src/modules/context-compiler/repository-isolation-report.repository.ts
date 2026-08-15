@@ -498,6 +498,7 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
   requestFacets?: RepositoryFacets;
   previewLimit?: number;
   recentRunLimit?: number;
+  enabledProducers?: string[];
   now?: Date;
 }): RepositoryIsolationReport {
   const now = input.now ?? new Date();
@@ -515,6 +516,7 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
     requestFacets: input.requestFacets,
     previewLimit: input.previewLimit,
     recentRunLimit: input.recentRunLimit,
+    enabledProducers: input.enabledProducers,
     now,
     schemaCapabilities: sqliteSchemaCapabilities(input.db),
   });
@@ -710,6 +712,7 @@ export async function collectRepositoryIsolationReport(
     requestFacets?: RepositoryFacets;
     previewLimit?: number;
     recentRunLimit?: number;
+    enabledProducers?: string[];
     now?: Date;
   } = {},
 ): Promise<RepositoryIsolationReport> {
@@ -738,6 +741,7 @@ export async function collectRepositoryIsolationReport(
     requestFacets: input.requestFacets,
     previewLimit: input.previewLimit,
     recentRunLimit: input.recentRunLimit,
+    enabledProducers: input.enabledProducers,
     now,
   });
 }

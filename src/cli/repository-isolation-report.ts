@@ -8,6 +8,7 @@ type Options = {
   repoPath?: string;
   previewLimit?: number;
   recentRunLimit?: number;
+  enabledProducers?: string[];
   requestFacets: RepositoryFacets;
 };
 
@@ -51,6 +52,8 @@ function parseArgs(args: string[]): Options {
       options.requestFacets.changeTypes = commaSeparated(value);
     } else if (option === "--domains") {
       options.requestFacets.domains = commaSeparated(value);
+    } else if (option === "--enabled-producers") {
+      options.enabledProducers = commaSeparated(value);
     } else {
       throw new Error(`Unknown argument: ${option}`);
     }
@@ -72,6 +75,7 @@ async function main(): Promise<void> {
     requestFacets: options.requestFacets,
     previewLimit: options.previewLimit,
     recentRunLimit: options.recentRunLimit,
+    enabledProducers: options.enabledProducers,
   });
   console.log(JSON.stringify(report, null, 2));
 }

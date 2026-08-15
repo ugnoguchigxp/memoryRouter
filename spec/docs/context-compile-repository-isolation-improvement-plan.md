@@ -2,7 +2,17 @@
 
 ## Status And Decision
 
-Status: reassessment complete; implementation plan revised on 2026-08-15.
+Status: implementation, migration, and enforced canary complete; producer observation and final time-based closeout gates pending.
+
+Implementation snapshot (2026-08-15):
+
+- Caller identity、producer contract、usage-weighted migration、Rust/TypeScript retrieval enforcement、minimal replay compatibilityは実装・検証済みである。
+- resident Rust daemonは対象buildへ更新済みで、normal local profileはfail-closed contractを使用している。
+- identity-present canary 50件とnegative smokeはSafety/Availability/Performance Gateを通過した。
+- 24-hour enforced observationは2026-08-15 22:15 JSTに開始した。2026-08-16 22:15 JSTより前にcloseoutしない。
+- live auditには旧`PROJECT_IDENTITY_PRODUCER_ACCEPTED`が5件あるだけで、durable `PERSISTED`はまだ0件である。enabled producer manifest、7日、identity-bearing PERSISTED 200件、new unresolved 0のgateが別途残る。
+- planned shadowを経ずに50-call enforced cohortへ進んだため、直前50 runとのavailability/performance比較とhard-zero safety auditを代替evidenceとする。このdeviationは[Closeout Evidence](context-compile-repository-isolation-closeout-evidence.md)へ明記する。
+- 実行証拠と残る時間条件は[Closeout Evidence](context-compile-repository-isolation-closeout-evidence.md)を正本とする。
 
 - T0（再現、inventory、baseline）とT1（additive identity foundation）は完了している。
 - 残作業は旧T2-T7をそのまま実行せず、P0-P5へ再編する。
@@ -11,7 +21,7 @@ Status: reassessment complete; implementation plan revised on 2026-08-15.
 - 最適な順序は、caller identity adoption、producer closure、利用実績に重み付けしたmigration、active Rust enforcement、最小限のreplay互換、local rolloutである。
 - 旧T7 Security Intelligence adapterは本計画から外す。[Security Intelligence Integration Concept](security-intelligence-integration-concept.md)で扱い、repository isolationの完了をblockしない。
 
-本計画のP0-P5が完了し、release evidenceが揃った時点で、本書と[T0 Evidence](context-compile-repository-isolation-t0-evidence.md)を`spec/docs/.archived/`へ移す。
+24-hour observationに加えてproducer observation gateとfinal auditが完了し、release evidenceが確定した時点で、本書、[T0 Evidence](context-compile-repository-isolation-t0-evidence.md)、[Closeout Evidence](context-compile-repository-isolation-closeout-evidence.md)を`spec/docs/.archived/`へ移す。
 
 ## Reassessment Evidence
 
@@ -219,11 +229,16 @@ Completion criteria:
 - identityなしrepo writeは拒否され、自動global化されない。
 - P3 shadow/P5 rollout観測中のnew unresolved producer countが0件である。
 
-Known draft corrections before merge:
+Implemented draft corrections:
 
-- Rust/TypeScript agent log syncの`projectName -> repoKey`伝播を除去する。
-- markdown importerのimport directoryとproject rootの同一視を除去する。
-- producer listをactive runtimeから再取得し、存在するだけのinactive codeを完了blockerにしない。
+- Rust/TypeScript agent log syncの`projectName -> repoKey`伝播を除去した。
+- markdown importerのimport directoryとproject rootの同一視を除去し、relative project rootを拒否する。
+- producer observationはdurable `PERSISTED`だけを数える。`--enabled-producers` manifestの省略、空、未観測producerありはすべてcompletion falseとする。
+
+Operational follow-up:
+
+- active runtimeからproducer listを再取得し、runtime active、maintenance-only、test-only、disabledを分類する。
+- runtime activeなproducer名を`repository-isolation:report --enabled-producers <comma-separated names>`へ渡し、7日・200件・coverage 100%を確認する。
 
 ### P2: Usage-Weighted Migration
 
@@ -543,7 +558,8 @@ deferred項目は本書内の未完了taskとして残さず、必要になっ�
 次をすべて満たしたらrepository isolationを完了とし、本書とT0 evidenceを`spec/docs/.archived/`へ移す。
 
 - P0-P5のcompletion criteriaを満たす。
-- 50回以上のidentity-present shadowと、20回以上かつ24時間のenforced canaryを完了する。
+- 50回以上のidentity-present shadow、または同等性をdecision recordで説明したenforced comparison cohortと、20回以上かつ24時間のenforced canaryを完了する。
+- enabled producer manifestを確定し、7日以上、identity-bearing `PERSISTED` 200件以上、enabled producer coverage 100%、new unresolved 0を満たす。
 - Safety Gate hard zero、Availability/Performance Gate pass。
 - resident daemonとnormal local profileがenforced contractを使用する。
 - live read-only auditとsafe rollback drillがpassする。
