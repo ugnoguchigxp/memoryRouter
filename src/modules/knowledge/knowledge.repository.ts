@@ -1,4 +1,4 @@
-import { type SQL, and, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
+import { type SQL, and, desc, eq, ilike, inArray, isNull, or, sql } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { db } from "../../db/index.js";
 import { knowledgeItems, knowledgeSourceLinks, sourceFragments, sources } from "../../db/schema.js";
@@ -10,6 +10,7 @@ import type {
 } from "../../shared/schemas/knowledge.schema.js";
 import { auditEventTypes, recordAuditLogSafe } from "../audit/audit-log.service.js";
 import {
+  type ResolvedProjectScopedWriteIdentity,
   recordProjectScopedWritePersisted,
   resolveAuditedProjectScopedWriteIdentity,
 } from "../context-compiler/project-scoped-write.js";
@@ -189,6 +190,29 @@ function buildApplicabilityFilterCondition(query: ApplicabilityQuery): SQL | und
   return clauses.length === 1 ? clauses[0] : or(...clauses);
 }
 
+function buildKnowledgeWriteIdentityCondition(identity: ResolvedProjectScopedWriteIdentity): SQL {
+  if (identity.scope === "global") {
+    return and(
+      eq(knowledgeItems.classificationStatus, "classified"),
+      eq(knowledgeItems.scope, "global"),
+      isNull(knowledgeItems.projectRef),
+      isNull(knowledgeItems.repoKey),
+      isNull(knowledgeItems.repoPath),
+    ) as SQL;
+  }
+  const selectedIdentity =
+    identity.matchBasis === "project_ref"
+      ? eq(knowledgeItems.projectRef, identity.projectRef as string)
+      : identity.matchBasis === "repo_key"
+        ? eq(knowledgeItems.repoKey, identity.repoKey as string)
+        : eq(knowledgeItems.repoPath, identity.repoPath as string);
+  return and(
+    eq(knowledgeItems.classificationStatus, "classified"),
+    eq(knowledgeItems.scope, "repo"),
+    selectedIdentity,
+  ) as SQL;
+}
+
 export async function searchKnowledge(
   input: KnowledgeSearchQueryInput,
   options: KnowledgeSearchOptions = {},
@@ -335,10 +359,6 @@ export async function upsertKnowledgeFromSource(
     return upsertKnowledgeFromSourceSqlite(params);
   }
 
-  const existing = await db.query.knowledgeItems.findFirst({
-    where: sql`${knowledgeItems.metadata} ->> 'sourceUri' = ${params.sourceUri}`,
-  });
-
   const scoped = buildKnowledgeScopeMetadata(params.sourceUri, params.metadata, params.appliesTo);
   const metadata = scoped.metadata;
   const identity = await resolveAuditedProjectScopedWriteIdentity(
@@ -360,6 +380,12 @@ export async function upsertKnowledgeFromSource(
       actor: resolveKnowledgeActor(params.sourceUri),
     },
   );
+  const existing = await db.query.knowledgeItems.findFirst({
+    where: and(
+      sql`${knowledgeItems.metadata} ->> 'sourceUri' = ${params.sourceUri}`,
+      buildKnowledgeWriteIdentityCondition(identity),
+    ),
+  });
 
   if (existing) {
     const now = new Date();

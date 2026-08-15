@@ -1,4 +1,5 @@
 import { closeDbPool } from "../db/index.js";
+import { loadRepositoryIsolationProducerManifest } from "../modules/context-compiler/repository-isolation-producer-manifest.js";
 import { collectRepositoryIsolationReport } from "../modules/context-compiler/repository-isolation-report.repository.js";
 import type { RepositoryFacets } from "../modules/context-compiler/repository-scope.js";
 
@@ -8,8 +9,6 @@ type Options = {
   repoPath?: string;
   previewLimit?: number;
   recentRunLimit?: number;
-  enabledProducers?: string[];
-  producerObservationStartedAt?: Date;
   requestFacets: RepositoryFacets;
 };
 
@@ -34,51 +33,6 @@ function commaSeparated(value: string): string[] {
     .filter(Boolean);
 }
 
-function isoTimestamp(value: string, option: string): Date {
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
-      value,
-    );
-  if (!match) {
-    throw new Error(`${option} must be an ISO-8601 timestamp with a timezone`);
-  }
-  const [
-    ,
-    yearText,
-    monthText,
-    dayText,
-    hourText,
-    minuteText,
-    secondText,
-    offsetHourText,
-    offsetMinuteText,
-  ] = match;
-  const year = Number(yearText);
-  const month = Number(monthText);
-  const day = Number(dayText);
-  const hour = Number(hourText);
-  const minute = Number(minuteText);
-  const second = Number(secondText);
-  const offsetHour = Number(offsetHourText ?? 0);
-  const offsetMinute = Number(offsetMinuteText ?? 0);
-  const daysInMonth =
-    month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
-  const parsed = new Date(value);
-  if (
-    day < 1 ||
-    day > daysInMonth ||
-    hour > 23 ||
-    minute > 59 ||
-    second > 59 ||
-    offsetHour > 23 ||
-    offsetMinute > 59 ||
-    !Number.isFinite(parsed.getTime())
-  ) {
-    throw new Error(`${option} must be a valid ISO-8601 timestamp`);
-  }
-  return parsed;
-}
-
 export function parseRepositoryIsolationReportArgs(args: string[]): Options {
   const options: Options = { requestFacets: {} };
   for (let index = 0; index < args.length; index += 1) {
@@ -98,10 +52,6 @@ export function parseRepositoryIsolationReportArgs(args: string[]): Options {
       options.requestFacets.changeTypes = commaSeparated(value);
     } else if (option === "--domains") {
       options.requestFacets.domains = commaSeparated(value);
-    } else if (option === "--enabled-producers") {
-      options.enabledProducers = commaSeparated(value);
-    } else if (option === "--producer-observation-started-at") {
-      options.producerObservationStartedAt = isoTimestamp(value, option);
     } else {
       throw new Error(`Unknown argument: ${option}`);
     }
@@ -123,8 +73,7 @@ async function main(): Promise<void> {
     requestFacets: options.requestFacets,
     previewLimit: options.previewLimit,
     recentRunLimit: options.recentRunLimit,
-    enabledProducers: options.enabledProducers,
-    producerObservationStartedAt: options.producerObservationStartedAt,
+    producerManifest: loadRepositoryIsolationProducerManifest(),
   });
   console.log(JSON.stringify(report, null, 2));
 }

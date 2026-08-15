@@ -1,4 +1,8 @@
-import type { ResolvedCompileProjectIdentity } from "./compile-project-identity.js";
+import {
+  COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION,
+  type ResolvedCompileProjectIdentity,
+} from "./compile-project-identity.js";
+import type { RepositoryIsolationProducerManifest } from "./repository-isolation-producer-manifest.js";
 import {
   type RepositoryClassification,
   type RepositoryEntityKind,
@@ -12,7 +16,7 @@ import {
   repositoryEntityKindValues,
 } from "./repository-scope.js";
 
-export const REPOSITORY_ISOLATION_REPORT_VERSION = 2 as const;
+export const REPOSITORY_ISOLATION_REPORT_VERSION = 3 as const;
 export const REPOSITORY_ISOLATION_PREVIEW_LIMIT_MAX = 20;
 export const REPOSITORY_ISOLATION_BASELINE_MIN_SAMPLE = 500;
 
@@ -22,6 +26,7 @@ export type RepositoryIsolationRunObservation = {
   durationMs: number;
   status: string;
   degradedReasons: string[];
+  scopeMode: "project" | "global_only";
   matchBasis: "project_ref" | "repo_key" | "repo_path" | "none";
   projectRef: string | null;
   repoKey: string | null;
@@ -99,6 +104,11 @@ export type RepositoryIsolationReport = {
   producerObservation: {
     requestedWindowDays: 7;
     minimumIdentityBearingEvents: 200;
+    manifestContractVersion: number | null;
+    manifestProfile: string | null;
+    manifestStatus: "missing" | RepositoryIsolationProducerManifest["status"];
+    manifestFinalizedAt: string | null;
+    manifestFingerprint: string | null;
     observationStartedAt: string | null;
     oldestIdentityBearingEventAt: string | null;
     observedDays: number;
@@ -119,6 +129,7 @@ export type RepositoryIsolationReport = {
     newUnresolvedCount: number;
     hasFullWindow: boolean;
     hasMinimumIdentityBearingEvents: boolean;
+    hasFinalizedManifest: boolean;
     hasCompleteEnabledProducerCoverage: boolean;
     completionCriteriaMet: boolean;
   };
@@ -181,13 +192,33 @@ function rate(numerator: number, denominator: number): number {
 }
 
 function runHasIdentity(run: RepositoryIsolationRunObservation): boolean {
-  return (
-    run.matchBasis !== "none" &&
-    (run.projectRef !== null || run.repoKey !== null || run.repoPath !== null)
-  );
+  if (
+    run.identityContractVersion !== COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION ||
+    run.scopeMode !== "project"
+  ) {
+    return false;
+  }
+  if (run.matchBasis === "project_ref") return run.projectRef !== null;
+  if (run.matchBasis === "repo_key") return run.repoKey !== null;
+  if (run.matchBasis === "repo_path") return run.repoPath !== null;
+  return false;
 }
 
 function runIdentity(run: RepositoryIsolationRunObservation): ResolvedCompileProjectIdentity {
+  if (!runHasIdentity(run)) {
+    return {
+      contractVersion: COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION,
+      scopeMode: "global_only",
+      matchBasis: "none",
+      matchValue: null,
+      projectRef: null,
+      repoKey: null,
+      repoPath: null,
+      identityFingerprint: null,
+      trust: "request_hint",
+      bindingStatus: "not_applicable",
+    };
+  }
   const matchValue =
     run.matchBasis === "project_ref"
       ? run.projectRef
@@ -197,9 +228,9 @@ function runIdentity(run: RepositoryIsolationRunObservation): ResolvedCompilePro
           ? run.repoPath
           : null;
   return {
-    contractVersion: 1,
-    scopeMode: matchValue === null ? "global_only" : "project",
-    matchBasis: matchValue === null ? "none" : run.matchBasis,
+    contractVersion: COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION,
+    scopeMode: "project",
+    matchBasis: run.matchBasis,
     matchValue,
     projectRef: run.projectRef,
     repoKey: run.repoKey,
@@ -323,8 +354,7 @@ function producerObservation(input: {
   events: RepositoryIdentityProducerEvent[];
   now: Date;
   newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
-  enabledProducers: string[];
-  observationStartedAt?: Date;
+  producerManifest?: RepositoryIsolationProducerManifest;
 }): RepositoryIsolationReport["producerObservation"] {
   const windowMs = 7 * 24 * 60 * 60 * 1000;
   const cutoff = input.now.getTime() - windowMs;
@@ -341,22 +371,29 @@ function producerObservation(input: {
   const rejected = events.filter(
     (event) => event.eventType === "PROJECT_IDENTITY_PRODUCER_REJECTED",
   );
-  const hasProducerMetadata = (event: RepositoryIdentityProducerEvent): boolean => {
+  const producerByName = new Map(
+    (input.producerManifest?.producers ?? []).map((producer) => [producer.name, producer]),
+  );
+  const producerContract = (event: RepositoryIdentityProducerEvent) => {
+    const producer =
+      typeof event.payload.producer === "string" ? event.payload.producer.trim() : "";
     const entityKind = event.payload.entityKind;
-    return (
-      typeof event.payload.producer === "string" &&
-      event.payload.producer.trim().length > 0 &&
+    const declared = producerByName.get(producer);
+    return declared &&
+      declared.disposition !== "disabled" &&
       (entityKind === "knowledge" ||
         entityKind === "source" ||
         entityKind === "episode" ||
         entityKind === "candidate" ||
-        entityKind === "vibe_memory")
-    );
+        entityKind === "vibe_memory") &&
+      declared.entityKinds.includes(entityKind)
+      ? declared
+      : null;
   };
-  const identityBearing = persisted.filter((event) => {
+  const validIdentityBearing = persisted.filter((event) => {
     const fingerprint = event.payload.identityFingerprint;
     return (
-      hasProducerMetadata(event) &&
+      producerContract(event) !== null &&
       event.payload.scope === "repo" &&
       (event.payload.matchBasis === "project_ref" ||
         event.payload.matchBasis === "repo_key" ||
@@ -367,32 +404,48 @@ function producerObservation(input: {
       /^[a-f0-9]{64}$/.test(fingerprint)
     );
   });
+  const identityBearing = validIdentityBearing.filter(
+    (event) => producerContract(event)?.disposition === "enabled",
+  );
   const globalPersisted = persisted.filter(
     (event) =>
-      hasProducerMetadata(event) &&
+      producerContract(event) !== null &&
       event.payload.scope === "global" &&
       event.payload.matchBasis === "none" &&
       event.payload.bindingStatus === "not_applicable" &&
       event.payload.identityFingerprint === null,
   );
   const malformedPersistedCount =
-    persisted.length - identityBearing.length - globalPersisted.length;
+    persisted.length - validIdentityBearing.length - globalPersisted.length;
   const oldestIdentityBearing = identityBearing.reduce<Date | null>(
     (oldest, event) => (!oldest || event.createdAt < oldest ? event.createdAt : oldest),
     null,
   );
+  const manifest = input.producerManifest;
+  const finalizedAt =
+    manifest &&
+    Number.isFinite(manifest.finalizedAt.getTime()) &&
+    manifest.finalizedAt.getTime() <= input.now.getTime()
+      ? manifest.finalizedAt
+      : null;
+  const hasFinalizedManifest = manifest?.status === "finalized" && finalizedAt !== null;
   const observationStartedAt =
-    input.observationStartedAt &&
-    Number.isFinite(input.observationStartedAt.getTime()) &&
-    input.observationStartedAt.getTime() <= input.now.getTime()
-      ? input.observationStartedAt
+    hasFinalizedManifest &&
+    finalizedAt !== null &&
+    manifest.observationStartedAt &&
+    Number.isFinite(manifest.observationStartedAt.getTime()) &&
+    manifest.observationStartedAt.getTime() >= finalizedAt.getTime() &&
+    manifest.observationStartedAt.getTime() <= input.now.getTime()
+      ? manifest.observationStartedAt
       : null;
   const observedDays = observationStartedAt
     ? Math.min(7, Math.max(0, (input.now.getTime() - observationStartedAt.getTime()) / 86_400_000))
     : 0;
   const hasFullWindow = observationStartedAt !== null && observationStartedAt.getTime() <= cutoff;
   const hasMinimumIdentityBearingEvents = identityBearing.length >= 200;
-  const enabledProducers = [...new Set(input.enabledProducers.map((value) => value.trim()))]
+  const enabledProducers = [
+    ...new Set((manifest?.enabledProducers ?? []).map((value) => value.trim())),
+  ]
     .filter(Boolean)
     .sort();
   const identityBearingProducerSet = new Set(
@@ -417,6 +470,11 @@ function producerObservation(input: {
   return {
     requestedWindowDays: 7,
     minimumIdentityBearingEvents: 200,
+    manifestContractVersion: manifest?.contractVersion ?? null,
+    manifestProfile: manifest?.profile ?? null,
+    manifestStatus: manifest?.status ?? "missing",
+    manifestFinalizedAt: finalizedAt?.toISOString() ?? null,
+    manifestFingerprint: manifest?.fingerprint ?? null,
     observationStartedAt: observationStartedAt?.toISOString() ?? null,
     oldestIdentityBearingEventAt: oldestIdentityBearing?.toISOString() ?? null,
     observedDays,
@@ -449,8 +507,10 @@ function producerObservation(input: {
     newUnresolvedCount,
     hasFullWindow,
     hasMinimumIdentityBearingEvents,
+    hasFinalizedManifest,
     hasCompleteEnabledProducerCoverage,
     completionCriteriaMet:
+      hasFinalizedManifest &&
       hasFullWindow &&
       hasMinimumIdentityBearingEvents &&
       hasCompleteEnabledProducerCoverage &&
@@ -470,8 +530,7 @@ export function buildRepositoryIsolationReport(input: {
   now?: Date;
   schemaCapabilities?: RepositoryIsolationSchemaCapabilities;
   producerEvents?: RepositoryIdentityProducerEvent[];
-  enabledProducers?: string[];
-  producerObservationStartedAt?: Date;
+  producerManifest?: RepositoryIsolationProducerManifest;
   newUnresolvedByEntity?: Record<RepositoryEntityKind, number>;
 }): RepositoryIsolationReport {
   const previewLimit = Math.min(
@@ -574,8 +633,7 @@ export function buildRepositoryIsolationReport(input: {
         source: 0,
         episode: 0,
       },
-      enabledProducers: input.enabledProducers ?? [],
-      observationStartedAt: input.producerObservationStartedAt,
+      producerManifest: input.producerManifest,
     }),
     baseline: buildBaseline(runs, input.now ?? new Date()),
   };

@@ -123,7 +123,7 @@ fn normalized(values: &[String]) -> Vec<String> {
         .collect()
 }
 
-fn intersects(left: &[String], right: &[String]) -> bool {
+pub(crate) fn facet_values_intersect(left: &[String], right: &[String]) -> bool {
     let right = normalized(right);
     normalized(left).iter().any(|value| right.contains(value))
 }
@@ -138,9 +138,9 @@ pub(crate) fn facets_allow(
     if request.is_empty() || general {
         return true;
     }
-    intersects(&request.technologies, candidate_technologies)
-        || intersects(&request.change_types, candidate_change_types)
-        || intersects(&request.domains, candidate_domains)
+    facet_values_intersect(&request.technologies, candidate_technologies)
+        || facet_values_intersect(&request.change_types, candidate_change_types)
+        || facet_values_intersect(&request.domains, candidate_domains)
 }
 
 pub(crate) fn json_string_array(value: &Value, key: &str) -> Vec<String> {

@@ -11,6 +11,7 @@ import type { KnowledgeStatus } from "../../shared/schemas/knowledge.schema.js";
 import {
   recordProjectScopedWritePersisted,
   resolveAuditedProjectScopedWriteIdentity,
+  storedProjectScopedIdentityMatches,
 } from "../context-compiler/project-scoped-write.js";
 import { computeDecayFactor } from "./knowledge-value.service.js";
 import {
@@ -330,7 +331,11 @@ export async function upsertKnowledgeFromSourceSqlite(
     .select()
     .from(sqliteKnowledgeItems)
     .all()
-    .find((row) => asRecord(row.metadata).sourceUri === params.sourceUri);
+    .find(
+      (row) =>
+        asRecord(row.metadata).sourceUri === params.sourceUri &&
+        storedProjectScopedIdentityMatches(row, identity),
+    );
   const id = existing?.id ?? crypto.randomUUID();
   repo.upsertKnowledgeItem({
     id,

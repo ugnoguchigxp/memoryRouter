@@ -2,10 +2,11 @@
 
 ## Status
 
-Status: implementation and enforced canary complete; producer observation and 24-hour/final audit gates pending.
+Status: implementation and controlled restart complete; producer observation and 24-hour/final audit gates pending.
 
-- Observation started: 2026-08-15 22:15 JST（2026-08-15T13:15Z）
-- Earliest 24-hour gate audit: 2026-08-16 22:15 JST（2026-08-16T13:15Z）
+- Current-build enforced canary and producer observation started: 2026-08-16 01:07:10 JST（2026-08-15T16:07:10Z）
+- Earliest 24-hour gate audit: 2026-08-17 01:07:10 JST（2026-08-16T16:07:10Z）
+- Earliest 7-day producer gate audit: 2026-08-23 01:07:10 JST（2026-08-22T16:07:10Z）
 - Active runtime: resident Rust `context-stilld`、12 Rust-native MCP tools、TypeScript sidecar 0
 - Effective database: `/Users/y.noguchi/Code/contextStill/data/context-still-core.sqlite`
 
@@ -97,9 +98,11 @@ path case、malformed percent encoding、selected-basis欠落、limit saturation
 
 ## Producer Observation
 
-producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定にはdurable write後のPERSISTEDだけを使用する。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。reportは`--enabled-producers`で宣言した全producerの観測と、manifest確定後に保存して`--producer-observation-started-at`へ渡す開始時刻を要求する。manifestまたは開始時刻の省略、空manifest、未観測producerありをfail closedにし、最古eventの時刻だけでは7日経過と判定しない。
+producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定にはdurable write後のPERSISTEDだけを使用する。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。
 
-明示的な`observationStartedAt`を追加してcompletion semanticsを変更したため、report schemaはversion 2とする。
+enabled producerと観測開始時刻は任意CLI引数から除去し、[versioned resident-local manifest](../../shared/fixtures/repository-isolation-producer-manifest-v1.json)を唯一の入力にした。manifest fingerprint、status、finalizedAtをreport version 3へ保存し、manifest欠落、draft、開始時刻NULL、未観測producerありをfail closedにする。200件の母数はmanifest上のenabled producerが宣言どおりのentity kindへ行ったPERSISTEDだけとし、maintenance-onlyは母数外、未知・disabled・entity不一致はmalformedとする。最古eventの時刻だけでは7日経過と判定しない。
+
+明示的な`observationStartedAt`でversion 2へ、versioned manifestを唯一の根拠とする変更でversion 3へ更新した。
 
 2026-08-15 22:35 JSTのlive read-only audit結果:
 
@@ -108,9 +111,11 @@ producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定
 | legacy `PROJECT_IDENTITY_PRODUCER_ACCEPTED` | 5 | completion対象外 |
 | `PROJECT_IDENTITY_PRODUCER_PERSISTED` | 0 | 7-day/200-event window未開始 |
 
-resident-onlyの暫定manifest（`agent-log-sync.rust`、`episode-distiller.rust`、`register-candidates.rust`）でreportを実行すると、missing 3、coverage 0、completion falseとなる。TypeScript/API/maintenance surfaceを含む最終manifestはruntime reachability分類後に確定する。
+2026-08-16 01:09 JSTのcurrent-build restart後auditでは、schema capabilityはすべてtrue、recent run mismatchは0、new unresolvedは0だった。観測開始直後のためPERSISTEDは0、enabled coverageは0/3、completionは期待どおりfalseである。
 
-残作業はruntime active、maintenance-only、test-only、disabledのproducer inventoryを確定し、active名をmanifestへ保存し、その確定時刻を観測開始時刻として固定したうえで、7日以上・identity-bearing PERSISTED 200件以上・coverage 100%・new unresolved 0を実観測することである。同一の開始時刻を各reportで使用し、人工的なfixture writeをlive completion countへ含めない。
+resident-local manifestは`agent-log-sync.rust`、`episode-distiller.rust`、`register-candidates.rust`をenabledとして確定した。TypeScript/API writerはmaintenance-onlyとして同じmanifestへ列挙し、resident completion countには含めないが、write contract testの対象からは外さない。
+
+2026-08-16 01:07:10 JSTに対象buildのcontrolled restart、MCP smoke、single-writer ownership確認を完了し、その安全確認完了時刻をmanifestの`observationStartedAt`へ固定した。旧finding/covering worker LaunchAgentもunload済みで、Rust residentだけがlive queue/write ownerである。この時刻から7日以上・identity-bearing PERSISTED 200件以上・coverage 100%・new unresolved 0を実観測する。人工的なfixture writeをlive completion countへ含めない。
 
 ## Verification
 
@@ -127,6 +132,8 @@ resident-onlyの暫定manifest（`agent-log-sync.rust`、`episode-distiller.rust
 - `bun run mcp:smoke:sqlite`: pass against resident port 39172
 - `bun run docs:check-links`: pass
 
+2026-08-16のcurrent-build code review後にも、`bun run verify`、`cargo test -p context-stilld`（246 passed）、`cargo clippy -p context-stilld --all-targets -- -D warnings`、SQLite backfill/report/runtime/knowledgeのfocused testsを再実行し、すべてpassした。controlled restart後の`CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon`とlive MCP smokeもpassし、旧queue、finding、covering、agent-log-sync LaunchAgentがすべてunload済みであることを確認した。
+
 最初の`bun run verify` rerunで、repoPathをrepoKeyへ派生しなくなった新contractに対する旧test expectationを1件検出し、expectationをcanonical repoPathへ修正した。修正後の全gateはpassした。24-hour observation終了時にも同じcommandを再実行する。
 
 ## Archive Checklist
@@ -140,7 +147,8 @@ resident-onlyの暫定manifest（`agent-log-sync.rust`、`episode-distiller.rust
 - [x] negative smoke, Availability Gate, Performance Gate
 - [x] live backup, write, post-write idempotence, integrity check
 - [x] enforced comparison cohort accepted as documented shadow deviation
-- [ ] enabled producer inventory/manifest is fixed
+- [x] enabled producer inventory/manifest is fixed
+- [x] PERSISTED-capable resident build is deployed and observationStartedAt is fixed
 - [ ] 7 days、identity-bearing PERSISTED 200件、enabled coverage 100%、new unresolved 0
 - [ ] 24 hours elapsed with no Safety Gate violation
 - [ ] final read-only audit and `bun run verify` closeout rerun

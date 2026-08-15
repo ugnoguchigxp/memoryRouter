@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type SqliteCoreDatabase, openSqliteCoreDatabase } from "../src/db/sqlite/client.js";
+import type { RepositoryIsolationProducerManifest } from "../src/modules/context-compiler/repository-isolation-producer-manifest.js";
 import { collectRepositoryIsolationReportFromSqlite } from "../src/modules/context-compiler/repository-isolation-report.repository.js";
 
 type FixtureCandidate = {
@@ -260,8 +261,23 @@ describe("SQLite repository isolation read-only report", () => {
 
     const report = collectRepositoryIsolationReportFromSqlite({
       db: database.db,
-      enabledProducers: ["source.boundary-fixture"],
-      producerObservationStartedAt: observationStartedAt,
+      producerManifest: {
+        contractVersion: 1,
+        profile: "resident-local",
+        status: "finalized",
+        finalizedAt: new Date("2026-08-08T11:00:00.000Z"),
+        observationStartedAt,
+        fingerprint: "f".repeat(64),
+        producers: [
+          {
+            name: "source.boundary-fixture",
+            disposition: "enabled",
+            runtime: "resident",
+            entityKinds: ["source"],
+          },
+        ],
+        enabledProducers: ["source.boundary-fixture"],
+      } satisfies RepositoryIsolationProducerManifest,
       now,
     });
 

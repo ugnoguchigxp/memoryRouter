@@ -48,10 +48,8 @@ export async function openSqliteCoreDatabase(input: {
   path: string;
   vectorDimension?: number;
   loadVectorExtension?: boolean;
-  /** Reserved for guarded offline maintenance commands while the resident writer is stopped. */
-  directWrite?: boolean;
 }): Promise<SqliteCoreDatabase> {
-  if (!input.directWrite && !isDirectWriteTestRuntime()) {
+  if (!isDirectWriteTestRuntime()) {
     const sqlite = await import("bun:sqlite");
     const readOnly = new sqlite.Database(input.path, {
       readonly: true,
@@ -72,7 +70,9 @@ export async function openSqliteCoreDatabase(input: {
 
   await mkdir(path.dirname(input.path), { recursive: true });
   const sqlite = await import("bun:sqlite");
-  const db = new sqlite.Database(input.path, { create: true }) as BunSqliteDatabase;
+  const db = new sqlite.Database(input.path, {
+    create: true,
+  }) as BunSqliteDatabase;
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA busy_timeout = 5000;");
   db.exec("PRAGMA journal_mode = WAL;");

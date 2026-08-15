@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { realpath, stat } from "node:fs/promises";
+import path from "node:path";
 import { eq, sql } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { db } from "../../db/index.js";
@@ -121,7 +123,11 @@ function globalPromotionReview(
       decision.entityKind === kind && decision.entityId === id && decision.decision === "global",
   );
   return review
-    ? { reviewer: review.reviewer, reason: review.reason, reviewedAt: review.reviewedAt }
+    ? {
+        reviewer: review.reviewer,
+        reason: review.reason,
+        reviewedAt: review.reviewedAt,
+      }
     : undefined;
 }
 
@@ -251,18 +257,27 @@ async function collectPostgresData(
   const episodeRows = episodeRaw.map((row) => toBackfillRow(row, "episode", input));
   const provenance = new Map<string, RepositoryIdentityProvenance[]>();
 
-  for (const row of targetResult.rows as Array<{ knowledge_ids: unknown; metadata: unknown }>) {
+  for (const row of targetResult.rows as Array<{
+    knowledge_ids: unknown;
+    metadata: unknown;
+  }>) {
     for (const knowledgeId of array(row.knowledge_ids)) {
       if (typeof knowledgeId === "string") {
         addProvenance(provenance, knowledgeId, "distillation_target_state", [row.metadata]);
       }
     }
   }
-  for (const row of finalResult.rows as Array<{ entity_id: string; provenance: unknown }>) {
+  for (const row of finalResult.rows as Array<{
+    entity_id: string;
+    provenance: unknown;
+  }>) {
     addProvenance(provenance, row.entity_id, "cover_evidence_chain", row.provenance);
   }
   const legacyCover = new Map<string, unknown>();
-  for (const row of legacyCoverResult.rows as Array<{ cover_id: string; provenance: unknown }>) {
+  for (const row of legacyCoverResult.rows as Array<{
+    cover_id: string;
+    provenance: unknown;
+  }>) {
     legacyCover.set(row.cover_id, row.provenance);
   }
   for (const row of knowledgeRaw) {
@@ -641,7 +656,7 @@ function applySqlitePlan(
   return { updatedCount, auditInsertedCount };
 }
 
-function requireWriteSafety(input: RunRepositoryIdentityBackfillInput, checksum: string): void {
+function requireWriteInputs(input: RunRepositoryIdentityBackfillInput): void {
   if (!input.backupReference?.trim()) {
     throw new Error(
       "write mode requires --backup-reference for a verified offline backup or snapshot",
@@ -650,6 +665,10 @@ function requireWriteSafety(input: RunRepositoryIdentityBackfillInput, checksum:
   if (!input.expectedChecksum?.trim()) {
     throw new Error("write mode requires the checksum from a reviewed dry-run");
   }
+}
+
+function requireWriteSafety(input: RunRepositoryIdentityBackfillInput, checksum: string): void {
+  requireWriteInputs(input);
   if (input.expectedChecksum !== checksum) {
     throw new Error(
       `backfill plan checksum changed: expected ${input.expectedChecksum}, received ${checksum}`,
@@ -672,6 +691,61 @@ function requireWriteSafety(input: RunRepositoryIdentityBackfillInput, checksum:
   }
 }
 
+async function requireSeparateSqliteBackupReference(
+  sqlitePath: string,
+  backupReference: string,
+): Promise<void> {
+  if (path.resolve(backupReference) === path.resolve(sqlitePath)) {
+    throw new Error("SQLite backup reference must not be the target database path");
+  }
+  try {
+    const [targetRealPath, backupRealPath, targetStat, backupStat] = await Promise.all([
+      realpath(sqlitePath),
+      realpath(backupReference),
+      stat(sqlitePath),
+      stat(backupReference),
+    ]);
+    if (
+      targetRealPath === backupRealPath ||
+      (targetStat.dev === backupStat.dev && targetStat.ino === backupStat.ino)
+    ) {
+      throw new Error("SQLite backup reference must not resolve to the target database file");
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("SQLite backup reference")) throw error;
+    // A backup reference may be an external snapshot identifier rather than a local file.
+  }
+}
+
+function isValidIsoTimestamp(value: string): boolean {
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value,
+    );
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = Number(match[7] ?? 0);
+  const offsetMinute = Number(match[8] ?? 0);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return (
+    month >= 1 &&
+    month <= 12 &&
+    day >= 1 &&
+    day <= daysInMonth &&
+    hour <= 23 &&
+    minute <= 59 &&
+    second <= 59 &&
+    offsetHour <= 23 &&
+    offsetMinute <= 59 &&
+    Number.isFinite(new Date(value).getTime())
+  );
+}
+
 function validateReviewDecisions(input: RunRepositoryIdentityBackfillInput): void {
   const seen = new Set<string>();
   for (const decision of input.reviewDecisions ?? []) {
@@ -681,7 +755,7 @@ function validateReviewDecisions(input: RunRepositoryIdentityBackfillInput): voi
     if (!decision.entityId.trim() || !decision.reviewer.trim() || !decision.reason.trim()) {
       throw new Error(`review decision requires entityId, reviewer, and reason: ${key}`);
     }
-    if (Number.isNaN(new Date(decision.reviewedAt).getTime())) {
+    if (!isValidIsoTimestamp(decision.reviewedAt)) {
       throw new Error(`review decision has invalid reviewedAt: ${key}`);
     }
   }
@@ -726,8 +800,11 @@ export async function runRepositoryIdentityBackfill(
 ): Promise<RepositoryIdentityBackfillSummary> {
   const mode = input.mode ?? "dry-run";
   validateReviewDecisions(input);
+  if (mode === "write") requireWriteInputs(input);
   const batchSize = Math.min(1000, Math.max(1, Math.trunc(input.batchSize ?? 200)));
-  const backendConfig = resolveDatabaseBackendConfig({ sqlitePath: input.sqlitePath });
+  const backendConfig = resolveDatabaseBackendConfig({
+    sqlitePath: input.sqlitePath,
+  });
   if (backendConfig.kind === "postgres") {
     const data = await collectPostgresData(input);
     const plan = planRepositoryIdentityBackfill(data);
@@ -761,10 +838,15 @@ export async function runRepositoryIdentityBackfill(
   }
 
   if (!backendConfig.sqlitePath) throw new Error("SQLite path is required");
+  if (mode === "write") {
+    await requireSeparateSqliteBackupReference(
+      backendConfig.sqlitePath,
+      input.backupReference?.trim() ?? "",
+    );
+  }
   const sqlite = await openSqliteCoreDatabase({
     path: backendConfig.sqlitePath,
     loadVectorExtension: false,
-    directWrite: mode === "write",
   });
   try {
     const data = collectSqliteData(sqlite, input);

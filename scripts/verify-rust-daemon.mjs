@@ -292,7 +292,14 @@ async function runLiveOwnershipCheck() {
     process.exit(1);
   }
 
-  for (const label of ["com.context-still.queue-supervisor", "com.context-still.agent-log-sync"]) {
+  for (const label of [
+    "com.context-still.queue-supervisor",
+    "com.context-still.finding-worker",
+    "com.context-still.covering-worker",
+    "com.context-still.agent-log-sync",
+    "com.memory-router.queue-supervisor",
+    "com.memory-router.agent-log-sync",
+  ]) {
     const legacy = await runCommand(["launchctl", "print", `${guiDomain}/${label}`]);
     if (legacy.code === 0) {
       console.error("[verify:rust-daemon] live ownership check failed");

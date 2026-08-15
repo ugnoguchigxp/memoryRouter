@@ -23,6 +23,7 @@ import {
   type RepositoryIsolationSchemaCapabilities,
   buildRepositoryIsolationReport,
 } from "./repository-isolation-report.js";
+import type { RepositoryIsolationProducerManifest } from "./repository-isolation-producer-manifest.js";
 import type {
   RepositoryEntityKind,
   RepositoryFacets,
@@ -53,6 +54,7 @@ type RawRun = {
   durationMs: unknown;
   status: unknown;
   degradedReasons: unknown;
+  scopeMode: unknown;
   matchBasis: unknown;
   projectRef: unknown;
   repoKey: unknown;
@@ -137,6 +139,15 @@ function runMatchBasis(value: unknown): RepositoryIsolationRunObservation["match
   return "none";
 }
 
+function runScopeMode(value: unknown): RepositoryIsolationRunObservation["scopeMode"] {
+  return value === "project" ? "project" : "global_only";
+}
+
+function identityContractVersion(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function outputMarkdownKind(value: unknown): "narrative" | "no-content" | null {
   const pack = asRecord(parseJson(value));
   const diagnostics = asRecord(pack.diagnostics);
@@ -182,11 +193,12 @@ function normalizeRuns(
     durationMs: Math.max(0, Number(run.durationMs) || 0),
     status: stringOrNull(run.status) ?? "unknown",
     degradedReasons: stringArray(parseJson(run.degradedReasons)),
+    scopeMode: runScopeMode(run.scopeMode),
     matchBasis: runMatchBasis(run.matchBasis),
     projectRef: stringOrNull(run.projectRef),
     repoKey: stringOrNull(run.repoKey),
     repoPath: stringOrNull(run.repoPath),
-    identityContractVersion: Math.max(1, Number(run.identityContractVersion) || 1),
+    identityContractVersion: identityContractVersion(run.identityContractVersion),
     outputMarkdownKind: outputMarkdownKind(run.packSnapshot),
     selectedIdsByEntity: selectedByRun.get(run.id) ?? {
       knowledge: [],
@@ -246,9 +258,12 @@ function sqliteSchemaCapabilities(db: SqliteReader): RepositoryIsolationSchemaCa
       episode: entity("episode_cards"),
     },
     runIdentity:
+      runColumns.has("scope_mode") &&
       runColumns.has("match_basis") &&
       runColumns.has("identity_contract_version") &&
-      (runColumns.has("project_ref") || runColumns.has("repo_key") || runColumns.has("repo_path")),
+      runColumns.has("project_ref") &&
+      runColumns.has("repo_key") &&
+      runColumns.has("repo_path"),
     identityAliases: sqliteTableExists(db, "project_identity_aliases"),
   };
 }
@@ -390,6 +405,7 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
               ${sqliteColumn(runColumns, "duration_ms", "0")},
               ${sqliteColumn(runColumns, "status", "'unknown'")},
               ${sqliteColumn(runColumns, "degraded_reasons", "'[]'")},
+              ${sqliteColumn(runColumns, "scope_mode", "'global_only'")},
               ${sqliteColumn(runColumns, "match_basis", "'none'")},
               ${sqliteColumn(runColumns, "project_ref", "null")},
               ${sqliteColumn(runColumns, "repo_key", "null")},
@@ -398,7 +414,7 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
                   ? sqliteColumn(runColumns, "repo_path", "null")
                   : "null as repo_path"
               },
-              ${sqliteColumn(runColumns, "identity_contract_version", "1")},
+              ${sqliteColumn(runColumns, "identity_contract_version", "0")},
               ${sqliteColumn(runColumns, "pack_snapshot", "null")}
          from context_compile_runs
         where ${sqliteTimestampMillis("created_at")} >= ?`,
@@ -411,6 +427,7 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
         durationMs: row.duration_ms,
         status: row.status,
         degradedReasons: row.degraded_reasons,
+        scopeMode: row.scope_mode,
         matchBasis: row.match_basis,
         projectRef: row.project_ref,
         repoKey: row.repo_key,
@@ -505,8 +522,7 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
   requestFacets?: RepositoryFacets;
   previewLimit?: number;
   recentRunLimit?: number;
-  enabledProducers?: string[];
-  producerObservationStartedAt?: Date;
+  producerManifest?: RepositoryIsolationProducerManifest;
   now?: Date;
 }): RepositoryIsolationReport {
   const now = input.now ?? new Date();
@@ -524,8 +540,7 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
     requestFacets: input.requestFacets,
     previewLimit: input.previewLimit,
     recentRunLimit: input.recentRunLimit,
-    enabledProducers: input.enabledProducers,
-    producerObservationStartedAt: input.producerObservationStartedAt,
+    producerManifest: input.producerManifest,
     now,
     schemaCapabilities: sqliteSchemaCapabilities(input.db),
   });
@@ -602,6 +617,7 @@ async function collectPostgresData(now: Date): Promise<{
           durationMs: contextCompileRuns.durationMs,
           status: contextCompileRuns.status,
           degradedReasons: contextCompileRuns.degradedReasons,
+          scopeMode: contextCompileRuns.scopeMode,
           matchBasis: contextCompileRuns.matchBasis,
           projectRef: contextCompileRuns.projectRef,
           repoKey: contextCompileRuns.repoKey,
@@ -721,8 +737,7 @@ export async function collectRepositoryIsolationReport(
     requestFacets?: RepositoryFacets;
     previewLimit?: number;
     recentRunLimit?: number;
-    enabledProducers?: string[];
-    producerObservationStartedAt?: Date;
+    producerManifest?: RepositoryIsolationProducerManifest;
     now?: Date;
   } = {},
 ): Promise<RepositoryIsolationReport> {
@@ -739,7 +754,9 @@ export async function collectRepositoryIsolationReport(
   }
   const data = await collectPostgresData(now);
   const requestIdentity = input.identityInput
-    ? resolveCompileProjectIdentity(input.identityInput, { aliases: data.aliases })
+    ? resolveCompileProjectIdentity(input.identityInput, {
+        aliases: data.aliases,
+      })
     : undefined;
   return buildRepositoryIsolationReport({
     backend: "postgres",
@@ -751,8 +768,7 @@ export async function collectRepositoryIsolationReport(
     requestFacets: input.requestFacets,
     previewLimit: input.previewLimit,
     recentRunLimit: input.recentRunLimit,
-    enabledProducers: input.enabledProducers,
-    producerObservationStartedAt: input.producerObservationStartedAt,
+    producerManifest: input.producerManifest,
     now,
   });
 }

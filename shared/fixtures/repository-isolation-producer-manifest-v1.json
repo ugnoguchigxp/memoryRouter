@@ -1,0 +1,142 @@
+{
+  "contractVersion": 1,
+  "profile": "resident-local",
+  "status": "finalized",
+  "finalizedAt": "2026-08-15T15:42:29.000Z",
+  "observationStartedAt": "2026-08-15T16:07:10.000Z",
+  "producers": [
+    {
+      "name": "agent-log-sync.rust",
+      "disposition": "enabled",
+      "runtime": "resident",
+      "entityKinds": ["vibe_memory"],
+      "reason": "The resident daemon schedules Rust agent-log-sync by default."
+    },
+    {
+      "name": "episode-distiller.rust",
+      "disposition": "enabled",
+      "runtime": "resident",
+      "entityKinds": ["episode"],
+      "reason": "The resident queue executor owns EpisodeCard persistence."
+    },
+    {
+      "name": "register-candidates.rust",
+      "disposition": "enabled",
+      "runtime": "resident",
+      "entityKinds": ["candidate"],
+      "reason": "The resident Rust MCP server owns register_candidates."
+    },
+    {
+      "name": "agent-log-sync.typescript",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["vibe_memory"],
+      "reason": "The TypeScript CLI remains callable but is not resident-owned."
+    },
+    {
+      "name": "episode-distiller.typescript",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["episode"],
+      "reason": "The TypeScript worker is retained for maintenance compatibility."
+    },
+    {
+      "name": "register-candidate.typescript",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["candidate"],
+      "reason": "The TypeScript MCP implementation is not the resident tool owner."
+    },
+    {
+      "name": "knowledge.api-create",
+      "disposition": "maintenance_only",
+      "runtime": "api",
+      "entityKinds": ["knowledge"],
+      "reason": "The optional TypeScript API can create Knowledge."
+    },
+    {
+      "name": "knowledge.api-update",
+      "disposition": "maintenance_only",
+      "runtime": "api",
+      "entityKinds": ["knowledge"],
+      "reason": "The optional TypeScript API can update Knowledge."
+    },
+    {
+      "name": "knowledge.register-markdown",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["knowledge"],
+      "reason": "Markdown registration is an explicit maintenance/import operation."
+    },
+    {
+      "name": "knowledge.upsert-from-source",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["knowledge"],
+      "reason": "This is the default TypeScript Knowledge repository producer."
+    },
+    {
+      "name": "source.upsert-document",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["source"],
+      "reason": "Source import and API paths use this TypeScript repository producer."
+    },
+    {
+      "name": "finalize-distille",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["knowledge"],
+      "reason": "Finalization is an explicit TypeScript maintenance pipeline."
+    },
+    {
+      "name": "vibe-memory.capture",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["vibe_memory"],
+      "reason": "Direct TypeScript capture is not scheduled by the resident profile."
+    },
+    {
+      "name": "vibe-memory.legacy-capture",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["vibe_memory"],
+      "reason": "The legacy capture repository remains reachable only through compatibility code."
+    },
+    {
+      "name": "episode.vibe_memory",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["episode"],
+      "reason": "Default TypeScript EpisodeCard producer for vibe-memory input."
+    },
+    {
+      "name": "episode.compile_run",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["episode"],
+      "reason": "Default TypeScript EpisodeCard producer for compile-run input."
+    },
+    {
+      "name": "episode.decision_run",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["episode"],
+      "reason": "Default TypeScript EpisodeCard producer for decision-run input."
+    },
+    {
+      "name": "episode.audit_log",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["episode"],
+      "reason": "Default TypeScript EpisodeCard producer for audit-log input."
+    },
+    {
+      "name": "episode.manual",
+      "disposition": "maintenance_only",
+      "runtime": "typescript",
+      "entityKinds": ["episode"],
+      "reason": "Default TypeScript EpisodeCard producer for manual input."
+    }
+  ]
+}

@@ -14,10 +14,22 @@ const legacyQueuePlist = "com.context-still.queue-supervisor.plist";
 const legacyQueueLabel = "com.context-still.queue-supervisor";
 const legacyMemoryRouterQueuePlist = "com.memory-router.queue-supervisor.plist";
 const legacyMemoryRouterQueueLabel = "com.memory-router.queue-supervisor";
+const legacyFindingWorkerPlist = "com.context-still.finding-worker.plist";
+const legacyFindingWorkerLabel = "com.context-still.finding-worker";
+const legacyCoveringWorkerPlist = "com.context-still.covering-worker.plist";
+const legacyCoveringWorkerLabel = "com.context-still.covering-worker";
 const legacyAgentLogSyncPlist = "com.context-still.agent-log-sync.plist";
 const legacyAgentLogSyncLabel = "com.context-still.agent-log-sync";
 const legacyMemoryRouterAgentLogSyncPlist = "com.memory-router.agent-log-sync.plist";
 const legacyMemoryRouterAgentLogSyncLabel = "com.memory-router.agent-log-sync";
+const legacyOwnerEntries = [
+  [legacyQueuePlist, legacyQueueLabel],
+  [legacyMemoryRouterQueuePlist, legacyMemoryRouterQueueLabel],
+  [legacyFindingWorkerPlist, legacyFindingWorkerLabel],
+  [legacyCoveringWorkerPlist, legacyCoveringWorkerLabel],
+  [legacyAgentLogSyncPlist, legacyAgentLogSyncLabel],
+  [legacyMemoryRouterAgentLogSyncPlist, legacyMemoryRouterAgentLogSyncLabel],
+] as const;
 
 function isDarwin(): boolean {
   return process.platform === "darwin";
@@ -60,7 +72,7 @@ function terminateDetachedQueueSupervisors(): void {
     try {
       const output = execFileSync("pgrep", [
         "-f",
-        "bun run src/cli/queue-supervisor.ts --continuous --limit 1",
+        "bun run src/cli/queue-supervisor.ts --continuous",
       ]);
       for (const rawPid of output
         .toString()
@@ -190,14 +202,9 @@ function install(): void {
   console.log(`installed: ${target}`);
 }
 
-function unloadLegacyQueueOwners(): void {
+function unloadLegacyOwners(): void {
   const uid = getUid();
-  for (const item of [
-    [legacyQueuePlist, legacyQueueLabel],
-    [legacyMemoryRouterQueuePlist, legacyMemoryRouterQueueLabel],
-    [legacyAgentLogSyncPlist, legacyAgentLogSyncLabel],
-    [legacyMemoryRouterAgentLogSyncPlist, legacyMemoryRouterAgentLogSyncLabel],
-  ] as const) {
+  for (const item of legacyOwnerEntries) {
     const [legacyPlist, legacyLabel] = item;
     const target = path.resolve(launchAgentsDir, legacyPlist);
     launchctlQuiet("bootout", `gui/${uid}`, target);
@@ -211,12 +218,12 @@ function loadJob(): void {
   if (!existsSync(target)) install();
   const uid = getUid();
   launchctlQuiet("bootout", `gui/${uid}`, target);
-  unloadLegacyQueueOwners();
+  unloadLegacyOwners();
   terminateDetachedQueueSupervisors();
   launchctl("bootstrap", `gui/${uid}`, target);
   console.log(`loaded: ${label}`);
-  console.log(`unloaded legacy queue owner: ${legacyQueueLabel}`);
-  console.log(`unloaded legacy agent-log-sync owner: ${legacyAgentLogSyncLabel}`);
+  console.log("unloaded legacy queue owners");
+  console.log("unloaded legacy agent-log-sync owners");
 }
 
 function unloadJob(): void {
@@ -225,6 +232,7 @@ function unloadJob(): void {
   const uid = getUid();
   launchctlQuiet("bootout", `gui/${uid}`, target);
   launchctlQuiet("bootout", `gui/${uid}/${label}`);
+  unloadLegacyOwners();
   terminateDetachedQueueSupervisors();
   console.log(`unloaded: ${label}`);
 }
@@ -265,12 +273,7 @@ function status(): void {
     );
   }
 
-  for (const legacyLabel of [
-    legacyQueueLabel,
-    legacyMemoryRouterQueueLabel,
-    legacyAgentLogSyncLabel,
-    legacyMemoryRouterAgentLogSyncLabel,
-  ]) {
+  for (const [, legacyLabel] of legacyOwnerEntries) {
     try {
       execFileSync("launchctl", ["print", `gui/${getUid()}/${legacyLabel}`], {
         encoding: "utf8",

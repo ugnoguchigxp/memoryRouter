@@ -2,14 +2,14 @@
 
 ## Status And Decision
 
-Status: implementation, migration, and enforced canary complete; producer observation and final time-based closeout gates pending.
+Status: implementation, migration, and initial enforced canary complete; current-build producer/24-hour observations and final time-based closeout gates pending.
 
 Implementation snapshot (2026-08-15):
 
 - Caller identity、producer contract、usage-weighted migration、Rust/TypeScript retrieval enforcement、minimal replay compatibilityは実装・検証済みである。
 - resident Rust daemonは対象buildへ更新済みで、normal local profileはfail-closed contractを使用している。
 - identity-present canary 50件とnegative smokeはSafety/Availability/Performance Gateを通過した。
-- 24-hour enforced observationは2026-08-15 22:15 JSTに開始した。2026-08-16 22:15 JSTより前にcloseoutしない。
+- code review後の対象buildを2026-08-16 01:07:10 JSTにcontrolled restartした。この時刻から24-hour enforced observationと7-day producer observationを開始し、24-hour gateは2026-08-17 01:07:10 JST、7-day gateは2026-08-23 01:07:10 JSTより前にcloseoutしない。
 - live auditには旧`PROJECT_IDENTITY_PRODUCER_ACCEPTED`が5件あるだけで、durable `PERSISTED`はまだ0件である。enabled producer manifest、7日、identity-bearing PERSISTED 200件、new unresolved 0のgateが別途残る。
 - planned shadowを経ずに50-call enforced cohortへ進んだため、直前50 runとのavailability/performance比較とhard-zero safety auditを代替evidenceとする。このdeviationは[Closeout Evidence](context-compile-repository-isolation-closeout-evidence.md)へ明記する。
 - 実行証拠と残る時間条件は[Closeout Evidence](context-compile-repository-isolation-closeout-evidence.md)を正本とする。
@@ -233,12 +233,12 @@ Implemented draft corrections:
 
 - Rust/TypeScript agent log syncの`projectName -> repoKey`伝播を除去した。
 - markdown importerのimport directoryとproject rootの同一視を除去し、relative project rootを拒否する。
-- producer observationはdurable `PERSISTED`だけを数える。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。`--enabled-producers` manifestの省略、空、未観測producerあり、および`--producer-observation-started-at`の省略はすべてcompletion falseとする。7日経過はevent timestampから推定せず、manifest確定後に保存した明示的な開始時刻から判定する。
+- producer observationはdurable `PERSISTED`だけを数える。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。enabled producerと開始時刻はversioned resident-local manifestだけから読み、manifest欠落、draft、開始時刻NULL、未観測producerありはすべてcompletion falseとする。7日経過はevent timestampから推定しない。
 
 Operational follow-up:
 
-- active runtimeからproducer listを再取得し、runtime active、maintenance-only、test-only、disabledを分類する。
-- runtime activeなproducer名とmanifest確定時刻を`repository-isolation:report --enabled-producers <comma-separated names> --producer-observation-started-at <ISO-8601 timestamp>`へ渡し、同じ開始時刻を継続使用して7日・200件・coverage 100%を確認する。
+- active runtimeからproducer listを再取得し、runtime active、maintenance-only、test-only、disabledを分類済みである。
+- runtime activeなproducer名をversioned resident-local manifestで固定し、2026-08-16 01:07:10 JSTのcontrolled restart後に`observationStartedAt`を保存した。この時刻から7日・200件・coverage 100%を確認する。
 
 ### P2: Usage-Weighted Migration
 

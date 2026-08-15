@@ -1,4 +1,5 @@
-import { copyFile, mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, mkdtemp, rm, symlink } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -22,7 +23,10 @@ describe("repository identity SQLite migration", () => {
     previousBackend = process.env.CONTEXT_STILL_DB_BACKEND;
     process.env.CONTEXT_STILL_DB_BACKEND = "sqlite";
 
-    const sqlite = await openSqliteCoreDatabase({ path: sqlitePath, loadVectorExtension: false });
+    const sqlite = await openSqliteCoreDatabase({
+      path: sqlitePath,
+      loadVectorExtension: false,
+    });
     sqlite.db
       .query(
         `insert into knowledge_items
@@ -80,10 +84,20 @@ describe("repository identity SQLite migration", () => {
   });
 
   test("dry-run is deterministic, write is guarded and idempotent, and backup restores", async () => {
-    const first = await runRepositoryIdentityBackfill({ mode: "dry-run", sqlitePath });
-    const second = await runRepositoryIdentityBackfill({ mode: "dry-run", sqlitePath });
+    const first = await runRepositoryIdentityBackfill({
+      mode: "dry-run",
+      sqlitePath,
+    });
+    const second = await runRepositoryIdentityBackfill({
+      mode: "dry-run",
+      sqlitePath,
+    });
     expect(second.checksum).toBe(first.checksum);
-    expect(first.counts).toMatchObject({ backfilled: 3, unresolved: 0, unchanged: 1 });
+    expect(first.counts).toMatchObject({
+      backfilled: 3,
+      unresolved: 0,
+      unchanged: 1,
+    });
     await expect(runRepositoryIdentityBackfill({ mode: "write", sqlitePath })).rejects.toThrow(
       "backup-reference",
     );
@@ -100,9 +114,15 @@ describe("repository identity SQLite migration", () => {
     expect(written.updatedCount).toBe(3);
     expect(written.auditInsertedCount).toBe(4);
 
-    const rerun = await runRepositoryIdentityBackfill({ mode: "dry-run", sqlitePath });
+    const rerun = await runRepositoryIdentityBackfill({
+      mode: "dry-run",
+      sqlitePath,
+    });
     expect(rerun.decisions.every((item) => !item.changed)).toBe(true);
-    const sqlite = await openSqliteCoreDatabase({ path: sqlitePath, loadVectorExtension: false });
+    const sqlite = await openSqliteCoreDatabase({
+      path: sqlitePath,
+      loadVectorExtension: false,
+    });
     expect(
       sqlite.db
         .query<{ count: number }>(
@@ -116,11 +136,17 @@ describe("repository identity SQLite migration", () => {
           "select classification_status, repo_path from knowledge_items where id = 'knowledge-exact'",
         )
         .get(),
-    ).toEqual({ classification_status: "classified", repo_path: "/work/repo-a" });
+    ).toEqual({
+      classification_status: "classified",
+      repo_path: "/work/repo-a",
+    });
     sqlite.db.close();
 
     await copyFile(backupPath, sqlitePath);
-    const restored = await openSqliteCoreDatabase({ path: sqlitePath, loadVectorExtension: false });
+    const restored = await openSqliteCoreDatabase({
+      path: sqlitePath,
+      loadVectorExtension: false,
+    });
     expect(
       restored.db
         .query<{ classification_status: string }>(
@@ -129,6 +155,56 @@ describe("repository identity SQLite migration", () => {
         .get()?.classification_status,
     ).toBe("unresolved");
     restored.db.close();
+  });
+
+  test("rejects missing write safeguards before opening or creating SQLite", async () => {
+    const missingPath = path.join(directory, "must-not-be-created.sqlite");
+
+    await expect(
+      runRepositoryIdentityBackfill({ mode: "write", sqlitePath: missingPath }),
+    ).rejects.toThrow("backup-reference");
+    expect(existsSync(missingPath)).toBe(false);
+  });
+
+  test("rejects using the target SQLite database as its own backup", async () => {
+    await expect(
+      runRepositoryIdentityBackfill({
+        mode: "write",
+        sqlitePath,
+        expectedChecksum: "reviewed-checksum",
+        backupReference: sqlitePath,
+      }),
+    ).rejects.toThrow("must not be the target database path");
+
+    const aliasPath = path.join(directory, "core-alias.sqlite");
+    await symlink(sqlitePath, aliasPath);
+    await expect(
+      runRepositoryIdentityBackfill({
+        mode: "write",
+        sqlitePath,
+        expectedChecksum: "reviewed-checksum",
+        backupReference: aliasPath,
+      }),
+    ).rejects.toThrow("must not resolve to the target database file");
+  });
+
+  test("requires review timestamps to be strict ISO-8601 with a timezone", async () => {
+    await expect(
+      runRepositoryIdentityBackfill({
+        mode: "dry-run",
+        sqlitePath,
+        reviewDecisions: [
+          {
+            entityKind: "knowledge",
+            entityId: "knowledge-unknown",
+            decision: "unresolved",
+            reviewer: "reviewer",
+            reason: "reviewed",
+            reviewedAt: "August 15, 2026",
+          },
+        ],
+      }),
+    ).rejects.toThrow("invalid reviewedAt");
   });
 
   test("rejects review decisions that conflict with the deterministic plan", async () => {
@@ -224,7 +300,10 @@ describe("repository identity SQLite migration", () => {
     expect(written.decisions.find((item) => item.entityId === "source-capture")?.outcome).toBe(
       "global_promoted",
     );
-    const sqlite = await openSqliteCoreDatabase({ path: sqlitePath, loadVectorExtension: false });
+    const sqlite = await openSqliteCoreDatabase({
+      path: sqlitePath,
+      loadVectorExtension: false,
+    });
     expect(
       sqlite.db
         .query<{
@@ -236,7 +315,12 @@ describe("repository identity SQLite migration", () => {
           "select scope, project_ref, repo_key, repo_path from sources where id = 'source-capture'",
         )
         .get(),
-    ).toEqual({ scope: "global", project_ref: null, repo_key: null, repo_path: null });
+    ).toEqual({
+      scope: "global",
+      project_ref: null,
+      repo_key: null,
+      repo_path: null,
+    });
     sqlite.db.close();
   });
 });

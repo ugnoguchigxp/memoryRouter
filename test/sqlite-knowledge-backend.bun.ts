@@ -139,6 +139,78 @@ describe("sqlite knowledge backend", () => {
     expect(hits).toEqual([]);
   });
 
+  test("does not overwrite knowledge or sources across project identities", async () => {
+    const sharedKnowledgeUri = "agent://candidate/shared-identity";
+    const knowledgeA = await upsertKnowledgeFromSource({
+      sourceUri: sharedKnowledgeUri,
+      type: "rule",
+      status: "active",
+      scope: "repo",
+      repoPath: "/repo/a",
+      title: "Repository A rule",
+      body: "Only repository A should select this rule.",
+    });
+    const knowledgeB = await upsertKnowledgeFromSource({
+      sourceUri: sharedKnowledgeUri,
+      type: "rule",
+      status: "active",
+      scope: "repo",
+      repoPath: "/repo/b",
+      title: "Repository B rule",
+      body: "Only repository B should select this rule.",
+    });
+    expect(knowledgeB).not.toBe(knowledgeA);
+
+    const sharedSourceUri = "https://example.invalid/shared-source";
+    await upsertSourceDocument({
+      sourceKind: "wiki",
+      scope: "repo",
+      repoPath: "/repo/a",
+      uri: sharedSourceUri,
+      body: "Repository A source",
+    });
+    await expect(
+      upsertSourceDocument({
+        sourceKind: "wiki",
+        scope: "repo",
+        repoPath: "/repo/b",
+        uri: sharedSourceUri,
+        body: "Repository B source",
+      }),
+    ).rejects.toThrow("IDENTITY_CONFLICT");
+
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    expect(
+      sqlite.db
+        .query<{ count: number }, [string]>(
+          "select count(*) as count from knowledge_items where json_extract(metadata, '$.sourceUri') = ?",
+        )
+        .get(sharedKnowledgeUri)?.count,
+    ).toBe(2);
+    expect(
+      sqlite.db
+        .query<{ repo_path: string; body: string }, [string]>(
+          "select repo_path, body from sources where uri = ?",
+        )
+        .get(sharedSourceUri),
+    ).toEqual({ repo_path: "/repo/a", body: "Repository A source" });
+    expect(
+      sqlite.db
+        .query<{ producer: string; rejection_code: string }, []>(
+          `select json_extract(payload, '$.producer') as producer,
+                  json_extract(payload, '$.rejectionCode') as rejection_code
+             from audit_logs
+            where event_type = 'PROJECT_IDENTITY_PRODUCER_REJECTED'
+            order by created_at desc
+            limit 1`,
+        )
+        .get(),
+    ).toEqual({
+      producer: "source.upsert-document",
+      rejection_code: "IDENTITY_CONFLICT",
+    });
+  });
+
   test("disables sqlite vector search when scope cannot be prefiltered", async () => {
     await upsertKnowledgeFromSource({
       sourceUri: "agent://candidate/vector-target",
@@ -271,7 +343,10 @@ describe("sqlite knowledge backend", () => {
 
     const deleted = await deleteKnowledgeItem(created.id);
     expect(deleted?.id).toBe(created.id);
-    const missingFeedback = await recordKnowledgeFeedback({ id: created.id, direction: "down" });
+    const missingFeedback = await recordKnowledgeFeedback({
+      id: created.id,
+      direction: "down",
+    });
     expect(missingFeedback).toBeNull();
   }, 15_000);
 

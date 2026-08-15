@@ -99,7 +99,15 @@ export function classifyRepositoryCandidate(
 function normalizedFacetSet(values: string[] | undefined): Set<string> {
   return new Set(
     (values ?? [])
-      .map((value) => value.trim().toLocaleLowerCase("en-US"))
+      .map((value) =>
+        value
+          .trim()
+          .toLocaleLowerCase("en-US")
+          .replace(/[\s_]+/g, "-")
+          .replace(/[^\p{L}\p{N}./+#-]/gu, "-")
+          .replace(/-+/g, "-")
+          .replace(/^-+|-+$/g, ""),
+      )
       .filter((value) => value.length > 0),
   );
 }

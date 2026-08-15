@@ -4,6 +4,7 @@ import { SqliteCoreRepository } from "../../db/sqlite/core-repository.js";
 import { sqliteSourceFragments, sqliteSources } from "../../db/sqlite/schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
 import {
+  assertAuditedStoredProjectScopedIdentityCompatible,
   recordProjectScopedWritePersisted,
   resolveAuditedProjectScopedWriteIdentity,
 } from "../context-compiler/project-scoped-write.js";
@@ -49,7 +50,11 @@ function chunkSourceDocument(params: {
 }): Array<{ locator: string; heading: string | null; content: string }> {
   const maxChars = params.maxChars ?? 2500;
   const lines = params.body.split("\n");
-  const chunks: Array<{ locator: string; heading: string | null; content: string }> = [];
+  const chunks: Array<{
+    locator: string;
+    heading: string | null;
+    content: string;
+  }> = [];
   let heading = params.title ?? null;
   let buffer: string[] = [];
   let index = 1;
@@ -156,10 +161,29 @@ export async function upsertSourceDocumentSqlite(params: UpsertSourceParams): Pr
     },
   );
   const existing = sqlite.orm
-    .select({ id: sqliteSources.id })
+    .select({
+      id: sqliteSources.id,
+      classificationStatus: sqliteSources.classificationStatus,
+      scope: sqliteSources.scope,
+      projectRef: sqliteSources.projectRef,
+      repoKey: sqliteSources.repoKey,
+      repoPath: sqliteSources.repoPath,
+    })
     .from(sqliteSources)
     .where(eq(sqliteSources.uri, redactedUri))
     .get();
+  if (existing) {
+    await assertAuditedStoredProjectScopedIdentityCompatible(
+      existing,
+      identity,
+      `source URI ${redactedUri}`,
+      {
+        producer: params.identityProducer ?? "source.upsert-document",
+        entityKind: "source",
+        actor: params.actor,
+      },
+    );
+  }
   const sourceId = existing?.id ?? randomUUID();
   repo.upsertSource({
     id: sourceId,
@@ -180,7 +204,10 @@ export async function upsertSourceDocumentSqlite(params: UpsertSourceParams): Pr
     .delete(sqliteSourceFragments)
     .where(eq(sqliteSourceFragments.sourceId, sourceId))
     .run();
-  for (const chunk of chunkSourceDocument({ title: redactedTitle, body: redactedBody })) {
+  for (const chunk of chunkSourceDocument({
+    title: redactedTitle,
+    body: redactedBody,
+  })) {
     repo.upsertSourceFragment({
       id: randomUUID(),
       sourceId,

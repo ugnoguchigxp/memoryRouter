@@ -78,7 +78,9 @@ function candidate(input: FixtureCandidate): RepositoryScopeCandidate {
 function identityById(id: string) {
   const fixtureIdentity = fixture.identities.find((item) => item.id === id);
   if (!fixtureIdentity) throw new Error(`missing fixture identity: ${id}`);
-  return resolveCompileProjectIdentity(fixtureIdentity.input, { aliases: fixture.aliases });
+  return resolveCompileProjectIdentity(fixtureIdentity.input, {
+    aliases: fixture.aliases,
+  });
 }
 
 describe("context compile repository isolation shared fixture", () => {
@@ -155,5 +157,29 @@ describe("context compile repository isolation shared fixture", () => {
       allowed: false,
       reason: "PROJECT_IDENTITY_BASIS_MISSING",
     });
+  });
+
+  test("normalizes facet separators and punctuation consistently with persisted facets", () => {
+    const fixtureCandidate = candidate({
+      id: "facet-normalization",
+      entityKind: "knowledge",
+      status: "active",
+      classificationStatus: "classified",
+      scope: "global",
+      general: false,
+      facets: { technologies: ["type_script", "C++"] },
+    });
+    const identity = identityById("identity-project-a");
+
+    expect(
+      evaluateRepositoryScope(fixtureCandidate, identity, {
+        technologies: ["Type Script!"],
+      }),
+    ).toMatchObject({ allowed: true, reason: "ALLOW_GLOBAL" });
+    expect(
+      evaluateRepositoryScope(fixtureCandidate, identity, {
+        technologies: ["c++"],
+      }),
+    ).toMatchObject({ allowed: true, reason: "ALLOW_GLOBAL" });
   });
 });

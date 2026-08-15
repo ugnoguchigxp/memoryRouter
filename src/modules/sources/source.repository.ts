@@ -5,6 +5,7 @@ import { sourceFragments, sources } from "../../db/schema.js";
 import { redactSecretRecord, redactSecrets } from "../../shared/utils/secret-redaction.js";
 import { auditEventTypes, recordAuditLogSafe } from "../audit/audit-log.service.js";
 import {
+  assertAuditedStoredProjectScopedIdentityCompatible,
   recordProjectScopedWritePersisted,
   resolveAuditedProjectScopedWriteIdentity,
 } from "../context-compiler/project-scoped-write.js";
@@ -99,7 +100,11 @@ function chunkSourceDocument(params: {
 }): Array<{ locator: string; heading: string | null; content: string }> {
   const maxChars = params.maxChars ?? 2500;
   const lines = params.body.split("\n");
-  const chunks: Array<{ locator: string; heading: string | null; content: string }> = [];
+  const chunks: Array<{
+    locator: string;
+    heading: string | null;
+    content: string;
+  }> = [];
   let heading = params.title ?? null;
   let buffer: string[] = [];
   let index = 1;
@@ -197,8 +202,27 @@ export async function upsertSourceDocument(params: UpsertSourceParams): Promise<
   );
   const existing = await db.query.sources.findFirst({
     where: eq(sources.uri, redactedUri),
-    columns: { id: true },
+    columns: {
+      id: true,
+      classificationStatus: true,
+      scope: true,
+      projectRef: true,
+      repoKey: true,
+      repoPath: true,
+    },
   });
+  if (existing) {
+    await assertAuditedStoredProjectScopedIdentityCompatible(
+      existing,
+      identity,
+      `source URI ${redactedUri}`,
+      {
+        producer: params.identityProducer ?? "source.upsert-document",
+        entityKind: "source",
+        actor: params.actor,
+      },
+    );
+  }
 
   if (existing) {
     await db

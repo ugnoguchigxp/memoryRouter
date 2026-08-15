@@ -3,7 +3,9 @@ import {
   PROJECT_IDENTITY_FORBIDDEN,
   PROJECT_IDENTITY_REQUIRED,
   ProjectScopedWriteError,
+  assertStoredProjectScopedIdentityCompatible,
   resolveProjectScopedWriteIdentity,
+  storedProjectScopedIdentityMatches,
 } from "../src/modules/context-compiler/project-scoped-write.js";
 
 describe("project-scoped write identity", () => {
@@ -60,5 +62,38 @@ describe("project-scoped write identity", () => {
       expect(error).toBeInstanceOf(ProjectScopedWriteError);
       expect((error as ProjectScopedWriteError).code).toBe(PROJECT_IDENTITY_FORBIDDEN);
     }
+  });
+
+  it("prevents a classified or conflicted record from being rebound by an upsert", () => {
+    const identity = resolveProjectScopedWriteIdentity({ scope: "repo", repoPath: "/repo/a" });
+    const matching = {
+      classificationStatus: "classified",
+      scope: "repo",
+      projectRef: null,
+      repoKey: null,
+      repoPath: "/repo/a",
+    };
+    expect(storedProjectScopedIdentityMatches(matching, identity)).toBe(true);
+    expect(() =>
+      assertStoredProjectScopedIdentityCompatible(
+        { ...matching, repoPath: "/repo/b" },
+        identity,
+        "source",
+      ),
+    ).toThrow("IDENTITY_CONFLICT");
+    expect(() =>
+      assertStoredProjectScopedIdentityCompatible(
+        { ...matching, classificationStatus: "conflict" },
+        identity,
+        "source",
+      ),
+    ).toThrow("IDENTITY_CONFLICT");
+    expect(() =>
+      assertStoredProjectScopedIdentityCompatible(
+        { ...matching, classificationStatus: "unresolved", repoPath: null },
+        identity,
+        "source",
+      ),
+    ).not.toThrow();
   });
 });

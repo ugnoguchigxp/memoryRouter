@@ -8,8 +8,9 @@ use super::native_common::{
 use super::native_tools::NativeToolContext;
 use super::project_identity::{resolve_compile_project_identity, CompileProjectIdentityTrust};
 use super::repository_scope::{
-    applicability_general, eligible_scope_clause, facets_allow, identity_input_from_args,
-    optional_string_array, parse_json_object, query_params, request_facets_from_args,
+    applicability_general, eligible_scope_clause, facet_values_intersect, facets_allow,
+    identity_input_from_args, optional_string_array, parse_json_object, query_params,
+    request_facets_from_args,
 };
 
 pub(crate) fn search_episodes(params: &Value, context: &NativeToolContext) -> Value {
@@ -100,10 +101,7 @@ pub(crate) fn search_episodes(params: &Value, context: &NativeToolContext) -> Va
             &change_types,
             &domains,
             applicability_general(&applicability, &technologies, &change_types, &domains),
-        ) || (!requested_tools.is_empty()
-            && !requested_tools
-                .iter()
-                .any(|requested| tools.iter().any(|candidate| candidate == requested)))
+        ) || (!requested_tools.is_empty() && !facet_values_intersect(&requested_tools, &tools))
         {
             continue;
         }
@@ -615,6 +613,36 @@ mod tests {
         assert!(!items.is_empty());
         // 最初の結果が Rust 関連であること
         assert_eq!(items[0]["id"], "ep-rust");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn search_episodes_normalizes_tool_filters_like_typescript() {
+        let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        create_episode_schema(&connection);
+        insert_episode(
+            &connection,
+            "ep-typescript",
+            "TypeScript episode",
+            "Tool normalization",
+        );
+        connection
+            .execute(
+                "update episode_cards set tools = '[\"type_script\"]' where id = 'ep-typescript'",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let context = make_context(&db_path);
+        let result = search_episodes(&json!({"arguments": {"tools": ["Type Script!"]}}), &context);
+        let payload = extract_content_json(&result);
+        let items = payload["items"].as_array().unwrap();
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["id"], "ep-typescript");
 
         let _ = std::fs::remove_file(&db_path);
     }

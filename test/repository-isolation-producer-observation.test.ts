@@ -1,8 +1,41 @@
 import { describe, expect, test } from "vitest";
+import type { RepositoryIsolationProducerManifest } from "../src/modules/context-compiler/repository-isolation-producer-manifest.js";
 import { buildRepositoryIsolationReport } from "../src/modules/context-compiler/repository-isolation-report.js";
 
 const now = new Date("2026-08-15T12:00:00.000Z");
 const observationStartedAt = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+function producerManifest(
+  enabledProducers = ["source.markdown-import", "episode-distiller.rust"],
+  startedAt: Date | null = observationStartedAt,
+  maintenanceProducers: string[] = [],
+): RepositoryIsolationProducerManifest {
+  const producer = (name: string, disposition: "enabled" | "maintenance_only") => ({
+    name,
+    disposition,
+    runtime: disposition === "enabled" ? ("resident" as const) : ("typescript" as const),
+    entityKinds: [
+      name.startsWith("source")
+        ? ("source" as const)
+        : name.startsWith("knowledge")
+          ? ("knowledge" as const)
+          : ("episode" as const),
+    ],
+  });
+  return {
+    contractVersion: 1,
+    profile: "resident-local",
+    status: "finalized",
+    finalizedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000),
+    observationStartedAt: startedAt,
+    fingerprint: "f".repeat(64),
+    producers: [
+      ...enabledProducers.map((name) => producer(name, "enabled")),
+      ...maintenanceProducers.map((name) => producer(name, "maintenance_only")),
+    ],
+    enabledProducers,
+  };
+}
 
 function identityBearingEvents(count: number) {
   return Array.from({ length: count }, (_, index) => ({
@@ -32,8 +65,7 @@ describe("repository isolation producer observation", () => {
         eventType: "PROJECT_IDENTITY_PRODUCER_VALIDATED" as const,
       })),
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
-      producerObservationStartedAt: observationStartedAt,
+      producerManifest: producerManifest(),
       now,
     });
 
@@ -97,9 +129,8 @@ describe("repository isolation producer observation", () => {
           },
         },
       ],
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      producerObservationStartedAt: observationStartedAt,
+      producerManifest: producerManifest(undefined, undefined, ["knowledge.api-create"]),
       now,
     });
 
@@ -121,8 +152,7 @@ describe("repository isolation producer observation", () => {
       candidates: [],
       producerEvents: identityBearingEvents(200),
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
-      producerObservationStartedAt: observationStartedAt,
+      producerManifest: producerManifest(),
       now,
     });
 
@@ -159,8 +189,7 @@ describe("repository isolation producer observation", () => {
         },
       ],
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
-      producerObservationStartedAt: observationStartedAt,
+      producerManifest: producerManifest(),
       now,
     });
 
@@ -180,7 +209,7 @@ describe("repository isolation producer observation", () => {
       candidates: [],
       producerEvents: identityBearingEvents(200),
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
+      producerManifest: producerManifest(undefined, null),
       now,
     });
 
@@ -199,8 +228,7 @@ describe("repository isolation producer observation", () => {
       candidates: [],
       producerEvents: identityBearingEvents(200),
       newUnresolvedByEntity: { knowledge: 1, source: 0, episode: 0 },
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
-      producerObservationStartedAt: observationStartedAt,
+      producerManifest: producerManifest(),
       now,
     });
 
@@ -217,9 +245,8 @@ describe("repository isolation producer observation", () => {
       backend: "fixture",
       candidates: [],
       producerEvents,
-      enabledProducers: ["source.markdown-import", "episode-distiller.rust"],
+      producerManifest: producerManifest(["source.markdown-import", "episode-distiller.rust"]),
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      producerObservationStartedAt: observationStartedAt,
       now,
     });
 
@@ -238,14 +265,77 @@ describe("repository isolation producer observation", () => {
       candidates: [],
       producerEvents: identityBearingEvents(200),
       newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
-      producerObservationStartedAt: observationStartedAt,
       now,
     });
 
     expect(report.producerObservation).toMatchObject({
       enabledProducers: [],
+      manifestStatus: "missing",
+      hasFinalizedManifest: false,
       enabledProducerCoverageRate: 0,
       hasCompleteEnabledProducerCoverage: false,
+      completionCriteriaMet: false,
+    });
+  });
+
+  test("does not let maintenance-only events satisfy the enabled event minimum", () => {
+    const producerEvents = identityBearingEvents(200).map((event, index) => ({
+      ...event,
+      payload: {
+        ...event.payload,
+        producer: index === 0 ? "source.markdown-import" : "episode.maintenance",
+        entityKind: index === 0 ? "source" : "episode",
+      },
+    }));
+    const report = buildRepositoryIsolationReport({
+      backend: "fixture",
+      candidates: [],
+      producerEvents,
+      producerManifest: producerManifest(["source.markdown-import"], observationStartedAt, [
+        "episode.maintenance",
+      ]),
+      newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
+      now,
+    });
+
+    expect(report.producerObservation).toMatchObject({
+      persistedCount: 200,
+      identityBearingPersistedCount: 1,
+      malformedPersistedCount: 0,
+      hasMinimumIdentityBearingEvents: false,
+      completionCriteriaMet: false,
+    });
+  });
+
+  test("fails closed for unknown producers and producer/entity contract mismatches", () => {
+    const [baseEvent] = identityBearingEvents(1);
+    if (!baseEvent) throw new Error("missing fixture event");
+    const report = buildRepositoryIsolationReport({
+      backend: "fixture",
+      candidates: [],
+      producerEvents: [
+        {
+          ...baseEvent,
+          payload: { ...baseEvent.payload, producer: "unknown.rust" },
+        },
+        {
+          ...baseEvent,
+          payload: {
+            ...baseEvent.payload,
+            producer: "source.markdown-import",
+            entityKind: "episode",
+          },
+        },
+      ],
+      producerManifest: producerManifest(["source.markdown-import"]),
+      newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
+      now,
+    });
+
+    expect(report.producerObservation).toMatchObject({
+      persistedCount: 2,
+      identityBearingPersistedCount: 0,
+      malformedPersistedCount: 2,
       completionCriteriaMet: false,
     });
   });

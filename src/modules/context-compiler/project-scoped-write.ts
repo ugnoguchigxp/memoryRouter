@@ -64,6 +64,14 @@ export type ProjectScopedWritePersistenceContext = ProjectScopedWriteAuditContex
   entityId?: string;
 };
 
+export type StoredProjectScopedIdentity = {
+  classificationStatus: string | null | undefined;
+  scope: string | null | undefined;
+  projectRef: string | null | undefined;
+  repoKey: string | null | undefined;
+  repoPath: string | null | undefined;
+};
+
 function present(value: string | null | undefined): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -131,6 +139,60 @@ export function resolveProjectScopedWriteIdentity(
     identityFingerprint: resolved.identityFingerprint,
     bindingStatus: resolved.bindingStatus,
   };
+}
+
+export function storedProjectScopedIdentityMatches(
+  stored: StoredProjectScopedIdentity,
+  identity: ResolvedProjectScopedWriteIdentity,
+): boolean {
+  if (stored.classificationStatus !== "classified" || stored.scope !== identity.scope) return false;
+  if (identity.scope === "global") {
+    return !stored.projectRef && !stored.repoKey && !stored.repoPath;
+  }
+  if (identity.matchBasis === "project_ref") return stored.projectRef === identity.projectRef;
+  if (identity.matchBasis === "repo_key") return stored.repoKey === identity.repoKey;
+  if (identity.matchBasis === "repo_path") return stored.repoPath === identity.repoPath;
+  return false;
+}
+
+export function assertStoredProjectScopedIdentityCompatible(
+  stored: StoredProjectScopedIdentity,
+  identity: ResolvedProjectScopedWriteIdentity,
+  entityLabel: string,
+): void {
+  const mayBeUpgraded =
+    stored.classificationStatus === null ||
+    stored.classificationStatus === undefined ||
+    stored.classificationStatus === "unresolved";
+  if (!mayBeUpgraded && !storedProjectScopedIdentityMatches(stored, identity)) {
+    throw new ProjectScopedWriteError(
+      "IDENTITY_CONFLICT",
+      `${entityLabel} is already bound to a different project identity`,
+    );
+  }
+}
+
+export async function assertAuditedStoredProjectScopedIdentityCompatible(
+  stored: StoredProjectScopedIdentity,
+  identity: ResolvedProjectScopedWriteIdentity,
+  entityLabel: string,
+  context: ProjectScopedWriteAuditContext,
+): Promise<void> {
+  try {
+    assertStoredProjectScopedIdentityCompatible(stored, identity, entityLabel);
+  } catch (error) {
+    await recordAuditLogSafe({
+      eventType: auditEventTypes.projectIdentityProducerRejected,
+      actor: context.actor ?? "system",
+      payload: {
+        producer: context.producer,
+        entityKind: context.entityKind,
+        scope: identity.scope,
+        rejectionCode: rejectionCode(error),
+      },
+    });
+    throw error;
+  }
 }
 
 function rejectionCode(error: unknown): string {

@@ -25,7 +25,7 @@ Created: 2026-08-15
 
 1. repository isolationはDB fileの統合問題ではない。request identity、write、migration、retrieval、traceを一つのlogical boundaryとして閉じる。
 2. working tree上のT1 foundationとlive deploymentを区別する。最終確認時のsource schemaはrevision 5まで進んでいる一方、確認時のresident DBはrevision 1であり、live MCP schemaもidentity fieldを公開していなかった。
-3. producer observationは`PERSISTED`だけを数え、enabled producer manifestが省略・空・未観測を含む場合はcompletion gateをfail closedにする。
+3. producer observationは`PERSISTED`だけを数え、enabled producerと開始時刻をversioned manifestへ固定する。manifest欠落、draft、開始時刻NULL、未観測を含む場合はcompletion gateをfail closedにする。
 4. isolationのenforcement完了前に、compile engineの大規模統合や巨大fileの全面分割を混ぜない。
 5. MCPのactive ownerはRustだが、CLI、init-project、UI/APIはTypeScript compile serviceを使用している。TypeScript全体をdormantとは扱わない。
 6. TypeScriptのcwd既定、Rust daemonのApplication Support既定、LaunchAgentのrepository data指定は意図した運用profileとして維持する。自動mergeや一つのpathへの統一は行わない。
@@ -93,7 +93,7 @@ P1の観測gateは次のとおりである。
 - 7日、identity-bearing persisted 200件、new unresolved 0件に加え、enabled producer coverage 100%を要求する。
 - global writeは別cohortとして扱い、identity-bearing件数を水増ししない。
 
-reportには`--enabled-producers`でruntime inventoryを、`--producer-observation-started-at`でmanifest確定後に保存したISO-8601開始時刻を渡す。manifestまたは開始時刻の省略、空manifest、未観測producerありのいずれもcompletion falseとなり、7日経過を最古eventの時刻から推定しない。2026-08-15のlive auditには旧ACCEPTEDが5件、PERSISTEDが0件であり、7日間のcompletion windowはまだ開始できていない。
+reportはversioned resident-local manifestからruntime inventory、manifest fingerprint、finalizedAt、observationStartedAtを読む。任意CLI overrideは受け付けず、manifest欠落、draft、開始時刻NULL、未観測producerありのいずれもcompletion falseとなり、7日経過を最古eventの時刻から推定しない。2026-08-15のlive auditには旧ACCEPTEDが5件、PERSISTEDが0件だった。2026-08-16 01:07:10 JSTにPERSISTED-capable resident buildをcontrolled restartし、同時刻から7日間のcompletion windowを開始した。
 
 ### 3.4 Retrieval Resolution
 
@@ -636,8 +636,8 @@ PostgreSQLをsupported surfaceとして残す場合は専用test DBで同じisol
 
 ## 12. Immediate Next Actions
 
-1. runtime producer inventoryを確定し、`--enabled-producers` manifestと`--producer-observation-started-at`へ渡す開始時刻を保存して7日・200 PERSISTED観測を開始する。
-2. 2026-08-16 22:15 JST以降に24-hour enforced observationのfinal read-only auditを行う。
+1. 2026-08-16 01:07:10 JSTに開始したproducer observationで、7日・200 PERSISTED・enabled coverage 100%を確認する。
+2. 2026-08-17 01:07:10 JST以降にcurrent-build 24-hour enforced observationのread-only auditを行う。
 3. producer coverage、new unresolved、Safety/Availability/Performance Gateと`bun run verify`を再確認し、closeout evidenceを確定する。
 4. archive gateをすべて満たしたらcloseout plan、T0 evidence、closeout evidenceをarchiveし、READMEを更新する。
 5. G4 closeout後にcompile ownership ADRを確定し、Rust single-owner migrationを開始する。
