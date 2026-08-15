@@ -14,25 +14,35 @@ export type RepositoryIsolationProducerEntityKind =
 
 const producerEntityKindSchema = z.enum(repositoryIsolationProducerEntityKindValues);
 
+const producerSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    disposition: z.enum(["enabled", "maintenance_only", "disabled"]),
+    runtime: z.enum(["resident", "typescript", "api"]),
+    entityKinds: z.array(producerEntityKindSchema).min(1),
+    reason: z.string().trim().min(1),
+  })
+  .strict()
+  .superRefine((producer, context) => {
+    if (new Set(producer.entityKinds).size !== producer.entityKinds.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["entityKinds"],
+        message: "producer entity kinds must be unique",
+      });
+    }
+  });
+
 const producerManifestSchema = z
   .object({
     contractVersion: z.literal(1),
     profile: z.literal("resident-local"),
     status: z.enum(["draft", "finalized"]),
-    finalizedAt: z.string().datetime({ offset: true }),
+    finalizedAt: z.string().datetime({ offset: true }).nullable(),
     observationStartedAt: z.string().datetime({ offset: true }).nullable(),
-    producers: z
-      .array(
-        z.object({
-          name: z.string().trim().min(1).max(120),
-          disposition: z.enum(["enabled", "maintenance_only", "disabled"]),
-          runtime: z.enum(["resident", "typescript", "api"]),
-          entityKinds: z.array(producerEntityKindSchema).min(1),
-          reason: z.string().trim().min(1),
-        }),
-      )
-      .min(1),
+    producers: z.array(producerSchema).min(1),
   })
+  .strict()
   .superRefine((manifest, context) => {
     const names = new Set<string>();
     for (const [index, producer] of manifest.producers.entries()) {
@@ -61,8 +71,23 @@ const producerManifestSchema = z
         });
       }
     }
+    if (manifest.status === "finalized" && manifest.finalizedAt === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["finalizedAt"],
+        message: "finalized manifest requires finalizedAt",
+      });
+    }
+    if (manifest.status === "draft" && manifest.finalizedAt !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["finalizedAt"],
+        message: "draft manifest must not have finalizedAt",
+      });
+    }
     if (
       manifest.observationStartedAt &&
+      manifest.finalizedAt &&
       new Date(manifest.observationStartedAt).getTime() < new Date(manifest.finalizedAt).getTime()
     ) {
       context.addIssue({
@@ -82,11 +107,15 @@ const producerManifestSchema = z
 
 export type RepositoryIsolationProducerManifestDocument = z.infer<typeof producerManifestSchema>;
 
+const validatedRepositoryIsolationProducerManifest = Symbol(
+  "validatedRepositoryIsolationProducerManifest",
+);
+
 export type RepositoryIsolationProducerManifest = {
   contractVersion: 1;
   profile: "resident-local";
   status: "draft" | "finalized";
-  finalizedAt: Date;
+  finalizedAt: Date | null;
   observationStartedAt: Date | null;
   fingerprint: string;
   producers: Array<{
@@ -95,7 +124,7 @@ export type RepositoryIsolationProducerManifest = {
     runtime: "resident" | "typescript" | "api";
     entityKinds: RepositoryIsolationProducerEntityKind[];
   }>;
-  enabledProducers: string[];
+  readonly [validatedRepositoryIsolationProducerManifest]: true;
 };
 
 const manifestUrl = new URL(
@@ -112,7 +141,7 @@ export function parseRepositoryIsolationProducerManifest(
     contractVersion: document.contractVersion,
     profile: document.profile,
     status: document.status,
-    finalizedAt: new Date(document.finalizedAt),
+    finalizedAt: document.finalizedAt ? new Date(document.finalizedAt) : null,
     observationStartedAt: document.observationStartedAt
       ? new Date(document.observationStartedAt)
       : null,
@@ -123,10 +152,7 @@ export function parseRepositoryIsolationProducerManifest(
       runtime: producer.runtime,
       entityKinds: producer.entityKinds,
     })),
-    enabledProducers: document.producers
-      .filter((producer) => producer.disposition === "enabled")
-      .map((producer) => producer.name)
-      .sort(),
+    [validatedRepositoryIsolationProducerManifest]: true,
   };
 }
 

@@ -16,6 +16,7 @@ import {
   type CompileProjectIdentityInput,
   resolveCompileProjectIdentity,
 } from "./compile-project-identity.js";
+import type { RepositoryIsolationProducerManifest } from "./repository-isolation-producer-manifest.js";
 import {
   type RepositoryIdentityProducerEvent,
   type RepositoryIsolationReport,
@@ -23,7 +24,6 @@ import {
   type RepositoryIsolationSchemaCapabilities,
   buildRepositoryIsolationReport,
 } from "./repository-isolation-report.js";
-import type { RepositoryIsolationProducerManifest } from "./repository-isolation-producer-manifest.js";
 import type {
   RepositoryEntityKind,
   RepositoryFacets,
@@ -130,7 +130,14 @@ function dateFromUnknown(value: unknown): Date {
     const milliseconds = Number(value.slice("unix-ms:".length));
     if (Number.isFinite(milliseconds)) return new Date(milliseconds);
   }
-  const parsed = new Date(typeof value === "string" || typeof value === "number" ? value : 0);
+  const normalized =
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value.trim())
+      ? `${value.trim().replace(" ", "T")}Z`
+      : value;
+  const parsed = new Date(
+    typeof normalized === "string" || typeof normalized === "number" ? normalized : 0,
+  );
   return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
 }
 
@@ -243,14 +250,18 @@ function sqliteSchemaCapabilities(db: SqliteReader): RepositoryIsolationSchemaCa
   const entity = (tableName: string) => {
     const columns = sqliteTableColumns(db, tableName);
     return {
+      id: columns.has("id"),
       classificationStatus: columns.has("classification_status"),
       scope: columns.has("scope"),
       projectRef: columns.has("project_ref"),
       repoKey: columns.has("repo_key"),
       repoPath: columns.has("repo_path"),
+      createdAt: columns.has("created_at"),
     };
   };
   const runColumns = sqliteTableColumns(db, "context_compile_runs");
+  const aliasColumns = sqliteTableColumns(db, "project_identity_aliases");
+  const auditColumns = sqliteTableColumns(db, "audit_logs");
   return {
     entities: {
       knowledge: entity("knowledge_items"),
@@ -258,13 +269,20 @@ function sqliteSchemaCapabilities(db: SqliteReader): RepositoryIsolationSchemaCa
       episode: entity("episode_cards"),
     },
     runIdentity:
+      runColumns.has("id") &&
+      runColumns.has("created_at") &&
       runColumns.has("scope_mode") &&
       runColumns.has("match_basis") &&
       runColumns.has("identity_contract_version") &&
       runColumns.has("project_ref") &&
       runColumns.has("repo_key") &&
       runColumns.has("repo_path"),
-    identityAliases: sqliteTableExists(db, "project_identity_aliases"),
+    identityAliases: ["project_ref", "alias_kind", "normalized_value", "status"].every((column) =>
+      aliasColumns.has(column),
+    ),
+    producerAudit: ["event_type", "payload", "created_at"].every((column) =>
+      auditColumns.has(column),
+    ),
   };
 }
 
@@ -274,9 +292,12 @@ function sqliteCandidates(db: SqliteReader): RepositoryScopeCandidate[] {
   const episodeColumns = sqliteTableColumns(db, "episode_cards");
   if (knowledgeColumns.size === 0 && sourceColumns.size === 0 && episodeColumns.size === 0)
     return [];
-  const knowledge = db
-    .query<Record<string, unknown>, []>(
-      `select id,
+  const knowledge =
+    knowledgeColumns.size === 0 || !knowledgeColumns.has("id")
+      ? []
+      : db
+          .query<Record<string, unknown>, []>(
+            `select id,
               ${sqliteColumn(knowledgeColumns, "status", "'active'")},
               ${sqliteColumn(knowledgeColumns, "classification_status", "'unresolved'")},
               ${sqliteColumn(knowledgeColumns, "scope", "'repo'")},
@@ -286,26 +307,29 @@ function sqliteCandidates(db: SqliteReader): RepositoryScopeCandidate[] {
               ${sqliteColumn(knowledgeColumns, "metadata", "'{}'")},
               ${sqliteColumn(knowledgeColumns, "applies_to", "'{}'")}
          from knowledge_items`,
-    )
-    .all()
-    .map(
-      (row): RawCandidate => ({
-        id: String(row.id),
-        entityKind: "knowledge",
-        status: stringOrNull(row.status),
-        classificationStatus: stringOrNull(row.classification_status),
-        scope: stringOrNull(row.scope),
-        projectRef: stringOrNull(row.project_ref),
-        repoKey: stringOrNull(row.repo_key),
-        repoPath: stringOrNull(row.repo_path),
-        producer: null,
-        metadata: row.metadata,
-        facets: row.applies_to,
-      }),
-    );
-  const sourceRows = db
-    .query<Record<string, unknown>, []>(
-      `select id,
+          )
+          .all()
+          .map(
+            (row): RawCandidate => ({
+              id: String(row.id),
+              entityKind: "knowledge",
+              status: stringOrNull(row.status),
+              classificationStatus: stringOrNull(row.classification_status),
+              scope: stringOrNull(row.scope),
+              projectRef: stringOrNull(row.project_ref),
+              repoKey: stringOrNull(row.repo_key),
+              repoPath: stringOrNull(row.repo_path),
+              producer: null,
+              metadata: row.metadata,
+              facets: row.applies_to,
+            }),
+          );
+  const sourceRows =
+    sourceColumns.size === 0 || !sourceColumns.has("id")
+      ? []
+      : db
+          .query<Record<string, unknown>, []>(
+            `select id,
               ${sqliteColumn(sourceColumns, "source_kind", "'unknown'")},
               ${sqliteColumn(sourceColumns, "classification_status", "'unresolved'")},
               ${sqliteColumn(sourceColumns, "scope", "'repo'")},
@@ -314,26 +338,29 @@ function sqliteCandidates(db: SqliteReader): RepositoryScopeCandidate[] {
               ${sqliteColumn(sourceColumns, "repo_path", "null")},
               ${sqliteColumn(sourceColumns, "metadata", "'{}'")}
          from sources`,
-    )
-    .all()
-    .map(
-      (row): RawCandidate => ({
-        id: String(row.id),
-        entityKind: "source",
-        status: "active",
-        classificationStatus: stringOrNull(row.classification_status),
-        scope: stringOrNull(row.scope),
-        projectRef: stringOrNull(row.project_ref),
-        repoKey: stringOrNull(row.repo_key),
-        repoPath: stringOrNull(row.repo_path),
-        producer: stringOrNull(row.source_kind),
-        metadata: row.metadata,
-        facets: row.metadata,
-      }),
-    );
-  const episodes = db
-    .query<Record<string, unknown>, []>(
-      `select id,
+          )
+          .all()
+          .map(
+            (row): RawCandidate => ({
+              id: String(row.id),
+              entityKind: "source",
+              status: "active",
+              classificationStatus: stringOrNull(row.classification_status),
+              scope: stringOrNull(row.scope),
+              projectRef: stringOrNull(row.project_ref),
+              repoKey: stringOrNull(row.repo_key),
+              repoPath: stringOrNull(row.repo_path),
+              producer: stringOrNull(row.source_kind),
+              metadata: row.metadata,
+              facets: row.metadata,
+            }),
+          );
+  const episodes =
+    episodeColumns.size === 0 || !episodeColumns.has("id")
+      ? []
+      : db
+          .query<Record<string, unknown>, []>(
+            `select id,
               ${sqliteColumn(episodeColumns, "status", "'active'")},
               ${sqliteColumn(episodeColumns, "source_kind", "'unknown'")},
               ${sqliteColumn(episodeColumns, "classification_status", "'unresolved'")},
@@ -347,34 +374,41 @@ function sqliteCandidates(db: SqliteReader): RepositoryScopeCandidate[] {
               ${sqliteColumn(episodeColumns, "domains", "'[]'")},
               ${sqliteColumn(episodeColumns, "applicability", "'{}'")}
          from episode_cards`,
-    )
-    .all()
-    .map((row): RawCandidate => {
-      const applicability = asRecord(parseJson(row.applicability));
-      return {
-        id: String(row.id),
-        entityKind: "episode",
-        status: stringOrNull(row.status),
-        classificationStatus: stringOrNull(row.classification_status),
-        scope: stringOrNull(row.scope),
-        projectRef: stringOrNull(row.project_ref),
-        repoKey: stringOrNull(row.repo_key),
-        repoPath: stringOrNull(row.repo_path),
-        producer: stringOrNull(row.source_kind),
-        metadata: row.metadata,
-        facets: {
-          technologies: stringArray(parseJson(row.technologies)),
-          changeTypes: stringArray(parseJson(row.change_types)),
-          domains: stringArray(parseJson(row.domains)),
-          general: applicability.general === true,
-        },
-      };
-    });
+          )
+          .all()
+          .map((row): RawCandidate => {
+            const applicability = asRecord(parseJson(row.applicability));
+            return {
+              id: String(row.id),
+              entityKind: "episode",
+              status: stringOrNull(row.status),
+              classificationStatus: stringOrNull(row.classification_status),
+              scope: stringOrNull(row.scope),
+              projectRef: stringOrNull(row.project_ref),
+              repoKey: stringOrNull(row.repo_key),
+              repoPath: stringOrNull(row.repo_path),
+              producer: stringOrNull(row.source_kind),
+              metadata: row.metadata,
+              facets: {
+                technologies: stringArray(parseJson(row.technologies)),
+                changeTypes: stringArray(parseJson(row.change_types)),
+                domains: stringArray(parseJson(row.domains)),
+                general: applicability.general === true,
+              },
+            };
+          });
   return [...knowledge, ...sourceRows, ...episodes].map(normalizeCandidate);
 }
 
 function sqliteAliases(db: SqliteReader): CompileProjectIdentityAlias[] {
-  if (!sqliteTableExists(db, "project_identity_aliases")) return [];
+  const columns = sqliteTableColumns(db, "project_identity_aliases");
+  if (
+    !["project_ref", "alias_kind", "normalized_value", "status"].every((column) =>
+      columns.has(column),
+    )
+  ) {
+    return [];
+  }
   return db
     .query<Record<string, unknown>, []>(
       `select project_ref, alias_kind, normalized_value
@@ -396,7 +430,7 @@ function sqliteAliases(db: SqliteReader): CompileProjectIdentityAlias[] {
 
 function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservation[] {
   const runColumns = sqliteTableColumns(db, "context_compile_runs");
-  if (runColumns.size === 0) return [];
+  if (!runColumns.has("id") || !runColumns.has("created_at")) return [];
   const cutoff = now.getTime() - 30 * 24 * 60 * 60 * 1000;
   const rows = db
     .query<Record<string, unknown>, [number]>(
@@ -436,7 +470,10 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
         packSnapshot: row.pack_snapshot,
       }),
     );
-  const packItems = !sqliteTableExists(db, "context_pack_items")
+  const packItemColumns = sqliteTableColumns(db, "context_pack_items");
+  const packItems = !["run_id", "item_kind", "item_id"].every((column) =>
+    packItemColumns.has(column),
+  )
     ? []
     : db
         .query<Record<string, unknown>, [number]>(
@@ -457,7 +494,8 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
 }
 
 function sqliteProducerEvents(db: SqliteReader, now: Date): RepositoryIdentityProducerEvent[] {
-  if (!sqliteTableExists(db, "audit_logs")) return [];
+  const columns = sqliteTableColumns(db, "audit_logs");
+  if (!["event_type", "payload", "created_at"].every((column) => columns.has(column))) return [];
   const cutoff = now.getTime() - 7 * 24 * 60 * 60 * 1000;
   return db
     .query<Record<string, unknown>, [string, string, string, number]>(

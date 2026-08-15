@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { RepositoryIsolationProducerManifest } from "../src/modules/context-compiler/repository-isolation-producer-manifest.js";
+import { parseRepositoryIsolationProducerManifest } from "../src/modules/context-compiler/repository-isolation-producer-manifest.js";
 import { buildRepositoryIsolationReport } from "../src/modules/context-compiler/repository-isolation-report.js";
 
 const now = new Date("2026-08-15T12:00:00.000Z");
@@ -9,7 +9,7 @@ function producerManifest(
   enabledProducers = ["source.markdown-import", "episode-distiller.rust"],
   startedAt: Date | null = observationStartedAt,
   maintenanceProducers: string[] = [],
-): RepositoryIsolationProducerManifest {
+) {
   const producer = (name: string, disposition: "enabled" | "maintenance_only") => ({
     name,
     disposition,
@@ -21,20 +21,19 @@ function producerManifest(
           ? ("knowledge" as const)
           : ("episode" as const),
     ],
+    reason: "test fixture",
   });
-  return {
+  return parseRepositoryIsolationProducerManifest({
     contractVersion: 1,
     profile: "resident-local",
     status: "finalized",
-    finalizedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000),
-    observationStartedAt: startedAt,
-    fingerprint: "f".repeat(64),
+    finalizedAt: new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString(),
+    observationStartedAt: startedAt?.toISOString() ?? null,
     producers: [
       ...enabledProducers.map((name) => producer(name, "enabled")),
       ...maintenanceProducers.map((name) => producer(name, "maintenance_only")),
     ],
-    enabledProducers,
-  };
+  });
 }
 
 function identityBearingEvents(count: number) {
@@ -50,7 +49,7 @@ function identityBearingEvents(count: number) {
       scope: "repo",
       matchBasis: "repo_path",
       identityFingerprint: "a".repeat(64),
-      bindingStatus: "unverified",
+      bindingStatus: "not_applicable",
     },
   }));
 }
@@ -166,6 +165,59 @@ describe("repository isolation producer observation", () => {
       hasCompleteEnabledProducerCoverage: true,
       enabledProducerCoverageRate: 1,
       completionCriteriaMet: true,
+    });
+  });
+
+  test("keeps completion closed when the repository identity schema is incomplete", () => {
+    const report = buildRepositoryIsolationReport({
+      backend: "fixture",
+      candidates: [],
+      producerEvents: identityBearingEvents(200),
+      newUnresolvedByEntity: { knowledge: 0, source: 0, episode: 0 },
+      producerManifest: producerManifest(),
+      schemaCapabilities: {
+        entities: {
+          knowledge: {
+            id: false,
+            classificationStatus: true,
+            scope: true,
+            projectRef: true,
+            repoKey: true,
+            repoPath: true,
+            createdAt: true,
+          },
+          source: {
+            id: true,
+            classificationStatus: true,
+            scope: true,
+            projectRef: true,
+            repoKey: true,
+            repoPath: true,
+            createdAt: true,
+          },
+          episode: {
+            id: true,
+            classificationStatus: true,
+            scope: true,
+            projectRef: true,
+            repoKey: true,
+            repoPath: true,
+            createdAt: true,
+          },
+        },
+        runIdentity: true,
+        identityAliases: true,
+        producerAudit: true,
+      },
+      now,
+    });
+
+    expect(report.producerObservation).toMatchObject({
+      hasRequiredSchemaCapabilities: false,
+      hasFullWindow: true,
+      hasMinimumIdentityBearingEvents: true,
+      hasCompleteEnabledProducerCoverage: true,
+      completionCriteriaMet: false,
     });
   });
 

@@ -14,12 +14,13 @@ describe("repository isolation producer manifest", () => {
       profile: "resident-local",
       status: "finalized",
       observationStartedAt: new Date("2026-08-15T16:07:10.000Z"),
-      enabledProducers: [
-        "agent-log-sync.rust",
-        "episode-distiller.rust",
-        "register-candidates.rust",
-      ],
     });
+    expect(
+      manifest.producers
+        .filter((producer) => producer.disposition === "enabled")
+        .map((producer) => producer.name)
+        .sort(),
+    ).toEqual(["agent-log-sync.rust", "episode-distiller.rust", "register-candidates.rust"]);
     expect(manifest.fingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 
@@ -31,8 +32,12 @@ describe("repository isolation producer manifest", () => {
       "crates/context-stilld/src/domains/mcp_lifecycle/native_knowledge.rs",
     ].map((file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8"));
 
-    for (const producer of manifest.enabledProducers) {
-      expect(sources.some((source) => source.includes(`"producer": "${producer}"`))).toBe(true);
+    for (const producer of manifest.producers.filter(
+      (candidate) => candidate.disposition === "enabled",
+    )) {
+      expect(sources.some((source) => source.includes(`"producer": "${producer.name}"`))).toBe(
+        true,
+      );
     }
   });
 
@@ -89,5 +94,45 @@ describe("repository isolation producer manifest", () => {
         ],
       }),
     ).toThrow(/enabled producers must use the resident runtime/);
+  });
+
+  test("rejects unknown fields, duplicate entity kinds, and inconsistent draft timestamps", () => {
+    const producer = {
+      name: "agent-log-sync.rust",
+      disposition: "enabled",
+      runtime: "resident",
+      entityKinds: ["vibe_memory"],
+      reason: "resident",
+    };
+    const draft = {
+      contractVersion: 1,
+      profile: "resident-local",
+      status: "draft",
+      finalizedAt: null,
+      observationStartedAt: null,
+      producers: [producer],
+    };
+
+    expect(() => parseRepositoryIsolationProducerManifest({ ...draft, unexpected: true })).toThrow(
+      /Unrecognized key/,
+    );
+    expect(() =>
+      parseRepositoryIsolationProducerManifest({
+        ...draft,
+        producers: [{ ...producer, entityKinds: ["vibe_memory", "vibe_memory"] }],
+      }),
+    ).toThrow(/entity kinds must be unique/);
+    expect(() =>
+      parseRepositoryIsolationProducerManifest({
+        ...draft,
+        finalizedAt: "2026-08-15T15:42:29.000Z",
+      }),
+    ).toThrow(/draft manifest must not have finalizedAt/);
+    expect(() =>
+      parseRepositoryIsolationProducerManifest({
+        ...draft,
+        status: "finalized",
+      }),
+    ).toThrow(/finalized manifest requires finalizedAt/);
   });
 });

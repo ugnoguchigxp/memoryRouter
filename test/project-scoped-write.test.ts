@@ -95,5 +95,25 @@ describe("project-scoped write identity", () => {
         "source",
       ),
     ).not.toThrow();
+    expect(() =>
+      assertStoredProjectScopedIdentityCompatible(
+        { ...matching, classificationStatus: "unresolved", repoPath: "/repo/b" },
+        identity,
+        "source",
+      ),
+    ).toThrow("IDENTITY_CONFLICT");
+    expect(() =>
+      assertStoredProjectScopedIdentityCompatible(
+        {
+          classificationStatus: "unresolved",
+          scope: "repo",
+          projectRef: null,
+          repoKey: null,
+          repoPath: null,
+        },
+        resolveProjectScopedWriteIdentity({ scope: "global" }),
+        "source",
+      ),
+    ).toThrow("IDENTITY_CONFLICT");
   });
 });

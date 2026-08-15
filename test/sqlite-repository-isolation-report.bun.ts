@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -5,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { type SqliteCoreDatabase, openSqliteCoreDatabase } from "../src/db/sqlite/client.js";
-import type { RepositoryIsolationProducerManifest } from "../src/modules/context-compiler/repository-isolation-producer-manifest.js";
+import { parseRepositoryIsolationProducerManifest } from "../src/modules/context-compiler/repository-isolation-producer-manifest.js";
 import { collectRepositoryIsolationReportFromSqlite } from "../src/modules/context-compiler/repository-isolation-report.repository.js";
 
 type FixtureCandidate = {
@@ -172,6 +173,39 @@ async function fixtureDatabase(): Promise<SqliteCoreDatabase> {
 }
 
 describe("SQLite repository isolation read-only report", () => {
+  test("reports a partial schema without treating unavailable checks as zero-risk", () => {
+    const partial = new Database(":memory:");
+    try {
+      partial.exec(`
+        create table knowledge_items (
+          id text primary key,
+          status text,
+          classification_status text,
+          scope text,
+          project_ref text,
+          repo_key text,
+          repo_path text,
+          metadata text,
+          applies_to text
+        );
+      `);
+      const report = collectRepositoryIsolationReportFromSqlite({
+        db: partial as unknown as SqliteCoreDatabase["db"],
+        now: new Date("2026-08-15T00:00:00.000Z"),
+      });
+
+      expect(report.schemaCapabilities.entities.knowledge.createdAt).toBe(false);
+      expect(report.schemaCapabilities.entities.knowledge.id).toBe(true);
+      expect(report.schemaCapabilities.producerAudit).toBe(false);
+      expect(report.producerObservation).toMatchObject({
+        hasRequiredSchemaCapabilities: false,
+        completionCriteriaMet: false,
+      });
+    } finally {
+      partial.close();
+    }
+  });
+
   test("uses the shared fixture without exposing content or absolute paths", async () => {
     const database = await fixtureDatabase();
     const report = collectRepositoryIsolationReportFromSqlite({
@@ -237,7 +271,7 @@ describe("SQLite repository isolation read-only report", () => {
       scope: "repo",
       matchBasis: "repo_path",
       identityFingerprint: "a".repeat(64),
-      bindingStatus: "unverified",
+      bindingStatus: "not_applicable",
     });
     const insertAudit = database.db.query(
       `insert into audit_logs (id, event_type, actor, payload, created_at)
@@ -259,32 +293,41 @@ describe("SQLite repository isolation read-only report", () => {
     insertSource.run("source-boundary-recent", "fixture://boundary-recent", "2026-08-08 13:00:00");
     insertSource.run("source-boundary-old", "fixture://boundary-old", "2026-08-08T11:59:59.000Z");
 
-    const report = collectRepositoryIsolationReportFromSqlite({
-      db: database.db,
-      producerManifest: {
-        contractVersion: 1,
-        profile: "resident-local",
-        status: "finalized",
-        finalizedAt: new Date("2026-08-08T11:00:00.000Z"),
-        observationStartedAt,
-        fingerprint: "f".repeat(64),
-        producers: [
-          {
-            name: "source.boundary-fixture",
-            disposition: "enabled",
-            runtime: "resident",
-            entityKinds: ["source"],
-          },
-        ],
-        enabledProducers: ["source.boundary-fixture"],
-      } satisfies RepositoryIsolationProducerManifest,
-      now,
-    });
+    const originalTimezone = process.env.TZ;
+    process.env.TZ = "Asia/Tokyo";
+    const report = (() => {
+      try {
+        return collectRepositoryIsolationReportFromSqlite({
+          db: database.db,
+          producerManifest: parseRepositoryIsolationProducerManifest({
+            contractVersion: 1,
+            profile: "resident-local",
+            status: "finalized",
+            finalizedAt: "2026-08-08T11:00:00.000Z",
+            observationStartedAt: observationStartedAt.toISOString(),
+            producers: [
+              {
+                name: "source.boundary-fixture",
+                disposition: "enabled",
+                runtime: "resident",
+                entityKinds: ["source"],
+                reason: "test fixture",
+              },
+            ],
+          }),
+          now,
+        });
+      } finally {
+        if (originalTimezone === undefined) process.env.TZ = undefined;
+        else process.env.TZ = originalTimezone;
+      }
+    })();
 
     expect(report.producerObservation).toMatchObject({
       persistedCount: 2,
       identityBearingPersistedCount: 2,
       malformedPersistedCount: 0,
+      oldestIdentityBearingEventAt: "2026-08-08T13:00:00.000Z",
       observedEnabledProducers: ["source.boundary-fixture"],
     });
     expect(report.producerObservation.newUnresolvedByEntity.source).toBe(

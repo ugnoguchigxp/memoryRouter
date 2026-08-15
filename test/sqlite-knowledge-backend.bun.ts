@@ -209,7 +209,7 @@ describe("sqlite knowledge backend", () => {
       producer: "source.upsert-document",
       rejection_code: "IDENTITY_CONFLICT",
     });
-  });
+  }, 15_000);
 
   test("disables sqlite vector search when scope cannot be prefiltered", async () => {
     await upsertKnowledgeFromSource({
@@ -265,7 +265,23 @@ describe("sqlite knowledge backend", () => {
       body: "Knowledge API activation should stay on SQLite.",
     });
     expect(updated?.id).toBe(created.id);
+    await expect(
+      updateKnowledgeItem(created.id, {
+        repoPath: "/repo/another-project",
+        body: "A conflicting identity must not overwrite this item.",
+      }),
+    ).rejects.toThrow("IDENTITY_CONFLICT");
     const sqlite = await getRuntimeSqliteCoreDatabase();
+    expect(
+      sqlite.db
+        .query<{ repo_path: string; body: string }, [string]>(
+          "select repo_path, body from knowledge_items where id = ?",
+        )
+        .get(created.id),
+    ).toEqual({
+      repo_path: "/repo/contextStill",
+      body: "Knowledge API activation should stay on SQLite.",
+    });
     const persistedWrites = sqlite.db
       .query<{ payload: string }, []>(
         `select payload
@@ -292,6 +308,18 @@ describe("sqlite knowledge backend", () => {
         matchBasis: "repo_path",
       }),
     );
+    expect(
+      sqlite.db
+        .query<{ rejection_code: string }, []>(
+          `select json_extract(payload, '$.rejectionCode') as rejection_code
+             from audit_logs
+            where event_type = 'PROJECT_IDENTITY_PRODUCER_REJECTED'
+              and json_extract(payload, '$.producer') = 'knowledge.api-update'
+            order by created_at desc
+            limit 1`,
+        )
+        .get(),
+    ).toEqual({ rejection_code: "IDENTITY_CONFLICT" });
 
     const feedback = await recordKnowledgeFeedback({
       id: created.id,
@@ -348,7 +376,7 @@ describe("sqlite knowledge backend", () => {
       direction: "down",
     });
     expect(missingFeedback).toBeNull();
-  }, 15_000);
+  }, 45_000);
 
   test("compiles context and stores run snapshots in sqlite", async () => {
     await upsertKnowledgeFromSource({

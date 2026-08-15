@@ -100,7 +100,7 @@ path case、malformed percent encoding、selected-basis欠落、limit saturation
 
 producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定にはdurable write後のPERSISTEDだけを使用する。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。
 
-enabled producerと観測開始時刻は任意CLI引数から除去し、[versioned resident-local manifest](../../shared/fixtures/repository-isolation-producer-manifest-v1.json)を唯一の入力にした。manifest fingerprint、status、finalizedAtをreport version 3へ保存し、manifest欠落、draft、開始時刻NULL、未観測producerありをfail closedにする。200件の母数はmanifest上のenabled producerが宣言どおりのentity kindへ行ったPERSISTEDだけとし、maintenance-onlyは母数外、未知・disabled・entity不一致はmalformedとする。最古eventの時刻だけでは7日経過と判定しない。
+enabled producerと観測開始時刻は任意CLI引数から除去し、[versioned resident-local manifest](../../shared/fixtures/repository-isolation-producer-manifest-v1.json)を唯一の入力にした。manifest fingerprint、status、finalizedAtをreport version 3へ保存し、manifest欠落、draft、開始時刻NULL、未観測producerありをfail closedにする。200件の母数はmanifest上のenabled producerが宣言どおりのentity kindへ行ったPERSISTEDだけとし、maintenance-onlyは母数外、未知・disabled・entity不一致はmalformedとする。単一basisの通常writeはidentity contractどおり`bindingStatus=not_applicable`を受理し、複数identifierでは`verified`または`unverified`を受理する。identity/entity/run/alias/audit/created-atのschema capabilityが一つでも欠ける場合もcompletion falseとする。最古eventの時刻だけでは7日経過と判定しない。
 
 明示的な`observationStartedAt`でversion 2へ、versioned manifestを唯一の根拠とする変更でversion 3へ更新した。
 
@@ -132,7 +132,7 @@ resident-local manifestは`agent-log-sync.rust`、`episode-distiller.rust`、`re
 - `bun run mcp:smoke:sqlite`: pass against resident port 39172
 - `bun run docs:check-links`: pass
 
-2026-08-16のcurrent-build code review後にも、`bun run verify`、`cargo test -p context-stilld`（246 passed）、`cargo clippy -p context-stilld --all-targets -- -D warnings`、SQLite backfill/report/runtime/knowledgeのfocused testsを再実行し、すべてpassした。controlled restart後の`CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon`とlive MCP smokeもpassし、旧queue、finding、covering、agent-log-sync LaunchAgentがすべてunload済みであることを確認した。
+2026-08-16のcurrent-build code review後にも、`bun run verify`、`cargo test -p context-stilld`（246 passed）、`cargo clippy -p context-stilld --all-targets -- -D warnings`、SQLite backfill/report/runtime/knowledgeのfocused testsを再実行し、すべてpassした。reviewで検出したAPI updateのidentity rebind、unresolved rowのscope rebind、単一identity basisの`not_applicable`誤拒否、不完全schemaでのfalse completion、非canonical run identity、SQLite timestampのtimezone依存、manifest contradiction/重複は回帰testとともに修正した。controlled restart後の`CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon`とlive MCP smokeもpassし、旧queue、finding、covering、agent-log-sync LaunchAgentがすべてunload済みであることを確認した。
 
 最初の`bun run verify` rerunで、repoPathをrepoKeyへ派生しなくなった新contractに対する旧test expectationを1件検出し、expectationをcanonical repoPathへ修正した。修正後の全gateはpassした。24-hour observation終了時にも同じcommandを再実行する。
 

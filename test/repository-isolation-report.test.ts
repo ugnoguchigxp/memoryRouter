@@ -73,6 +73,18 @@ describe("repository isolation report run identity", () => {
           projectRef: "project-A",
           identityContractVersion: 2,
         }),
+        run({
+          id: "noncanonical-path",
+          scopeMode: "project",
+          matchBasis: "repo_path",
+          repoPath: "/work/repo-a/../repo-a",
+        }),
+        run({
+          id: "relative-path",
+          scopeMode: "project",
+          matchBasis: "repo_path",
+          repoPath: "work/repo-a",
+        }),
       ],
       now: new Date("2026-08-16T00:00:00.000Z"),
     });
@@ -88,6 +100,8 @@ describe("repository isolation report run identity", () => {
       "global-mode-with-project-fields",
       "selected-basis-missing",
       "unsupported-contract",
+      "noncanonical-path",
+      "relative-path",
     ]) {
       expect(reevaluated[id]).toMatchObject({
         identityKnown: false,

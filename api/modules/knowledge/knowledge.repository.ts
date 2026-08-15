@@ -11,6 +11,7 @@ import {
   recordAuditLogSafe,
 } from "../../../src/modules/audit/audit-log.service.js";
 import {
+  assertAuditedStoredProjectScopedIdentityCompatible,
   recordProjectScopedWritePersisted,
   resolveAuditedProjectScopedWriteIdentity,
 } from "../../../src/modules/context-compiler/project-scoped-write.js";
@@ -534,6 +535,42 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
   const nextImportance =
     input.importance === undefined ? normalizeKnowledgeScore(existing.importance, 70) : importance;
   const existingAppliesTo = asRecord(existing.appliesTo);
+  const explicitAppliesTo = asRecord(input.appliesTo);
+  const identity = await resolveAuditedProjectScopedWriteIdentity(
+    {
+      scope: nextScope as "repo" | "global",
+      projectRef:
+        input.projectRef ??
+        (nextScope === "repo" && "projectRef" in existing
+          ? (existing.projectRef as string | null | undefined)
+          : undefined),
+      repoKey:
+        input.repoKey ??
+        (typeof explicitAppliesTo.repoKey === "string" ? explicitAppliesTo.repoKey : undefined) ??
+        (nextScope === "repo" && "repoKey" in existing
+          ? (existing.repoKey as string | null | undefined)
+          : undefined),
+      repoPath:
+        input.repoPath ??
+        (typeof explicitAppliesTo.repoPath === "string" ? explicitAppliesTo.repoPath : undefined) ??
+        (nextScope === "repo" && "repoPath" in existing
+          ? (existing.repoPath as string | null | undefined)
+          : undefined),
+    },
+    { producer: "knowledge.api-update", entityKind: "knowledge", actor: "user" },
+  );
+  await assertAuditedStoredProjectScopedIdentityCompatible(
+    {
+      classificationStatus: existing.classificationStatus,
+      scope: existing.scope,
+      projectRef: existing.projectRef,
+      repoKey: existing.repoKey,
+      repoPath: existing.repoPath,
+    },
+    identity,
+    `Knowledge ${existing.id}`,
+    { producer: "knowledge.api-update", entityKind: "knowledge", actor: "user" },
+  );
   const hasApplicabilityPatch =
     input.appliesTo !== undefined ||
     input.general !== undefined ||
@@ -568,30 +605,6 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
           inputAppliesTo: input.appliesTo,
           normalizedAppliesTo: normalizedApplicability.appliesTo,
         });
-  const explicitAppliesTo = asRecord(input.appliesTo);
-  const identity = await resolveAuditedProjectScopedWriteIdentity(
-    {
-      scope: nextScope as "repo" | "global",
-      projectRef:
-        input.projectRef ??
-        (nextScope === "repo" && "projectRef" in existing
-          ? (existing.projectRef as string | null | undefined)
-          : undefined),
-      repoKey:
-        input.repoKey ??
-        (typeof explicitAppliesTo.repoKey === "string" ? explicitAppliesTo.repoKey : undefined) ??
-        (nextScope === "repo" && "repoKey" in existing
-          ? (existing.repoKey as string | null | undefined)
-          : undefined),
-      repoPath:
-        input.repoPath ??
-        (typeof explicitAppliesTo.repoPath === "string" ? explicitAppliesTo.repoPath : undefined) ??
-        (nextScope === "repo" && "repoPath" in existing
-          ? (existing.repoPath as string | null | undefined)
-          : undefined),
-    },
-    { producer: "knowledge.api-update", entityKind: "knowledge", actor: "user" },
-  );
   if (identity.scope === "global") {
     appliesTo = Object.fromEntries(
       Object.entries(appliesTo).filter(([key]) => key !== "repoKey" && key !== "repoPath"),

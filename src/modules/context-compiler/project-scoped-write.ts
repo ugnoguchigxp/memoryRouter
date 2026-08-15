@@ -146,6 +146,14 @@ export function storedProjectScopedIdentityMatches(
   identity: ResolvedProjectScopedWriteIdentity,
 ): boolean {
   if (stored.classificationStatus !== "classified" || stored.scope !== identity.scope) return false;
+  return storedIdentityBasisMatches(stored, identity);
+}
+
+function storedIdentityBasisMatches(
+  stored: StoredProjectScopedIdentity,
+  identity: ResolvedProjectScopedWriteIdentity,
+): boolean {
+  if (present(stored.scope) && stored.scope !== identity.scope) return false;
   if (identity.scope === "global") {
     return !stored.projectRef && !stored.repoKey && !stored.repoPath;
   }
@@ -164,7 +172,14 @@ export function assertStoredProjectScopedIdentityCompatible(
     stored.classificationStatus === null ||
     stored.classificationStatus === undefined ||
     stored.classificationStatus === "unresolved";
-  if (!mayBeUpgraded && !storedProjectScopedIdentityMatches(stored, identity)) {
+  const hasStoredIdentity =
+    present(stored.projectRef) || present(stored.repoKey) || present(stored.repoPath);
+  const storedScopeIsCompatible = !present(stored.scope) || stored.scope === identity.scope;
+  const compatible = mayBeUpgraded
+    ? storedScopeIsCompatible &&
+      (!hasStoredIdentity || storedIdentityBasisMatches(stored, identity))
+    : storedProjectScopedIdentityMatches(stored, identity);
+  if (!compatible) {
     throw new ProjectScopedWriteError(
       "IDENTITY_CONFLICT",
       `${entityLabel} is already bound to a different project identity`,

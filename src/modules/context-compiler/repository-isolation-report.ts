@@ -1,6 +1,7 @@
 import {
   COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION,
   type ResolvedCompileProjectIdentity,
+  resolveCompileProjectIdentity,
 } from "./compile-project-identity.js";
 import type { RepositoryIsolationProducerManifest } from "./repository-isolation-producer-manifest.js";
 import {
@@ -60,15 +61,18 @@ export type RepositoryIsolationSchemaCapabilities = {
   entities: Record<
     RepositoryEntityKind,
     {
+      id: boolean;
       classificationStatus: boolean;
       scope: boolean;
       projectRef: boolean;
       repoKey: boolean;
       repoPath: boolean;
+      createdAt: boolean;
     }
   >;
   runIdentity: boolean;
   identityAliases: boolean;
+  producerAudit: boolean;
 };
 
 export type RepositoryIsolationReport = {
@@ -129,6 +133,7 @@ export type RepositoryIsolationReport = {
     newUnresolvedCount: number;
     hasFullWindow: boolean;
     hasMinimumIdentityBearingEvents: boolean;
+    hasRequiredSchemaCapabilities: boolean;
     hasFinalizedManifest: boolean;
     hasCompleteEnabledProducerCoverage: boolean;
     completionCriteriaMet: boolean;
@@ -191,21 +196,43 @@ function rate(numerator: number, denominator: number): number {
   return denominator === 0 ? 0 : numerator / denominator;
 }
 
-function runHasIdentity(run: RepositoryIsolationRunObservation): boolean {
+function resolvedRunIdentity(
+  run: RepositoryIsolationRunObservation,
+): ResolvedCompileProjectIdentity | null {
   if (
     run.identityContractVersion !== COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION ||
     run.scopeMode !== "project"
   ) {
-    return false;
+    return null;
   }
-  if (run.matchBasis === "project_ref") return run.projectRef !== null;
-  if (run.matchBasis === "repo_key") return run.repoKey !== null;
-  if (run.matchBasis === "repo_path") return run.repoPath !== null;
-  return false;
+  try {
+    const resolved = resolveCompileProjectIdentity({
+      projectRef: run.projectRef ?? undefined,
+      repoKey: run.repoKey ?? undefined,
+      repoPath: run.repoPath ?? undefined,
+    });
+    if (
+      resolved.scopeMode !== "project" ||
+      resolved.matchBasis !== run.matchBasis ||
+      resolved.projectRef !== run.projectRef ||
+      resolved.repoKey !== run.repoKey ||
+      resolved.repoPath !== run.repoPath
+    ) {
+      return null;
+    }
+    return resolved;
+  } catch {
+    return null;
+  }
+}
+
+function runHasIdentity(run: RepositoryIsolationRunObservation): boolean {
+  return resolvedRunIdentity(run) !== null;
 }
 
 function runIdentity(run: RepositoryIsolationRunObservation): ResolvedCompileProjectIdentity {
-  if (!runHasIdentity(run)) {
+  const resolved = resolvedRunIdentity(run);
+  if (!resolved) {
     return {
       contractVersion: COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION,
       scopeMode: "global_only",
@@ -219,26 +246,7 @@ function runIdentity(run: RepositoryIsolationRunObservation): ResolvedCompilePro
       bindingStatus: "not_applicable",
     };
   }
-  const matchValue =
-    run.matchBasis === "project_ref"
-      ? run.projectRef
-      : run.matchBasis === "repo_key"
-        ? run.repoKey
-        : run.matchBasis === "repo_path"
-          ? run.repoPath
-          : null;
-  return {
-    contractVersion: COMPILE_PROJECT_IDENTITY_CONTRACT_VERSION,
-    scopeMode: "project",
-    matchBasis: run.matchBasis,
-    matchValue,
-    projectRef: run.projectRef,
-    repoKey: run.repoKey,
-    repoPath: run.repoPath,
-    identityFingerprint: null,
-    trust: "request_hint",
-    bindingStatus: "not_applicable",
-  };
+  return resolved;
 }
 
 function selectedIds(run: RepositoryIsolationRunObservation): string[] {
@@ -354,6 +362,7 @@ function producerObservation(input: {
   events: RepositoryIdentityProducerEvent[];
   now: Date;
   newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
+  hasRequiredSchemaCapabilities: boolean;
   producerManifest?: RepositoryIsolationProducerManifest;
 }): RepositoryIsolationReport["producerObservation"] {
   const windowMs = 7 * 24 * 60 * 60 * 1000;
@@ -399,7 +408,8 @@ function producerObservation(input: {
         event.payload.matchBasis === "repo_key" ||
         event.payload.matchBasis === "repo_path") &&
       (event.payload.bindingStatus === "verified" ||
-        event.payload.bindingStatus === "unverified") &&
+        event.payload.bindingStatus === "unverified" ||
+        event.payload.bindingStatus === "not_applicable") &&
       typeof fingerprint === "string" &&
       /^[a-f0-9]{64}$/.test(fingerprint)
     );
@@ -424,19 +434,22 @@ function producerObservation(input: {
   const manifest = input.producerManifest;
   const finalizedAt =
     manifest &&
+    manifest.status === "finalized" &&
+    manifest.finalizedAt &&
     Number.isFinite(manifest.finalizedAt.getTime()) &&
     manifest.finalizedAt.getTime() <= input.now.getTime()
       ? manifest.finalizedAt
       : null;
-  const hasFinalizedManifest = manifest?.status === "finalized" && finalizedAt !== null;
+  const hasFinalizedManifest = finalizedAt !== null;
+  const observationCandidate = manifest?.observationStartedAt;
   const observationStartedAt =
     hasFinalizedManifest &&
     finalizedAt !== null &&
-    manifest.observationStartedAt &&
-    Number.isFinite(manifest.observationStartedAt.getTime()) &&
-    manifest.observationStartedAt.getTime() >= finalizedAt.getTime() &&
-    manifest.observationStartedAt.getTime() <= input.now.getTime()
-      ? manifest.observationStartedAt
+    observationCandidate &&
+    Number.isFinite(observationCandidate.getTime()) &&
+    observationCandidate.getTime() >= finalizedAt.getTime() &&
+    observationCandidate.getTime() <= input.now.getTime()
+      ? observationCandidate
       : null;
   const observedDays = observationStartedAt
     ? Math.min(7, Math.max(0, (input.now.getTime() - observationStartedAt.getTime()) / 86_400_000))
@@ -444,7 +457,11 @@ function producerObservation(input: {
   const hasFullWindow = observationStartedAt !== null && observationStartedAt.getTime() <= cutoff;
   const hasMinimumIdentityBearingEvents = identityBearing.length >= 200;
   const enabledProducers = [
-    ...new Set((manifest?.enabledProducers ?? []).map((value) => value.trim())),
+    ...new Set(
+      (manifest?.producers ?? [])
+        .filter((producer) => producer.disposition === "enabled")
+        .map((producer) => producer.name.trim()),
+    ),
   ]
     .filter(Boolean)
     .sort();
@@ -507,10 +524,12 @@ function producerObservation(input: {
     newUnresolvedCount,
     hasFullWindow,
     hasMinimumIdentityBearingEvents,
+    hasRequiredSchemaCapabilities: input.hasRequiredSchemaCapabilities,
     hasFinalizedManifest,
     hasCompleteEnabledProducerCoverage,
     completionCriteriaMet:
       hasFinalizedManifest &&
+      input.hasRequiredSchemaCapabilities &&
       hasFullWindow &&
       hasMinimumIdentityBearingEvents &&
       hasCompleteEnabledProducerCoverage &&
@@ -533,11 +552,55 @@ export function buildRepositoryIsolationReport(input: {
   producerManifest?: RepositoryIsolationProducerManifest;
   newUnresolvedByEntity?: Record<RepositoryEntityKind, number>;
 }): RepositoryIsolationReport {
+  const now = input.now ?? new Date();
   const previewLimit = Math.min(
     REPOSITORY_ISOLATION_PREVIEW_LIMIT_MAX,
     Math.max(0, Math.floor(input.previewLimit ?? REPOSITORY_ISOLATION_PREVIEW_LIMIT_MAX)),
   );
   const runs = input.runs ?? [];
+  const schemaCapabilities =
+    input.schemaCapabilities ??
+    ({
+      entities: {
+        knowledge: {
+          id: true,
+          classificationStatus: true,
+          scope: true,
+          projectRef: true,
+          repoKey: true,
+          repoPath: true,
+          createdAt: true,
+        },
+        source: {
+          id: true,
+          classificationStatus: true,
+          scope: true,
+          projectRef: true,
+          repoKey: true,
+          repoPath: true,
+          createdAt: true,
+        },
+        episode: {
+          id: true,
+          classificationStatus: true,
+          scope: true,
+          projectRef: true,
+          repoKey: true,
+          repoPath: true,
+          createdAt: true,
+        },
+      },
+      runIdentity: true,
+      identityAliases: true,
+      producerAudit: true,
+    } satisfies RepositoryIsolationSchemaCapabilities);
+  const hasRequiredSchemaCapabilities =
+    schemaCapabilities.runIdentity &&
+    schemaCapabilities.identityAliases &&
+    schemaCapabilities.producerAudit &&
+    repositoryEntityKindValues.every((kind) =>
+      Object.values(schemaCapabilities.entities[kind]).every(Boolean),
+    );
   const candidatesById = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
   const requestIdentity = input.requestIdentity;
   const requestDecisions = requestIdentity
@@ -576,7 +639,7 @@ export function buildRepositoryIsolationReport(input: {
   const excluded = requestDecisions.filter(({ decision }) => !decision.allowed);
   return {
     reportVersion: REPOSITORY_ISOLATION_REPORT_VERSION,
-    generatedAt: (input.now ?? new Date()).toISOString(),
+    generatedAt: now.toISOString(),
     backend: input.backend,
     readOnly: true,
     privacy: {
@@ -584,33 +647,7 @@ export function buildRepositoryIsolationReport(input: {
       absolutePathsIncluded: false,
       previewLimit,
     },
-    schemaCapabilities: input.schemaCapabilities ?? {
-      entities: {
-        knowledge: {
-          classificationStatus: true,
-          scope: true,
-          projectRef: true,
-          repoKey: true,
-          repoPath: true,
-        },
-        source: {
-          classificationStatus: true,
-          scope: true,
-          projectRef: true,
-          repoKey: true,
-          repoPath: true,
-        },
-        episode: {
-          classificationStatus: true,
-          scope: true,
-          projectRef: true,
-          repoKey: true,
-          repoPath: true,
-        },
-      },
-      runIdentity: true,
-      identityAliases: true,
-    },
+    schemaCapabilities,
     inventory: buildInventory(input.candidates, previewLimit),
     requestComparison: requestIdentity
       ? {
@@ -627,14 +664,15 @@ export function buildRepositoryIsolationReport(input: {
     recentRunReevaluation: recentRuns,
     producerObservation: producerObservation({
       events: input.producerEvents ?? [],
-      now: input.now ?? new Date(),
+      now,
       newUnresolvedByEntity: input.newUnresolvedByEntity ?? {
         knowledge: 0,
         source: 0,
         episode: 0,
       },
+      hasRequiredSchemaCapabilities,
       producerManifest: input.producerManifest,
     }),
-    baseline: buildBaseline(runs, input.now ?? new Date()),
+    baseline: buildBaseline(runs, now),
   };
 }
