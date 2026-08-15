@@ -30,4 +30,16 @@ describe("repository identity backfill CLI", () => {
       parseRepositoryIdentityBackfillArgs(["--promote-global", "repository:item-1"]),
     ).toThrow("--promote-global requires");
   });
+
+  test("rejects missing option values instead of consuming the next flag", () => {
+    expect(() => parseRepositoryIdentityBackfillArgs(["--expected-checksum", "--write"])).toThrow(
+      "--expected-checksum requires a value",
+    );
+    expect(() => parseRepositoryIdentityBackfillArgs(["--batch-size"])).toThrow(
+      "--batch-size requires a value",
+    );
+    expect(() => parseRepositoryIdentityBackfillArgs(["--promote-global"])).toThrow(
+      "--promote-global requires a value",
+    );
+  });
 });

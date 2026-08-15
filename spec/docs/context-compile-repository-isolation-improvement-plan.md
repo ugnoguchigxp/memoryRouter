@@ -233,12 +233,12 @@ Implemented draft corrections:
 
 - Rust/TypeScript agent log syncの`projectName -> repoKey`伝播を除去した。
 - markdown importerのimport directoryとproject rootの同一視を除去し、relative project rootを拒否する。
-- producer observationはdurable `PERSISTED`だけを数える。`--enabled-producers` manifestの省略、空、未観測producerありはすべてcompletion falseとする。
+- producer observationはdurable `PERSISTED`だけを数える。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。`--enabled-producers` manifestの省略、空、未観測producerあり、および`--producer-observation-started-at`の省略はすべてcompletion falseとする。7日経過はevent timestampから推定せず、manifest確定後に保存した明示的な開始時刻から判定する。
 
 Operational follow-up:
 
 - active runtimeからproducer listを再取得し、runtime active、maintenance-only、test-only、disabledを分類する。
-- runtime activeなproducer名を`repository-isolation:report --enabled-producers <comma-separated names>`へ渡し、7日・200件・coverage 100%を確認する。
+- runtime activeなproducer名とmanifest確定時刻を`repository-isolation:report --enabled-producers <comma-separated names> --producer-observation-started-at <ISO-8601 timestamp>`へ渡し、同じ開始時刻を継続使用して7日・200件・coverage 100%を確認する。
 
 ### P2: Usage-Weighted Migration
 

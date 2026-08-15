@@ -12,7 +12,7 @@ import {
   repositoryEntityKindValues,
 } from "./repository-scope.js";
 
-export const REPOSITORY_ISOLATION_REPORT_VERSION = 1 as const;
+export const REPOSITORY_ISOLATION_REPORT_VERSION = 2 as const;
 export const REPOSITORY_ISOLATION_PREVIEW_LIMIT_MAX = 20;
 export const REPOSITORY_ISOLATION_BASELINE_MIN_SAMPLE = 500;
 
@@ -99,11 +99,14 @@ export type RepositoryIsolationReport = {
   producerObservation: {
     requestedWindowDays: 7;
     minimumIdentityBearingEvents: 200;
+    observationStartedAt: string | null;
     oldestIdentityBearingEventAt: string | null;
     observedDays: number;
     validatedCount: number;
     persistedCount: number;
     identityBearingPersistedCount: number;
+    globalPersistedCount: number;
+    malformedPersistedCount: number;
     rejectedCount: number;
     persistedByProducer: Record<string, number>;
     enabledProducers: string[];
@@ -321,6 +324,7 @@ function producerObservation(input: {
   now: Date;
   newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
   enabledProducers: string[];
+  observationStartedAt?: Date;
 }): RepositoryIsolationReport["producerObservation"] {
   const windowMs = 7 * 24 * 60 * 60 * 1000;
   const cutoff = input.now.getTime() - windowMs;
@@ -337,21 +341,56 @@ function producerObservation(input: {
   const rejected = events.filter(
     (event) => event.eventType === "PROJECT_IDENTITY_PRODUCER_REJECTED",
   );
-  const identityBearing = persisted.filter(
+  const hasProducerMetadata = (event: RepositoryIdentityProducerEvent): boolean => {
+    const entityKind = event.payload.entityKind;
+    return (
+      typeof event.payload.producer === "string" &&
+      event.payload.producer.trim().length > 0 &&
+      (entityKind === "knowledge" ||
+        entityKind === "source" ||
+        entityKind === "episode" ||
+        entityKind === "candidate" ||
+        entityKind === "vibe_memory")
+    );
+  };
+  const identityBearing = persisted.filter((event) => {
+    const fingerprint = event.payload.identityFingerprint;
+    return (
+      hasProducerMetadata(event) &&
+      event.payload.scope === "repo" &&
+      (event.payload.matchBasis === "project_ref" ||
+        event.payload.matchBasis === "repo_key" ||
+        event.payload.matchBasis === "repo_path") &&
+      (event.payload.bindingStatus === "verified" ||
+        event.payload.bindingStatus === "unverified") &&
+      typeof fingerprint === "string" &&
+      /^[a-f0-9]{64}$/.test(fingerprint)
+    );
+  });
+  const globalPersisted = persisted.filter(
     (event) =>
-      event.payload.matchBasis === "project_ref" ||
-      event.payload.matchBasis === "repo_key" ||
-      event.payload.matchBasis === "repo_path",
+      hasProducerMetadata(event) &&
+      event.payload.scope === "global" &&
+      event.payload.matchBasis === "none" &&
+      event.payload.bindingStatus === "not_applicable" &&
+      event.payload.identityFingerprint === null,
   );
+  const malformedPersistedCount =
+    persisted.length - identityBearing.length - globalPersisted.length;
   const oldestIdentityBearing = identityBearing.reduce<Date | null>(
     (oldest, event) => (!oldest || event.createdAt < oldest ? event.createdAt : oldest),
     null,
   );
-  const observedDays = oldestIdentityBearing
-    ? Math.min(7, Math.max(0, (input.now.getTime() - oldestIdentityBearing.getTime()) / 86_400_000))
+  const observationStartedAt =
+    input.observationStartedAt &&
+    Number.isFinite(input.observationStartedAt.getTime()) &&
+    input.observationStartedAt.getTime() <= input.now.getTime()
+      ? input.observationStartedAt
+      : null;
+  const observedDays = observationStartedAt
+    ? Math.min(7, Math.max(0, (input.now.getTime() - observationStartedAt.getTime()) / 86_400_000))
     : 0;
-  const hasFullWindow =
-    oldestIdentityBearing !== null && oldestIdentityBearing.getTime() <= cutoff + 60_000;
+  const hasFullWindow = observationStartedAt !== null && observationStartedAt.getTime() <= cutoff;
   const hasMinimumIdentityBearingEvents = identityBearing.length >= 200;
   const enabledProducers = [...new Set(input.enabledProducers.map((value) => value.trim()))]
     .filter(Boolean)
@@ -378,11 +417,14 @@ function producerObservation(input: {
   return {
     requestedWindowDays: 7,
     minimumIdentityBearingEvents: 200,
+    observationStartedAt: observationStartedAt?.toISOString() ?? null,
     oldestIdentityBearingEventAt: oldestIdentityBearing?.toISOString() ?? null,
     observedDays,
     validatedCount: validated.length,
     persistedCount: persisted.length,
     identityBearingPersistedCount: identityBearing.length,
+    globalPersistedCount: globalPersisted.length,
+    malformedPersistedCount,
     rejectedCount: rejected.length,
     persistedByProducer: sortedCounts(
       persisted.map((event) =>
@@ -412,6 +454,7 @@ function producerObservation(input: {
       hasFullWindow &&
       hasMinimumIdentityBearingEvents &&
       hasCompleteEnabledProducerCoverage &&
+      malformedPersistedCount === 0 &&
       newUnresolvedCount === 0,
   };
 }
@@ -428,6 +471,7 @@ export function buildRepositoryIsolationReport(input: {
   schemaCapabilities?: RepositoryIsolationSchemaCapabilities;
   producerEvents?: RepositoryIdentityProducerEvent[];
   enabledProducers?: string[];
+  producerObservationStartedAt?: Date;
   newUnresolvedByEntity?: Record<RepositoryEntityKind, number>;
 }): RepositoryIsolationReport {
   const previewLimit = Math.min(
@@ -531,6 +575,7 @@ export function buildRepositoryIsolationReport(input: {
         episode: 0,
       },
       enabledProducers: input.enabledProducers ?? [],
+      observationStartedAt: input.producerObservationStartedAt,
     }),
     baseline: buildBaseline(runs, input.now ?? new Date()),
   };

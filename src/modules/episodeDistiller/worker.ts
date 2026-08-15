@@ -735,7 +735,12 @@ async function createEpisodeIdempotently(input: Parameters<typeof createEpisodeC
   });
   if (existing) return { episode: existing, deduped: true };
   try {
-    return { episode: await createEpisodeCard(input), deduped: false };
+    return {
+      episode: await createEpisodeCard(input, {
+        identityProducer: "episode-distiller.typescript",
+      }),
+      deduped: false,
+    };
   } catch (error) {
     const concurrentExisting = await getEpisodeCardBySource({
       sourceKind: input.sourceKind,

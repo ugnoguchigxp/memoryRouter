@@ -655,13 +655,20 @@ function requireWriteSafety(input: RunRepositoryIdentityBackfillInput, checksum:
       `backfill plan checksum changed: expected ${input.expectedChecksum}, received ${checksum}`,
     );
   }
-  if (
-    Object.values(input.explicitGlobalPromotions ?? {}).some((ids) => (ids?.length ?? 0) > 0) &&
-    (input.reviewDecisions?.length ?? 0) === 0
-  ) {
-    throw new Error(
-      "write mode requires reviewed global promotions with reviewer, reason, and timestamp",
-    );
+  for (const entityKind of ["knowledge", "source", "episode"] as const) {
+    for (const entityId of input.explicitGlobalPromotions?.[entityKind] ?? []) {
+      const hasMatchingReview = input.reviewDecisions?.some(
+        (review) =>
+          review.entityKind === entityKind &&
+          review.entityId === entityId &&
+          review.decision === "global",
+      );
+      if (!hasMatchingReview) {
+        throw new Error(
+          `write mode requires a matching global review decision for ${entityKind}:${entityId}`,
+        );
+      }
+    }
   }
 }
 
@@ -680,6 +687,40 @@ function validateReviewDecisions(input: RunRepositoryIdentityBackfillInput): voi
   }
 }
 
+function validateReviewDecisionsAgainstPlan(
+  input: RunRepositoryIdentityBackfillInput,
+  plan: RepositoryIdentityBackfillPlan,
+): void {
+  const decisionsByEntity = new Map(
+    plan.decisions.map((decision) => [`${decision.entityKind}:${decision.entityId}`, decision]),
+  );
+  for (const review of input.reviewDecisions ?? []) {
+    const key = `${review.entityKind}:${review.entityId}`;
+    const planned = decisionsByEntity.get(key);
+    if (!planned) throw new Error(`review decision references an unknown entity: ${key}`);
+    const hasIdentity = Boolean(
+      planned.after.projectRef || planned.after.repoKey || planned.after.repoPath,
+    );
+    const hasNoIdentity =
+      planned.after.projectRef === null &&
+      planned.after.repoKey === null &&
+      planned.after.repoPath === null;
+    const matches =
+      review.decision === "global"
+        ? planned.after.classificationStatus === "classified" &&
+          planned.after.scope === "global" &&
+          hasNoIdentity
+        : review.decision === "repo"
+          ? planned.after.classificationStatus === "classified" &&
+            planned.after.scope === "repo" &&
+            hasIdentity
+          : planned.after.classificationStatus === "unresolved" && hasNoIdentity;
+    if (!matches) {
+      throw new Error(`review decision conflicts with deterministic plan: ${key}`);
+    }
+  }
+}
+
 export async function runRepositoryIdentityBackfill(
   input: RunRepositoryIdentityBackfillInput = {},
 ): Promise<RepositoryIdentityBackfillSummary> {
@@ -690,6 +731,7 @@ export async function runRepositoryIdentityBackfill(
   if (backendConfig.kind === "postgres") {
     const data = await collectPostgresData(input);
     const plan = planRepositoryIdentityBackfill(data);
+    validateReviewDecisionsAgainstPlan(input, plan);
     if (mode === "dry-run") {
       return {
         ...plan,
@@ -727,6 +769,7 @@ export async function runRepositoryIdentityBackfill(
   try {
     const data = collectSqliteData(sqlite, input);
     const plan = planRepositoryIdentityBackfill(data);
+    validateReviewDecisionsAgainstPlan(input, plan);
     if (mode === "dry-run") {
       return {
         ...plan,

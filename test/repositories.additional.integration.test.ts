@@ -1,9 +1,12 @@
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { buildGraphSnapshot } from "../api/modules/graph/graph.repository.js";
-import { createKnowledgeItem } from "../api/modules/knowledge/knowledge.repository.js";
+import {
+  createKnowledgeItem,
+  updateKnowledgeItem,
+} from "../api/modules/knowledge/knowledge.repository.js";
 import { db } from "../src/db/index.js";
-import { knowledgeSourceLinks, sourceFragments } from "../src/db/schema.js";
+import { auditLogs, knowledgeSourceLinks, sourceFragments } from "../src/db/schema.js";
 import {
   getLatestCompileRunSnapshot,
   insertCompileRun,
@@ -33,7 +36,7 @@ vi.mock("../src/modules/embedding/embedding.service.js", () => ({
 
 const describeDb = isDbIntegrationEnabled() ? describe : describe.skip;
 
-describeDb("repositories integration additional", () => {
+describeDb("repositories additional integration", () => {
   beforeAll(async () => {
     await ensureDbIntegrationReady();
   });
@@ -281,7 +284,8 @@ describeDb("repositories integration additional", () => {
     const created = await createKnowledgeItem({
       type: "rule",
       status: "draft",
-      scope: "global",
+      scope: "repo",
+      repoPath: "/workspace/wiki",
       title: "Manual registration should auto link",
       body: "knowledge registration should attach source link when possible",
       confidence: 70,
@@ -299,6 +303,28 @@ describeDb("repositories integration additional", () => {
       .from(knowledgeSourceLinks)
       .where(eq(knowledgeSourceLinks.knowledgeId, created.id));
     expect(linkedRows.length).toBe(1);
+
+    await updateKnowledgeItem(created.id, { status: "active" });
+    const persistedWrites = await db
+      .select({ payload: auditLogs.payload })
+      .from(auditLogs)
+      .where(eq(auditLogs.eventType, "PROJECT_IDENTITY_PRODUCER_PERSISTED"));
+    expect(persistedWrites.map((row) => row.payload)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          producer: "knowledge.api-create",
+          entityKind: "knowledge",
+          entityId: created.id,
+          matchBasis: "repo_path",
+        }),
+        expect.objectContaining({
+          producer: "knowledge.api-update",
+          entityKind: "knowledge",
+          entityId: created.id,
+          matchBasis: "repo_path",
+        }),
+      ]),
+    );
   });
 
   test("getLatestCompileRunSnapshot returns the most recent run", async () => {

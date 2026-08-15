@@ -193,6 +193,33 @@ describe("sqlite knowledge backend", () => {
       body: "Knowledge API activation should stay on SQLite.",
     });
     expect(updated?.id).toBe(created.id);
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const persistedWrites = sqlite.db
+      .query<{ payload: string }, []>(
+        `select payload
+           from audit_logs
+          where event_type = 'PROJECT_IDENTITY_PRODUCER_PERSISTED'`,
+      )
+      .all()
+      .map((row) => JSON.parse(row.payload) as Record<string, unknown>);
+    expect(persistedWrites).toContainEqual(
+      expect.objectContaining({
+        producer: "knowledge.api-create",
+        entityKind: "knowledge",
+        entityId: created.id,
+        scope: "repo",
+        matchBasis: "repo_path",
+      }),
+    );
+    expect(persistedWrites).toContainEqual(
+      expect.objectContaining({
+        producer: "knowledge.api-update",
+        entityKind: "knowledge",
+        entityId: created.id,
+        scope: "repo",
+        matchBasis: "repo_path",
+      }),
+    );
 
     const feedback = await recordKnowledgeFeedback({
       id: created.id,
@@ -246,7 +273,7 @@ describe("sqlite knowledge backend", () => {
     expect(deleted?.id).toBe(created.id);
     const missingFeedback = await recordKnowledgeFeedback({ id: created.id, direction: "down" });
     expect(missingFeedback).toBeNull();
-  });
+  }, 15_000);
 
   test("compiles context and stores run snapshots in sqlite", async () => {
     await upsertKnowledgeFromSource({

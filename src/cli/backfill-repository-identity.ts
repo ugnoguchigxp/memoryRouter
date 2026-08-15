@@ -11,6 +11,12 @@ type RepositoryIdentityBackfillCliInput = RunRepositoryIdentityBackfillInput & {
   reviewFile?: string;
 };
 
+function requiredValue(args: readonly string[], index: number, option: string): string {
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) throw new Error(`${option} requires a value`);
+  return value;
+}
+
 export function parseRepositoryIdentityBackfillArgs(
   args: readonly string[],
 ): RepositoryIdentityBackfillCliInput {
@@ -20,13 +26,24 @@ export function parseRepositoryIdentityBackfillArgs(
     const arg = args[index];
     if (arg === "--dry-run") input.mode = "dry-run";
     else if (arg === "--write") input.mode = "write";
-    else if (arg === "--expected-checksum") input.expectedChecksum = args[++index];
-    else if (arg === "--backup-reference") input.backupReference = args[++index];
-    else if (arg === "--sqlite-path") input.sqlitePath = args[++index];
-    else if (arg === "--review-file") input.reviewFile = args[++index];
-    else if (arg === "--batch-size") input.batchSize = Number(args[++index]);
-    else if (arg === "--promote-global") {
-      const declaration = args[++index] ?? "";
+    else if (arg === "--expected-checksum") {
+      input.expectedChecksum = requiredValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--backup-reference") {
+      input.backupReference = requiredValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--sqlite-path") {
+      input.sqlitePath = requiredValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--review-file") {
+      input.reviewFile = requiredValue(args, index, arg);
+      index += 1;
+    } else if (arg === "--batch-size") {
+      input.batchSize = Number(requiredValue(args, index, arg));
+      index += 1;
+    } else if (arg === "--promote-global") {
+      const declaration = requiredValue(args, index, arg);
+      index += 1;
       const separator = declaration.indexOf(":");
       const kind = declaration.slice(0, separator) as RepositoryIdentityEntityKind;
       const id = declaration.slice(separator + 1);

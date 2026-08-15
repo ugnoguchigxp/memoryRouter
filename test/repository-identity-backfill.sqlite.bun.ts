@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { openSqliteCoreDatabase } from "../src/db/sqlite/index.js";
 import { runRepositoryIdentityBackfill } from "../src/modules/context-compiler/repository-identity-backfill.service.js";
 
+const reviewMetadata = {
+  reviewer: "repository-migration-reviewer",
+  reason: "Reviewed against deterministic provenance",
+  reviewedAt: "2026-08-15T00:00:00.000Z",
+} as const;
+
 describe("repository identity SQLite migration", () => {
   let directory = "";
   let sqlitePath = "";
@@ -123,5 +129,114 @@ describe("repository identity SQLite migration", () => {
         .get()?.classification_status,
     ).toBe("unresolved");
     restored.db.close();
+  });
+
+  test("rejects review decisions that conflict with the deterministic plan", async () => {
+    await expect(
+      runRepositoryIdentityBackfill({
+        mode: "dry-run",
+        sqlitePath,
+        reviewDecisions: [
+          {
+            entityKind: "knowledge",
+            entityId: "knowledge-exact",
+            decision: "unresolved",
+            ...reviewMetadata,
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "review decision conflicts with deterministic plan: knowledge:knowledge-exact",
+    );
+  });
+
+  test("rejects review decisions for entities outside the migration plan", async () => {
+    await expect(
+      runRepositoryIdentityBackfill({
+        mode: "dry-run",
+        sqlitePath,
+        reviewDecisions: [
+          {
+            entityKind: "knowledge",
+            entityId: "missing-knowledge",
+            decision: "unresolved",
+            ...reviewMetadata,
+          },
+        ],
+      }),
+    ).rejects.toThrow("review decision references an unknown entity: knowledge:missing-knowledge");
+  });
+
+  test("does not authorize a global promotion with an unrelated review", async () => {
+    const explicitGlobalPromotions = { source: ["source-capture"] } as const;
+    const dryRun = await runRepositoryIdentityBackfill({
+      mode: "dry-run",
+      sqlitePath,
+      explicitGlobalPromotions,
+    });
+
+    await expect(
+      runRepositoryIdentityBackfill({
+        mode: "write",
+        sqlitePath,
+        explicitGlobalPromotions,
+        expectedChecksum: dryRun.checksum,
+        backupReference: "verified-test-backup",
+        reviewDecisions: [
+          {
+            entityKind: "knowledge",
+            entityId: "knowledge-unknown",
+            decision: "unresolved",
+            ...reviewMetadata,
+          },
+        ],
+      }),
+    ).rejects.toThrow(
+      "write mode requires a matching global review decision for source:source-capture",
+    );
+  });
+
+  test("allows a global promotion with the matching reviewed decision", async () => {
+    const explicitGlobalPromotions = { source: ["source-capture"] } as const;
+    const reviewDecisions = [
+      {
+        entityKind: "source" as const,
+        entityId: "source-capture",
+        decision: "global" as const,
+        ...reviewMetadata,
+      },
+    ];
+    const dryRun = await runRepositoryIdentityBackfill({
+      mode: "dry-run",
+      sqlitePath,
+      explicitGlobalPromotions,
+      reviewDecisions,
+    });
+    const written = await runRepositoryIdentityBackfill({
+      mode: "write",
+      sqlitePath,
+      explicitGlobalPromotions,
+      reviewDecisions,
+      expectedChecksum: dryRun.checksum,
+      backupReference: "verified-test-backup",
+    });
+
+    expect(written.decisions.find((item) => item.entityId === "source-capture")?.outcome).toBe(
+      "global_promoted",
+    );
+    const sqlite = await openSqliteCoreDatabase({ path: sqlitePath, loadVectorExtension: false });
+    expect(
+      sqlite.db
+        .query<{
+          scope: string;
+          project_ref: string | null;
+          repo_key: string | null;
+          repo_path: string | null;
+        }>(
+          "select scope, project_ref, repo_key, repo_path from sources where id = 'source-capture'",
+        )
+        .get(),
+    ).toEqual({ scope: "global", project_ref: null, repo_key: null, repo_path: null });
+    sqlite.db.close();
   });
 });

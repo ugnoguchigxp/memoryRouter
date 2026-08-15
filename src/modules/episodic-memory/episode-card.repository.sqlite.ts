@@ -14,6 +14,7 @@ import {
 } from "../context-compiler/project-scoped-write.js";
 import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
 import { evaluateRepositoryScope } from "../context-compiler/repository-scope.js";
+import type { CreateEpisodeCardOptions } from "./episode-card.repository.js";
 
 async function getSqliteCoreDatabase() {
   const { getRuntimeSqliteCoreDatabase } = await import("../../db/sqlite/runtime.js");
@@ -348,8 +349,10 @@ async function refsByEpisodeIds(ids: string[]): Promise<Map<string, SqliteEpisod
 
 export async function createEpisodeCardSqlite(
   rawInput: EpisodeCardCreateInput,
+  options: CreateEpisodeCardOptions = {},
 ): Promise<EpisodeCard> {
   const input = episodeCardCreateSchema.parse(rawInput);
+  const identityProducer = options.identityProducer ?? `episode.${input.sourceKind}`;
   const identity = await resolveAuditedProjectScopedWriteIdentity(
     {
       scope: input.scope,
@@ -358,13 +361,14 @@ export async function createEpisodeCardSqlite(
       repoPath: input.repoPath,
     },
     {
-      producer: `episode.${input.sourceKind}`,
+      producer: identityProducer,
       entityKind: "episode",
     },
   );
   const sqlite = await getSqliteCoreDatabase();
   const id = crypto.randomUUID();
   const now = nowIso();
+  const refs: SqliteEpisodeRefRow[] = [];
   sqlite.db.query("BEGIN IMMEDIATE").run();
   try {
     sqlite.db
@@ -430,7 +434,6 @@ export async function createEpisodeCardSqlite(
         redactSecrets(input.outcome),
         redactSecrets(input.lesson),
       );
-    const refs: SqliteEpisodeRefRow[] = [];
     for (const ref of input.refs) {
       const refId = crypto.randomUUID();
       sqlite.db
@@ -463,19 +466,23 @@ export async function createEpisodeCardSqlite(
       });
     }
     sqlite.db.query("COMMIT").run();
-    const row = await getEpisodeCardRow(id);
-    if (!row) throw new Error("EpisodeCard insert did not return a row");
-    const episode = mapEpisode(row, refs);
-    await recordProjectScopedWritePersisted(identity, {
-      producer: `episode.${input.sourceKind}`,
-      entityKind: "episode",
-      entityId: id,
-    });
-    return episode;
   } catch (error) {
-    sqlite.db.query("ROLLBACK").run();
+    try {
+      sqlite.db.query("ROLLBACK").run();
+    } catch {
+      // The transaction may already be closed when COMMIT itself fails.
+    }
     throw error;
   }
+  const row = await getEpisodeCardRow(id);
+  if (!row) throw new Error("EpisodeCard insert did not return a row");
+  const episode = mapEpisode(row, refs);
+  await recordProjectScopedWritePersisted(identity, {
+    producer: identityProducer,
+    entityKind: "episode",
+    entityId: id,
+  });
+  return episode;
 }
 
 async function getEpisodeCardRow(id: string): Promise<SqliteEpisodeCardRow | null> {

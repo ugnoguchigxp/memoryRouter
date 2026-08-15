@@ -10,7 +10,10 @@ import {
   auditEventTypes,
   recordAuditLogSafe,
 } from "../../../src/modules/audit/audit-log.service.js";
-import { resolveAuditedProjectScopedWriteIdentity } from "../../../src/modules/context-compiler/project-scoped-write.js";
+import {
+  recordProjectScopedWritePersisted,
+  resolveAuditedProjectScopedWriteIdentity,
+} from "../../../src/modules/context-compiler/project-scoped-write.js";
 import { embedOne } from "../../../src/modules/embedding/embedding.service.js";
 import { canTransitionKnowledgeStatus } from "../../../src/modules/knowledge/knowledge-lifecycle.service.js";
 import {
@@ -431,6 +434,12 @@ export async function createKnowledgeItem(input: KnowledgeCreateInput) {
       confidence,
       linkMetadataSource: "createKnowledgeItem",
     });
+    await recordProjectScopedWritePersisted(identity, {
+      producer: "knowledge.api-create",
+      entityKind: "knowledge",
+      entityId: id,
+      actor: "user",
+    });
     return { id };
   }
 
@@ -472,6 +481,12 @@ export async function createKnowledgeItem(input: KnowledgeCreateInput) {
     metadata,
     confidence: confidence,
     linkMetadataSource: "createKnowledgeItem",
+  });
+  await recordProjectScopedWritePersisted(identity, {
+    producer: "knowledge.api-create",
+    entityKind: "knowledge",
+    entityId: inserted.id,
+    actor: "user",
   });
   return inserted;
 }
@@ -658,6 +673,12 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
         },
       });
     }
+    await recordProjectScopedWritePersisted(identity, {
+      producer: "knowledge.api-update",
+      entityKind: "knowledge",
+      entityId: existing.id,
+      actor: "user",
+    });
     return { id: existing.id };
   }
 
@@ -711,6 +732,12 @@ export async function updateKnowledgeItem(id: string, input: KnowledgeUpdateInpu
       },
     });
   }
+  await recordProjectScopedWritePersisted(identity, {
+    producer: "knowledge.api-update",
+    entityKind: "knowledge",
+    entityId: updated.id,
+    actor: "user",
+  });
   return updated ?? null;
 }
 

@@ -224,4 +224,55 @@ describe("SQLite repository isolation read-only report", () => {
       previewLimit: 20,
     });
   });
+
+  test("normalizes mixed SQLite timestamp formats at the 7-day boundary", async () => {
+    const database = await fixtureDatabase();
+    const now = new Date("2026-08-15T12:00:00.000Z");
+    const observationStartedAt = new Date("2026-08-08T12:00:00.000Z");
+    const before = collectRepositoryIsolationReportFromSqlite({ db: database.db, now });
+    const persistedPayload = JSON.stringify({
+      producer: "source.boundary-fixture",
+      entityKind: "source",
+      scope: "repo",
+      matchBasis: "repo_path",
+      identityFingerprint: "a".repeat(64),
+      bindingStatus: "unverified",
+    });
+    const insertAudit = database.db.query(
+      `insert into audit_logs (id, event_type, actor, payload, created_at)
+       values (?, 'PROJECT_IDENTITY_PRODUCER_PERSISTED', 'system', ?, ?)`,
+    );
+    insertAudit.run("audit-space", persistedPayload, "2026-08-08 13:00:00");
+    insertAudit.run(
+      "audit-unix",
+      persistedPayload,
+      `unix-ms:${new Date("2026-08-14T00:00:00.000Z").getTime()}`,
+    );
+    insertAudit.run("audit-old", persistedPayload, "2026-08-08T11:59:59.000Z");
+
+    const insertSource = database.db.query(
+      `insert into sources
+         (id, source_kind, classification_status, scope, uri, body, metadata, created_at)
+       values (?, 'wiki', 'unresolved', 'repo', ?, 'body', '{}', ?)`,
+    );
+    insertSource.run("source-boundary-recent", "fixture://boundary-recent", "2026-08-08 13:00:00");
+    insertSource.run("source-boundary-old", "fixture://boundary-old", "2026-08-08T11:59:59.000Z");
+
+    const report = collectRepositoryIsolationReportFromSqlite({
+      db: database.db,
+      enabledProducers: ["source.boundary-fixture"],
+      producerObservationStartedAt: observationStartedAt,
+      now,
+    });
+
+    expect(report.producerObservation).toMatchObject({
+      persistedCount: 2,
+      identityBearingPersistedCount: 2,
+      malformedPersistedCount: 0,
+      observedEnabledProducers: ["source.boundary-fixture"],
+    });
+    expect(report.producerObservation.newUnresolvedByEntity.source).toBe(
+      before.producerObservation.newUnresolvedByEntity.source + 1,
+    );
+  });
 });

@@ -91,10 +91,34 @@ pub(crate) fn query_params(values: &[String]) -> impl rusqlite::Params + '_ {
     params_from_iter(values.iter())
 }
 
+fn normalize_facet_value(value: &str) -> String {
+    let mut normalized = String::new();
+    for character in value.trim().chars().flat_map(char::to_lowercase) {
+        let mapped = if character.is_whitespace() || character == '_' {
+            '-'
+        } else if character.is_alphanumeric() || matches!(character, '.' | '/' | '+' | '#' | '-') {
+            character
+        } else {
+            '-'
+        };
+        if mapped == '-' {
+            if !normalized.is_empty() && !normalized.ends_with('-') {
+                normalized.push('-');
+            }
+        } else {
+            normalized.push(mapped);
+        }
+    }
+    if normalized.ends_with('-') {
+        normalized.pop();
+    }
+    normalized
+}
+
 fn normalized(values: &[String]) -> Vec<String> {
     values
         .iter()
-        .map(|value| value.trim().to_ascii_lowercase())
+        .map(|value| normalize_facet_value(value))
         .filter(|value| !value.is_empty())
         .collect()
 }
@@ -165,4 +189,40 @@ pub(crate) fn scope_snapshot(
         "classificationStatus": "classified",
         "decision": if item_scope == "global" { "ALLOW_GLOBAL" } else { "ALLOW_REPOSITORY" }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{facets_allow, normalize_facet_value, RepositoryRequestFacets};
+
+    #[test]
+    fn facet_normalization_matches_typescript_slug_rules() {
+        assert_eq!(normalize_facet_value(" Type__Script! "), "type-script");
+        assert_eq!(normalize_facet_value("API@@Layer"), "api-layer");
+        assert_eq!(normalize_facet_value("C++"), "c++");
+    }
+
+    #[test]
+    fn facet_matching_normalizes_request_and_candidate_values() {
+        let request = RepositoryRequestFacets {
+            technologies: vec!["Type Script".to_string()],
+            change_types: Vec::new(),
+            domains: Vec::new(),
+        };
+
+        assert!(facets_allow(
+            &request,
+            &["type_script".to_string()],
+            &[],
+            &[],
+            false,
+        ));
+        assert!(!facets_allow(
+            &request,
+            &["rust".to_string()],
+            &[],
+            &[],
+            false,
+        ));
+    }
 }

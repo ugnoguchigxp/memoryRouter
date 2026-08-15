@@ -1154,6 +1154,21 @@ describe("sqlite runtime support repositories", () => {
       repo_path: "/repo/contextStill",
       repo_key: null,
     });
+    const persistedEpisodeWrite = sqlite.db
+      .query<{ payload: string }, [string]>(
+        `select payload
+           from audit_logs
+          where event_type = 'PROJECT_IDENTITY_PRODUCER_PERSISTED'
+            and json_extract(payload, '$.entityId') = ?
+          limit 1`,
+      )
+      .get(episodes[0]?.id ?? "");
+    expect(JSON.parse(persistedEpisodeWrite?.payload ?? "{}")).toMatchObject({
+      producer: "episode-distiller.typescript",
+      entityKind: "episode",
+      entityId: episodes[0]?.id,
+      matchBasis: "repo_path",
+    });
     expect(JSON.parse(episodeRow?.anti_applicability ?? "{}")).toMatchObject({
       openLoops: ["Review quality scores after real LLM runs."],
     });

@@ -220,6 +220,13 @@ function sqliteColumn(columns: Set<string>, name: string, fallback: string): str
   return columns.has(name) ? name : `${fallback} as ${name}`;
 }
 
+function sqliteTimestampMillis(column: string): string {
+  return `case
+    when ${column} like 'unix-ms:%' then cast(substr(${column}, 9) as integer)
+    else cast(round((julianday(${column}) - 2440587.5) * 86400000) as integer)
+  end`;
+}
+
 function sqliteSchemaCapabilities(db: SqliteReader): RepositoryIsolationSchemaCapabilities {
   const entity = (tableName: string) => {
     const columns = sqliteTableColumns(db, tableName);
@@ -375,9 +382,9 @@ function sqliteAliases(db: SqliteReader): CompileProjectIdentityAlias[] {
 function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservation[] {
   const runColumns = sqliteTableColumns(db, "context_compile_runs");
   if (runColumns.size === 0) return [];
-  const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = now.getTime() - 30 * 24 * 60 * 60 * 1000;
   const rows = db
-    .query<Record<string, unknown>, [string]>(
+    .query<Record<string, unknown>, [number]>(
       `select id,
               ${sqliteColumn(runColumns, "created_at", "CURRENT_TIMESTAMP")},
               ${sqliteColumn(runColumns, "duration_ms", "0")},
@@ -394,7 +401,7 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
               ${sqliteColumn(runColumns, "identity_contract_version", "1")},
               ${sqliteColumn(runColumns, "pack_snapshot", "null")}
          from context_compile_runs
-        where created_at >= ?`,
+        where ${sqliteTimestampMillis("created_at")} >= ?`,
     )
     .all(cutoff)
     .map(
@@ -415,11 +422,11 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
   const packItems = !sqliteTableExists(db, "context_pack_items")
     ? []
     : db
-        .query<Record<string, unknown>, [string]>(
+        .query<Record<string, unknown>, [number]>(
           `select item.run_id, item.item_kind, item.item_id
          from context_pack_items item
          join context_compile_runs run on run.id = item.run_id
-        where run.created_at >= ?`,
+        where ${sqliteTimestampMillis("run.created_at")} >= ?`,
         )
         .all(cutoff)
         .map(
@@ -434,13 +441,13 @@ function sqliteRuns(db: SqliteReader, now: Date): RepositoryIsolationRunObservat
 
 function sqliteProducerEvents(db: SqliteReader, now: Date): RepositoryIdentityProducerEvent[] {
   if (!sqliteTableExists(db, "audit_logs")) return [];
-  const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = now.getTime() - 7 * 24 * 60 * 60 * 1000;
   return db
-    .query<Record<string, unknown>, [string, string, string, string]>(
+    .query<Record<string, unknown>, [string, string, string, number]>(
       `select event_type, payload, created_at
          from audit_logs
         where event_type in (?, ?, ?)
-          and created_at >= ?`,
+          and ${sqliteTimestampMillis("created_at")} >= ?`,
     )
     .all(
       "PROJECT_IDENTITY_PRODUCER_VALIDATED",
@@ -471,15 +478,15 @@ function sqliteNewUnresolvedCounts(
   db: SqliteReader,
   now: Date,
 ): Record<RepositoryEntityKind, number> {
-  const cutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoff = now.getTime() - 7 * 24 * 60 * 60 * 1000;
   const count = (table: string): number => {
     const columns = sqliteTableColumns(db, table);
     if (!columns.has("classification_status") || !columns.has("created_at")) return 0;
     const row = db
-      .query<{ count: number }, [string]>(
+      .query<{ count: number }, [number]>(
         `select count(*) as count
            from ${table}
-          where created_at >= ?
+          where ${sqliteTimestampMillis("created_at")} >= ?
             and coalesce(classification_status, 'unresolved') <> 'classified'`,
       )
       .all(cutoff)[0];
@@ -499,6 +506,7 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
   previewLimit?: number;
   recentRunLimit?: number;
   enabledProducers?: string[];
+  producerObservationStartedAt?: Date;
   now?: Date;
 }): RepositoryIsolationReport {
   const now = input.now ?? new Date();
@@ -517,6 +525,7 @@ export function collectRepositoryIsolationReportFromSqlite(input: {
     previewLimit: input.previewLimit,
     recentRunLimit: input.recentRunLimit,
     enabledProducers: input.enabledProducers,
+    producerObservationStartedAt: input.producerObservationStartedAt,
     now,
     schemaCapabilities: sqliteSchemaCapabilities(input.db),
   });
@@ -713,6 +722,7 @@ export async function collectRepositoryIsolationReport(
     previewLimit?: number;
     recentRunLimit?: number;
     enabledProducers?: string[];
+    producerObservationStartedAt?: Date;
     now?: Date;
   } = {},
 ): Promise<RepositoryIsolationReport> {
@@ -742,6 +752,7 @@ export async function collectRepositoryIsolationReport(
     previewLimit: input.previewLimit,
     recentRunLimit: input.recentRunLimit,
     enabledProducers: input.enabledProducers,
+    producerObservationStartedAt: input.producerObservationStartedAt,
     now,
   });
 }

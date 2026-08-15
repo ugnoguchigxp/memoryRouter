@@ -97,7 +97,9 @@ path case、malformed percent encoding、selected-basis欠落、limit saturation
 
 ## Producer Observation
 
-producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定にはdurable write後のPERSISTEDだけを使用する。reportは`--enabled-producers`で宣言した全producerの観測を要求し、manifest省略、空、未観測producerありをfail closedにする。
+producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定にはdurable write後のPERSISTEDだけを使用する。identity-bearing件数にはrepo scope、exact match basis、producer、既知entity kind、binding status、64桁identity fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion falseとする。正規なglobal PERSISTEDは別cohortで集計する。reportは`--enabled-producers`で宣言した全producerの観測と、manifest確定後に保存して`--producer-observation-started-at`へ渡す開始時刻を要求する。manifestまたは開始時刻の省略、空manifest、未観測producerありをfail closedにし、最古eventの時刻だけでは7日経過と判定しない。
+
+明示的な`observationStartedAt`を追加してcompletion semanticsを変更したため、report schemaはversion 2とする。
 
 2026-08-15 22:35 JSTのlive read-only audit結果:
 
@@ -108,7 +110,7 @@ producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定
 
 resident-onlyの暫定manifest（`agent-log-sync.rust`、`episode-distiller.rust`、`register-candidates.rust`）でreportを実行すると、missing 3、coverage 0、completion falseとなる。TypeScript/API/maintenance surfaceを含む最終manifestはruntime reachability分類後に確定する。
 
-残作業はruntime active、maintenance-only、test-only、disabledのproducer inventoryを確定し、active名をmanifestへ保存したうえで、7日以上・identity-bearing PERSISTED 200件以上・coverage 100%・new unresolved 0を実観測することである。人工的なfixture writeをlive completion countへ含めない。
+残作業はruntime active、maintenance-only、test-only、disabledのproducer inventoryを確定し、active名をmanifestへ保存し、その確定時刻を観測開始時刻として固定したうえで、7日以上・identity-bearing PERSISTED 200件以上・coverage 100%・new unresolved 0を実観測することである。同一の開始時刻を各reportで使用し、人工的なfixture writeをlive completion countへ含めない。
 
 ## Verification
 

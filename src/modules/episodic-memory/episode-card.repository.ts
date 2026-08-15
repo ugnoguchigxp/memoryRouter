@@ -270,13 +270,21 @@ async function refsByEpisodeIds(ids: string[]): Promise<Map<string, EpisodeRefRo
   return refs;
 }
 
-export async function createEpisodeCard(rawInput: EpisodeCardCreateInput): Promise<EpisodeCard> {
+export type CreateEpisodeCardOptions = {
+  identityProducer?: string;
+};
+
+export async function createEpisodeCard(
+  rawInput: EpisodeCardCreateInput,
+  options: CreateEpisodeCardOptions = {},
+): Promise<EpisodeCard> {
   if (isSqliteBackend()) {
     const sqlite = await sqliteRepository();
-    return sqlite.createEpisodeCardSqlite(rawInput);
+    return sqlite.createEpisodeCardSqlite(rawInput, options);
   }
 
   const input = episodeCardCreateSchema.parse(rawInput);
+  const identityProducer = options.identityProducer ?? `episode.${input.sourceKind}`;
   const identity = await resolveAuditedProjectScopedWriteIdentity(
     {
       scope: input.scope,
@@ -285,7 +293,7 @@ export async function createEpisodeCard(rawInput: EpisodeCardCreateInput): Promi
       repoPath: input.repoPath,
     },
     {
-      producer: `episode.${input.sourceKind}`,
+      producer: identityProducer,
       entityKind: "episode",
     },
   );
@@ -347,7 +355,7 @@ export async function createEpisodeCard(rawInput: EpisodeCardCreateInput): Promi
   });
 
   await recordProjectScopedWritePersisted(identity, {
-    producer: `episode.${input.sourceKind}`,
+    producer: identityProducer,
     entityKind: "episode",
     entityId: episode.id,
   });

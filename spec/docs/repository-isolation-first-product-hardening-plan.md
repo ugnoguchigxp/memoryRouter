@@ -93,7 +93,7 @@ P1の観測gateは次のとおりである。
 - 7日、identity-bearing persisted 200件、new unresolved 0件に加え、enabled producer coverage 100%を要求する。
 - global writeは別cohortとして扱い、identity-bearing件数を水増ししない。
 
-reportには`--enabled-producers`でruntime inventoryを渡す。manifest省略、空manifest、未観測producerありのいずれもcompletion falseとなる。2026-08-15のlive auditには旧ACCEPTEDが5件、PERSISTEDが0件であり、7日間のcompletion windowはまだ開始できていない。
+reportには`--enabled-producers`でruntime inventoryを、`--producer-observation-started-at`でmanifest確定後に保存したISO-8601開始時刻を渡す。manifestまたは開始時刻の省略、空manifest、未観測producerありのいずれもcompletion falseとなり、7日経過を最古eventの時刻から推定しない。2026-08-15のlive auditには旧ACCEPTEDが5件、PERSISTEDが0件であり、7日間のcompletion windowはまだ開始できていない。
 
 ### 3.4 Retrieval Resolution
 
@@ -636,7 +636,7 @@ PostgreSQLをsupported surfaceとして残す場合は専用test DBで同じisol
 
 ## 12. Immediate Next Actions
 
-1. runtime producer inventoryを確定し、`--enabled-producers` manifestを保存して7日・200 PERSISTED観測を開始する。
+1. runtime producer inventoryを確定し、`--enabled-producers` manifestと`--producer-observation-started-at`へ渡す開始時刻を保存して7日・200 PERSISTED観測を開始する。
 2. 2026-08-16 22:15 JST以降に24-hour enforced observationのfinal read-only auditを行う。
 3. producer coverage、new unresolved、Safety/Availability/Performance Gateと`bun run verify`を再確認し、closeout evidenceを確定する。
 4. archive gateをすべて満たしたらcloseout plan、T0 evidence、closeout evidenceをarchiveし、READMEを更新する。
