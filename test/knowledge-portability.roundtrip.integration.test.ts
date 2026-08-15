@@ -372,6 +372,10 @@ describeDb("knowledge portability roundtrip integration", () => {
   beforeEach(async () => {
     await ensureDbIntegrationReady();
     await truncateIntegrationTables();
+    await getDb().execute(sql`
+      delete from knowledge_tag_definitions
+      where id = '66666666-6666-4666-8666-666666666666'
+    `);
   });
 
   afterAll(async () => {

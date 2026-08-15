@@ -9,10 +9,66 @@ use rusqlite::Connection;
 use serde_json::{json, Value};
 
 use super::native_common::{
-    now_iso, pseudo_uuid, request_session_id, score_text, single_line, string_arg,
-    string_array_arg, table_exists, tool_error, with_writer,
+    now_iso, pseudo_uuid, request_session_id, score_text, single_line, string_arg, table_exists,
+    tool_error, with_writer,
 };
 use super::native_tools::NativeToolContext;
+use super::project_identity::{
+    resolve_compile_project_identity, CompileProjectIdentityInput, CompileProjectIdentityTrust,
+};
+
+fn optional_identity_string_arg(
+    args: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Option<String>, String> {
+    match args.get(key) {
+        None => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("{key} must be a string")),
+    }
+}
+
+fn validate_compile_argument_keys(args: &serde_json::Map<String, Value>) -> Result<(), String> {
+    const ALLOWED_KEYS: [&str; 7] = [
+        "goal",
+        "changeTypes",
+        "technologies",
+        "domains",
+        "projectRef",
+        "repoKey",
+        "repoPath",
+    ];
+    if let Some(key) = args
+        .keys()
+        .find(|key| !ALLOWED_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!("unknown context_compile argument: {key}"));
+    }
+    Ok(())
+}
+
+fn optional_string_array_arg(
+    args: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<Vec<String>, String> {
+    let Some(value) = args.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(values) = value.as_array() else {
+        return Err(format!("{key} must be an array of non-empty strings"));
+    };
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string)
+                .ok_or_else(|| format!("{key} must contain only non-empty strings"))
+        })
+        .collect()
+}
 
 pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Value {
     let owned_params = params.clone();
@@ -31,21 +87,55 @@ pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Va
 
 fn context_compile_on_connection(
     params: &Value,
-    context: &NativeToolContext,
+    _context: &NativeToolContext,
     connection: &mut Connection,
 ) -> Value {
     let started = Instant::now();
     let Some(args) = params.get("arguments").and_then(Value::as_object) else {
         return tool_error("context_compile arguments must be an object");
     };
+    if let Err(error) = validate_compile_argument_keys(args) {
+        return tool_error(&error);
+    }
     let goal = match string_arg(args, "goal") {
         Some(goal) => goal,
         None => return tool_error("goal is required"),
     };
     let session_id = request_session_id(params, args);
-    let technologies = string_array_arg(args, "technologies");
-    let change_types = string_array_arg(args, "changeTypes");
-    let domains = string_array_arg(args, "domains");
+    let technologies = match optional_string_array_arg(args, "technologies") {
+        Ok(values) => values,
+        Err(error) => return tool_error(&error),
+    };
+    let change_types = match optional_string_array_arg(args, "changeTypes") {
+        Ok(values) => values,
+        Err(error) => return tool_error(&error),
+    };
+    let domains = match optional_string_array_arg(args, "domains") {
+        Ok(values) => values,
+        Err(error) => return tool_error(&error),
+    };
+    let identity_input = match (
+        optional_identity_string_arg(args, "projectRef"),
+        optional_identity_string_arg(args, "repoKey"),
+        optional_identity_string_arg(args, "repoPath"),
+    ) {
+        (Ok(project_ref), Ok(repo_key), Ok(repo_path)) => CompileProjectIdentityInput {
+            project_ref,
+            repo_key,
+            repo_path,
+        },
+        (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+            return tool_error(&error);
+        }
+    };
+    let project_identity = match resolve_compile_project_identity(
+        &identity_input,
+        CompileProjectIdentityTrust::RequestHint,
+        None,
+    ) {
+        Ok(identity) => identity,
+        Err(error) => return tool_error(&error.to_string()),
+    };
     if !table_exists(connection, "context_compile_runs") {
         return tool_error("context_compile_runs table is not available");
     }
@@ -100,9 +190,12 @@ fn context_compile_on_connection(
         "goal": goal,
         "technologies": technologies,
         "changeTypes": change_types,
-        "domains": domains
+        "domains": domains,
+        "projectRef": project_identity.project_ref,
+        "repoKey": project_identity.repo_key,
+        "repoPath": project_identity.repo_path,
+        "projectIdentity": project_identity
     });
-    let repo_path = context.project_root.to_string_lossy();
     let transaction = match connection.transaction() {
         Ok(transaction) => transaction,
         Err(error) => return tool_error(&format!("failed to start compile transaction: {error}")),
@@ -112,7 +205,15 @@ fn context_compile_on_connection(
         run_id: &run_id,
         goal: &goal,
         session_id: session_id.as_deref(),
-        repo_path: repo_path.as_ref(),
+        project_ref: project_identity.project_ref.as_deref(),
+        repo_path: project_identity.repo_path.as_deref(),
+        repo_key: project_identity.repo_key.as_deref(),
+        match_basis: project_identity.match_basis.as_str(),
+        identity_contract_version: project_identity.contract_version,
+        scope_mode: project_identity.scope_mode,
+        identity_fingerprint: project_identity.identity_fingerprint.as_deref(),
+        identity_trust: project_identity.trust.as_str(),
+        binding_status: project_identity.binding_status.as_str(),
         input: &input,
         status,
         pack: &pack,
@@ -1640,7 +1741,15 @@ struct CompileRunInsert<'a> {
     run_id: &'a str,
     goal: &'a str,
     session_id: Option<&'a str>,
-    repo_path: &'a str,
+    project_ref: Option<&'a str>,
+    repo_path: Option<&'a str>,
+    repo_key: Option<&'a str>,
+    match_basis: &'a str,
+    identity_contract_version: u8,
+    scope_mode: &'a str,
+    identity_fingerprint: Option<&'a str>,
+    identity_trust: &'a str,
+    binding_status: &'a str,
     input: &'a Value,
     status: &'a str,
     pack: &'a Value,
@@ -1654,15 +1763,21 @@ fn insert_compile_run(params: CompileRunInsert<'_>) -> Result<(), String> {
         .execute(
             r#"
             insert into context_compile_runs (
-              id, goal, intent, session_id, repo_path, input, retrieval_mode, status,
+              id, goal, intent, session_id, project_ref, repo_key, repo_path, match_basis,
+              identity_contract_version, scope_mode, input, retrieval_mode, status,
               degraded_reasons, token_budget, duration_ms, source, pack_snapshot, created_at
-            ) values (?1, ?2, 'mcp_context_compile', ?3, ?4, ?5, 'sqlite_text', ?6, '[]', 0, ?7, 'mcp', ?8, ?9)
+            ) values (?1, ?2, 'mcp_context_compile', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'sqlite_text', ?11, '[]', 0, ?12, 'mcp', ?13, ?14)
             "#,
             (
                 params.run_id,
                 params.goal,
                 params.session_id,
+                params.project_ref,
+                params.repo_key,
                 params.repo_path,
+                params.match_basis,
+                i64::from(params.identity_contract_version),
+                params.scope_mode,
                 params.input.to_string(),
                 params.status,
                 i64::try_from(params.duration_ms).unwrap_or(i64::MAX),
@@ -1671,21 +1786,34 @@ fn insert_compile_run(params: CompileRunInsert<'_>) -> Result<(), String> {
             ),
         )
         .map_err(|error| format!("failed to insert context_compile run: {error}"))?;
-    let _ = params.connection.execute(
-        r#"
-        insert or replace into context_compile_task_traces (
-          run_id, retrieval_mode, repo_path, technologies, change_types, domains, goal_hash
-        ) values (?1, 'sqlite_text', ?2, ?3, ?4, ?5, ?6)
-        "#,
-        (
-            params.run_id,
-            params.repo_path,
-            json_array_string(params.input, "technologies"),
-            json_array_string(params.input, "changeTypes"),
-            json_array_string(params.input, "domains"),
-            goal_hash(params.goal),
-        ),
-    );
+    params
+        .connection
+        .execute(
+            r#"
+            insert or replace into context_compile_task_traces (
+              run_id, retrieval_mode, project_ref, repo_path, repo_key, match_basis,
+              identity_contract_version, scope_mode, identity_fingerprint, identity_trust,
+              binding_status, technologies, change_types, domains, goal_hash
+            ) values (?1, 'sqlite_text', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            "#,
+            (
+                params.run_id,
+                params.project_ref,
+                params.repo_path,
+                params.repo_key,
+                params.match_basis,
+                i64::from(params.identity_contract_version),
+                params.scope_mode,
+                params.identity_fingerprint,
+                params.identity_trust,
+                params.binding_status,
+                json_array_string(params.input, "technologies"),
+                json_array_string(params.input, "changeTypes"),
+                json_array_string(params.input, "domains"),
+                goal_hash(params.goal),
+            ),
+        )
+        .map_err(|error| format!("failed to insert context_compile task trace: {error}"))?;
     Ok(())
 }
 
@@ -2019,7 +2147,12 @@ mod tests {
                   goal text not null,
                   intent text not null,
                   session_id text,
+                  project_ref text,
+                  repo_key text,
                   repo_path text,
+                  match_basis text not null default 'none',
+                  identity_contract_version integer not null default 1,
+                  scope_mode text not null default 'global_only',
                   input text not null default '{}',
                   retrieval_mode text not null,
                   status text not null,
@@ -2029,6 +2162,25 @@ mod tests {
                   source text not null default 'unknown',
                   pack_snapshot text,
                   created_at text not null default CURRENT_TIMESTAMP
+                );
+                create table context_compile_task_traces (
+                  run_id text primary key,
+                  retrieval_mode text not null,
+                  project_ref text,
+                  repo_path text,
+                  repo_key text,
+                  match_basis text not null default 'none',
+                  identity_contract_version integer not null default 1,
+                  scope_mode text not null default 'global_only',
+                  identity_fingerprint text,
+                  identity_trust text not null default 'request_hint',
+                  binding_status text not null default 'not_applicable',
+                  technologies text not null default '[]',
+                  change_types text not null default '[]',
+                  domains text not null default '[]',
+                  goal_hash text not null,
+                  created_at text not null default CURRENT_TIMESTAMP,
+                  updated_at text not null default CURRENT_TIMESTAMP
                 );
                 create table context_pack_items (
                   id integer primary key autoincrement,
@@ -2156,6 +2308,49 @@ mod tests {
     }
 
     #[test]
+    fn compile_run_insert_fails_closed_when_identity_trace_cannot_be_saved() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        create_minimal_compile_schema(&connection);
+        connection
+            .execute("drop table context_compile_task_traces", [])
+            .unwrap();
+        let input = json!({"goal": "trace persistence", "projectRef": "project-A"});
+        let pack = json!({});
+        let transaction = connection.transaction().unwrap();
+        let error = insert_compile_run(CompileRunInsert {
+            connection: &transaction,
+            run_id: "run-trace-failure",
+            goal: "trace persistence",
+            session_id: None,
+            project_ref: Some("project-A"),
+            repo_path: None,
+            repo_key: None,
+            match_basis: "project_ref",
+            identity_contract_version: 1,
+            scope_mode: "project",
+            identity_fingerprint: Some(
+                "0513f9c3cf83583e36682ab931ecc66a70eafc5cd40b15123fab848a60cd7407",
+            ),
+            identity_trust: "request_hint",
+            binding_status: "not_applicable",
+            input: &input,
+            status: "ok",
+            pack: &pack,
+            duration_ms: 1,
+        })
+        .expect_err("missing identity trace table must fail the compile write");
+        assert!(error.contains("failed to insert context_compile task trace"));
+        drop(transaction);
+
+        let run_count: i64 = connection
+            .query_row("select count(*) from context_compile_runs", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(run_count, 0);
+    }
+
+    #[test]
     fn context_compile_disabled_agentic_settings_returns_composed_fallback() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
@@ -2214,7 +2409,12 @@ mod tests {
             sqlite_core_path: db_path.clone(),
         };
         let result = context_compile(
-            &json!({"arguments": {"goal": "Rust composer fallback route"}}),
+            &json!({"arguments": {
+                "goal": "Rust composer fallback route",
+                "projectRef": "project-A",
+                "repoKey": "ORG/Repo-A",
+                "repoPath": "/work/./repo-a"
+            }}),
             &context,
         );
         let text = result["content"][0]["text"].as_str().unwrap();
@@ -2224,6 +2424,8 @@ mod tests {
         assert!(!text.contains("# Context Pack"));
         assert!(!text.contains("runId"));
         assert!(!text.contains("score"));
+        assert!(!text.contains("project-A"));
+        assert!(!text.contains("/work/repo-a"));
         assert!(!result
             .get("isError")
             .and_then(serde_json::Value::as_bool)
@@ -2270,6 +2472,154 @@ mod tests {
             )
             .unwrap();
         assert_eq!(trace_reason, "rust_native_text_score");
+        let run_identity = connection
+            .query_row(
+                "select project_ref, repo_key, repo_path, match_basis, identity_contract_version, scope_mode, input from context_compile_runs limit 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(run_identity.0, "project-A");
+        assert_eq!(run_identity.1, "org/repo-a");
+        assert_eq!(run_identity.2, "/work/repo-a");
+        assert_eq!(run_identity.3, "project_ref");
+        assert_eq!(run_identity.4, 1);
+        assert_eq!(run_identity.5, "project");
+        let persisted_input: Value = serde_json::from_str(&run_identity.6).unwrap();
+        assert_eq!(
+            persisted_input["projectIdentity"]["bindingStatus"],
+            "unverified"
+        );
+        let trace_identity = connection
+            .query_row(
+                "select project_ref, repo_key, repo_path, match_basis, identity_fingerprint, identity_trust, binding_status from context_compile_task_traces limit 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(trace_identity.0, "project-A");
+        assert_eq!(trace_identity.1, "org/repo-a");
+        assert_eq!(trace_identity.2, "/work/repo-a");
+        assert_eq!(trace_identity.3, "project_ref");
+        assert_eq!(trace_identity.4.len(), 64);
+        assert_eq!(trace_identity.5, "request_hint");
+        assert_eq!(trace_identity.6, "unverified");
+
+        let global_only = context_compile(
+            &json!({"arguments": {"goal": "Rust global-only identity trace"}}),
+            &context,
+        );
+        assert!(!global_only
+            .get("isError")
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
+        let global_identity = connection
+            .query_row(
+                "select project_ref, repo_key, repo_path, match_basis, scope_mode, input from context_compile_runs where goal = 'Rust global-only identity trace'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(global_identity.0, None);
+        assert_eq!(global_identity.1, None);
+        assert_eq!(global_identity.2, None);
+        assert_eq!(global_identity.3, "none");
+        assert_eq!(global_identity.4, "global_only");
+        let global_input: Value = serde_json::from_str(&global_identity.5).unwrap();
+        assert_eq!(global_input["projectIdentity"]["matchValue"], Value::Null);
+        assert_eq!(
+            global_input["projectIdentity"]["identityFingerprint"],
+            Value::Null
+        );
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn context_compile_rejects_non_string_project_identity() {
+        let db_path = temp_db_path();
+        let context = NativeToolContext {
+            project_root: std::env::temp_dir(),
+            sqlite_core_path: db_path.clone(),
+        };
+        let result = context_compile(
+            &json!({"arguments": {"goal": "Reject malformed identity", "projectRef": 42}}),
+            &context,
+        );
+
+        assert_eq!(result["isError"], true);
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("projectRef must be a string")));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn context_compile_rejects_unknown_and_control_arguments() {
+        let db_path = temp_db_path();
+        let context = NativeToolContext {
+            project_root: std::env::temp_dir(),
+            sqlite_core_path: db_path.clone(),
+        };
+        let unknown = context_compile(
+            &json!({"arguments": {"goal": "Reject unknown argument", "tokenBudget": 1000}}),
+            &context,
+        );
+        assert_eq!(unknown["isError"], true);
+        assert!(unknown["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("unknown context_compile argument: tokenBudget")));
+
+        let control = context_compile(
+            &json!({"arguments": {"goal": "Reject control", "projectRef": "project-A\n"}}),
+            &context,
+        );
+        assert_eq!(control["isError"], true);
+        assert!(control["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("INVALID_PROJECT_REF")));
+
+        let malformed_facets = context_compile(
+            &json!({"arguments": {
+                "goal": "Reject malformed facets",
+                "technologies": ["Rust", 42]
+            }}),
+            &context,
+        );
+        assert_eq!(malformed_facets["isError"], true);
+        assert!(malformed_facets["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("technologies must contain only non-empty strings")));
 
         let _ = std::fs::remove_file(db_path);
     }

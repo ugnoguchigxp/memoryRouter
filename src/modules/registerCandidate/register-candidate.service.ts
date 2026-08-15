@@ -9,19 +9,18 @@ import {
   findingCandidateQueue,
   foundCandidates,
 } from "../../db/schema.js";
+import { parseLlmJsonLike } from "../../lib/llm-output-parser.js";
 import { registerCandidateInputSchema } from "../../shared/schemas/knowledge.schema.js";
 import { registerCandidatesBulkInputSchema } from "../../shared/schemas/knowledge.schema.js";
 import { hasSkillLikeProcedureBody } from "../distillation/procedure-quality.js";
 import { resolveKnowledgeCandidatePriorityGroup } from "../distillationTarget/priority-group.js";
 import { DEFAULT_DISTILLATION_TARGET_VERSION } from "../distillationTarget/repository.js";
-import { embedOne } from "../embedding/embedding.service.js";
 import { parseStorageCandidatesFromLlmOutput } from "../findCandidate/parser.js";
 import type {
   CandidateKnowledgePolarity,
   CandidateKnowledgeType,
 } from "../findCandidate/repository.js";
 import { type KnowledgeApplicability, normalizeApplicability } from "../knowledge/applicability.js";
-import { upsertKnowledgeFromSource } from "../knowledge/knowledge.repository.js";
 import { appendQueueEvent } from "../queue/core/events.js";
 
 export type RegisterCandidateInput = z.input<typeof registerCandidateInputSchema>;
@@ -94,6 +93,32 @@ function hasProcedureAvoidSection(body: string): boolean {
   return /^Avoid:\s*$/im.test(body) || /^Avoid:\s+\S/im.test(body);
 }
 
+function parseRegistrationTextCandidates(input: RegisterCandidateInput) {
+  if (!input.text) return [];
+  const strictCandidates = parseStorageCandidatesFromLlmOutput(input.text);
+  if (strictCandidates.length > 0) return strictCandidates;
+
+  const parsed = parseLlmJsonLike(input.text)?.value;
+  if (!parsed || typeof parsed !== "object") return strictCandidates;
+  const withDefaults = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    return {
+      ...record,
+      type: record.type ?? record.candidateType ?? input.type ?? "rule",
+      polarity: record.polarity ?? input.polarity ?? "positive",
+    };
+  };
+  const defaulted = Array.isArray(parsed)
+    ? parsed.map(withDefaults)
+    : "candidates" in parsed && Array.isArray(parsed.candidates)
+      ? { ...parsed, candidates: parsed.candidates.map(withDefaults) }
+      : "candidate" in parsed
+        ? { ...parsed, candidate: withDefaults(parsed.candidate) }
+        : withDefaults(parsed);
+  return parseStorageCandidatesFromLlmOutput(JSON.stringify(defaulted));
+}
+
 function bodyWithProcedureAvoidSection(params: {
   body: string;
   type: CandidateKnowledgeType;
@@ -118,7 +143,7 @@ function normalizeInput(input: RegisterCandidateInput): {
   warnings: RegisterCandidateWarning[];
 } {
   const warnings: RegisterCandidateWarning[] = [];
-  const textCandidates = input.text ? parseStorageCandidatesFromLlmOutput(input.text) : [];
+  const textCandidates = parseRegistrationTextCandidates(input);
   const parsedCandidate = textCandidates[0];
   if (parsedCandidate) {
     warnings.push("text_parsed_to_candidate_json");
@@ -208,34 +233,162 @@ export async function registerCandidate(
   const now = new Date();
   const hasApplicability = Object.keys(normalized.applicability).length > 0;
   if (resolveDatabaseBackendConfig().kind === "sqlite") {
-    const embedding = await embedOne(`${normalized.title}\n${normalized.body}`, "passage");
-    const knowledgeId = await upsertKnowledgeFromSource({
-      sourceUri,
-      type: normalized.type,
-      status: "active",
-      scope: normalized.applicability.general ? "global" : "repo",
+    const { getRuntimeSqliteCoreDatabase } = await import("../../db/sqlite/runtime.js");
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const targetStateId = randomUUID();
+    const findCandidateResultId = randomUUID();
+    const findingJobId = randomUUID();
+    const foundCandidateId = randomUUID();
+    const coveringJobId = randomUUID();
+    const origin = compactOrigin(parsed, normalized);
+    const targetMetadata = {
+      ...(parsed.metadata ?? {}),
+      source: "mcp_register_candidate",
+      registeredAt: now.toISOString(),
       polarity: normalized.polarity,
-      intentTags: normalized.intentTags,
+      ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
+      ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
+    } satisfies Record<string, unknown>;
+    const priorityGroup = resolveKnowledgeCandidatePriorityGroup({
+      sourceUri,
+      metadata: targetMetadata,
+    });
+    const payload = {
       title: normalized.title,
       body: normalized.body,
-      confidence: parsed.confidence ?? 70,
-      importance: parsed.importance ?? 70,
-      metadata: {
-        ...(parsed.metadata ?? {}),
-        source: "mcp_register_candidate",
-        registeredAt: now.toISOString(),
-        sqliteDirectRegistration: true,
-        candidateId,
-        polarity: normalized.polarity,
-        ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
-        ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
-      },
-      embedding,
-      appliesTo: normalized.applicability,
+      type: normalized.type,
+      polarity: normalized.polarity,
+      ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
+      origin,
+      legacyTargetStateId: targetStateId,
+      legacyFindCandidateResultId: findCandidateResultId,
+      ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
+    };
+    const findingMetadata = {
+      source: "mcp_register_candidate",
+      registeredAt: now.toISOString(),
+      legacyTargetStateId: targetStateId,
+      legacyFindCandidateResultId: findCandidateResultId,
+      polarity: normalized.polarity,
+      ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
+      ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
+    };
+    const candidateMetadata = {
+      sourceKind: "knowledge_candidate",
+      sourceKey: candidateId,
+      sourceUri,
+      polarity: normalized.polarity,
+      ...(normalized.intentTags.length > 0 ? { intentTags: normalized.intentTags } : {}),
+      ...(hasApplicability ? { appliesTo: normalized.applicability } : {}),
+    };
+    sqlite.db.exec("BEGIN IMMEDIATE");
+    try {
+      sqlite.db
+        .query(
+          `insert into distillation_target_states (
+             id, target_kind, target_key, source_uri, distillation_version,
+             status, phase, priority_group, sort_key, metadata, created_at, updated_at
+           ) values (?, 'knowledge_candidate', ?, ?, ?, 'pending', 'selected', ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          targetStateId,
+          candidateId,
+          sourceUri,
+          DEFAULT_DISTILLATION_TARGET_VERSION,
+          priorityGroup,
+          now.toISOString(),
+          JSON.stringify(targetMetadata),
+          now.toISOString(),
+          now.toISOString(),
+        );
+      sqlite.db
+        .query(
+          `insert into find_candidate_results (
+             id, target_state_id, candidate_index, title, content, origin, status, created_at, updated_at
+           ) values (?, ?, 0, ?, ?, ?, 'selected', ?, ?)`,
+        )
+        .run(
+          findCandidateResultId,
+          targetStateId,
+          normalized.title,
+          normalized.body,
+          JSON.stringify(origin),
+          now.toISOString(),
+          now.toISOString(),
+        );
+      sqlite.db
+        .query(
+          `insert into finding_candidate_queue (
+             id, input_kind, source_kind, source_key, source_uri, distillation_version,
+             status, priority, payload, metadata, completed_at, last_outcome_kind, created_at, updated_at
+           ) values (?, 'provided_candidate', 'knowledge_candidate', ?, ?, ?,
+             'completed', 90, ?, ?, ?, 'provided_candidate_registered', ?, ?)`,
+        )
+        .run(
+          findingJobId,
+          candidateId,
+          sourceUri,
+          DEFAULT_DISTILLATION_TARGET_VERSION,
+          JSON.stringify(payload),
+          JSON.stringify(findingMetadata),
+          now.toISOString(),
+          now.toISOString(),
+          now.toISOString(),
+        );
+      sqlite.db
+        .query(
+          `insert into found_candidates (
+             id, finding_job_id, candidate_index, type, title, content, origin, metadata, created_at, updated_at
+           ) values (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          foundCandidateId,
+          findingJobId,
+          normalized.type,
+          normalized.title,
+          normalized.body,
+          JSON.stringify(origin),
+          JSON.stringify(candidateMetadata),
+          now.toISOString(),
+          now.toISOString(),
+        );
+      sqlite.db
+        .query(
+          `insert into covering_evidence_queue (
+             id, found_candidate_id, distillation_version, status, priority,
+             provider_policy, payload, metadata, created_at, updated_at
+           ) values (?, ?, ?, 'pending', 90, 'default', '{}', '{}', ?, ?)`,
+        )
+        .run(
+          coveringJobId,
+          foundCandidateId,
+          DEFAULT_DISTILLATION_TARGET_VERSION,
+          now.toISOString(),
+          now.toISOString(),
+        );
+      sqlite.db.exec("COMMIT");
+    } catch (error) {
+      sqlite.db.exec("ROLLBACK");
+      throw error;
+    }
+    await appendQueueEvent({
+      queueName: "findingCandidate",
+      queueJobId: findingJobId,
+      eventType: "completed",
+      message: "provided candidate persisted to candidate pipeline",
+      metadata: { sourceKind: "knowledge_candidate", sourceKey: candidateId, foundCandidateId },
+    });
+    await appendQueueEvent({
+      queueName: "coveringEvidence",
+      queueJobId: coveringJobId,
+      eventType: "enqueued",
+      message: "covering job enqueued from register-candidate",
+      metadata: { foundCandidateId, findingJobId },
     });
     return {
-      targetStateId: knowledgeId,
-      findCandidateResultId: candidateId,
+      targetStateId,
+      findCandidateResultId,
+      findingJobId,
       sourceUri,
       status: "candidate_registered",
       title: normalized.title,

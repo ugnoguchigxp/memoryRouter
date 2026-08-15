@@ -3,6 +3,18 @@ import { reloadRuntimeSettingsCache } from "../../modules/settings/settings.serv
 import { compileInputSchema } from "../../shared/schemas/compile.schema.js";
 import type { ToolEntry } from "../registry.js";
 
+const contextCompileMcpInputSchema = compileInputSchema
+  .pick({
+    goal: true,
+    changeTypes: true,
+    technologies: true,
+    domains: true,
+    projectRef: true,
+    repoKey: true,
+    repoPath: true,
+  })
+  .strict();
+
 function resolveSessionIdFromMeta(requestMeta?: Record<string, unknown>): string | undefined {
   const keys = ["sessionId", "threadId", "conversationId", "codexSessionId"] as const;
   for (const key of keys) {
@@ -18,16 +30,38 @@ export const contextCompileTool: ToolEntry = {
     "Primary workflow tool. Build the minimal task context pack from knowledge + source evidence before coding.",
   inputSchema: {
     type: "object",
+    additionalProperties: false,
     properties: {
       goal: { type: "string" },
       changeTypes: { type: "array", items: { type: "string" } },
       technologies: { type: "array", items: { type: "string" } },
       domains: { type: "array", items: { type: "string" } },
+      projectRef: {
+        type: "string",
+        minLength: 1,
+        maxLength: 256,
+        pattern: "^[^\\u0000-\\u001F\\u007F-\\u009F]+$",
+        description: "Stable, opaque, case-sensitive project identity used as a selection hint.",
+      },
+      repoKey: {
+        type: "string",
+        minLength: 1,
+        maxLength: 1024,
+        pattern: "^[^\\u0000-\\u001F\\u007F-\\u009F]+$",
+        description: "Explicit legacy repository lookup key. Not derived from repoPath.",
+      },
+      repoPath: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4096,
+        pattern: "^[^\\u0000-\\u001F\\u007F-\\u009F]+$",
+        description: "Absolute lexical repository path or local absolute file URI.",
+      },
     },
     required: ["goal"],
   },
   handler: async (args, context) => {
-    const parsed = compileInputSchema.parse(args ?? {});
+    const parsed = contextCompileMcpInputSchema.parse(args ?? {});
     await reloadRuntimeSettingsCache();
     const { markdown } = await compileContextPack(parsed, {
       source: "mcp",

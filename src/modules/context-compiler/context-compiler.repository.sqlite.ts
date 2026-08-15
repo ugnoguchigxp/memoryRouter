@@ -298,7 +298,12 @@ export async function insertCompileRunSqlite(params: {
   goal: string;
   intent: string;
   sessionId?: string;
+  projectRef?: string | null;
+  repoKey?: string | null;
   repoPath?: string;
+  matchBasis?: "project_ref" | "repo_key" | "repo_path" | "none";
+  identityContractVersion?: number;
+  scopeMode?: "global_only" | "project";
   input: Record<string, unknown>;
   retrievalMode: string;
   status: "ok" | "degraded" | "failed";
@@ -312,16 +317,22 @@ export async function insertCompileRunSqlite(params: {
   sqlite.db
     .query(
       `INSERT INTO context_compile_runs (
-        id, goal, intent, session_id, repo_path, input, retrieval_mode, status,
+        id, goal, intent, session_id, project_ref, repo_key, repo_path, match_basis,
+        identity_contract_version, scope_mode, input, retrieval_mode, status,
         degraded_reasons, token_budget, duration_ms, source, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       id,
       params.goal,
       params.intent,
       params.sessionId ?? null,
+      params.projectRef ?? null,
+      params.repoKey ?? null,
       params.repoPath ?? null,
+      params.matchBasis ?? "none",
+      params.identityContractVersion ?? 1,
+      params.scopeMode ?? "global_only",
       json(params.input),
       params.retrievalMode,
       params.status,
@@ -1236,8 +1247,15 @@ export async function saveRunEpisodeFeedbackSqlite(params: {
 export async function upsertContextCompileTaskTraceSqlite(input: {
   runId: string;
   retrievalMode: string;
+  projectRef: string | null;
   repoPath: string | null;
   repoKey: string | null;
+  matchBasis: "project_ref" | "repo_key" | "repo_path" | "none";
+  identityContractVersion: number;
+  scopeMode: "global_only" | "project";
+  identityFingerprint: string | null;
+  identityTrust: "request_hint" | "trusted_adapter";
+  bindingStatus: "verified" | "not_applicable" | "unverified";
   technologies: string[];
   changeTypes: string[];
   domains: string[];
@@ -1253,14 +1271,23 @@ export async function upsertContextCompileTaskTraceSqlite(input: {
   sqlite.db
     .query(
       `INSERT INTO context_compile_task_traces (
-        run_id, retrieval_mode, repo_path, repo_key, technologies, change_types, domains,
-        embedding_status, embedding_provider, embedding_model, embedding_dimensions,
-        embedding, goal_hash, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        run_id, retrieval_mode, project_ref, repo_path, repo_key, match_basis,
+        identity_contract_version, scope_mode, identity_fingerprint, identity_trust,
+        binding_status, technologies, change_types, domains, embedding_status,
+        embedding_provider, embedding_model, embedding_dimensions, embedding, goal_hash,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         retrieval_mode = excluded.retrieval_mode,
+        project_ref = excluded.project_ref,
         repo_path = excluded.repo_path,
         repo_key = excluded.repo_key,
+        match_basis = excluded.match_basis,
+        identity_contract_version = excluded.identity_contract_version,
+        scope_mode = excluded.scope_mode,
+        identity_fingerprint = excluded.identity_fingerprint,
+        identity_trust = excluded.identity_trust,
+        binding_status = excluded.binding_status,
         technologies = excluded.technologies,
         change_types = excluded.change_types,
         domains = excluded.domains,
@@ -1275,8 +1302,15 @@ export async function upsertContextCompileTaskTraceSqlite(input: {
     .run(
       input.runId,
       input.retrievalMode,
+      input.projectRef,
       input.repoPath,
       input.repoKey,
+      input.matchBasis,
+      input.identityContractVersion,
+      input.scopeMode,
+      input.identityFingerprint,
+      input.identityTrust,
+      input.bindingStatus,
       json(input.technologies),
       json(input.changeTypes),
       json(input.domains),
@@ -1294,8 +1328,15 @@ export async function upsertContextCompileTaskTraceSqlite(input: {
 type SqliteTaskTraceRow = {
   run_id: string;
   retrieval_mode: string;
+  project_ref: string | null;
   repo_path: string | null;
   repo_key: string | null;
+  match_basis: string;
+  identity_contract_version: number;
+  scope_mode: string;
+  identity_fingerprint: string | null;
+  identity_trust: string;
+  binding_status: string;
   technologies: string;
   change_types: string;
   domains: string;
@@ -1320,8 +1361,23 @@ function mapTaskTraceRow(row: SqliteTaskTraceRow): ContextCompileTaskTrace {
   return {
     runId: row.run_id,
     retrievalMode: row.retrieval_mode,
+    projectRef: row.project_ref,
     repoPath: row.repo_path,
     repoKey: row.repo_key,
+    matchBasis:
+      row.match_basis === "project_ref" ||
+      row.match_basis === "repo_key" ||
+      row.match_basis === "repo_path"
+        ? row.match_basis
+        : "none",
+    identityContractVersion: Math.max(1, Math.trunc(row.identity_contract_version)),
+    scopeMode: row.scope_mode === "project" ? "project" : "global_only",
+    identityFingerprint: row.identity_fingerprint,
+    identityTrust: row.identity_trust === "trusted_adapter" ? "trusted_adapter" : "request_hint",
+    bindingStatus:
+      row.binding_status === "verified" || row.binding_status === "unverified"
+        ? row.binding_status
+        : "not_applicable",
     technologies: normalizeStringArray(parseJson(row.technologies)),
     changeTypes: normalizeStringArray(parseJson(row.change_types)),
     domains: normalizeStringArray(parseJson(row.domains)),

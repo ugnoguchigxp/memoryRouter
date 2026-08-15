@@ -1,7 +1,7 @@
 import { and, desc, eq, ne } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
-import { getDefaultDbSession } from "../../db/session.js";
 import { contextCompileTaskTraces } from "../../db/schema.js";
+import { getDefaultDbSession } from "../../db/session.js";
 
 const db = getDefaultDbSession().db;
 
@@ -17,8 +17,15 @@ export type ContextCompileTaskTraceEmbeddingStatus =
 export type ContextCompileTaskTrace = {
   runId: string;
   retrievalMode: string;
+  projectRef: string | null;
   repoPath: string | null;
   repoKey: string | null;
+  matchBasis: "project_ref" | "repo_key" | "repo_path" | "none";
+  identityContractVersion: number;
+  scopeMode: "global_only" | "project";
+  identityFingerprint: string | null;
+  identityTrust: "request_hint" | "trusted_adapter";
+  bindingStatus: "verified" | "not_applicable" | "unverified";
   technologies: string[];
   changeTypes: string[];
   domains: string[];
@@ -56,8 +63,15 @@ function asEmbedding(value: unknown): number[] | null {
 function mapRow(row: {
   runId: string;
   retrievalMode: string;
+  projectRef: string | null;
   repoPath: string | null;
   repoKey: string | null;
+  matchBasis: string;
+  identityContractVersion: number;
+  scopeMode: string;
+  identityFingerprint: string | null;
+  identityTrust: string;
+  bindingStatus: string;
   technologies: unknown;
   changeTypes: unknown;
   domains: unknown;
@@ -80,8 +94,23 @@ function mapRow(row: {
   return {
     runId: row.runId,
     retrievalMode: row.retrievalMode,
+    projectRef: row.projectRef,
     repoPath: row.repoPath,
     repoKey: row.repoKey,
+    matchBasis:
+      row.matchBasis === "project_ref" ||
+      row.matchBasis === "repo_key" ||
+      row.matchBasis === "repo_path"
+        ? row.matchBasis
+        : "none",
+    identityContractVersion: Math.max(1, Math.trunc(row.identityContractVersion)),
+    scopeMode: row.scopeMode === "project" ? "project" : "global_only",
+    identityFingerprint: row.identityFingerprint,
+    identityTrust: row.identityTrust === "trusted_adapter" ? "trusted_adapter" : "request_hint",
+    bindingStatus:
+      row.bindingStatus === "verified" || row.bindingStatus === "unverified"
+        ? row.bindingStatus
+        : "not_applicable",
     technologies: asStringArray(row.technologies),
     changeTypes: asStringArray(row.changeTypes),
     domains: asStringArray(row.domains),
@@ -99,8 +128,15 @@ function mapRow(row: {
 export async function upsertContextCompileTaskTrace(input: {
   runId: string;
   retrievalMode: string;
+  projectRef: string | null;
   repoPath: string | null;
   repoKey: string | null;
+  matchBasis: "project_ref" | "repo_key" | "repo_path" | "none";
+  identityContractVersion: number;
+  scopeMode: "global_only" | "project";
+  identityFingerprint: string | null;
+  identityTrust: "request_hint" | "trusted_adapter";
+  bindingStatus: "verified" | "not_applicable" | "unverified";
   technologies: string[];
   changeTypes: string[];
   domains: string[];
@@ -121,8 +157,15 @@ export async function upsertContextCompileTaskTrace(input: {
     .values({
       runId: input.runId,
       retrievalMode: input.retrievalMode,
+      projectRef: input.projectRef,
       repoPath: input.repoPath,
       repoKey: input.repoKey,
+      matchBasis: input.matchBasis,
+      identityContractVersion: input.identityContractVersion,
+      scopeMode: input.scopeMode,
+      identityFingerprint: input.identityFingerprint,
+      identityTrust: input.identityTrust,
+      bindingStatus: input.bindingStatus,
       technologies: input.technologies,
       changeTypes: input.changeTypes,
       domains: input.domains,
@@ -139,8 +182,15 @@ export async function upsertContextCompileTaskTrace(input: {
       target: [contextCompileTaskTraces.runId],
       set: {
         retrievalMode: input.retrievalMode,
+        projectRef: input.projectRef,
         repoPath: input.repoPath,
         repoKey: input.repoKey,
+        matchBasis: input.matchBasis,
+        identityContractVersion: input.identityContractVersion,
+        scopeMode: input.scopeMode,
+        identityFingerprint: input.identityFingerprint,
+        identityTrust: input.identityTrust,
+        bindingStatus: input.bindingStatus,
         technologies: input.technologies,
         changeTypes: input.changeTypes,
         domains: input.domains,
@@ -166,8 +216,15 @@ export async function findContextCompileTaskTraceByRunId(
     .select({
       runId: contextCompileTaskTraces.runId,
       retrievalMode: contextCompileTaskTraces.retrievalMode,
+      projectRef: contextCompileTaskTraces.projectRef,
       repoPath: contextCompileTaskTraces.repoPath,
       repoKey: contextCompileTaskTraces.repoKey,
+      matchBasis: contextCompileTaskTraces.matchBasis,
+      identityContractVersion: contextCompileTaskTraces.identityContractVersion,
+      scopeMode: contextCompileTaskTraces.scopeMode,
+      identityFingerprint: contextCompileTaskTraces.identityFingerprint,
+      identityTrust: contextCompileTaskTraces.identityTrust,
+      bindingStatus: contextCompileTaskTraces.bindingStatus,
       technologies: contextCompileTaskTraces.technologies,
       changeTypes: contextCompileTaskTraces.changeTypes,
       domains: contextCompileTaskTraces.domains,
@@ -204,8 +261,15 @@ export async function listRecentContextCompileTaskTraces(input: {
     .select({
       runId: contextCompileTaskTraces.runId,
       retrievalMode: contextCompileTaskTraces.retrievalMode,
+      projectRef: contextCompileTaskTraces.projectRef,
       repoPath: contextCompileTaskTraces.repoPath,
       repoKey: contextCompileTaskTraces.repoKey,
+      matchBasis: contextCompileTaskTraces.matchBasis,
+      identityContractVersion: contextCompileTaskTraces.identityContractVersion,
+      scopeMode: contextCompileTaskTraces.scopeMode,
+      identityFingerprint: contextCompileTaskTraces.identityFingerprint,
+      identityTrust: contextCompileTaskTraces.identityTrust,
+      bindingStatus: contextCompileTaskTraces.bindingStatus,
       technologies: contextCompileTaskTraces.technologies,
       changeTypes: contextCompileTaskTraces.changeTypes,
       domains: contextCompileTaskTraces.domains,

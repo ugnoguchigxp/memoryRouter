@@ -14,7 +14,10 @@ import {
   updateKnowledgeItem,
 } from "../api/modules/knowledge/knowledge.repository.js";
 import { groupedConfig } from "../src/config.js";
-import { resetRuntimeSqliteCoreDatabaseForTests } from "../src/db/sqlite/runtime.js";
+import {
+  getRuntimeSqliteCoreDatabase,
+  resetRuntimeSqliteCoreDatabaseForTests,
+} from "../src/db/sqlite/runtime.js";
 import {
   getCompileRunSnapshot,
   listRecentCompileRuns,
@@ -22,6 +25,7 @@ import {
 import { compileContextPack } from "../src/modules/context-compiler/context-compiler.service.js";
 import {
   searchKnowledge,
+  upsertKnowledgeFromSource,
   vectorSearchKnowledge,
 } from "../src/modules/knowledge/knowledge.repository.js";
 import { registerCandidate } from "../src/modules/registerCandidate/register-candidate.service.js";
@@ -36,6 +40,7 @@ const originalBackend = process.env.CONTEXT_STILL_DB_BACKEND;
 const originalSqlitePath = process.env.CONTEXT_STILL_SQLITE_CORE_PATH;
 const originalVectorSearch = process.env.CONTEXT_STILL_COMPILE_ENABLE_VECTOR_SEARCH;
 const originalAgenticCompileEnabled = groupedConfig.agenticCompile.enabled;
+const originalCompileVectorSearchEnabled = groupedConfig.compile.enableVectorSearch;
 let originalRuntimeAgenticCompileEnabled = false;
 
 describe("sqlite knowledge backend", () => {
@@ -48,6 +53,7 @@ describe("sqlite knowledge backend", () => {
     const runtimeSettings = getRuntimeSettingsSnapshot();
     originalRuntimeAgenticCompileEnabled = runtimeSettings.taskRouting.agenticCompile.enabled;
     groupedConfig.agenticCompile.enabled = false;
+    groupedConfig.compile.enableVectorSearch = false;
     runtimeSettings.taskRouting.agenticCompile.enabled = false;
     resetRuntimeSqliteCoreDatabaseForTests();
   });
@@ -58,12 +64,13 @@ describe("sqlite knowledge backend", () => {
     restoreEnv("CONTEXT_STILL_COMPILE_ENABLE_VECTOR_SEARCH", originalVectorSearch);
     const runtimeSettings = getRuntimeSettingsSnapshot();
     groupedConfig.agenticCompile.enabled = originalAgenticCompileEnabled;
+    groupedConfig.compile.enableVectorSearch = originalCompileVectorSearchEnabled;
     runtimeSettings.taskRouting.agenticCompile.enabled = originalRuntimeAgenticCompileEnabled;
     resetRuntimeSqliteCoreDatabaseForTests();
     await rm(tempDir, { recursive: true, force: true });
   });
 
-  test("registers candidates directly into sqlite knowledge and searches them", async () => {
+  test("registers candidates in the sqlite pipeline without activating knowledge", async () => {
     const result = await registerCandidate({
       title: "Prefer Drizzle SQLite",
       body: "Use Drizzle for ordinary SQLite tables and raw SQL for FTS or vec0 virtual tables.",
@@ -76,6 +83,21 @@ describe("sqlite knowledge backend", () => {
     });
 
     expect(result.status).toBe("candidate_registered");
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    expect(
+      sqlite.db
+        .query<{ count: number }, []>(
+          "select count(*) as count from knowledge_items where status = 'active'",
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      sqlite.db
+        .query<{ count: number }, []>(
+          "select count(*) as count from covering_evidence_queue where status = 'pending'",
+        )
+        .get()?.count,
+    ).toBe(1);
     const hits = await searchKnowledge({
       query: "Drizzle SQLite virtual tables",
       status: "active",
@@ -87,18 +109,22 @@ describe("sqlite knowledge backend", () => {
       repoPath: "/repo/contextStill",
     });
 
-    expect(hits.map((hit) => hit.title)).toContain("Prefer Drizzle SQLite");
-    expect(hits[0].applicabilityMatches.technologies).toContain("sqlite");
+    expect(hits).toEqual([]);
   });
 
   test("does not return unrelated sqlite knowledge when query has no text or applicability match", async () => {
-    await registerCandidate({
+    await upsertKnowledgeFromSource({
+      sourceUri: "agent://candidate/sqlite-only-rule",
       title: "SQLite only rule",
       body: "This row should not match an unrelated random query.",
       type: "rule",
-      technologies: ["sqlite"],
-      changeTypes: ["migration"],
-      repoPath: "/repo/contextStill",
+      status: "active",
+      scope: "repo",
+      appliesTo: {
+        technologies: ["sqlite"],
+        changeTypes: ["migration"],
+        repoPath: "/repo/contextStill",
+      },
     });
 
     const hits = await searchKnowledge({
@@ -114,14 +140,6 @@ describe("sqlite knowledge backend", () => {
   });
 
   test("uses sqlite vector fallback for knowledge vector search", async () => {
-    await registerCandidate({
-      title: "Vector target",
-      body: "This candidate is inserted before direct vector upsert.",
-      type: "rule",
-    });
-    const { upsertKnowledgeFromSource } = await import(
-      "../src/modules/knowledge/knowledge.repository.js"
-    );
     await upsertKnowledgeFromSource({
       sourceUri: "agent://candidate/vector-target",
       type: "rule",
@@ -225,15 +243,20 @@ describe("sqlite knowledge backend", () => {
   });
 
   test("compiles context and stores run snapshots in sqlite", async () => {
-    await registerCandidate({
+    await upsertKnowledgeFromSource({
+      sourceUri: "agent://candidate/sqlite-compile-rule",
       title: "SQLite compile rule",
       body: "SQLite backend mode must return context without requiring PostgreSQL persistence.",
       type: "rule",
-      technologies: ["sqlite"],
-      changeTypes: ["migration"],
-      repoPath: "/repo/contextStill",
+      status: "active",
+      scope: "repo",
       confidence: 90,
       importance: 90,
+      appliesTo: {
+        technologies: ["sqlite"],
+        changeTypes: ["migration"],
+        repoPath: "/repo/contextStill",
+      },
     });
     await upsertSourceDocument({
       sourceKind: "wiki",

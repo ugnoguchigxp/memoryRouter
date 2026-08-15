@@ -36,6 +36,7 @@ import {
 } from "../landscape/landscape-compile-intervention.service.js";
 import { retrieveSources } from "../sources/source-retrieval.service.js";
 import { agenticRefine } from "./agentic-refine.service.js";
+import { resolveCompileProjectIdentity } from "./compile-project-identity.js";
 import { upsertContextCompileTaskTrace } from "./context-compile-task-trace.repository.js";
 import {
   insertCompileRun,
@@ -51,7 +52,7 @@ import {
 } from "./duplicate-suppression.service.js";
 import { renderContextPackMarkdown } from "./pack-renderer.js";
 import { normalizeRepoKey, normalizeRepoPath } from "./query-context.js";
-import { explainRankableScore, type Rankable, rankAndDedupe } from "./ranking.service.js";
+import { type Rankable, explainRankableScore, rankAndDedupe } from "./ranking.service.js";
 import { applySectionTokenBudget, estimateTokens } from "./token-budget.js";
 import { collectUtilityTraceCandidates } from "./utility-retrieval.service.js";
 
@@ -747,8 +748,15 @@ function goalHash(goal: string): string {
 async function persistCompileTaskTraceSafe(params: {
   runId: string;
   retrievalMode: RetrievalMode;
+  projectRef: string | null;
   repoPath: string | null;
   repoKey: string | null;
+  matchBasis: "project_ref" | "repo_key" | "repo_path" | "none";
+  identityContractVersion: number;
+  scopeMode: "global_only" | "project";
+  identityFingerprint: string | null;
+  identityTrust: "request_hint" | "trusted_adapter";
+  bindingStatus: "verified" | "not_applicable" | "unverified";
   technologies: string[];
   changeTypes: string[];
   domains: string[];
@@ -763,8 +771,15 @@ async function persistCompileTaskTraceSafe(params: {
     await upsertContextCompileTaskTrace({
       runId: params.runId,
       retrievalMode: params.retrievalMode,
+      projectRef: params.projectRef,
       repoPath: params.repoPath,
       repoKey: params.repoKey,
+      matchBasis: params.matchBasis,
+      identityContractVersion: params.identityContractVersion,
+      scopeMode: params.scopeMode,
+      identityFingerprint: params.identityFingerprint,
+      identityTrust: params.identityTrust,
+      bindingStatus: params.bindingStatus,
       technologies: normalizeFacetArray(params.technologies),
       changeTypes: normalizeFacetArray(params.changeTypes),
       domains: normalizeFacetArray(params.domains),
@@ -1218,13 +1233,31 @@ export async function compileContextPack(
 }> {
   const compileStartedAt = Date.now();
   const input = compileInputSchema.parse(rawInput);
+  const projectIdentity = resolveCompileProjectIdentity(input);
   const retrievalMode =
     input.retrievalMode ?? deriveRetrievalModeFromChangeTypes(input.changeTypes);
-  const workspaceRepoPath = normalizeRepoPath(process.cwd()) ?? process.cwd();
-  const workspaceRepoKey =
-    normalizeRepoKey(workspaceRepoPath) ?? normalizeRepoKey(process.cwd()) ?? null;
+  // T1 preserves the current retrieval lane while stopping daemon cwd from being persisted as
+  // caller identity. T4 removes this legacy fallback from candidate selection.
+  const legacyWorkspaceRepoPath = normalizeRepoPath(process.cwd()) ?? process.cwd();
+  const legacyWorkspaceRepoKey =
+    normalizeRepoKey(legacyWorkspaceRepoPath) ?? normalizeRepoKey(process.cwd()) ?? null;
   const tokenBudget = input.tokenBudget ?? groupedConfig.compile.defaultTokenBudget;
   const candidateTraceLimit = groupedConfig.compile.candidateTraceLimit;
+  const persistedInput = {
+    goal: input.goal,
+    ...(input.intent ? { intent: input.intent } : {}),
+    ...(input.retrievalMode ? { retrievalMode: input.retrievalMode } : {}),
+    ...(input.changeTypes ? { changeTypes: input.changeTypes } : {}),
+    ...(input.technologies ? { technologies: input.technologies } : {}),
+    ...(input.domains ? { domains: input.domains } : {}),
+    ...(input.files ? { files: input.files } : {}),
+    ...(projectIdentity.projectRef ? { projectRef: projectIdentity.projectRef } : {}),
+    ...(projectIdentity.repoPath ? { repoPath: projectIdentity.repoPath } : {}),
+    ...(projectIdentity.repoKey ? { repoKey: projectIdentity.repoKey } : {}),
+    ...(input.includeDraft !== undefined ? { includeDraft: input.includeDraft } : {}),
+    ...(input.tokenBudget ? { tokenBudget: input.tokenBudget } : {}),
+    projectIdentity,
+  };
 
   const normalizedApplicability = await normalizeKnowledgeApplicability({
     technologies: input.technologies,
@@ -1263,20 +1296,13 @@ export async function compileContextPack(
       goal: input.goal,
       intent: legacyIntentFromRetrievalMode(retrievalMode),
       sessionId: options?.sessionId,
-      repoPath: workspaceRepoPath,
-      input: {
-        goal: input.goal,
-        ...(input.intent ? { intent: input.intent } : {}),
-        ...(input.retrievalMode ? { retrievalMode: input.retrievalMode } : {}),
-        ...(input.changeTypes ? { changeTypes: input.changeTypes } : {}),
-        ...(input.technologies ? { technologies: input.technologies } : {}),
-        ...(input.domains ? { domains: input.domains } : {}),
-        ...(input.files ? { files: input.files } : {}),
-        ...(input.repoPath ? { repoPath: input.repoPath } : {}),
-        ...(input.repoKey ? { repoKey: input.repoKey } : {}),
-        ...(input.includeDraft !== undefined ? { includeDraft: input.includeDraft } : {}),
-        ...(input.tokenBudget ? { tokenBudget: input.tokenBudget } : {}),
-      },
+      projectRef: projectIdentity.projectRef,
+      repoKey: projectIdentity.repoKey,
+      repoPath: projectIdentity.repoPath ?? undefined,
+      matchBasis: projectIdentity.matchBasis,
+      identityContractVersion: projectIdentity.contractVersion,
+      scopeMode: projectIdentity.scopeMode,
+      input: persistedInput,
       retrievalMode,
       status: "degraded",
       degradedReasons,
@@ -1287,8 +1313,15 @@ export async function compileContextPack(
     await persistCompileTaskTraceSafe({
       runId,
       retrievalMode,
-      repoPath: workspaceRepoPath,
-      repoKey: workspaceRepoKey,
+      projectRef: projectIdentity.projectRef,
+      repoPath: projectIdentity.repoPath,
+      repoKey: projectIdentity.repoKey,
+      matchBasis: projectIdentity.matchBasis,
+      identityContractVersion: projectIdentity.contractVersion,
+      scopeMode: projectIdentity.scopeMode,
+      identityFingerprint: projectIdentity.identityFingerprint,
+      identityTrust: projectIdentity.trust,
+      bindingStatus: projectIdentity.bindingStatus,
       technologies: matchedTechnologies,
       changeTypes: matchedChangeTypes,
       domains: matchedDomains,
@@ -1384,8 +1417,8 @@ export async function compileContextPack(
       retrieveSources(input, { retrievalMode }),
       retrieveEpisodePrecedents({
         input,
-        repoPath: workspaceRepoPath,
-        repoKey: workspaceRepoKey,
+        repoPath: legacyWorkspaceRepoPath,
+        repoKey: legacyWorkspaceRepoKey,
         technologies: matchedTechnologies,
         changeTypes: matchedChangeTypes,
         domains: matchedDomains,
@@ -1659,20 +1692,13 @@ export async function compileContextPack(
     goal: input.goal,
     intent: legacyIntentFromRetrievalMode(retrievalMode),
     sessionId: options?.sessionId,
-    repoPath: workspaceRepoPath,
-    input: {
-      goal: input.goal,
-      ...(input.intent ? { intent: input.intent } : {}),
-      ...(input.retrievalMode ? { retrievalMode: input.retrievalMode } : {}),
-      ...(input.changeTypes ? { changeTypes: input.changeTypes } : {}),
-      ...(input.technologies ? { technologies: input.technologies } : {}),
-      ...(input.domains ? { domains: input.domains } : {}),
-      ...(input.files ? { files: input.files } : {}),
-      ...(input.repoPath ? { repoPath: input.repoPath } : {}),
-      ...(input.repoKey ? { repoKey: input.repoKey } : {}),
-      ...(input.includeDraft !== undefined ? { includeDraft: input.includeDraft } : {}),
-      ...(input.tokenBudget ? { tokenBudget: input.tokenBudget } : {}),
-    },
+    projectRef: projectIdentity.projectRef,
+    repoKey: projectIdentity.repoKey,
+    repoPath: projectIdentity.repoPath ?? undefined,
+    matchBasis: projectIdentity.matchBasis,
+    identityContractVersion: projectIdentity.contractVersion,
+    scopeMode: projectIdentity.scopeMode,
+    input: persistedInput,
     retrievalMode,
     status,
     degradedReasons,
@@ -1692,8 +1718,15 @@ export async function compileContextPack(
   await persistCompileTaskTraceSafe({
     runId,
     retrievalMode,
-    repoPath: workspaceRepoPath,
-    repoKey: workspaceRepoKey,
+    projectRef: projectIdentity.projectRef,
+    repoPath: projectIdentity.repoPath,
+    repoKey: projectIdentity.repoKey,
+    matchBasis: projectIdentity.matchBasis,
+    identityContractVersion: projectIdentity.contractVersion,
+    scopeMode: projectIdentity.scopeMode,
+    identityFingerprint: projectIdentity.identityFingerprint,
+    identityTrust: projectIdentity.trust,
+    bindingStatus: projectIdentity.bindingStatus,
     technologies: matchedTechnologies,
     changeTypes: matchedChangeTypes,
     domains: matchedDomains,

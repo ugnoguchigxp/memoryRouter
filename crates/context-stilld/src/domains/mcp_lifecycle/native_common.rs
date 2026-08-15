@@ -98,21 +98,6 @@ pub(super) fn bool_arg(args: &serde_json::Map<String, Value>, key: &str) -> Opti
     args.get(key).and_then(Value::as_bool)
 }
 
-pub(super) fn string_array_arg(args: &serde_json::Map<String, Value>, key: &str) -> Vec<String> {
-    args.get(key)
-        .and_then(Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
 pub(super) fn request_session_id(
     params: &Value,
     args: &serde_json::Map<String, Value>,

@@ -1,8 +1,8 @@
 import { afterAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { groupedConfig } from "../src/config.js";
 import { recordAuditLogSafe } from "../src/modules/audit/audit-log.service.js";
-import { upsertContextCompileTaskTrace } from "../src/modules/context-compiler/context-compile-task-trace.repository.js";
 import { agenticRefine } from "../src/modules/context-compiler/agentic-refine.service.js";
+import { upsertContextCompileTaskTrace } from "../src/modules/context-compiler/context-compile-task-trace.repository.js";
 import {
   insertCompileRun,
   insertContextCompileCandidateTraces,
@@ -134,6 +134,82 @@ describe("Context Compiler Service", () => {
   test("records run source for caller", async () => {
     await compileContextPack({ goal: "source test" }, { source: "mcp" });
     expect(insertCompileRun).toHaveBeenCalledWith(expect.objectContaining({ source: "mcp" }));
+  });
+
+  test("persists normalized request identity instead of daemon cwd", async () => {
+    const { markdown } = await compileContextPack({
+      goal: "identity trace",
+      projectRef: "project-A",
+      repoKey: "ORG\\Repo-A",
+      repoPath: "/work/./repo-a",
+    });
+
+    expect(insertCompileRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRef: "project-A",
+        repoKey: "org/repo-a",
+        repoPath: "/work/repo-a",
+        matchBasis: "project_ref",
+        identityContractVersion: 1,
+        scopeMode: "project",
+        input: expect.objectContaining({
+          projectRef: "project-A",
+          repoKey: "org/repo-a",
+          repoPath: "/work/repo-a",
+          projectIdentity: expect.objectContaining({
+            matchBasis: "project_ref",
+            bindingStatus: "unverified",
+          }),
+        }),
+      }),
+    );
+    expect(upsertContextCompileTaskTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRef: "project-A",
+        repoKey: "org/repo-a",
+        repoPath: "/work/repo-a",
+        matchBasis: "project_ref",
+        identityContractVersion: 1,
+        scopeMode: "project",
+        identityFingerprint: "0513f9c3cf83583e36682ab931ecc66a70eafc5cd40b15123fab848a60cd7407",
+        identityTrust: "request_hint",
+        bindingStatus: "unverified",
+      }),
+    );
+    expect(markdown).not.toContain("project-A");
+    expect(markdown).not.toContain("/work/repo-a");
+  });
+
+  test("persists missing identity as global-only without process cwd", async () => {
+    await compileContextPack({ goal: "global-only identity trace" });
+
+    expect(insertCompileRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRef: null,
+        repoKey: null,
+        repoPath: undefined,
+        matchBasis: "none",
+        identityContractVersion: 1,
+        scopeMode: "global_only",
+        input: expect.objectContaining({
+          projectIdentity: expect.objectContaining({
+            matchBasis: "none",
+            matchValue: null,
+            identityFingerprint: null,
+          }),
+        }),
+      }),
+    );
+    expect(upsertContextCompileTaskTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectRef: null,
+        repoKey: null,
+        repoPath: null,
+        matchBasis: "none",
+        scopeMode: "global_only",
+        identityFingerprint: null,
+      }),
+    );
   });
 
   test("applies internal token budget and marks compaction warning", async () => {

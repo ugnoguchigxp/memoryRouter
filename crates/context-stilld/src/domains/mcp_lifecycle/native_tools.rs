@@ -91,13 +91,17 @@ fn initial_instructions_result() -> Value {
 fn exposed_tools() -> Value {
     json!([
         tool("initial_instructions", "Get concise MCP operating guidance and the recommended tool flow.", json!({"type":"object","properties":{}})),
-        tool("context_compile", "Primary workflow tool. Build the minimal task context pack from knowledge + source evidence before coding.", json!({
+        tool("context_compile", "Primary workflow tool. Build the minimal task context pack from Knowledge and EpisodeCard candidates before coding.", json!({
             "type":"object",
+            "additionalProperties":false,
             "properties":{
                 "goal":{"type":"string"},
                 "changeTypes":{"type":"array","items":{"type":"string"}},
                 "technologies":{"type":"array","items":{"type":"string"}},
-                "domains":{"type":"array","items":{"type":"string"}}
+                "domains":{"type":"array","items":{"type":"string"}},
+                "projectRef":{"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001F\\u007F-\\u009F]+$","description":"Stable, opaque, case-sensitive project identity used as a selection hint."},
+                "repoKey":{"type":"string","minLength":1,"maxLength":1024,"pattern":"^[^\\u0000-\\u001F\\u007F-\\u009F]+$","description":"Explicit legacy repository lookup key. Not derived from repoPath."},
+                "repoPath":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^[^\\u0000-\\u001F\\u007F-\\u009F]+$","description":"Absolute lexical repository path or local absolute file URI."}
             },
             "required":["goal"]
         })),
@@ -160,7 +164,7 @@ fn exposed_tools() -> Value {
             },
             "required":["query"]
         })),
-        tool("register_candidates", "Bulk-register lightweight rule/procedure candidates for later distillation. Use when multiple durable lessons should be registered from the same task. In Japanese-operated contexts, write title/body/avoid/prefer natural language in Japanese except identifiers, commands, API names, URLs, and error messages.", json!({
+        tool("register_candidates", "Bulk-register lightweight rule/procedure candidates into the distillation pipeline. candidate_registered means transactionally persisted to that pipeline; it does not mean active Knowledge. Use when multiple durable lessons should be registered from the same task. In Japanese-operated contexts, write title/body/avoid/prefer natural language in Japanese except identifiers, commands, API names, URLs, and error messages.", json!({
             "type":"object",
             "additionalProperties":false,
             "properties":{"items":{"type":"array","minItems":1,"maxItems":10,"items":{"type":"object"}}},
@@ -247,6 +251,7 @@ const INITIAL_INSTRUCTIONS_JA: &str = concat!(
     "## 常用ルール\n",
     "- 常に日本語で返答する。\n",
     "- まず `context_compile` を呼び、作業の主導線とする。`goal` を必ず渡し、適切な `changeTypes` / `technologies` を指定する。\n",
+    "- workspace taskでは、stable `projectRef`、explicit `repoKey`、またはabsolute `repoPath`のいずれかを`context_compile`へ渡す。identityを推測せず、未指定時はglobal-only identityとして記録される。\n",
     "- `goal` は達成したい状態を1-3文で具体的に書き、設計書パスや `design.md` などの文書参照は含めない。\n",
     "- 次の応答がユーザーへの確認質問になりそうで、かつ自律的に続行できる余地がある場合は、質問する前に `context_decision` を pre-question gate として呼ぶ。\n",
     "- ブロッカー由来の判断が必要な場合、ユーザーに質問する前に `context_decision` を呼ぶ。例: このまま進めるか、修正して進めるか、reject/rollback/discard/escalate すべきか、PR作成前の判断、危険操作や未完了Todoの扱い。\n",
@@ -268,6 +273,7 @@ const INITIAL_INSTRUCTIONS_EN: &str = concat!(
     "## Operational Rules\n",
     "- Always respond in Japanese.\n",
     "- First call `context_compile` as the main baseline of the task. Always provide `goal`, and specify appropriate `changeTypes` / `technologies`.\n",
+    "- For workspace tasks, pass a stable `projectRef`, explicit `repoKey`, or absolute `repoPath` to `context_compile`. Do not infer identity; missing identity is recorded as global-only.\n",
     "- Keep the `goal` focused on 1-3 specific sentences describing the desired outcome. Do not include path references like `design.md` or implementation plans.\n",
     "- If the next response would ask the user for confirmation and autonomous progress may still be possible, call `context_decision` as a pre-question gate before asking.\n",
     "- When a blocker-derived judgment is needed, call `context_decision` before asking the user. Examples: whether to proceed, revise and proceed, reject, rollback, discard, escalate, create a PR, handle a risky operation, or handle unfinished Todo/status.\n",

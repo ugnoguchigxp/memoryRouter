@@ -22,6 +22,8 @@ import {
   episodeRetrievalUsedForValues,
   episodeRetrievalVerdictValues,
   episodeSourceKindValues,
+  projectClassificationStatusValues,
+  scopeValues,
   settingValueKindValues,
 } from "./schema.constants.js";
 import { toSqlList } from "./schema.utils.js";
@@ -215,6 +217,9 @@ export const episodeCards = pgTable(
     technologies: jsonb("technologies").default([]).notNull(),
     changeTypes: jsonb("change_types").default([]).notNull(),
     tools: jsonb("tools").default([]).notNull(),
+    classificationStatus: text("classification_status").notNull().default("unresolved"),
+    scope: text("scope").notNull().default("repo"),
+    projectRef: text("project_ref"),
     repoPath: text("repo_path"),
     repoKey: text("repo_key"),
     sourceKind: text("source_kind").notNull(),
@@ -233,6 +238,13 @@ export const episodeCards = pgTable(
   },
   (table) => ({
     statusIdx: index("episode_cards_status_idx").on(table.status),
+    classificationStatusIdx: index("episode_cards_classification_status_idx").on(
+      table.classificationStatus,
+    ),
+    projectRefScopeIdx: index("episode_cards_scope_project_ref_idx").on(
+      table.scope,
+      table.projectRef,
+    ),
     sourceUniqueIdx: uniqueIndex("episode_cards_source_unique_idx").on(
       table.sourceKind,
       table.sourceKey,
@@ -252,6 +264,16 @@ export const episodeCards = pgTable(
     statusCheck: check(
       "episode_cards_status_check",
       sql`${table.status} IN (${sql.raw(toSqlList(episodeCardStatusValues))})`,
+    ),
+    classificationStatusCheck: check(
+      "episode_cards_classification_status_check",
+      sql`${table.classificationStatus} IN (${sql.raw(
+        toSqlList(projectClassificationStatusValues),
+      )})`,
+    ),
+    scopeCheck: check(
+      "episode_cards_scope_check",
+      sql`${table.scope} IN (${sql.raw(toSqlList(scopeValues))})`,
     ),
     outcomeKindCheck: check(
       "episode_cards_outcome_kind_check",

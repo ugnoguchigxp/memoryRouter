@@ -151,8 +151,22 @@ describe("Shared Schemas", () => {
   });
 
   test("compileInputSchema parses valid input", () => {
-    const input = { goal: "test" };
+    const input = {
+      goal: "test",
+      projectRef: "project-A",
+      repoKey: "org/repo-a",
+      repoPath: "/work/repo-a",
+    };
     expect(compileInputSchema.parse(input)).toEqual(expect.objectContaining(input));
+  });
+
+  test("compileInputSchema rejects control characters in project identity", () => {
+    expect(
+      compileInputSchema.safeParse({ goal: "test", projectRef: "project-A\nproject-B" }).success,
+    ).toBe(false);
+    expect(compileInputSchema.safeParse({ goal: "test", repoKey: "repo-A\trepo-B" }).success).toBe(
+      false,
+    );
   });
 
   test("doctorReportSchema parses valid input", () => {

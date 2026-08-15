@@ -14,14 +14,15 @@ import {
 } from "drizzle-orm/pg-core";
 import { groupedConfig } from "../config.js";
 import {
+  knowledgeOriginLinkKindValues,
+  knowledgePolarityValues,
   knowledgeQualityAdjustmentKindValues,
   knowledgeStatusValues,
   knowledgeTagKindValues,
   knowledgeTagStatusValues,
   knowledgeTypeValues,
+  projectClassificationStatusValues,
   scopeValues,
-  knowledgePolarityValues,
-  knowledgeOriginLinkKindValues,
 } from "./schema.constants.js";
 import { toSqlList } from "./schema.utils.js";
 
@@ -32,6 +33,10 @@ export const knowledgeItems = pgTable(
     type: text("type").notNull(),
     status: text("status").notNull(),
     scope: text("scope").notNull().default("repo"),
+    classificationStatus: text("classification_status").notNull().default("unresolved"),
+    projectRef: text("project_ref"),
+    repoKey: text("repo_key"),
+    repoPath: text("repo_path"),
     polarity: text("polarity").notNull().default("positive"),
     intentTags: jsonb("intent_tags").notNull().default("[]"),
     title: text("title").notNull(),
@@ -55,6 +60,24 @@ export const knowledgeItems = pgTable(
     typeIdx: index("knowledge_items_type_idx").on(table.type),
     statusIdx: index("knowledge_items_status_idx").on(table.status),
     scopeIdx: index("knowledge_items_scope_idx").on(table.scope),
+    classificationStatusIdx: index("knowledge_items_classification_status_idx").on(
+      table.classificationStatus,
+    ),
+    projectRefScopeIdx: index("knowledge_items_status_scope_project_ref_idx").on(
+      table.status,
+      table.scope,
+      table.projectRef,
+    ),
+    repoKeyScopeIdx: index("knowledge_items_status_scope_repo_key_idx").on(
+      table.status,
+      table.scope,
+      table.repoKey,
+    ),
+    repoPathScopeIdx: index("knowledge_items_status_scope_repo_path_idx").on(
+      table.status,
+      table.scope,
+      table.repoPath,
+    ),
     polarityIdx: index("knowledge_items_polarity_idx").on(table.polarity),
     intentTagsGinIdx: index("knowledge_items_intent_tags_gin_idx").using("gin", table.intentTags),
     statusPolarityIdx: index("knowledge_items_status_polarity_idx").on(
@@ -96,6 +119,12 @@ export const knowledgeItems = pgTable(
     scopeCheck: check(
       "knowledge_items_scope_check",
       sql`${table.scope} IN (${sql.raw(toSqlList(scopeValues))})`,
+    ),
+    classificationStatusCheck: check(
+      "knowledge_items_classification_status_check",
+      sql`${table.classificationStatus} IN (${sql.raw(
+        toSqlList(projectClassificationStatusValues),
+      )})`,
     ),
     polarityCheck: check(
       "knowledge_items_polarity_check",

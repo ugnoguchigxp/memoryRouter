@@ -6,3 +6,4 @@ export * from "./schema-distillation.js";
 export * from "./schema-context.js";
 export * from "./schema-landscape.js";
 export * from "./schema-llm.js";
+export * from "./schema-security-intelligence.js";

@@ -8,6 +8,10 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
   type TEXT NOT NULL,
   status TEXT NOT NULL,
   scope TEXT NOT NULL DEFAULT 'repo',
+  classification_status TEXT NOT NULL DEFAULT 'unresolved',
+  project_ref TEXT,
+  repo_key TEXT,
+  repo_path TEXT,
   polarity TEXT NOT NULL DEFAULT 'positive',
   intent_tags TEXT NOT NULL DEFAULT '[]',
   title TEXT NOT NULL,
@@ -90,6 +94,11 @@ CREATE TABLE IF NOT EXISTS knowledge_origin_links (
 CREATE TABLE IF NOT EXISTS sources (
   id TEXT PRIMARY KEY,
   source_kind TEXT NOT NULL,
+  classification_status TEXT NOT NULL DEFAULT 'unresolved',
+  scope TEXT NOT NULL DEFAULT 'repo',
+  project_ref TEXT,
+  repo_key TEXT,
+  repo_path TEXT,
   uri TEXT NOT NULL UNIQUE,
   title TEXT,
   body TEXT NOT NULL,
@@ -222,7 +231,12 @@ CREATE TABLE IF NOT EXISTS context_compile_runs (
   goal TEXT NOT NULL,
   intent TEXT NOT NULL,
   session_id TEXT,
+  project_ref TEXT,
+  repo_key TEXT,
   repo_path TEXT,
+  match_basis TEXT NOT NULL DEFAULT 'none',
+  identity_contract_version INTEGER NOT NULL DEFAULT 1,
+  scope_mode TEXT NOT NULL DEFAULT 'global_only',
   input TEXT NOT NULL DEFAULT '{}',
   retrieval_mode TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -239,6 +253,24 @@ CREATE INDEX IF NOT EXISTS context_compile_runs_created_at_idx
 CREATE INDEX IF NOT EXISTS context_compile_runs_session_created_idx
   ON context_compile_runs(session_id, created_at);
 
+CREATE TABLE IF NOT EXISTS project_identity_aliases (
+  id TEXT PRIMARY KEY,
+  project_ref TEXT NOT NULL,
+  alias_kind TEXT NOT NULL,
+  normalized_value TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
+  source TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(project_ref, alias_kind, normalized_value)
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS project_identity_aliases_active_alias_unique
+  ON project_identity_aliases(alias_kind, normalized_value)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS project_identity_aliases_project_status_idx
+  ON project_identity_aliases(project_ref, status);
+
 CREATE TABLE IF NOT EXISTS context_pack_items (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   postgres_id TEXT,
@@ -249,6 +281,7 @@ CREATE TABLE IF NOT EXISTS context_pack_items (
   score REAL NOT NULL DEFAULT 0,
   ranking_reason TEXT NOT NULL DEFAULT '',
   source_refs TEXT NOT NULL DEFAULT '[]',
+  scope_snapshot TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (run_id) REFERENCES context_compile_runs(id) ON DELETE CASCADE
 ) STRICT;
@@ -288,8 +321,15 @@ CREATE TABLE IF NOT EXISTS context_compile_task_traces (
   run_id TEXT PRIMARY KEY,
   postgres_id TEXT,
   retrieval_mode TEXT NOT NULL,
+  project_ref TEXT,
   repo_path TEXT,
   repo_key TEXT,
+  match_basis TEXT NOT NULL DEFAULT 'none',
+  identity_contract_version INTEGER NOT NULL DEFAULT 1,
+  scope_mode TEXT NOT NULL DEFAULT 'global_only',
+  identity_fingerprint TEXT,
+  identity_trust TEXT NOT NULL DEFAULT 'request_hint',
+  binding_status TEXT NOT NULL DEFAULT 'not_applicable',
   technologies TEXT NOT NULL DEFAULT '[]',
   change_types TEXT NOT NULL DEFAULT '[]',
   domains TEXT NOT NULL DEFAULT '[]',
@@ -376,6 +416,9 @@ CREATE TABLE IF NOT EXISTS episode_cards (
   technologies TEXT NOT NULL DEFAULT '[]',
   change_types TEXT NOT NULL DEFAULT '[]',
   tools TEXT NOT NULL DEFAULT '[]',
+  classification_status TEXT NOT NULL DEFAULT 'unresolved',
+  scope TEXT NOT NULL DEFAULT 'repo',
+  project_ref TEXT,
   repo_path TEXT,
   repo_key TEXT,
   source_kind TEXT NOT NULL,
@@ -1132,6 +1175,67 @@ CREATE TABLE IF NOT EXISTS distillation_queue_events (
 
 CREATE INDEX IF NOT EXISTS distillation_queue_events_job_idx
   ON distillation_queue_events(queue_name, queue_job_id, created_at);
+
+CREATE TABLE IF NOT EXISTS security_candidate_batch_receipts (
+  id TEXT PRIMARY KEY,
+  receipt_ref TEXT NOT NULL UNIQUE,
+  producer_principal TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  batch_ref TEXT NOT NULL,
+  batch_payload_digest TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(producer_principal, endpoint, contract_version, idempotency_key)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS security_candidate_batch_receipts_batch_digest_idx
+  ON security_candidate_batch_receipts(batch_payload_digest);
+
+CREATE TABLE IF NOT EXISTS security_candidate_batch_items (
+  id TEXT PRIMARY KEY,
+  receipt_id TEXT NOT NULL REFERENCES security_candidate_batch_receipts(id) ON DELETE CASCADE,
+  candidate_ref TEXT NOT NULL,
+  fingerprint TEXT,
+  payload_digest TEXT,
+  status TEXT NOT NULL,
+  reason_code TEXT,
+  target_state_ref TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(receipt_id, candidate_ref)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS security_candidate_batch_items_fingerprint_payload_idx
+  ON security_candidate_batch_items(fingerprint, payload_digest);
+
+CREATE TABLE IF NOT EXISTS security_feedback_batch_receipts (
+  id TEXT PRIMARY KEY,
+  receipt_ref TEXT NOT NULL UNIQUE,
+  producer_principal TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  contract_version TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  batch_ref TEXT NOT NULL,
+  batch_payload_digest TEXT NOT NULL,
+  receipt_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(producer_principal, endpoint, contract_version, idempotency_key)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS security_feedback_events (
+  id TEXT PRIMARY KEY,
+  event_ref TEXT NOT NULL UNIQUE,
+  receipt_id TEXT NOT NULL REFERENCES security_feedback_batch_receipts(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  knowledge_ref TEXT NOT NULL,
+  knowledge_revision TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS security_feedback_events_receipt_idx
+  ON security_feedback_events(receipt_id);
 
 CREATE TABLE IF NOT EXISTS distillation_queue_migration_map (
   id TEXT PRIMARY KEY,

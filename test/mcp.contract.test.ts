@@ -49,8 +49,10 @@ describeDb("mcp contract", () => {
     expect(properties?.changeTypes).toEqual({ type: "array", items: { type: "string" } });
     expect(properties?.technologies).toEqual({ type: "array", items: { type: "string" } });
     expect(properties?.domains).toEqual({ type: "array", items: { type: "string" } });
+    expect(properties?.projectRef).toMatchObject({ type: "string", minLength: 1, maxLength: 256 });
+    expect(properties?.repoKey).toMatchObject({ type: "string", minLength: 1, maxLength: 1024 });
+    expect(properties?.repoPath).toMatchObject({ type: "string", minLength: 1, maxLength: 4096 });
     expect(properties).not.toHaveProperty("intent");
-    expect(properties).not.toHaveProperty("repoPath");
     expect(properties).not.toHaveProperty("files");
     expect(properties).not.toHaveProperty("tokenBudget");
     expect(properties).not.toHaveProperty("includeDraft");

@@ -13,7 +13,12 @@ import {
 } from "drizzle-orm/pg-core";
 import { groupedConfig } from "../config.js";
 import { knowledgeItems } from "./schema-knowledge.js";
-import { sourceKindValues, sourceLinkTypeValues } from "./schema.constants.js";
+import {
+  projectClassificationStatusValues,
+  scopeValues,
+  sourceKindValues,
+  sourceLinkTypeValues,
+} from "./schema.constants.js";
 import { toSqlList } from "./schema.utils.js";
 
 export const sources = pgTable(
@@ -21,6 +26,11 @@ export const sources = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     sourceKind: text("source_kind").notNull(),
+    classificationStatus: text("classification_status").notNull().default("unresolved"),
+    scope: text("scope").notNull().default("repo"),
+    projectRef: text("project_ref"),
+    repoKey: text("repo_key"),
+    repoPath: text("repo_path"),
     uri: text("uri").notNull(),
     title: text("title"),
     body: text("body").notNull(),
@@ -31,10 +41,26 @@ export const sources = pgTable(
   },
   (table) => ({
     kindIdx: index("sources_kind_idx").on(table.sourceKind),
+    classificationStatusIdx: index("sources_classification_status_idx").on(
+      table.classificationStatus,
+    ),
+    projectRefScopeIdx: index("sources_scope_project_ref_idx").on(table.scope, table.projectRef),
+    repoKeyScopeIdx: index("sources_scope_repo_key_idx").on(table.scope, table.repoKey),
+    repoPathScopeIdx: index("sources_scope_repo_path_idx").on(table.scope, table.repoPath),
     uriUniqueIdx: uniqueIndex("sources_uri_unique_idx").on(table.uri),
     sourceKindCheck: check(
       "sources_source_kind_check",
       sql`${table.sourceKind} IN (${sql.raw(toSqlList(sourceKindValues))})`,
+    ),
+    classificationStatusCheck: check(
+      "sources_classification_status_check",
+      sql`${table.classificationStatus} IN (${sql.raw(
+        toSqlList(projectClassificationStatusValues),
+      )})`,
+    ),
+    scopeCheck: check(
+      "sources_scope_check",
+      sql`${table.scope} IN (${sql.raw(toSqlList(scopeValues))})`,
     ),
     bodyFtsIdx: index("sources_body_fts_idx").using(
       "gin",

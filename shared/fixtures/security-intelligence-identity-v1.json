@@ -1,0 +1,43 @@
+{
+  "contractVersion": 1,
+  "identityMappingVersion": 1,
+  "project": {
+    "rawRef": "11111111-1111-4111-8111-111111111111",
+    "canonicalRef": "project:11111111-1111-4111-8111-111111111111"
+  },
+  "scanRun": {
+    "rawRef": "22222222-2222-4222-8222-222222222222",
+    "canonicalRef": "scan-run:22222222-2222-4222-8222-222222222222"
+  },
+  "targetDigest": {
+    "rawHex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "canonicalDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "workingTree": {
+    "scanStartSourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "scanStartSourceRevisionRole": "base_revision",
+    "assessmentSourceRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "assessmentSourceRevisionRole": "assessed_revision"
+  },
+  "fullTarget": {
+    "available": false,
+    "reasonCode": "target_kind_unsupported"
+  },
+  "supportedTransports": ["http_service"],
+  "unsupportedTransports": ["local_cli"],
+  "failureReasonCategories": [
+    "absolute_path_forbidden",
+    "identity_mapping_version_unsupported",
+    "project_ref_mismatch",
+    "revision_role_mismatch",
+    "scan_run_ref_mismatch",
+    "secret_like_value_forbidden",
+    "target_digest_mismatch"
+  ],
+  "limits": {
+    "assessmentResponseBytes": 2097152,
+    "candidateBatchBytes": 262144,
+    "feedbackBatchBytes": 131072,
+    "workspaceGrantRequestBytes": 16384
+  }
+}

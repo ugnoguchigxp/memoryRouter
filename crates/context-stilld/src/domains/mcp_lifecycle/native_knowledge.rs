@@ -279,8 +279,19 @@ fn register_candidates_on_connection(params: &Value, connection: &mut Connection
     if items.is_empty() || items.len() > 10 {
         return tool_error("items must contain 1-10 candidates");
     }
-    if !table_exists(connection, "knowledge_items") {
-        return tool_error("knowledge_items table is not available");
+    for table in [
+        "distillation_target_states",
+        "find_candidate_results",
+        "finding_candidate_queue",
+        "found_candidates",
+        "covering_evidence_queue",
+        "distillation_queue_events",
+    ] {
+        if !table_exists(connection, table) {
+            return tool_error(&format!(
+                "candidate pipeline table is not available: {table}"
+            ));
+        }
     }
     let tx = match connection.transaction() {
         Ok(tx) => tx,
@@ -303,8 +314,9 @@ fn register_candidates_on_connection(params: &Value, connection: &mut Connection
                     "status": "candidate_registered",
                     "title": result.title,
                     "type": result.kind,
-                    "targetStateId": result.knowledge_id,
-                    "findCandidateResultId": result.candidate_id,
+                    "targetStateId": result.target_state_id,
+                    "findCandidateResultId": result.find_candidate_result_id,
+                    "findingJobId": result.finding_job_id,
                     "sourceUri": result.source_uri,
                     "warnings": result.warnings
                 }));
@@ -365,18 +377,16 @@ struct Candidate {
     kind: String,
     polarity: String,
     intent_tags: Vec<String>,
-    confidence: f64,
-    importance: f64,
     applies_to: Value,
     metadata: Value,
-    scope: String,
     warnings: Vec<String>,
 }
 
 #[derive(Debug)]
 struct InsertCandidateResult {
-    knowledge_id: String,
-    candidate_id: String,
+    target_state_id: String,
+    find_candidate_result_id: String,
+    finding_job_id: String,
     source_uri: String,
     title: String,
     kind: String,
@@ -481,21 +491,9 @@ fn normalize_candidate(item: &serde_json::Map<String, Value>) -> Result<Candidat
         warnings.push("text_parsed_to_candidate_json".to_string());
     }
     let applies_to = build_applies_to(item);
-    let scope = if applies_to
-        .get("general")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        "global"
-    } else {
-        "repo"
-    }
-    .to_string();
     let metadata = json!({
         "source": "mcp_register_candidate",
         "registeredAt": now_iso(),
-        "sqliteDirectRegistration": true,
-        "rustDirectRegistration": true,
         "polarity": polarity,
         "metadata": item.get("metadata").cloned().unwrap_or_else(|| json!({}))
     });
@@ -505,11 +503,8 @@ fn normalize_candidate(item: &serde_json::Map<String, Value>) -> Result<Candidat
         kind,
         polarity,
         intent_tags: string_array_arg(item, "intentTags"),
-        confidence: number_arg(item, "confidence").unwrap_or(70.0),
-        importance: number_arg(item, "importance").unwrap_or(70.0),
         applies_to,
         metadata,
-        scope,
         warnings,
     })
 }
@@ -518,41 +513,163 @@ fn insert_candidate(
     connection: &rusqlite::Transaction<'_>,
     candidate: Candidate,
 ) -> Result<InsertCandidateResult, String> {
-    let knowledge_id = pseudo_uuid();
     let candidate_id = pseudo_uuid();
+    let target_state_id = pseudo_uuid();
+    let find_candidate_result_id = pseudo_uuid();
+    let finding_job_id = pseudo_uuid();
+    let found_candidate_id = pseudo_uuid();
+    let covering_job_id = pseudo_uuid();
     let source_uri = format!("agent://candidate/{candidate_id}");
     let now = now_iso();
+    let origin = json!({
+        "source": "mcp_register_candidate",
+        "registeredAt": now,
+        "candidateType": candidate.kind,
+        "polarity": candidate.polarity,
+        "intentTags": candidate.intent_tags,
+        "appliesTo": candidate.applies_to,
+        "metadata": candidate.metadata,
+    });
+    let payload = json!({
+        "title": candidate.title,
+        "body": candidate.body,
+        "type": candidate.kind,
+        "polarity": candidate.polarity,
+        "appliesTo": candidate.applies_to,
+        "intentTags": candidate.intent_tags,
+        "origin": origin,
+        "legacyTargetStateId": target_state_id,
+        "legacyFindCandidateResultId": find_candidate_result_id,
+    });
+    let metadata = json!({
+        "source": "mcp_register_candidate",
+        "registeredAt": now,
+        "legacyTargetStateId": target_state_id,
+        "legacyFindCandidateResultId": find_candidate_result_id,
+        "polarity": candidate.polarity,
+        "intentTags": candidate.intent_tags,
+        "appliesTo": candidate.applies_to,
+    });
     connection
         .execute(
             r#"
-            insert into knowledge_items (
-              id, type, status, scope, polarity, intent_tags, title, body, applies_to,
-              confidence, importance, metadata, created_at, updated_at, last_verified_at
-            ) values (?1, ?2, 'active', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?12)
+            insert into distillation_target_states (
+              id, target_kind, target_key, source_uri, distillation_version,
+              status, phase, priority_group, sort_key, metadata, created_at, updated_at
+            ) values (?1, 'knowledge_candidate', ?2, ?3, 'v1',
+              'pending', 'selected', 'knowledge_candidate', ?4, ?5, ?4, ?4)
             "#,
             (
-                &knowledge_id,
-                &candidate.kind,
-                &candidate.scope,
-                &candidate.polarity,
-                json!(candidate.intent_tags).to_string(),
+                &target_state_id,
+                &candidate_id,
+                &source_uri,
+                &now,
+                metadata.to_string(),
+            ),
+        )
+        .map_err(|error| format!("failed to insert candidate target: {error}"))?;
+    connection
+        .execute(
+            r#"
+            insert into find_candidate_results (
+              id, target_state_id, candidate_index, title, content, origin, status, created_at, updated_at
+            ) values (?1, ?2, 0, ?3, ?4, ?5, 'selected', ?6, ?6)
+            "#,
+            (
+                &find_candidate_result_id,
+                &target_state_id,
                 &candidate.title,
                 &candidate.body,
-                candidate.applies_to.to_string(),
-                candidate.confidence,
-                candidate.importance,
-                candidate.metadata.to_string(),
+                origin.to_string(),
                 &now,
             ),
         )
-        .map_err(|error| format!("failed to insert knowledge item: {error}"))?;
-    let _ = connection.execute(
-        "insert into knowledge_items_fts(id, title, body) values (?1, ?2, ?3)",
-        (&knowledge_id, &candidate.title, &candidate.body),
-    );
+        .map_err(|error| format!("failed to insert candidate result: {error}"))?;
+    connection
+        .execute(
+            r#"
+            insert into finding_candidate_queue (
+              id, input_kind, source_kind, source_key, source_uri, distillation_version,
+              status, priority, payload, metadata, completed_at, last_outcome_kind, created_at, updated_at
+            ) values (?1, 'provided_candidate', 'knowledge_candidate', ?2, ?3, 'v1',
+              'completed', 90, ?4, ?5, ?6, 'provided_candidate_registered', ?6, ?6)
+            "#,
+            (
+                &finding_job_id,
+                &candidate_id,
+                &source_uri,
+                payload.to_string(),
+                metadata.to_string(),
+                &now,
+            ),
+        )
+        .map_err(|error| format!("failed to insert finding queue job: {error}"))?;
+    connection
+        .execute(
+            r#"
+            insert into found_candidates (
+              id, finding_job_id, candidate_index, type, title, content, origin, metadata, created_at, updated_at
+            ) values (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+            "#,
+            (
+                &found_candidate_id,
+                &finding_job_id,
+                &candidate.kind,
+                &candidate.title,
+                &candidate.body,
+                origin.to_string(),
+                metadata.to_string(),
+                &now,
+            ),
+        )
+        .map_err(|error| format!("failed to insert found candidate: {error}"))?;
+    connection
+        .execute(
+            r#"
+            insert into covering_evidence_queue (
+              id, found_candidate_id, distillation_version, status, priority,
+              provider_policy, payload, metadata, created_at, updated_at
+            ) values (?1, ?2, 'v1', 'pending', 90, 'default', '{}', '{}', ?3, ?3)
+            "#,
+            (&covering_job_id, &found_candidate_id, &now),
+        )
+        .map_err(|error| format!("failed to insert covering queue job: {error}"))?;
+    for (queue_name, queue_job_id, event_type, message) in [
+        (
+            "findingCandidate",
+            &finding_job_id,
+            "completed",
+            "provided candidate persisted to candidate pipeline",
+        ),
+        (
+            "coveringEvidence",
+            &covering_job_id,
+            "enqueued",
+            "covering job enqueued from register-candidate",
+        ),
+    ] {
+        connection
+            .execute(
+                r#"
+                insert into distillation_queue_events (
+                  id, queue_name, queue_job_id, event_type, message, metadata, created_at
+                ) values (?1, ?2, ?3, ?4, ?5, '{}', ?6)
+                "#,
+                (
+                    pseudo_uuid(),
+                    queue_name,
+                    queue_job_id,
+                    event_type,
+                    message,
+                    &now,
+                ),
+            )
+            .map_err(|error| format!("failed to append candidate queue event: {error}"))?;
+    }
     Ok(InsertCandidateResult {
-        knowledge_id,
-        candidate_id,
+        target_state_id,
+        find_candidate_result_id,
+        finding_job_id,
         source_uri,
         title: candidate.title,
         kind: candidate.kind,
@@ -611,10 +728,6 @@ fn string_array_arg(args: &serde_json::Map<String, Value>, key: &str) -> Vec<Str
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn number_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<f64> {
-    args.get(key).and_then(Value::as_f64)
 }
 
 #[cfg(test)]
@@ -764,6 +877,55 @@ mod tests {
                 "#,
             )
             .unwrap();
+    }
+
+    fn create_candidate_pipeline_schema(connection: &Connection) {
+        connection
+            .execute_batch(
+                r#"
+                create table distillation_target_states (
+                  id text primary key, target_kind text not null, target_key text not null,
+                  source_uri text not null, distillation_version text not null,
+                  status text not null, phase text not null, priority_group text not null,
+                  sort_key text not null, metadata text not null default '{}',
+                  created_at text not null, updated_at text not null
+                );
+                create table find_candidate_results (
+                  id text primary key, target_state_id text not null, candidate_index integer not null,
+                  title text not null, content text not null, origin text not null default '{}',
+                  status text not null, created_at text not null, updated_at text not null
+                );
+                create table finding_candidate_queue (
+                  id text primary key, input_kind text not null, source_kind text not null,
+                  source_key text not null, source_uri text not null, distillation_version text not null,
+                  status text not null, priority integer not null, payload text not null,
+                  metadata text not null, completed_at text, last_outcome_kind text,
+                  created_at text not null, updated_at text not null
+                );
+                create table found_candidates (
+                  id text primary key, finding_job_id text not null, candidate_index integer not null,
+                  type text, title text not null, content text not null, origin text not null,
+                  metadata text not null, created_at text not null, updated_at text not null
+                );
+                create table covering_evidence_queue (
+                  id text primary key, found_candidate_id text, distillation_version text not null,
+                  status text not null, priority integer not null, provider_policy text,
+                  payload text not null, metadata text not null,
+                  created_at text not null, updated_at text not null
+                );
+                create table distillation_queue_events (
+                  id text primary key, queue_name text not null, queue_job_id text not null,
+                  event_type text not null, message text, metadata text not null,
+                  created_at text not null
+                );
+                "#,
+            )
+            .unwrap();
+    }
+
+    fn create_candidate_registration_schema(connection: &Connection) {
+        create_knowledge_schema(connection);
+        create_candidate_pipeline_schema(connection);
     }
 
     fn insert_knowledge(
@@ -1292,7 +1454,7 @@ mod tests {
     fn register_candidates_valid_rule() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);
@@ -1318,16 +1480,22 @@ mod tests {
         assert_eq!(items[0]["status"].as_str().unwrap(), "candidate_registered");
         assert_eq!(items[0]["type"].as_str().unwrap(), "rule");
 
-        // Verify persisted in DB
+        // Registration persists a pipeline candidate, not active Knowledge.
         let connection = Connection::open(&db_path).unwrap();
-        let count: i64 = connection
+        let active_count: i64 = connection
             .query_row(
-                "select count(*) from knowledge_items where type = 'rule'",
+                "select count(*) from knowledge_items where status = 'active'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(active_count, 0);
+        let candidate_count: i64 = connection
+            .query_row("select count(*) from find_candidate_results", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(candidate_count, 1);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -1336,7 +1504,7 @@ mod tests {
     fn register_candidates_valid_procedure() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);
@@ -1361,14 +1529,22 @@ mod tests {
         let items = inner["items"].as_array().unwrap();
         assert_eq!(items[0]["type"].as_str().unwrap(), "procedure");
 
-        // Verify persisted in DB
+        // The procedure remains a candidate until the existing pipeline finalizes it.
         let connection = Connection::open(&db_path).unwrap();
         let kind: String = connection
-            .query_row("select type from knowledge_items limit 1", [], |row| {
+            .query_row("select type from found_candidates limit 1", [], |row| {
                 row.get(0)
             })
             .unwrap();
         assert_eq!(kind, "procedure");
+        let active_count: i64 = connection
+            .query_row(
+                "select count(*) from knowledge_items where status = 'active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_count, 0);
 
         let _ = std::fs::remove_file(db_path);
     }
@@ -1377,7 +1553,7 @@ mod tests {
     fn register_candidates_missing_body_rejected() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);
@@ -1405,7 +1581,7 @@ mod tests {
     fn register_candidates_invalid_type_rejected() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);
@@ -1436,7 +1612,7 @@ mod tests {
     fn register_candidates_procedure_without_skill_sections_rejected() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);
@@ -1467,7 +1643,7 @@ mod tests {
     fn register_candidates_empty_items_rejected() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);
@@ -1482,7 +1658,7 @@ mod tests {
     fn register_candidates_too_many_items_rejected() {
         let db_path = temp_db_path();
         let connection = Connection::open(&db_path).unwrap();
-        create_knowledge_schema(&connection);
+        create_candidate_registration_schema(&connection);
         drop(connection);
 
         let context = make_context(&db_path);

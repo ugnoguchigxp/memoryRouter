@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 export const sqliteKnowledgeItems = sqliteTable(
@@ -7,6 +8,10 @@ export const sqliteKnowledgeItems = sqliteTable(
     type: text("type").notNull(),
     status: text("status").notNull(),
     scope: text("scope").notNull().default("repo"),
+    classificationStatus: text("classification_status").notNull().default("unresolved"),
+    projectRef: text("project_ref"),
+    repoKey: text("repo_key"),
+    repoPath: text("repo_path"),
     polarity: text("polarity").notNull().default("positive"),
     intentTags: text("intent_tags", { mode: "json" }).$type<unknown[]>().notNull(),
     title: text("title").notNull(),
@@ -28,6 +33,18 @@ export const sqliteKnowledgeItems = sqliteTable(
   (table) => [
     index("knowledge_items_status_idx").on(table.status),
     index("knowledge_items_type_status_idx").on(table.type, table.status),
+    index("knowledge_items_classification_status_idx").on(table.classificationStatus),
+    index("knowledge_items_status_scope_project_ref_idx").on(
+      table.status,
+      table.scope,
+      table.projectRef,
+    ),
+    index("knowledge_items_status_scope_repo_key_idx").on(table.status, table.scope, table.repoKey),
+    index("knowledge_items_status_scope_repo_path_idx").on(
+      table.status,
+      table.scope,
+      table.repoPath,
+    ),
     index("knowledge_items_polarity_idx").on(table.polarity),
     index("knowledge_items_dynamic_score_idx").on(table.dynamicScore),
     index("knowledge_items_last_compiled_at_idx").on(table.lastCompiledAt),
@@ -101,6 +118,11 @@ export const sqliteSources = sqliteTable(
   {
     id: text("id").primaryKey(),
     sourceKind: text("source_kind").notNull(),
+    classificationStatus: text("classification_status").notNull().default("unresolved"),
+    scope: text("scope").notNull().default("repo"),
+    projectRef: text("project_ref"),
+    repoKey: text("repo_key"),
+    repoPath: text("repo_path"),
     uri: text("uri").notNull(),
     title: text("title"),
     body: text("body").notNull(),
@@ -111,7 +133,36 @@ export const sqliteSources = sqliteTable(
   },
   (table) => [
     index("sources_kind_idx").on(table.sourceKind),
+    index("sources_classification_status_idx").on(table.classificationStatus),
+    index("sources_scope_project_ref_idx").on(table.scope, table.projectRef),
+    index("sources_scope_repo_key_idx").on(table.scope, table.repoKey),
+    index("sources_scope_repo_path_idx").on(table.scope, table.repoPath),
     uniqueIndex("sources_uri_unique_idx").on(table.uri),
+  ],
+);
+
+export const sqliteProjectIdentityAliases = sqliteTable(
+  "project_identity_aliases",
+  {
+    id: text("id").primaryKey(),
+    projectRef: text("project_ref").notNull(),
+    aliasKind: text("alias_kind").notNull(),
+    normalizedValue: text("normalized_value").notNull(),
+    status: text("status").notNull().default("active"),
+    source: text("source").notNull(),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("project_identity_aliases_project_alias_unique").on(
+      table.projectRef,
+      table.aliasKind,
+      table.normalizedValue,
+    ),
+    uniqueIndex("project_identity_aliases_active_alias_unique")
+      .on(table.aliasKind, table.normalizedValue)
+      .where(sql`${table.status} = 'active'`),
+    index("project_identity_aliases_project_status_idx").on(table.projectRef, table.status),
   ],
 );
 
@@ -217,6 +268,9 @@ export const sqliteEpisodeCards = sqliteTable(
     technologies: text("technologies", { mode: "json" }).$type<unknown[]>().notNull(),
     changeTypes: text("change_types", { mode: "json" }).$type<unknown[]>().notNull(),
     tools: text("tools", { mode: "json" }).$type<unknown[]>().notNull(),
+    classificationStatus: text("classification_status").notNull().default("unresolved"),
+    scope: text("scope").notNull().default("repo"),
+    projectRef: text("project_ref"),
     repoPath: text("repo_path"),
     repoKey: text("repo_key"),
     sourceKind: text("source_kind").notNull(),
@@ -236,6 +290,8 @@ export const sqliteEpisodeCards = sqliteTable(
   (table) => [
     uniqueIndex("episode_cards_source_unique_idx").on(table.sourceKind, table.sourceKey),
     index("episode_cards_status_idx").on(table.status),
+    index("episode_cards_classification_status_idx").on(table.classificationStatus),
+    index("episode_cards_scope_project_ref_idx").on(table.scope, table.projectRef),
     index("episode_cards_repo_key_idx").on(table.repoKey),
     index("episode_cards_repo_path_idx").on(table.repoPath),
     index("episode_cards_outcome_kind_idx").on(table.outcomeKind),

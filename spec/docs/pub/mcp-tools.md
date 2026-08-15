@@ -53,7 +53,7 @@ Deprecated hidden aliases remain for compatibility but are not listed:
 ## Recommended Agent Workflow
 
 1. Call `initial_instructions` once when starting work in this project.
-2. Call `context_compile` with the actual task goal.
+2. Call `context_compile` with the actual task goal and, for workspace tasks, a stable `projectRef`, explicit `repoKey`, or absolute `repoPath`.
 3. Call `context_decision` before asking the user when the next response would be a confirmation question and autonomous progress might still be possible.
 4. Do the work and verify changes, unless the decision is `reject`.
 5. If `context_decision` returns `reject`, stop the target action and report or wait for confirmation instead of continuing implementation, file changes, or PR creation.
@@ -90,6 +90,9 @@ Input:
 | `changeTypes`  |       no | Tags such as `bugfix`, `docs`, `backend`, `plan`.                                      |
 | `technologies` |       no | Technology tags such as `typescript`, `bun`, `react`.                                  |
 | `domains`      |       no | Domain tags such as `context-compiler`, `onboarding`, `queue`.                         |
+| `projectRef`   |       no | Stable opaque project selection identity. This is not an authorization token.          |
+| `repoKey`      |       no | Explicit legacy repository key. It is not derived from `repoPath`.                     |
+| `repoPath`     |       no | Absolute lexical repository path or local absolute `file://` URI.                      |
 
 Output:
 
@@ -100,6 +103,8 @@ Output:
 Behavior:
 
 - The result emphasizes implementation focus, steps, and verification points.
+- Project identity is normalized once and persisted in the compile run/task trace; daemon cwd is not used as caller identity.
+- Until repository enforcement is enabled in a later rollout phase, these fields are additive trace/contract data and do not by themselves prove authorization.
 - If no useful knowledge is selected, output can be `No Content`.
 - A weak compile result should not stop the workflow. Use `doctor`, docs, and direct repository inspection to supplement it.
 

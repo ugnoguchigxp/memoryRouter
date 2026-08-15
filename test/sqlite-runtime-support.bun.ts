@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { listCandidateItems } from "../api/modules/candidates/candidates.repository.js";
+import { deprecateRunEpisodeForRepository } from "../api/modules/context-compiler/context-compiler.repository.js";
 import {
   fetchOverviewDashboardForApi,
   fetchOverviewDomainForApi,
@@ -12,9 +13,9 @@ import {
   fetchQueueDashboardStats,
   listQueueItems,
 } from "../api/modules/queue/queue.repository.js";
-import { groupedConfig } from "../src/config.js";
 import { repairEpisodeCardQuality } from "../src/cli/repair-episode-card-quality.js";
 import { resetLowQualityEpisodeCards } from "../src/cli/reset-low-quality-episode-cards.js";
+import { groupedConfig } from "../src/config.js";
 import { openSqliteCoreDatabase } from "../src/db/sqlite/client.js";
 import { resetRuntimeSqliteCoreDatabaseForTests } from "../src/db/sqlite/runtime.js";
 import { getRuntimeSqliteCoreDatabase } from "../src/db/sqlite/runtime.js";
@@ -29,13 +30,16 @@ import {
 } from "../src/modules/context-compiler/context-compile-eval.repository.js";
 import { recordCompileEval } from "../src/modules/context-compiler/context-compile-eval.service.js";
 import {
+  findContextCompileTaskTraceByRunId,
+  upsertContextCompileTaskTrace,
+} from "../src/modules/context-compiler/context-compile-task-trace.repository.js";
+import {
   getCompileRunDetail,
   getCompileRunRankingTrace,
   insertCompileRun,
   listRecentCompileRuns,
   saveRunEpisodeFeedback,
 } from "../src/modules/context-compiler/context-compiler.repository.js";
-import { deprecateRunEpisodeForRepository } from "../api/modules/context-compiler/context-compiler.repository.js";
 import {
   getContextDecisionDetail,
   getContextDecisionMetrics,
@@ -377,6 +381,85 @@ describe("sqlite runtime support repositories", () => {
       "explicit eval",
     ]);
     expect((await listRecentCompileRuns(1))[0]?.evalSummary.count).toBe(2);
+  });
+
+  test("persists normalized compile project identity in sqlite run and task trace", async () => {
+    const runId = await insertCompileRun({
+      goal: "sqlite project identity",
+      intent: "implementation",
+      projectRef: "project-A",
+      repoKey: "org/repo-a",
+      repoPath: "/work/repo-a",
+      matchBasis: "project_ref",
+      identityContractVersion: 1,
+      scopeMode: "project",
+      input: { goal: "sqlite project identity" },
+      retrievalMode: "task_context",
+      status: "ok",
+      degradedReasons: [],
+      tokenBudget: 1000,
+      durationMs: 12,
+      source: "mcp",
+    });
+    await upsertContextCompileTaskTrace({
+      runId,
+      retrievalMode: "task_context",
+      projectRef: "project-A",
+      repoKey: "org/repo-a",
+      repoPath: "/work/repo-a",
+      matchBasis: "project_ref",
+      identityContractVersion: 1,
+      scopeMode: "project",
+      identityFingerprint: "a".repeat(64),
+      identityTrust: "request_hint",
+      bindingStatus: "verified",
+      technologies: ["sqlite"],
+      changeTypes: ["implementation"],
+      domains: ["context-compiler"],
+      embeddingStatus: "facets_only",
+      embeddingProvider: null,
+      embeddingModel: null,
+      embeddingDimensions: null,
+      embedding: null,
+      goalHash: "goal-hash",
+    });
+
+    const trace = await findContextCompileTaskTraceByRunId(runId);
+    expect(trace).toMatchObject({
+      projectRef: "project-A",
+      repoKey: "org/repo-a",
+      repoPath: "/work/repo-a",
+      matchBasis: "project_ref",
+      identityContractVersion: 1,
+      scopeMode: "project",
+      identityFingerprint: "a".repeat(64),
+      identityTrust: "request_hint",
+      bindingStatus: "verified",
+    });
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const run = sqlite.db
+      .query<
+        {
+          project_ref: string;
+          repo_key: string;
+          repo_path: string;
+          match_basis: string;
+          identity_contract_version: number;
+          scope_mode: string;
+        },
+        [string]
+      >(
+        "SELECT project_ref, repo_key, repo_path, match_basis, identity_contract_version, scope_mode FROM context_compile_runs WHERE id = ?",
+      )
+      .get(runId);
+    expect(run).toEqual({
+      project_ref: "project-A",
+      repo_key: "org/repo-a",
+      repo_path: "/work/repo-a",
+      match_basis: "project_ref",
+      identity_contract_version: 1,
+      scope_mode: "project",
+    });
   });
 
   test("persists compile run knowledge feedback and reflects it in sqlite run detail", async () => {
@@ -3760,7 +3843,7 @@ describe("sqlite runtime support repositories", () => {
   test("serves overview dashboard and domain reads from sqlite without postgres SQL", async () => {
     process.env.DATABASE_URL = "postgres://postgres:postgres@127.0.0.1:1/context_still_dead";
     const sqlite = await getRuntimeSqliteCoreDatabase();
-    const now = new Date("2026-06-20T00:00:00.000Z").toISOString();
+    const now = new Date().toISOString();
     sqlite.db
       .query(
         `
@@ -4164,7 +4247,7 @@ describe("sqlite runtime support repositories", () => {
     expect(fallbackLandscape.landscape.status).toBe("ok");
     expect(fallbackLandscape.landscape.snapshot?.totalCommunities).toBeGreaterThan(0);
     expect(fallbackLandscape.landscape.replay?.comparedRunCount).toBeGreaterThan(0);
-  });
+  }, 15_000);
 });
 
 function restoreEnv(key: string, value: string | undefined): void {

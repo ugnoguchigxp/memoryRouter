@@ -184,7 +184,7 @@ export const registerCandidateTool: ToolEntry = {
 export const registerCandidatesTool: ToolEntry = {
   name: "register_candidates",
   description:
-    "Bulk-register lightweight rule/procedure candidates for later distillation. Use when multiple durable lessons should be registered from the same task. In Japanese-operated contexts, write title/body/avoid/prefer natural language in Japanese except identifiers, commands, API names, URLs, and error messages.",
+    "Bulk-register lightweight rule/procedure candidates into the distillation pipeline. candidate_registered means transactionally persisted to that pipeline; it does not mean active Knowledge. Use when multiple durable lessons should be registered from the same task. In Japanese-operated contexts, write title/body/avoid/prefer natural language in Japanese except identifiers, commands, API names, URLs, and error messages.",
   inputSchema: {
     type: "object",
     additionalProperties: false,

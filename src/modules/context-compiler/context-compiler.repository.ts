@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
-import { getDefaultDbSession } from "../../db/session.js";
 import {
   contextCompileCandidateTraces,
   contextCompileRuns,
@@ -11,9 +10,10 @@ import {
   knowledgeUsageEvents,
   sources,
 } from "../../db/schema.js";
+import { getDefaultDbSession } from "../../db/session.js";
 import {
-  type CompileRunEpisodeFeedbackResult,
   type CompileRunDetail,
+  type CompileRunEpisodeFeedbackResult,
   type CompileRunRankingTrace,
   type CompileRunSelectedItem,
   type CompileRunSource,
@@ -55,7 +55,12 @@ export async function insertCompileRun(params: {
   goal: string;
   intent: string;
   sessionId?: string;
+  projectRef?: string | null;
+  repoKey?: string | null;
   repoPath?: string;
+  matchBasis?: "project_ref" | "repo_key" | "repo_path" | "none";
+  identityContractVersion?: number;
+  scopeMode?: "global_only" | "project";
   input: Record<string, unknown>;
   retrievalMode: string;
   status: "ok" | "degraded" | "failed";
@@ -74,7 +79,12 @@ export async function insertCompileRun(params: {
       goal: params.goal,
       intent: params.intent,
       sessionId: params.sessionId ?? null,
+      projectRef: params.projectRef ?? null,
+      repoKey: params.repoKey ?? null,
       repoPath: params.repoPath ?? null,
+      matchBasis: params.matchBasis ?? "none",
+      identityContractVersion: params.identityContractVersion ?? 1,
+      scopeMode: params.scopeMode ?? "global_only",
       input: params.input,
       retrievalMode: params.retrievalMode,
       status: params.status,

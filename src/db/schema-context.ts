@@ -18,6 +18,10 @@ import { knowledgeItems } from "./schema-knowledge.js";
 import {
   auditLogActorValues,
   compileEvalOutcomeValues,
+  compileProjectBindingStatusValues,
+  compileProjectIdentityTrustValues,
+  compileProjectMatchBasisValues,
+  compileProjectScopeModeValues,
   compileRunSourceValues,
   contextCompileCandidateTraceAgenticDecisionValues,
   contextCompileTaskTraceEmbeddingStatusValues,
@@ -38,6 +42,8 @@ import {
   knowledgeTypeValues,
   knowledgeUsageVerdictValues,
   packSectionValues,
+  projectIdentityAliasKindValues,
+  projectIdentityAliasStatusValues,
   runStatusValues,
 } from "./schema.constants.js";
 import { toSqlList } from "./schema.utils.js";
@@ -49,7 +55,12 @@ export const contextCompileRuns = pgTable(
     goal: text("goal").notNull(),
     intent: text("intent").notNull(),
     sessionId: text("session_id"),
+    projectRef: text("project_ref"),
+    repoKey: text("repo_key"),
     repoPath: text("repo_path"),
+    matchBasis: text("match_basis").notNull().default("none"),
+    identityContractVersion: integer("identity_contract_version").notNull().default(1),
+    scopeMode: text("scope_mode").notNull().default("global_only"),
     input: jsonb("input").notNull().default({}),
     retrievalMode: text("retrieval_mode").notNull(),
     status: text("status").notNull(),
@@ -67,6 +78,9 @@ export const contextCompileRuns = pgTable(
       .on(table.sessionId, table.createdAt)
       .where(sql`${table.sessionId} is not null`),
     sourceIdx: index("context_compile_runs_source_idx").on(table.source),
+    projectRefIdx: index("context_compile_runs_project_ref_idx").on(table.projectRef),
+    repoKeyIdx: index("context_compile_runs_repo_key_idx").on(table.repoKey),
+    repoPathIdx: index("context_compile_runs_repo_path_idx").on(table.repoPath),
     statusCheck: check(
       "context_compile_runs_status_check",
       sql`${table.status} IN (${sql.raw(toSqlList(runStatusValues))})`,
@@ -74,6 +88,50 @@ export const contextCompileRuns = pgTable(
     sourceCheck: check(
       "context_compile_runs_source_check",
       sql`${table.source} IN (${sql.raw(toSqlList(compileRunSourceValues))})`,
+    ),
+    matchBasisCheck: check(
+      "context_compile_runs_match_basis_check",
+      sql`${table.matchBasis} IN (${sql.raw(toSqlList(compileProjectMatchBasisValues))})`,
+    ),
+    scopeModeCheck: check(
+      "context_compile_runs_scope_mode_check",
+      sql`${table.scopeMode} IN (${sql.raw(toSqlList(compileProjectScopeModeValues))})`,
+    ),
+  }),
+);
+
+export const projectIdentityAliases = pgTable(
+  "project_identity_aliases",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectRef: text("project_ref").notNull(),
+    aliasKind: text("alias_kind").notNull(),
+    normalizedValue: text("normalized_value").notNull(),
+    status: text("status").notNull().default("active"),
+    source: text("source").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    projectAliasUnique: uniqueIndex("project_identity_aliases_project_alias_unique").on(
+      table.projectRef,
+      table.aliasKind,
+      table.normalizedValue,
+    ),
+    activeAliasUnique: uniqueIndex("project_identity_aliases_active_alias_unique")
+      .on(table.aliasKind, table.normalizedValue)
+      .where(sql`${table.status} = 'active'`),
+    projectStatusIdx: index("project_identity_aliases_project_status_idx").on(
+      table.projectRef,
+      table.status,
+    ),
+    aliasKindCheck: check(
+      "project_identity_aliases_alias_kind_check",
+      sql`${table.aliasKind} IN (${sql.raw(toSqlList(projectIdentityAliasKindValues))})`,
+    ),
+    statusCheck: check(
+      "project_identity_aliases_status_check",
+      sql`${table.status} IN (${sql.raw(toSqlList(projectIdentityAliasStatusValues))})`,
     ),
   }),
 );
@@ -163,8 +221,15 @@ export const contextCompileTaskTraces = pgTable(
       .references(() => contextCompileRuns.id, { onDelete: "cascade" })
       .notNull(),
     retrievalMode: text("retrieval_mode").notNull(),
+    projectRef: text("project_ref"),
     repoPath: text("repo_path"),
     repoKey: text("repo_key"),
+    matchBasis: text("match_basis").notNull().default("none"),
+    identityContractVersion: integer("identity_contract_version").notNull().default(1),
+    scopeMode: text("scope_mode").notNull().default("global_only"),
+    identityFingerprint: text("identity_fingerprint"),
+    identityTrust: text("identity_trust").notNull().default("request_hint"),
+    bindingStatus: text("binding_status").notNull().default("not_applicable"),
     technologies: jsonb("technologies").notNull().default([]),
     changeTypes: jsonb("change_types").notNull().default([]),
     domains: jsonb("domains").notNull().default([]),
@@ -182,6 +247,7 @@ export const contextCompileTaskTraces = pgTable(
     createdAtIdx: index("context_compile_task_traces_created_at_idx").on(table.createdAt),
     repoPathIdx: index("context_compile_task_traces_repo_path_idx").on(table.repoPath),
     repoKeyIdx: index("context_compile_task_traces_repo_key_idx").on(table.repoKey),
+    projectRefIdx: index("context_compile_task_traces_project_ref_idx").on(table.projectRef),
     embeddingStatusIdx: index("context_compile_task_traces_embedding_status_idx").on(
       table.embeddingStatus,
     ),
@@ -204,6 +270,22 @@ export const contextCompileTaskTraces = pgTable(
         toSqlList(contextCompileTaskTraceEmbeddingStatusValues),
       )})`,
     ),
+    matchBasisCheck: check(
+      "context_compile_task_traces_match_basis_check",
+      sql`${table.matchBasis} IN (${sql.raw(toSqlList(compileProjectMatchBasisValues))})`,
+    ),
+    scopeModeCheck: check(
+      "context_compile_task_traces_scope_mode_check",
+      sql`${table.scopeMode} IN (${sql.raw(toSqlList(compileProjectScopeModeValues))})`,
+    ),
+    identityTrustCheck: check(
+      "context_compile_task_traces_identity_trust_check",
+      sql`${table.identityTrust} IN (${sql.raw(toSqlList(compileProjectIdentityTrustValues))})`,
+    ),
+    bindingStatusCheck: check(
+      "context_compile_task_traces_binding_status_check",
+      sql`${table.bindingStatus} IN (${sql.raw(toSqlList(compileProjectBindingStatusValues))})`,
+    ),
   }),
 );
 
@@ -220,6 +302,7 @@ export const contextPackItems = pgTable(
     score: real("score").default(0).notNull(),
     rankingReason: text("ranking_reason").notNull(),
     sourceRefs: jsonb("source_refs").notNull().default([]),
+    scopeSnapshot: jsonb("scope_snapshot").notNull().default({}),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => ({

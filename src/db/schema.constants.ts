@@ -2,6 +2,27 @@ export const knowledgePolarityValues = ["positive", "negative", "neutral"] as co
 export const knowledgeTypeValues = ["rule", "procedure"] as const;
 export const knowledgeStatusValues = ["draft", "active", "deprecated"] as const;
 export const scopeValues = ["repo", "global"] as const;
+export const projectClassificationStatusValues = [
+  "classified",
+  "unresolved",
+  "conflict",
+  "malformed",
+] as const;
+export const projectIdentityAliasKindValues = ["repo_key", "repo_path"] as const;
+export const projectIdentityAliasStatusValues = ["active", "revoked"] as const;
+export const compileProjectMatchBasisValues = [
+  "project_ref",
+  "repo_key",
+  "repo_path",
+  "none",
+] as const;
+export const compileProjectScopeModeValues = ["global_only", "project"] as const;
+export const compileProjectIdentityTrustValues = ["request_hint", "trusted_adapter"] as const;
+export const compileProjectBindingStatusValues = [
+  "verified",
+  "not_applicable",
+  "unverified",
+] as const;
 
 export const knowledgeTagKindValues = [
   "technology",

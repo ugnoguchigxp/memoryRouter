@@ -1,0 +1,183 @@
+{
+  "valid": [
+    {
+      "name": "missing identity is global only",
+      "input": {},
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "global_only",
+        "matchBasis": "none",
+        "matchValue": null,
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "identityFingerprint": null,
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    },
+    {
+      "name": "projectRef has highest precedence",
+      "input": {
+        "projectRef": "project-A",
+        "repoKey": "ORG\\Repo-A",
+        "repoPath": "/work/repo-a"
+      },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "project_ref",
+        "matchValue": "project-A",
+        "projectRef": "project-A",
+        "repoKey": "org/repo-a",
+        "repoPath": "/work/repo-a",
+        "identityFingerprint": "0513f9c3cf83583e36682ab931ecc66a70eafc5cd40b15123fab848a60cd7407",
+        "trust": "request_hint",
+        "bindingStatus": "unverified"
+      }
+    },
+    {
+      "name": "repoKey normalizes separators and ASCII case only",
+      "input": { "repoKey": "ORG\\Über\\Repo" },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "repo_key",
+        "matchValue": "org/Über/repo",
+        "projectRef": null,
+        "repoKey": "org/Über/repo",
+        "repoPath": null,
+        "identityFingerprint": "5a35e9b5316d4bdd62575194f51b370f4cbacd7dc62c8fdf1516020c8a422676",
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    },
+    {
+      "name": "POSIX path is lexically normalized",
+      "input": { "repoPath": "/work/./repo-a/dir/../" },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "repo_path",
+        "matchValue": "/work/repo-a",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": "/work/repo-a",
+        "identityFingerprint": "bfc9c6722c084ec7dd6a199478ae01474cb1e13b1aa21ece35090fcb70a9a804",
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    },
+    {
+      "name": "Windows drive path preserves case",
+      "input": { "repoPath": "C:\\Work\\Repo-A\\.\\src\\.." },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "repo_path",
+        "matchValue": "C:/Work/Repo-A",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": "C:/Work/Repo-A",
+        "identityFingerprint": "8c4b8880c6879fe44153158707c0f3200fb4860a035d70f6e4a6798f8390c427",
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    },
+    {
+      "name": "localhost file URI decodes once",
+      "input": { "repoPath": "file://localhost/tmp/repo%2520a/" },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "repo_path",
+        "matchValue": "/tmp/repo%20a",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": "/tmp/repo%20a",
+        "identityFingerprint": "19f1bea9fc2a384aa9583693140f56a07f043c776ab98850d0c05453110eec2e",
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    },
+    {
+      "name": "Windows file URI uses the same lexical identity as a drive path",
+      "input": { "repoPath": "file:///C:/Work/Repo-A/./src/.." },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "repo_path",
+        "matchValue": "C:/Work/Repo-A",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": "C:/Work/Repo-A",
+        "identityFingerprint": "8c4b8880c6879fe44153158707c0f3200fb4860a035d70f6e4a6798f8390c427",
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    },
+    {
+      "name": "ECMAScript byte-order-mark whitespace is trimmed consistently",
+      "input": { "projectRef": "\uFEFFproject-A\uFEFF" },
+      "expected": {
+        "contractVersion": 1,
+        "scopeMode": "project",
+        "matchBasis": "project_ref",
+        "matchValue": "project-A",
+        "projectRef": "project-A",
+        "repoKey": null,
+        "repoPath": null,
+        "identityFingerprint": "0513f9c3cf83583e36682ab931ecc66a70eafc5cd40b15123fab848a60cd7407",
+        "trust": "request_hint",
+        "bindingStatus": "not_applicable"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "relative path",
+      "input": { "repoPath": "./repo-a" },
+      "code": "INVALID_REPO_PATH"
+    },
+    {
+      "name": "remote host file URI",
+      "input": { "repoPath": "file://remote-host/tmp/repo-a" },
+      "code": "INVALID_REPO_PATH"
+    },
+    {
+      "name": "file URI query",
+      "input": { "repoPath": "file:///tmp/repo-a?revision=1" },
+      "code": "INVALID_REPO_PATH"
+    },
+    {
+      "name": "malformed percent encoding",
+      "input": { "repoPath": "file:///tmp/repo-%ZZ" },
+      "code": "INVALID_REPO_PATH"
+    },
+    {
+      "name": "projectRef control character",
+      "input": { "projectRef": "project-A\nproject-B" },
+      "code": "INVALID_PROJECT_REF"
+    },
+    {
+      "name": "repoKey control character",
+      "input": { "repoKey": "repo-A\trepo-B" },
+      "code": "INVALID_REPO_KEY"
+    },
+    {
+      "name": "projectRef C1 control character",
+      "input": { "projectRef": "project-A\u0085project-B" },
+      "code": "INVALID_PROJECT_REF"
+    },
+    {
+      "name": "percent-decoded control character",
+      "input": { "repoPath": "file:///tmp/repo%00name" },
+      "code": "INVALID_REPO_PATH"
+    },
+    {
+      "name": "unsupported URI scheme",
+      "input": { "repoPath": "https://example.com/repo-a" },
+      "code": "INVALID_REPO_PATH"
+    }
+  ]
+}

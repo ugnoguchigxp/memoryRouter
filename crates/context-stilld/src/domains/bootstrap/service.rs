@@ -131,38 +131,64 @@ pub fn preflight<E: EnvProvider>(env: &E) -> BootstrapPreflightReport {
 }
 
 fn migration_check(sqlite_path: &Path) -> BootstrapCheck {
-    use crate::domains::sqlite_writer::schema::{read_schema_version, CURRENT_SCHEMA_VERSION};
+    use crate::domains::sqlite_writer::schema::{
+        read_schema_revision, read_schema_version, CURRENT_SCHEMA_REVISION, CURRENT_SCHEMA_VERSION,
+    };
 
     if !sqlite_path.exists() {
         return BootstrapCheck {
             key: "migration_state",
             status: "missing",
             message: format!(
-                "SQLite schema is missing; resident Writer will create version {CURRENT_SCHEMA_VERSION}"
+                "SQLite schema is missing; resident Writer will create compatibility version {CURRENT_SCHEMA_VERSION}, revision {CURRENT_SCHEMA_REVISION}"
             ),
         };
     }
-    match read_schema_version(sqlite_path) {
-        Ok(version) if version == CURRENT_SCHEMA_VERSION => BootstrapCheck {
-            key: "migration_state",
-            status: "ok",
-            message: format!("Rust-owned SQLite schema version {version} is current"),
-        },
-        Ok(version) if version < CURRENT_SCHEMA_VERSION => BootstrapCheck {
+    match (
+        read_schema_version(sqlite_path),
+        read_schema_revision(sqlite_path),
+    ) {
+        (Ok(version), Ok(revision))
+            if version > CURRENT_SCHEMA_REVISION || revision > CURRENT_SCHEMA_REVISION =>
+        {
+            BootstrapCheck {
+                key: "migration_state",
+                status: "incompatible",
+                message: format!(
+                    "SQLite compatibility version {version}, revision {revision} is newer than supported revision {CURRENT_SCHEMA_REVISION}"
+                ),
+            }
+        }
+        (Ok(version), Ok(revision))
+            if version == CURRENT_SCHEMA_VERSION && revision == CURRENT_SCHEMA_REVISION =>
+        {
+            BootstrapCheck {
+                key: "migration_state",
+                status: "ok",
+                message: format!(
+                    "Rust-owned SQLite compatibility version {version}, revision {revision} is current"
+                ),
+            }
+        }
+        (Ok(version), Ok(revision))
+            if version <= CURRENT_SCHEMA_REVISION && revision < CURRENT_SCHEMA_REVISION =>
+        {
+            BootstrapCheck {
+                key: "migration_state",
+                status: "outdated",
+                message: format!(
+                    "SQLite compatibility version {version}, revision {revision} requires Rust Writer migration to revision {CURRENT_SCHEMA_REVISION}"
+                ),
+            }
+        }
+        (Ok(version), Ok(revision)) => BootstrapCheck {
             key: "migration_state",
             status: "outdated",
             message: format!(
-                "SQLite schema version {version} requires Rust Writer migration to {CURRENT_SCHEMA_VERSION}"
+                "SQLite compatibility version {version}, revision {revision} requires normalization to compatibility version {CURRENT_SCHEMA_VERSION}"
             ),
         },
-        Ok(version) => BootstrapCheck {
-            key: "migration_state",
-            status: "incompatible",
-            message: format!(
-                "SQLite schema version {version} is newer than supported version {CURRENT_SCHEMA_VERSION}"
-            ),
-        },
-        Err(error) => BootstrapCheck {
+        (Err(error), _) | (_, Err(error)) => BootstrapCheck {
             key: "migration_state",
             status: "unknown",
             message: error,

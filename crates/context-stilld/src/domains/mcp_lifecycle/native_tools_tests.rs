@@ -143,3 +143,34 @@ fn test_exposed_tools_have_required_fields() {
         assert!(tool["inputSchema"].is_object());
     }
 }
+
+#[test]
+fn test_context_compile_exposes_additive_project_identity_contract() {
+    let context = make_context();
+    let response = handle_native_dispatch("tools/list", &json!({}), &context).unwrap();
+    let tool = response["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "context_compile")
+        .expect("context_compile is exposed");
+    let schema = &tool["inputSchema"];
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["projectRef"]["maxLength"], 256);
+    assert_eq!(schema["properties"]["repoKey"]["maxLength"], 1024);
+    assert_eq!(schema["properties"]["repoPath"]["maxLength"], 4096);
+    for property in ["projectRef", "repoKey", "repoPath"] {
+        assert_eq!(
+            schema["properties"][property]["pattern"],
+            "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        );
+    }
+    assert!(tool["description"]
+        .as_str()
+        .unwrap()
+        .contains("EpisodeCard"));
+    assert!(!tool["description"]
+        .as_str()
+        .unwrap()
+        .contains("source evidence"));
+}

@@ -1,0 +1,69 @@
+{
+  "fixtureVersion": 1,
+  "valid": {
+    "batch": {
+      "contractVersion": 1,
+      "batchRef": "skcb:v1:fa59649ec52baf54cab03d0d25b426eeb7cc0020890d0d388dbb9444f04f5834",
+      "idempotencyKey": "security-candidates:run:44444444-4444-4444-8444-444444444444:1",
+      "batchPayloadDigest": "sha256:fa59649ec52baf54cab03d0d25b426eeb7cc0020890d0d388dbb9444f04f5834",
+      "producer": { "system": "nightworkers", "version": "1.0.0" },
+      "correlation": {
+        "taskRef": "task:33333333-3333-4333-8333-333333333333",
+        "runRef": "run:44444444-4444-4444-8444-444444444444"
+      },
+      "items": [
+        {
+          "candidateRef": "skc:v1:ad18eb06481fbd88e4ea22353cdaffe6d4407498288c231b453e5c6696c5c505",
+          "fingerprint": "skcf:v1:ad18eb06481fbd88e4ea22353cdaffe6d4407498288c231b453e5c6696c5c505",
+          "type": "rule",
+          "polarity": "positive",
+          "title": "Verify authorization changes with an explicit negative test",
+          "body": "When an authorization boundary changes, add a negative test that proves an unauthorized principal cannot cross the boundary.",
+          "applicability": {
+            "domains": ["authorization"],
+            "technologies": ["typescript"],
+            "changeTypes": ["access-control"]
+          },
+          "evidenceRefs": [
+            {
+              "assessmentRef": "sia:v1:1111111111111111111111111111111111111111111111111111111111111111",
+              "evidenceRef": "verification:authorization-negative-test",
+              "evidenceDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "sourceProjectRef": "project:11111111-1111-4111-8111-111111111111",
+              "sourceRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "targetDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ],
+          "confidence": 0.91,
+          "limitations": ["requires_project_specific_authorization_context"],
+          "payloadDigest": "sha256:ee8251bcac9b612741ca9f8f9e3a5340c93317910ae0cac8ebb23241f15ef94b"
+        }
+      ]
+    },
+    "response": {
+      "replayed": false,
+      "receipt": {
+        "contractVersion": 1,
+        "batchRef": "skcb:v1:fa59649ec52baf54cab03d0d25b426eeb7cc0020890d0d388dbb9444f04f5834",
+        "receiptRef": "skcr:v1:21eb73a0bd81f6f17fc53697caebb396554b365f8577bad9f620b2a6fcce4d38",
+        "items": [
+          {
+            "candidateRef": "skc:v1:ad18eb06481fbd88e4ea22353cdaffe6d4407498288c231b453e5c6696c5c505",
+            "status": "accepted",
+            "targetStateRef": "candidate-target:55555555-5555-4555-8555-555555555555"
+          }
+        ]
+      }
+    }
+  },
+  "negativeCases": [
+    { "name": "secret-like-value", "expectedReasonCategory": "secret_like_value_forbidden" },
+    { "name": "evidence-missing", "expectedReasonCategory": "evidence_required" },
+    { "name": "batch-digest-mismatch", "expectedReasonCategory": "batch_digest_mismatch" },
+    { "name": "item-digest-mismatch", "expectedReasonCategory": "item_digest_mismatch" },
+    {
+      "name": "idempotency-key-reused-with-different-payload",
+      "expectedReasonCategory": "idempotency_conflict"
+    }
+  ]
+}
