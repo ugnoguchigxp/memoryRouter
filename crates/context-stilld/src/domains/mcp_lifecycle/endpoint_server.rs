@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{IpAddr, TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -165,19 +165,38 @@ fn dispatch_config<E: EnvProvider>(env: &E, writer_token: String) -> DispatchCon
 }
 
 fn endpoint_config<E: EnvProvider>(env: &E) -> Result<EndpointConfig, CliError> {
-    let host = env
+    let configured_host = env
         .var("CONTEXT_STILL_MCP_HOST")
         .unwrap_or_else(|| "127.0.0.1".to_string());
+    let address = configured_host.parse::<IpAddr>().map_err(|_| {
+        CliError::invalid_arguments(
+            "CONTEXT_STILL_MCP_HOST must be a loopback IP address (127.0.0.1 or ::1)",
+        )
+    })?;
+    if !address.is_loopback() {
+        return Err(CliError::invalid_arguments(
+            "CONTEXT_STILL_MCP_HOST must be a loopback IP address (127.0.0.1 or ::1)",
+        ));
+    }
+    let host = address.to_string();
+    let url_host = match address {
+        IpAddr::V4(_) => host.clone(),
+        IpAddr::V6(_) => format!("[{host}]"),
+    };
     let port = env
         .var("CONTEXT_STILL_MCP_PORT")
         .unwrap_or_else(|| "39172".to_string())
         .parse::<u16>()
         .map_err(|error| CliError::invalid_arguments(format!("invalid MCP port: {error}")))?;
     Ok(EndpointConfig {
-        url: format!("http://{host}:{port}/mcp"),
+        url: format!("http://{url_host}:{port}/mcp"),
         host,
         port,
     })
+}
+
+pub(super) fn configured_endpoint_url<E: EnvProvider>(env: &E) -> Result<String, CliError> {
+    Ok(endpoint_config(env)?.url)
 }
 
 fn persist_endpoint(
@@ -329,14 +348,10 @@ fn handle_request(
     dispatch: Arc<DispatchConfig>,
     peer_is_loopback: bool,
 ) -> String {
+    if !peer_is_loopback {
+        return json_response(403, json!({"ok": false, "error": "mcp_loopback_only"}), &[]);
+    }
     if request.path == "/writer/health" || request.path == "/writer/query" {
-        if !peer_is_loopback {
-            return json_response(
-                403,
-                json!({"ok": false, "error": "writer_loopback_only"}),
-                &[],
-            );
-        }
         return handle_writer_request(request, &dispatch);
     }
     if request.path == "/mcp/health" && request.method == "GET" {

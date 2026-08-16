@@ -245,6 +245,11 @@ export const groupedConfig: GroupedConfig = {
       APP_CONSTANTS.distillationCoverEvidenceFetchMaxTokensPerSite,
     timeoutMs: APP_CONSTANTS.distillationToolTimeoutMs,
     resultMaxChars: APP_CONSTANTS.distillationToolResultMaxChars,
+    fetchMaxResponseBytes: resolvePositiveInt(
+      readProjectEnv("FETCH_MAX_RESPONSE_BYTES"),
+      APP_CONSTANTS.distillationFetchMaxResponseBytes,
+      { min: 1024, max: 16 * 1024 * 1024 },
+    ),
     searchResultCount: APP_CONSTANTS.distillationSearchResultCount,
     searchProviders: parseDistillationSearchProviders(
       readProjectEnv("DISTILLATION_SEARCH_PROVIDERS"),

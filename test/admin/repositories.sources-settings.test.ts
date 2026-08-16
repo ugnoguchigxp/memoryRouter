@@ -31,6 +31,7 @@ describe("Admin Repository sources/settings", () => {
     const runtime = globalThis as { __MEMORY_ROUTER_ADMIN_API_KEY__?: string };
     runtime.__MEMORY_ROUTER_ADMIN_API_KEY__ = undefined;
     if (typeof window !== "undefined") {
+      window.localStorage.removeItem("context_still_admin_api_key");
       window.localStorage.removeItem("memory_router_admin_api_key");
       window.history.replaceState(null, "", "/");
     }

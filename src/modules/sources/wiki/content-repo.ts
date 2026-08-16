@@ -3,10 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import matter from "gray-matter";
+import { assertFullGitObjectId, assertGitObjectId } from "./git-revision.js";
 import { sanitizeMarkdownBody, sanitizePlainText } from "./sanitize.js";
 import { assertSafeSlug, filePathToSlug } from "./slug.js";
 
 const execFileAsync = promisify(execFile);
+const MAX_WIKI_PAGE_BYTES = 16 * 1024 * 1024;
 
 export type GitSummary = {
   branch: string;
@@ -59,6 +61,31 @@ const assertInsidePages = (contentRoot: string, relativePath: string): string =>
   return absolute;
 };
 
+const assertNoSymlinkComponents = async (
+  contentRoot: string,
+  absolutePath: string,
+): Promise<void> => {
+  const pagesRoot = pagesDirectory(contentRoot);
+  const relative = path.relative(pagesRoot, absolutePath);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error("Invalid page path");
+  }
+  const components = relative ? relative.split(path.sep).filter(Boolean) : [];
+  let current = pagesRoot;
+  for (const component of ["", ...components]) {
+    if (component) current = path.join(current, component);
+    try {
+      const stat = await fs.lstat(current);
+      if (stat.isSymbolicLink()) {
+        throw new Error("Symbolic links are not allowed in the pages directory");
+      }
+    } catch (error) {
+      if (isNotFoundError(error)) return;
+      throw error;
+    }
+  }
+};
+
 const assertSafeFolderPath = (folderPath: string): string => {
   const safe = assertSafeSlug(folderPath);
   if (safe === "") {
@@ -108,6 +135,7 @@ const readFolderPaths = async (root: string, base = root): Promise<string[]> => 
 
 export const listPages = async (contentRoot: string): Promise<PageTreeItem[]> => {
   const pagesRoot = pagesDirectory(contentRoot);
+  await assertNoSymlinkComponents(contentRoot, pagesRoot);
   const files = await readMarkdownFiles(pagesRoot);
   const items: PageTreeItem[] = files.map((file) => {
     const relativePath = path.relative(pagesRoot, file.filePath);
@@ -123,7 +151,9 @@ export const listPages = async (contentRoot: string): Promise<PageTreeItem[]> =>
 };
 
 export const listFolders = async (contentRoot: string): Promise<FolderTreeItem[]> => {
-  const folders = await readFolderPaths(pagesDirectory(contentRoot));
+  const pagesRoot = pagesDirectory(contentRoot);
+  await assertNoSymlinkComponents(contentRoot, pagesRoot);
+  const folders = await readFolderPaths(pagesRoot);
   return folders
     .map((folderPath) => ({ path: folderPath }))
     .sort((a, b) => a.path.localeCompare(b.path));
@@ -145,6 +175,7 @@ const findExistingPageRelativePath = async (
   for (const candidate of candidates) {
     const absolute = assertInsidePages(contentRoot, candidate);
     try {
+      await assertNoSymlinkComponents(contentRoot, absolute);
       const stat = await fs.stat(absolute);
       if (stat.isFile()) {
         return normalizePosixPath(candidate);
@@ -163,6 +194,11 @@ export const readPage = async (contentRoot: string, slug: string): Promise<PageD
   for (const candidate of candidates) {
     const absolute = assertInsidePages(contentRoot, candidate);
     try {
+      await assertNoSymlinkComponents(contentRoot, absolute);
+      const pageStat = await fs.stat(absolute);
+      if (pageStat.size > MAX_WIKI_PAGE_BYTES) {
+        throw new Error(`Wiki page exceeds ${MAX_WIKI_PAGE_BYTES} bytes`);
+      }
       const raw = await fs.readFile(absolute, "utf8");
       const parsed = matter(raw);
       const relativePath = path.relative(pagesDirectory(contentRoot), absolute);
@@ -225,7 +261,9 @@ export const writePage = async (
   options: { relativePath?: string } = {},
 ): Promise<{ path: string }> => {
   const targetPath = resolveWritePath(contentRoot, slug, options.relativePath);
+  await assertNoSymlinkComponents(contentRoot, targetPath);
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  await assertNoSymlinkComponents(contentRoot, targetPath);
   const output = serializeMarkdown(title, body, meta);
   await fs.writeFile(targetPath, output, "utf8");
   return { path: targetPath };
@@ -255,6 +293,7 @@ export const deletePage = async (contentRoot: string, slug: string): Promise<str
   );
   for (const candidate of candidates) {
     try {
+      await assertNoSymlinkComponents(contentRoot, candidate);
       await fs.rm(candidate);
       await removeEmptyParentDirectories(contentRoot, candidate);
       return candidate;
@@ -273,6 +312,7 @@ export const createFolder = async (
 ): Promise<{ path: string; keepFilePath: string }> => {
   const safe = assertSafeFolderPath(folderPath);
   const folderAbsolutePath = assertInsidePages(contentRoot, safe);
+  await assertNoSymlinkComponents(contentRoot, folderAbsolutePath);
   try {
     const stat = await fs.stat(folderAbsolutePath);
     if (stat.isDirectory()) {
@@ -285,6 +325,7 @@ export const createFolder = async (
     }
   }
   await fs.mkdir(folderAbsolutePath, { recursive: true });
+  await assertNoSymlinkComponents(contentRoot, folderAbsolutePath);
   const keepFilePath = path.join(folderAbsolutePath, ".gitkeep");
   await fs.writeFile(keepFilePath, "", "utf8");
   return { path: safe, keepFilePath };
@@ -305,6 +346,7 @@ export const deleteFolder = async (
 ): Promise<{ path: string; absolutePath: string; deletedSlugs: string[] }> => {
   const safe = assertSafeFolderPath(folderPath);
   const folderAbsolutePath = assertInsidePages(contentRoot, safe);
+  await assertNoSymlinkComponents(contentRoot, folderAbsolutePath);
   const stat = await fs.stat(folderAbsolutePath);
   if (!stat.isDirectory()) {
     throw new Error("Folder not found");
@@ -336,6 +378,8 @@ export const renameFolder = async (
   }
   const oldAbsolutePath = assertInsidePages(contentRoot, source);
   const newAbsolutePath = assertInsidePages(contentRoot, target);
+  await assertNoSymlinkComponents(contentRoot, oldAbsolutePath);
+  await assertNoSymlinkComponents(contentRoot, newAbsolutePath);
   const oldStat = await fs.stat(oldAbsolutePath);
   if (!oldStat.isDirectory()) {
     throw new Error("Folder not found");
@@ -354,6 +398,7 @@ export const renameFolder = async (
     return { from: page.slug, to: filePathToSlug(targetPath) };
   });
   await fs.mkdir(path.dirname(newAbsolutePath), { recursive: true });
+  await assertNoSymlinkComponents(contentRoot, newAbsolutePath);
   await fs.rename(oldAbsolutePath, newAbsolutePath);
   await removeEmptyParentDirectories(contentRoot, oldAbsolutePath);
   return { path: target, from: source, oldAbsolutePath, newAbsolutePath, movedPages };
@@ -364,6 +409,30 @@ const runGit = async (
   args: string[],
 ): Promise<{ stdout: string; stderr: string }> =>
   execFileAsync("git", ["-C", contentRoot, ...args]);
+
+const gitPathspecForAbsolutePath = (contentRoot: string, absolutePath: string): string => {
+  const relative = path.relative(contentRoot, absolutePath);
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error("Git path must remain inside the content root");
+  }
+  return normalizePosixPath(relative);
+};
+
+const resolveCommitObjectId = async (contentRoot: string, revision: string): Promise<string> => {
+  const safeRevision = assertGitObjectId(revision);
+  const { stdout } = await runGit(contentRoot, [
+    "rev-parse",
+    "--verify",
+    "--end-of-options",
+    `${safeRevision}^{commit}`,
+  ]);
+  return assertFullGitObjectId(stdout);
+};
 
 const hasStagedChanges = async (contentRoot: string, relativePath: string): Promise<boolean> => {
   try {
@@ -413,9 +482,8 @@ export const commitFileChange = async (
   absolutePath: string,
   message: string,
 ): Promise<string | null> => {
-  const relative = path.relative(contentRoot, absolutePath);
-  const normalizedRelative = normalizePosixPath(relative);
-  await runGit(contentRoot, ["add", normalizedRelative]);
+  const normalizedRelative = gitPathspecForAbsolutePath(contentRoot, absolutePath);
+  await runGit(contentRoot, ["add", "--", normalizedRelative]);
   try {
     await runGit(contentRoot, ["commit", "-m", message]);
   } catch (error) {
@@ -432,9 +500,8 @@ export const commitDeleteChange = async (
   absolutePath: string,
   message: string,
 ): Promise<string | null> => {
-  const relative = path.relative(contentRoot, absolutePath);
-  const normalizedRelative = normalizePosixPath(relative);
-  await runGit(contentRoot, ["add", "-A", normalizedRelative]);
+  const normalizedRelative = gitPathspecForAbsolutePath(contentRoot, absolutePath);
+  await runGit(contentRoot, ["add", "-A", "--", normalizedRelative]);
   try {
     await runGit(contentRoot, ["commit", "-m", message]);
   } catch (error) {
@@ -452,7 +519,7 @@ export const commitPathsChange = async (
   message: string,
 ): Promise<string | null> => {
   const normalizedRelatives = absolutePaths.map((absolutePath) =>
-    normalizePosixPath(path.relative(contentRoot, absolutePath)),
+    gitPathspecForAbsolutePath(contentRoot, absolutePath),
   );
   await runGit(contentRoot, ["add", "-A", "--", ...normalizedRelatives]);
   try {
@@ -512,9 +579,19 @@ export const getPageDiff = async (
   from: string,
   to: string,
 ): Promise<string> => {
+  const safeFrom = assertGitObjectId(from);
+  const safeTo = assertGitObjectId(to);
   const pathspecs = await resolveGitPathspecs(contentRoot, slug);
   try {
-    const { stdout } = await runGit(contentRoot, ["diff", from, to, "--", ...pathspecs]);
+    const resolvedFrom = await resolveCommitObjectId(contentRoot, safeFrom);
+    const resolvedTo = await resolveCommitObjectId(contentRoot, safeTo);
+    const { stdout } = await runGit(contentRoot, [
+      "diff",
+      resolvedFrom,
+      resolvedTo,
+      "--",
+      ...pathspecs,
+    ]);
     return stdout;
   } catch {
     return "";

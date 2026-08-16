@@ -55,10 +55,21 @@ describe("db seed redaction", () => {
 
   test("redactSecrets", () => {
     expect(redactSecrets("http://example.com?api_key=123")).toContain("[REMOVED SENSITIVE DATA]");
+    for (const key of ["admin_api_key", "adminApiKey", "x-admin-api-key"]) {
+      expect(redactSecrets(`http://example.com?${key}=legacy-secret`)).not.toContain(
+        "legacy-secret",
+      );
+    }
     expect(redactSecrets("-----BEGIN PRIVATE KEY-----\nFOO\n-----END PRIVATE KEY-----")).toBe(
       "[REMOVED SENSITIVE DATA]",
     );
     expect(redactSecrets("Bearer abcdef123456789")).toBe("[REMOVED SENSITIVE DATA]");
+    expect(redactSecrets("AWS_ACCESS_KEY_ID=AKIA3333333333333333")).not.toContain(
+      "AKIA3333333333333333",
+    );
+    expect(
+      redactSecrets("DATABASE_URL=postgres://user:fakePassword@db.example/test"),
+    ).not.toContain("fakePassword");
   });
 
   test("redactSecretsFromValue", () => {

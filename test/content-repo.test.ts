@@ -22,9 +22,18 @@ vi.mock("node:child_process", () => ({
 
 describe("Content Repo Service", () => {
   const contentRoot = "/wiki-root";
+  const fromCommit = "a".repeat(40);
+  const toCommit = "b".repeat(40);
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fs.lstat).mockResolvedValue({ isSymbolicLink: () => false } as any);
+    vi.mocked(fs.stat).mockResolvedValue({
+      size: 1024,
+      mtime: new Date(),
+      isFile: () => true,
+      isDirectory: () => false,
+    } as any);
   });
 
   test("ensureContentRoot creates necessary directories", async () => {
@@ -185,15 +194,36 @@ describe("Content Repo Service", () => {
   });
 
   test("getPageDiff returns git diff output", async () => {
-    vi.mocked(execFile).mockImplementation((_cmd, _args, callback: any) => {
-      callback(null, { stdout: "diff content" }, "");
+    vi.mocked(execFile).mockImplementation((_cmd, args, callback: any) => {
+      const gitArgs = args as string[];
+      if (gitArgs.includes("rev-parse")) {
+        const revision = gitArgs.at(-1) ?? "";
+        const resolved = revision.startsWith(fromCommit) ? fromCommit : toCommit;
+        callback(null, { stdout: `${resolved}\n` }, "");
+      } else {
+        callback(null, { stdout: "diff content" }, "");
+      }
       return {} as any;
     });
     vi.mocked(fs.stat).mockResolvedValue({ isFile: () => true, isDirectory: () => false } as any);
 
     const { getPageDiff } = await import("../src/modules/sources/wiki/content-repo.js");
-    const diff = await getPageDiff(contentRoot, "about", "v1", "v2");
+    const diff = await getPageDiff(contentRoot, "about", fromCommit, toCommit);
     expect(diff).toBe("diff content");
+    expect(execFile).toHaveBeenCalledWith(
+      "git",
+      ["-C", contentRoot, "diff", fromCommit, toCommit, "--", "pages/about.md"],
+      expect.any(Function),
+    );
+  });
+
+  test("getPageDiff rejects option-like revisions before invoking git", async () => {
+    const { getPageDiff } = await import("../src/modules/sources/wiki/content-repo.js");
+
+    await expect(
+      getPageDiff(contentRoot, "about", "--output=/tmp/contextstill-pwned", toCommit),
+    ).rejects.toThrow("Invalid git object ID");
+    expect(execFile).not.toHaveBeenCalled();
   });
 
   test("ensureGitRepo initializes if .git is missing", async () => {
@@ -244,6 +274,34 @@ describe("Content Repo Service", () => {
     await expect(readPage(contentRoot, "../secret")).rejects.toThrow("Invalid page slug");
   });
 
+  test("rejects page reads through symbolic links", async () => {
+    vi.mocked(fs.lstat).mockResolvedValueOnce({ isSymbolicLink: () => false } as any);
+    vi.mocked(fs.lstat).mockResolvedValueOnce({ isSymbolicLink: () => true } as any);
+
+    await expect(readPage(contentRoot, "outside")).rejects.toThrow(
+      "Symbolic links are not allowed",
+    );
+    expect(fs.readFile).not.toHaveBeenCalled();
+  });
+
+  test("rejects oversized wiki pages before reading them", async () => {
+    vi.mocked(fs.stat).mockResolvedValue({ size: 16 * 1024 * 1024 + 1 } as any);
+
+    await expect(readPage(contentRoot, "large")).rejects.toThrow(
+      "Wiki page exceeds 16777216 bytes",
+    );
+    expect(fs.readFile).not.toHaveBeenCalled();
+  });
+
+  test("rejects Git paths outside the content root", async () => {
+    const { commitFileChange } = await import("../src/modules/sources/wiki/content-repo.js");
+
+    await expect(
+      commitFileChange(contentRoot, "/outside/pages/test.md", "feat: reject escape"),
+    ).rejects.toThrow("Git path must remain inside the content root");
+    expect(execFile).not.toHaveBeenCalled();
+  });
+
   test("createFolder throws for empty path", async () => {
     await expect(createFolder(contentRoot, "")).rejects.toThrow("Invalid folder path");
   });
@@ -283,7 +341,7 @@ describe("Content Repo Service", () => {
     vi.mocked(fs.stat).mockResolvedValue({ isFile: () => true, isDirectory: () => false } as any);
 
     const { getPageDiff } = await import("../src/modules/sources/wiki/content-repo.js");
-    const diff = await getPageDiff(contentRoot, "about", "v1", "v2");
+    const diff = await getPageDiff(contentRoot, "about", fromCommit, toCommit);
     expect(diff).toBe("");
   });
 

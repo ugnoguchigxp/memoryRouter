@@ -33,6 +33,7 @@ describe("Admin Repository", () => {
     const runtime = globalThis as { __MEMORY_ROUTER_ADMIN_API_KEY__?: string };
     runtime.__MEMORY_ROUTER_ADMIN_API_KEY__ = undefined;
     if (typeof window !== "undefined") {
+      window.localStorage.removeItem("context_still_admin_api_key");
       window.localStorage.removeItem("memory_router_admin_api_key");
       window.history.replaceState(null, "", "/");
     }
@@ -120,7 +121,7 @@ describe("Admin Repository", () => {
       await expect(deleteKnowledgeItem("k-1")).rejects.toThrow("unauthorized");
     });
 
-    it("injects x-admin-api-key header when global key is set", async () => {
+    it("exchanges a global admin key for an HttpOnly session and clears it", async () => {
       const runtime = globalThis as { __MEMORY_ROUTER_ADMIN_API_KEY__?: string };
       runtime.__MEMORY_ROUTER_ADMIN_API_KEY__ = "test-admin-key";
       const spy = vi.spyOn(global, "fetch").mockResolvedValue({
@@ -130,16 +131,27 @@ describe("Admin Repository", () => {
 
       await deleteKnowledgeItem("k-1");
 
-      expect(spy).toHaveBeenCalledWith("/api/knowledge/k-1", {
+      expect(spy).toHaveBeenNthCalledWith(1, "/api/admin-session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: "test-admin-key" }),
+      });
+      expect(spy).toHaveBeenNthCalledWith(2, "/api/knowledge/k-1", {
         method: "DELETE",
-        headers: { "x-admin-api-key": "test-admin-key" },
+        headers: undefined,
         body: undefined,
       });
+      expect(runtime.__MEMORY_ROUTER_ADMIN_API_KEY__).toBeUndefined();
+      if (typeof window !== "undefined") {
+        expect(window.localStorage.getItem("context_still_admin_api_key")).toBeNull();
+      }
     });
 
-    it("reads admin api key from query and strips it from URL", async () => {
+    it("removes legacy query and localStorage keys without using them", async () => {
       if (typeof window === "undefined") return;
       window.history.replaceState(null, "", "/?admin_api_key=url-admin-key&foo=1");
+      window.localStorage.setItem("context_still_admin_api_key", "stored-admin-key");
+      window.localStorage.setItem("memory_router_admin_api_key", "legacy-admin-key");
       const spy = vi.spyOn(global, "fetch").mockResolvedValue({
         ok: true,
         json: async () => ({}),
@@ -149,10 +161,12 @@ describe("Admin Repository", () => {
 
       expect(spy).toHaveBeenCalledWith("/api/knowledge/k-1", {
         method: "DELETE",
-        headers: { "x-admin-api-key": "url-admin-key" },
+        headers: undefined,
         body: undefined,
       });
       expect(window.location.search).toBe("?foo=1");
+      expect(window.localStorage.getItem("context_still_admin_api_key")).toBeNull();
+      expect(window.localStorage.getItem("memory_router_admin_api_key")).toBeNull();
     });
   });
 

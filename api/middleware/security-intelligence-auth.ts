@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { readProjectEnv } from "../../src/project-identity.js";
 import { adminApiKeyAuth } from "./admin-auth.js";
+import { ADMIN_SESSION_PATH } from "./admin-session.js";
 
 export const SECURITY_CANDIDATE_PATH =
   "/api/integrations/security-intelligence/v1/candidate-batches";
@@ -52,10 +53,15 @@ function isPublicHealthPath(path: string) {
   return path === "/api/health" || path === "/api/health/" || path.startsWith("/api/health/");
 }
 
+function isAdminSessionPath(path: string) {
+  return path === ADMIN_SESSION_PATH || path === `${ADMIN_SESSION_PATH}/`;
+}
+
 export function apiAuthenticationDispatcher(): MiddlewareHandler {
   const adminAuth = adminApiKeyAuth();
   return async (ctx, next) => {
     if (ctx.req.method === "OPTIONS" || isPublicHealthPath(ctx.req.path)) return next();
+    if (isAdminSessionPath(ctx.req.path)) return next();
     const kind = integrationKind(ctx.req.path);
     if (!kind) return adminAuth(ctx, next);
     ctx.header("Cache-Control", "no-store");

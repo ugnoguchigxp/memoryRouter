@@ -20,7 +20,7 @@ if (typeof (globalThis as any).Bun === "undefined") {
   };
 }
 
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileDomain } from "../src/modules/readFile/domain.js";
@@ -35,6 +35,8 @@ import { sliceTextByTokenWindow } from "../src/modules/readFile/token-window.ser
 // fs と config をモックする
 vi.mock("node:fs/promises", () => ({
   readFile: vi.fn(),
+  realpath: vi.fn(),
+  stat: vi.fn(),
 }));
 
 vi.mock("../src/config.js", () => {
@@ -182,6 +184,8 @@ describe("sliceTextByTokenWindow", () => {
 describe("readFileDomain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(realpath).mockImplementation(async (value) => path.resolve(String(value)));
+    vi.mocked(stat).mockResolvedValue({ size: 1024 } as any);
   });
 
   it("should throw error if path is empty", async () => {
@@ -192,6 +196,26 @@ describe("readFileDomain", () => {
     await expect(readFileDomain({ path: "../outside" })).rejects.toThrow(
       "path must be inside read_file root",
     );
+  });
+
+  it("should reject a symbolic link that resolves outside rootPath", async () => {
+    vi.mocked(realpath).mockImplementation(async (value) =>
+      String(value) === "/mock/root" ? "/mock/root" : "/outside/secret.md",
+    );
+
+    await expect(readFileDomain({ path: "linked-secret.md" })).rejects.toThrow(
+      "path must be inside read_file root",
+    );
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("should reject files larger than the input byte limit", async () => {
+    vi.mocked(stat).mockResolvedValue({ size: 16 * 1024 * 1024 + 1 } as any);
+
+    await expect(readFileDomain({ path: "large.md" })).rejects.toThrow(
+      "read_file input exceeds 16777216 bytes",
+    );
+    expect(readFile).not.toHaveBeenCalled();
   });
 
   it("should read and process file correctly", async () => {

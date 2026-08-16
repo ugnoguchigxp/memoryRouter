@@ -227,7 +227,12 @@ bun run docs:check-links
 | Decision output is degraded | Inspect the Decision detail evidence/coverage tabs, then broaden `retrievalHints` or add missing Knowledge |
 | PR discard feedback is missing | Run `bun run decision:pr-discard-scan -- --dry-run` and confirm `gh pr view` can resolve the linked PR |
 | Embedding failures | Check daemon URL, CLI fallback paths, and `CONTEXT_STILL_EMBEDDING_DIMENSION` |
-| API returns unauthorized | Check `CONTEXT_STILL_ADMIN_API_KEY` and client header configuration |
+| API returns `401 unauthorized` | Check `CONTEXT_STILL_ADMIN_API_KEY` and client header configuration |
+| API returns `503 admin_api_key_not_configured` | Generate a strong `CONTEXT_STILL_ADMIN_API_KEY`, restart the API, and configure the client to send it |
+| API returns `503 admin_api_key_too_short` | Replace `CONTEXT_STILL_ADMIN_API_KEY` with a random value of at least 32 characters and restart the API |
+| Browser preflight returns `403 origin_not_allowed` | Add the exact UI origin to `CONTEXT_STILL_ALLOWED_ORIGINS`; do not use a wildcard |
+| Admin UI asks for a key again | The short-lived `HttpOnly` session expired or the admin key rotated; enter the current key to start a new session |
+| MCP fails to start with a host error | Set `CONTEXT_STILL_MCP_HOST` to `127.0.0.1` or `::1`; remote MCP binding is intentionally rejected |
 | Integration tests hit live DB | Stop immediately and set a `DATABASE_URL` whose database name includes `test` |
 
 ## Rust Daemon Boundary Checks

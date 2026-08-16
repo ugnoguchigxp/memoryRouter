@@ -2,7 +2,27 @@
 
 The REST API is served under `/api/*`. It primarily supports the local admin UI and local automation.
 
-If `CONTEXT_STILL_ADMIN_API_KEY` is configured, requests under `/api/*` must include the configured admin key according to the admin UI/API client behavior.
+Except for `/api/health*`, requests under `/api/*` must include the key configured by
+`CONTEXT_STILL_ADMIN_API_KEY` as `x-admin-api-key` or `Authorization: Bearer ...`. Protected
+endpoints return `503` when the key is not configured or is shorter than 32 characters, and `401`
+when the supplied key is invalid.
+
+Cross-origin browser access is disabled by default. Configure exact trusted origins with
+`CONTEXT_STILL_ALLOWED_ORIGINS`; wildcard origins are not supported. The cookie-based admin UI must
+remain same external-origin. A TLS-terminating reverse proxy must list that external origin because
+the application receives the proxied request over an internal HTTP hop.
+
+## Admin Session
+
+The browser UI sends the admin key once to `POST /api/admin-session`. The response sets a
+15-minute `HttpOnly`, `SameSite=Strict` cookie; the long-lived key is not stored in the URL or
+browser storage. `GET /api/admin-session` reports whether a session is configured/authenticated
+and includes a machine-readable `configurationError` when the configured key is missing or too
+short. `DELETE /api/admin-session` signs out. Session creation and state-changing cookie-authenticated
+requests require an exact trusted `Origin`. CLI clients continue to use `x-admin-api-key` or Bearer
+authentication.
+
+API request bodies are capped at 16 MiB. The admin-session exchange applies a narrower 2 KiB cap.
 
 ## Health
 

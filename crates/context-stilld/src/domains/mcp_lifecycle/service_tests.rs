@@ -68,6 +68,45 @@ fn endpoint_report_uses_loopback_streamable_http_url() {
 }
 
 #[test]
+fn endpoint_report_brackets_ipv6_loopback_url() {
+    let app_dir = temp_app_dir();
+    let env = MapEnv::from_pairs(vec![
+        ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+        ("CONTEXT_STILL_MCP_HOST", "::1"),
+        ("CONTEXT_STILL_MCP_PORT", "45678"),
+    ]);
+
+    let report = endpoint_report(&env);
+
+    assert_eq!(report.url, "http://[::1]:45678/mcp");
+    assert!(report
+        .warnings
+        .iter()
+        .all(|warning| !warning.contains("Invalid")));
+
+    cleanup_temp_app_dir(&app_dir);
+}
+
+#[test]
+fn endpoint_report_does_not_probe_non_loopback_configuration() {
+    let app_dir = temp_app_dir();
+    let env = MapEnv::from_pairs(vec![
+        ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+        ("CONTEXT_STILL_MCP_HOST", "192.0.2.1"),
+    ]);
+
+    let report = endpoint_report(&env);
+
+    assert_eq!(report.url, "unavailable");
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("must be a loopback IP address")));
+
+    cleanup_temp_app_dir(&app_dir);
+}
+
+#[test]
 fn sessions_report_reads_daemon_session_state() {
     let app_dir = temp_app_dir();
     let run_dir = app_dir.join("run");

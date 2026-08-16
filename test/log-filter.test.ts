@@ -27,4 +27,33 @@ describe("log-filter > filterSensitiveData", () => {
     expect(filtered).toContain("[REMOVED SENSITIVE DATA]");
     expect(filtered).not.toContain("-----BEGIN RSA PRIVATE KEY-----");
   });
+
+  it("should redact AWS environment assignments without removing ordinary lines", () => {
+    const raw = [
+      "AWS_ACCESS_KEY_ID=AKIA1111111111111111",
+      "export AWS_SECRET_ACCESS_KEY='fakeSecretValue123456789'",
+      "AWS_SESSION_TOKEN=fakeSessionToken123456789",
+      "ordinary line",
+    ].join("\n");
+
+    const filtered = filterSensitiveData(raw);
+    expect(filtered).toContain("ordinary line");
+    expect(filtered).not.toContain("AKIA1111111111111111");
+    expect(filtered).not.toContain("fakeSecretValue123456789");
+    expect(filtered).not.toContain("fakeSessionToken123456789");
+    expect(filtered.match(/\[REMOVED SENSITIVE DATA\]/g)).toHaveLength(3);
+  });
+
+  it("should redact structured secret labels idempotently", () => {
+    const raw = JSON.stringify({
+      AWS_ACCESS_KEY_ID: "AKIA2222222222222222",
+      database_url: "postgres://user:fakePassword@example.com/db",
+    });
+    const once = filterSensitiveData(raw);
+    const twice = filterSensitiveData(once);
+
+    expect(once).not.toContain("AKIA2222222222222222");
+    expect(once).not.toContain("fakePassword");
+    expect(twice).toBe(once);
+  });
 });

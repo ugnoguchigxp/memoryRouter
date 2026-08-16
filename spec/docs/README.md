@@ -13,3 +13,5 @@
 | [Rust Runtime Closeout Implementation Plan](rust-runtime-closeout-implementation-plan.md) | live database identity、doctor/backup、queue executor truth、vector modeの測定判断、regression testを一貫させてRust runtimeを安全に完了判定する計画 |
 | [LLM Provider busy 503 contract](llm-provider-busy-503-contract.md) | provider busyを恒久障害や完了として扱わず、`Retry-After`に従うretryable queue状態へ戻す契約 |
 | [Security Intelligence Integration Concept](security-intelligence-integration-concept.md) | vulnWorkbench、NightWorkers、contextStillが共有するSecurity Learning Loop、責務境界、trust boundary、段階導入、評価方法 |
+| [ContextStill Utility-RAG Concept](contextstill-utility-rag-concept.md) | 現行RAGを性能低下なしで高度化し、hybrid retrieval、bounded Utility Graph、utility-per-token選択によって情報密度を高める設計構想 |
+| [ContextStill Utility-RAG Future Experiments](contextstill-utility-rag-future-experiments.md) | Utility-RAGの初期roadmapへ含めない実験候補を、開始条件、評価manifest、昇格・延期・棄却条件とともに管理するbacklog |

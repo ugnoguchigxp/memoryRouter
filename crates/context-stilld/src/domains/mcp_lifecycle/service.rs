@@ -15,7 +15,7 @@ use crate::domains::{
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 
-use super::endpoint_server::RunningEndpoint;
+use super::endpoint_server::{configured_endpoint_url, RunningEndpoint};
 
 const MCP_ENDPOINT: ManagedProcessSpec = ManagedProcessSpec {
     state_name: "mcp-server",
@@ -250,7 +250,10 @@ fn resident_managed_stop_report<E: EnvProvider>(
 
 pub fn endpoint_report<E: EnvProvider>(env: &E) -> EndpointReport {
     let paths = resolve_paths(env);
-    let url = endpoint_url(env);
+    let (url, configuration_error) = match configured_endpoint_url(env) {
+        Ok(url) => (url, None),
+        Err(error) => ("unavailable".to_string(), Some(error.to_string())),
+    };
     let metadata_path = paths.run_dir.join("mcp-endpoint.json");
     let session_state_path = paths.run_dir.join("mcp-sessions.json");
     let sessions = read_sessions_file(&session_state_path).unwrap_or_default();
@@ -258,10 +261,16 @@ pub fn endpoint_report<E: EnvProvider>(env: &E) -> EndpointReport {
         .iter()
         .filter(|session| session.close_reason.is_none())
         .count();
-    let health = read_health(&url).ok();
+    let health = if configuration_error.is_none() {
+        read_health(&url).ok()
+    } else {
+        None
+    };
     let mut warnings = Vec::new();
 
-    if health.as_ref().is_none_or(|health| !health.ok) {
+    if let Some(error) = configuration_error {
+        warnings.push(format!("Invalid MCP endpoint configuration: {error}"));
+    } else if health.as_ref().is_none_or(|health| !health.ok) {
         warnings.push("MCP endpoint is not reachable; start context-stilld managed endpoint before registering clients.".to_string());
     }
 
@@ -335,16 +344,6 @@ fn default_tool_owners() -> Value {
     })
 }
 
-fn endpoint_url<E: EnvProvider>(env: &E) -> String {
-    let host = env
-        .var("CONTEXT_STILL_MCP_HOST")
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = env
-        .var("CONTEXT_STILL_MCP_PORT")
-        .unwrap_or_else(|| "39172".to_string());
-    format!("http://{host}:{port}/mcp")
-}
-
 fn read_sessions_file(path: &Path) -> Result<Vec<McpSession>, CliError> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -372,8 +371,13 @@ fn read_health(endpoint_url: &str) -> Result<HealthResponse, String> {
         .set_write_timeout(Some(Duration::from_secs(2)))
         .map_err(|error| error.to_string())?;
 
+    let host_header = if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
     let request = format!(
-        "GET /mcp/health HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+        "GET /mcp/health HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
@@ -404,9 +408,19 @@ fn parse_http_endpoint(endpoint_url: &str) -> Result<(String, u16), String> {
         .split('/')
         .next()
         .ok_or_else(|| "missing endpoint host".to_string())?;
-    let (host, port) = host_port
-        .rsplit_once(':')
-        .ok_or_else(|| "missing endpoint port".to_string())?;
+    let (host, port) = if let Some(bracketed) = host_port.strip_prefix('[') {
+        let (host, suffix) = bracketed
+            .split_once(']')
+            .ok_or_else(|| "invalid bracketed endpoint host".to_string())?;
+        let port = suffix
+            .strip_prefix(':')
+            .ok_or_else(|| "missing endpoint port".to_string())?;
+        (host, port)
+    } else {
+        host_port
+            .rsplit_once(':')
+            .ok_or_else(|| "missing endpoint port".to_string())?
+    };
     let parsed_port = port
         .parse::<u16>()
         .map_err(|error| format!("invalid endpoint port: {error}"))?;

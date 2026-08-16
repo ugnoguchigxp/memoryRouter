@@ -21,35 +21,35 @@ vi.mock("node:os", () => ({
 }));
 
 // node:child_process のモック
-let mockExecShouldFail = false;
-let mockExecStdout = "codex version 1.0.0";
+let mockExecFileShouldFail = false;
+let mockExecFileStdout = "codex version 1.0.0";
 vi.mock("node:child_process", () => {
   const { promisify } = require("node:util");
-  const execFn = (...args: any[]) => {
+  const execFileFn = (...args: any[]) => {
     const callback = args[args.length - 1];
     if (typeof callback === "function") {
-      if (mockExecShouldFail) {
+      if (mockExecFileShouldFail) {
         callback(new Error("Command failed"), "", "");
       } else {
-        callback(null, mockExecStdout, "");
+        callback(null, mockExecFileStdout, "");
       }
     }
   };
 
-  // promisify(exec) が呼び出された時にオブジェクト `{ stdout, stderr }` を正しく返すようにする
-  Object.defineProperty(execFn, promisify.custom, {
+  // promisify(execFile) が呼び出された時にオブジェクト `{ stdout, stderr }` を正しく返すようにする
+  Object.defineProperty(execFileFn, promisify.custom, {
     value: async () => {
-      if (mockExecShouldFail) {
+      if (mockExecFileShouldFail) {
         throw new Error("Command failed");
       }
-      return { stdout: mockExecStdout, stderr: "" };
+      return { stdout: mockExecFileStdout, stderr: "" };
     },
     writable: true,
     configurable: true,
   });
 
   return {
-    exec: execFn,
+    execFile: execFileFn,
   };
 });
 
@@ -60,8 +60,8 @@ describe("codex-auth.service", () => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
     process.env.CODEX_ACCESS_TOKEN = undefined;
-    mockExecShouldFail = false;
-    mockExecStdout = "codex version 1.0.0";
+    mockExecFileShouldFail = false;
+    mockExecFileStdout = "codex version 1.0.0";
   });
 
   afterEach(() => {
@@ -165,7 +165,7 @@ describe("codex-auth.service", () => {
 
     test("returns install-codex-cli when auth.json is missing and CLI is not available", async () => {
       vi.mocked(fs.readFile).mockRejectedValue(new Error("File not found"));
-      mockExecShouldFail = true;
+      mockExecFileShouldFail = true;
 
       const status = await checkCodexAuthStatus();
 
@@ -175,11 +175,30 @@ describe("codex-auth.service", () => {
 
     test("returns run-codex-login when auth.json is missing but CLI is available", async () => {
       vi.mocked(fs.readFile).mockRejectedValue(new Error("File not found"));
-      mockExecShouldFail = false;
+      mockExecFileShouldFail = false;
 
       const status = await checkCodexAuthStatus();
 
       expect(status.cliAvailable).toBe(true);
+      expect(status.recommendedAction).toBe("run-codex-login");
+    });
+
+    test("does not report ready for an auth file without credentials", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify({ auth_mode: "oauth" }));
+
+      const status = await checkCodexAuthStatus();
+
+      expect(status.authJsonExists).toBe(true);
+      expect(status.recommendedAction).toBe("run-codex-login");
+    });
+
+    test("does not report ready for malformed auth JSON", async () => {
+      vi.mocked(fs.readFile).mockResolvedValue("{not-json");
+
+      const status = await checkCodexAuthStatus();
+
+      expect(status.authJsonExists).toBe(true);
+      expect(status.tokenInfo).toBeNull();
       expect(status.recommendedAction).toBe("run-codex-login");
     });
 

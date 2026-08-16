@@ -1,10 +1,10 @@
-import { exec } from "node:child_process";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 export type CodexAuthTokenInfo = {
   authMode: string;
@@ -62,6 +62,7 @@ export async function checkCodexAuthStatus(): Promise<CodexAuthStatus> {
   // 2. ~/.codex/auth.json の存在チェックと中身の解析
   let authJsonExists = false;
   let tokenInfo: CodexAuthTokenInfo | null = null;
+  let authCredentialPresent = false;
 
   try {
     const raw = await fs.readFile(authJsonPath, "utf-8");
@@ -71,6 +72,12 @@ export async function checkCodexAuthStatus(): Promise<CodexAuthStatus> {
     const authMode = parsed.auth_mode ?? "unknown";
     const accessToken = parsed.tokens?.access_token ?? null;
     const idToken = parsed.tokens?.id_token ?? null;
+    authCredentialPresent = Boolean(
+      parsed.OPENAI_API_KEY?.trim() ||
+        accessToken?.trim() ||
+        idToken?.trim() ||
+        parsed.tokens?.refresh_token?.trim(),
+    );
 
     // JWT から email / exp を取得（access_token 優先、なければ id_token）
     let email: string | null = null;
@@ -103,7 +110,7 @@ export async function checkCodexAuthStatus(): Promise<CodexAuthStatus> {
   // 3. codex CLI の存在チェック
   let cliAvailable = false;
   try {
-    const { stdout } = await execAsync("codex --version", { timeout: 3000 });
+    const { stdout } = await execFileAsync("codex", ["--version"], { timeout: 3000 });
     cliAvailable = stdout.trim().length > 0;
   } catch {
     cliAvailable = false;
@@ -114,7 +121,9 @@ export async function checkCodexAuthStatus(): Promise<CodexAuthStatus> {
   //    環境変数 CODEX_ACCESS_TOKEN が設定されている → ready
   //    CLI が使えない → install-codex-cli
   //    それ以外 → run-codex-login
-  const hasValidToken = accessTokenConfigured || (authJsonExists && tokenInfo?.isExpired !== true);
+  const hasValidToken =
+    accessTokenConfigured ||
+    (authJsonExists && authCredentialPresent && tokenInfo?.isExpired !== true);
 
   let recommendedAction: CodexAuthStatus["recommendedAction"] = "run-codex-login";
   if (hasValidToken) {

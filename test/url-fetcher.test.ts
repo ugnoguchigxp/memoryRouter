@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { groupedConfig } from "../src/config.js";
 import {
   findDistillationEvidenceCache,
   upsertDistillationEvidenceCache,
@@ -13,14 +14,37 @@ import {
 } from "../src/modules/distillation/url-fetcher.js";
 import { estimateTextTokens } from "../src/modules/llm/token-estimator.js";
 
+const networkMocks = vi.hoisted(() => ({
+  fetch: vi.fn(),
+  dnsLookup: vi.fn(),
+  agentClose: vi.fn(),
+  agentOptions: [] as unknown[],
+}));
+
+vi.mock("node:dns/promises", () => ({
+  lookup: networkMocks.dnsLookup,
+}));
+
+vi.mock("undici/index.js", () => ({
+  Agent: class MockAgent {
+    constructor(options: unknown) {
+      networkMocks.agentOptions.push(options);
+    }
+
+    close() {
+      return networkMocks.agentClose();
+    }
+  },
+  fetch: networkMocks.fetch,
+}));
+
 vi.mock("../src/modules/distillation/distillation-evidence-cache.repository.js", () => ({
   evidenceCacheFreshAfter: vi.fn().mockReturnValue(new Date()),
   findDistillationEvidenceCache: vi.fn(),
   upsertDistillationEvidenceCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-const mockFetch = vi.fn();
-vi.stubGlobal("fetch", mockFetch);
+const mockFetch = networkMocks.fetch;
 
 describe("url-fetcher validateFetchContentUrl", () => {
   it("allows safe public HTTP and HTTPS URLs", () => {
@@ -93,6 +117,18 @@ describe("url-fetcher validateFetchContentUrl", () => {
       safe: false,
       reason: "private or loopback IPv4 is blocked",
     });
+    expect(validateFetchContentUrl("http://0.0.0.0")).toEqual({
+      safe: false,
+      reason: "private or loopback IPv4 is blocked",
+    });
+    expect(validateFetchContentUrl("http://100.64.0.1")).toEqual({
+      safe: false,
+      reason: "private or loopback IPv4 is blocked",
+    });
+    expect(validateFetchContentUrl("http://198.18.0.1")).toEqual({
+      safe: false,
+      reason: "private or loopback IPv4 is blocked",
+    });
   });
 
   it("blocks loopback and link-local IPv6 addresses", () => {
@@ -107,6 +143,21 @@ describe("url-fetcher validateFetchContentUrl", () => {
     expect(validateFetchContentUrl("http://[fc00::]")).toEqual({
       safe: false,
       reason: "private, loopback, or link-local IPv6 is blocked",
+    });
+    expect(validateFetchContentUrl("http://[::]")).toEqual({
+      safe: false,
+      reason: "private, loopback, or link-local IPv6 is blocked",
+    });
+    expect(validateFetchContentUrl("http://[::ffff:127.0.0.1]")).toEqual({
+      safe: false,
+      reason: "private, loopback, or link-local IPv6 is blocked",
+    });
+  });
+
+  it("blocks non-default ports", () => {
+    expect(validateFetchContentUrl("https://example.com:8443")).toEqual({
+      safe: false,
+      reason: "non-default ports are not allowed",
     });
   });
 });
@@ -179,6 +230,9 @@ describe("url-fetcher text processing utilities", () => {
 describe("url-fetcher fetchContent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    networkMocks.agentOptions.length = 0;
+    networkMocks.dnsLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    networkMocks.agentClose.mockResolvedValue(undefined);
   });
 
   it("returns cache hit results directly if present", async () => {
@@ -254,6 +308,35 @@ describe("url-fetcher fetchContent", () => {
     expect(upsertDistillationEvidenceCache).toHaveBeenCalled();
   });
 
+  it("pins connections to the vetted DNS address for single and all lookups", async () => {
+    vi.mocked(findDistillationEvidenceCache).mockResolvedValue(null);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Map([["content-type", "text/plain"]]),
+      text: async () => "public content",
+    });
+
+    await fetchContent("https://example.com");
+
+    const options = networkMocks.agentOptions[0] as {
+      connect: {
+        lookup: (
+          hostname: string,
+          options: { all?: boolean },
+          callback: (...args: unknown[]) => void,
+        ) => void;
+      };
+    };
+    const singleCallback = vi.fn();
+    options.connect.lookup("example.com", {}, singleCallback);
+    expect(singleCallback).toHaveBeenCalledWith(null, "93.184.216.34", 4);
+
+    const allCallback = vi.fn();
+    options.connect.lookup("example.com", { all: true }, allCallback);
+    expect(allCallback).toHaveBeenCalledWith(null, [{ address: "93.184.216.34", family: 4 }]);
+  });
+
   it("returns a blocked result when guarded evidence contains prompt injection", async () => {
     vi.mocked(findDistillationEvidenceCache).mockResolvedValue(null);
     mockFetch.mockResolvedValue({
@@ -281,6 +364,52 @@ describe("url-fetcher fetchContent", () => {
   it("throws validation errors for unsafe URLs", async () => {
     await expect(fetchContent("http://127.0.0.1")).rejects.toThrow("fetch_content blocked");
     await expect(fetchContent("")).rejects.toThrow("url must be a non-empty string");
+  });
+
+  it("blocks hostnames that resolve to a non-public address before fetch", async () => {
+    vi.mocked(findDistillationEvidenceCache).mockResolvedValue(null);
+    networkMocks.dnsLookup.mockResolvedValue([{ address: "127.0.0.1", family: 4 }]);
+
+    await expect(fetchContent("https://example.com")).rejects.toThrow(
+      "fetch_content blocked: DNS resolved to private or loopback IPv4 is blocked",
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("applies the request timeout while DNS lookup is pending", async () => {
+    vi.mocked(findDistillationEvidenceCache).mockResolvedValue(null);
+    const originalTimeout = groupedConfig.distillationTools.timeoutMs;
+    groupedConfig.distillationTools.timeoutMs = 10;
+    networkMocks.dnsLookup.mockReturnValue(new Promise(() => undefined));
+
+    try {
+      await expect(fetchContent("https://example.com")).rejects.toThrow(
+        "request timed out after 10ms",
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    } finally {
+      groupedConfig.distillationTools.timeoutMs = originalTimeout;
+    }
+  });
+
+  it("rejects response bodies over the configured byte limit", async () => {
+    vi.mocked(findDistillationEvidenceCache).mockResolvedValue(null);
+    const originalLimit = groupedConfig.distillationTools.fetchMaxResponseBytes;
+    groupedConfig.distillationTools.fetchMaxResponseBytes = 16;
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Map([["content-type", "text/plain"]]),
+      text: async () => "this response is larger than sixteen bytes",
+    });
+
+    try {
+      await expect(fetchContent("https://example.com")).rejects.toThrow(
+        "fetch_content blocked: response exceeds 16 bytes",
+      );
+    } finally {
+      groupedConfig.distillationTools.fetchMaxResponseBytes = originalLimit;
+    }
   });
 
   it("handles HTTP errors by trying jina reader fallback and throwing original error if both fail", async () => {

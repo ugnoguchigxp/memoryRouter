@@ -21,11 +21,12 @@ fn get_free_port() -> u16 {
 }
 
 fn make_test_env(port: u16, app_data_dir: PathBuf) -> MapEnv {
+    make_test_env_with_host(port, app_data_dir, "127.0.0.1")
+}
+
+fn make_test_env_with_host(port: u16, app_data_dir: PathBuf, host: &str) -> MapEnv {
     let mut vars = HashMap::new();
-    vars.insert(
-        "CONTEXT_STILL_MCP_HOST".to_string(),
-        "127.0.0.1".to_string(),
-    );
+    vars.insert("CONTEXT_STILL_MCP_HOST".to_string(), host.to_string());
     vars.insert("CONTEXT_STILL_MCP_PORT".to_string(), port.to_string());
     vars.insert(
         "CONTEXT_STILL_APP_DATA_DIR".to_string(),
@@ -43,6 +44,20 @@ fn make_test_env(port: u16, app_data_dir: PathBuf) -> MapEnv {
         std::env::temp_dir().to_string_lossy().to_string(),
     );
     MapEnv::new(vars)
+}
+
+#[test]
+fn test_endpoint_rejects_non_loopback_bind_host() {
+    let port = get_free_port();
+    let temp_dir = create_temp_dir();
+    let env = make_test_env_with_host(port, temp_dir.clone(), "0.0.0.0");
+
+    let error = start_in_process(&env)
+        .err()
+        .expect("Non-loopback MCP host should be rejected");
+    assert!(error.to_string().contains("must be a loopback IP address"));
+
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 fn create_temp_dir() -> PathBuf {

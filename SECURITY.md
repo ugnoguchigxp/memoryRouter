@@ -22,7 +22,10 @@ context-still is local-first software. It can read local source files, local wik
 Important boundaries:
 
 - Do not expose the admin API or MCP server to untrusted networks.
-- Use `CONTEXT_STILL_ADMIN_API_KEY` when exposing the API beyond localhost.
+- Configure a strong `CONTEXT_STILL_ADMIN_API_KEY` of at least 32 characters; protected API endpoints fail closed while it is missing or too short.
+- Keep `CONTEXT_STILL_ALLOWED_ORIGINS` empty for direct same-origin use. List only exact trusted browser origins; a TLS-terminating reverse proxy must include the external admin UI origin.
+- The admin UI uses a short-lived `HttpOnly` session; do not place the admin key in URLs or browser storage.
+- `CONTEXT_STILL_MCP_HOST` accepts loopback IP literals only. Remote MCP transport requires a separately designed authenticated TLS boundary.
 - Keep `.env` and provider credentials out of Git.
 - Review source and agent-log content before sending it to external LLM or search providers.
 - Use dedicated test databases for integration tests.

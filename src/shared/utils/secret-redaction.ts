@@ -3,7 +3,11 @@ const REDACTION_PLACEHOLDER = "[REMOVED SENSITIVE DATA]";
 const PRIVATE_KEY_BLOCK_PATTERN =
   /-----BEGIN(?: [A-Z]+)* PRIVATE KEY-----[\s\S]*?-----END(?: [A-Z]+)* PRIVATE KEY-----/g;
 const URL_SECRET_QUERY_PATTERN =
-  /([?&](?:api[_-]?key|token|access[_-]?token|refresh[_-]?token|auth[_-]?token|secret|password)=)[^&\s"']+/gi;
+  /([?&](?:(?:x[_-]?)?admin[_-]?api[_-]?key|api[_-]?key|token|access[_-]?token|refresh[_-]?token|auth[_-]?token|secret|password)=)[^&\s"']+/gi;
+const ENV_ASSIGNMENT_PATTERN =
+  /(^|[\s;])((?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|\[REMOVED SENSITIVE DATA\]|[^\s;]+)/gim;
+const LABELED_VALUE_PATTERN =
+  /(["']?)([A-Za-z_][A-Za-z0-9_.-]*)(["']?)(\s*:\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|\[REMOVED SENSITIVE DATA\]|[^\r\n,}\]]+)/gim;
 
 const SECRET_PATTERNS: RegExp[] = [
   PRIVATE_KEY_BLOCK_PATTERN,
@@ -13,6 +17,10 @@ const SECRET_PATTERNS: RegExp[] = [
   /\b(?:sk|rk|pk)-[A-Za-z0-9]{20,}\b/g,
   /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+  /\b(?:AKIA|ASIA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}\b/g,
+  /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g,
+  /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
+  /(\B--(?:api-key|token|password|secret|client-secret)(?:=|\s+))["']?[^\s"']+["']?/gi,
 ];
 
 const SENSITIVE_SINGLE_WORD_KEYS = new Set([
@@ -22,6 +30,7 @@ const SENSITIVE_SINGLE_WORD_KEYS = new Set([
   "passphrase",
   "password",
   "secret",
+  "token",
 ]);
 
 const SENSITIVE_COMPACT_KEY_PARTS = [
@@ -34,6 +43,9 @@ const SENSITIVE_COMPACT_KEY_PARTS = [
   "clientsecret",
   "secretkey",
   "privatekey",
+  "accesskeyid",
+  "connectionstring",
+  "databaseurl",
 ];
 
 function isSensitiveObjectKey(key: string): boolean {
@@ -57,13 +69,52 @@ function isSensitiveObjectKey(key: string): boolean {
   return SENSITIVE_COMPACT_KEY_PARTS.some((part) => compact.includes(part));
 }
 
+function isSensitiveEnvironmentKey(key: string): boolean {
+  const normalized = key.trim().replace(/^["']|["']$/g, "");
+  if (isSensitiveObjectKey(normalized)) return true;
+  const upper = normalized.toUpperCase();
+  if (upper === "DATABASE_URL" || upper === "PGPASSWORD") return true;
+  if (upper.endsWith("_DSN") || upper.endsWith("_CONNECTION_STRING")) return true;
+  const words = upper.split(/[^A-Z0-9]+/).filter(Boolean);
+  return words.includes("ACCESS") && words.includes("KEY");
+}
+
+function redactAssignmentValue(match: string, prefix: string): string {
+  const rawValue = match.slice(prefix.length);
+  if (rawValue.includes(REDACTION_PLACEHOLDER)) return match;
+  const quote = rawValue.startsWith('"') ? '"' : rawValue.startsWith("'") ? "'" : "";
+  return `${prefix}${quote}${REDACTION_PLACEHOLDER}${quote}`;
+}
+
+function redactStructuredAssignments(text: string): string {
+  const environmentRedacted = text.replace(
+    ENV_ASSIGNMENT_PATTERN,
+    (match, leading: string, exported: string, key: string, separator: string) => {
+      if (!isSensitiveEnvironmentKey(key)) return match;
+      const prefix = `${leading}${exported}${key}${separator}`;
+      return redactAssignmentValue(match, prefix);
+    },
+  );
+  return environmentRedacted.replace(
+    LABELED_VALUE_PATTERN,
+    (match, openingQuote: string, key: string, closingQuote: string, separator: string) => {
+      if (!isSensitiveEnvironmentKey(key)) return match;
+      const prefix = `${openingQuote}${key}${closingQuote}${separator}`;
+      return redactAssignmentValue(match, prefix);
+    },
+  );
+}
+
 function isPlainRecord(value: object): value is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
 }
 
 export function redactSecrets(text: string): string {
-  let redacted = text.replace(URL_SECRET_QUERY_PATTERN, `$1${REDACTION_PLACEHOLDER}`);
+  let redacted = redactStructuredAssignments(text).replace(
+    URL_SECRET_QUERY_PATTERN,
+    `$1${REDACTION_PLACEHOLDER}`,
+  );
   for (const pattern of SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, REDACTION_PLACEHOLDER);
   }

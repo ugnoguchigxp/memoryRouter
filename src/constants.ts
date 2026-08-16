@@ -28,6 +28,7 @@ export const APP_CONSTANTS = {
   distillationCoverEvidenceFetchMaxTokensPerSite: 3000,
   distillationToolTimeoutMs: 10_000,
   distillationToolResultMaxChars: 8000,
+  distillationFetchMaxResponseBytes: 2 * 1024 * 1024,
   distillationSearchResultCount: 8,
   distillationSearchProviders: ["brave", "exa"] as const,
   distillationSearchMaxProviderAttempts: 2,

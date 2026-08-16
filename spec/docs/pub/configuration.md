@@ -9,13 +9,26 @@ The desktop/local path should work with SQLite defaults and without a mandatory 
 | `CONTEXT_STILL_DB_BACKEND` | `sqlite` for the desktop product path | Selects the local SQLite backend |
 | `CONTEXT_STILL_SQLITE_CORE_PATH` | `./data/context-still-core.sqlite` in development | SQLite core database path |
 | `CONTEXT_STILL_SOURCE_CONTENT_ROOT` | `./wiki` | Local source/wiki root |
-| `CONTEXT_STILL_ADMIN_API_KEY` | empty | Optional admin API key |
+| `CONTEXT_STILL_ADMIN_API_KEY` | empty | Required with at least 32 characters for every admin API endpoint except `/api/health*`; protected endpoints return `503` while missing or too short |
+| `CONTEXT_STILL_ALLOWED_ORIGINS` | empty | Exact comma-separated browser origins; empty disables cross-origin requests |
 
 For the current Bun/admin development runtime, pass the backend explicitly:
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run dev
+CONTEXT_STILL_DEV_ADMIN_KEY="$(openssl rand -hex 32)"
+printf 'Admin API key: %s\n' "$CONTEXT_STILL_DEV_ADMIN_KEY"
+CONTEXT_STILL_DB_BACKEND=sqlite \
+CONTEXT_STILL_ADMIN_API_KEY="$CONTEXT_STILL_DEV_ADMIN_KEY" \
+bun run dev
 ```
+
+Serve the admin UI and API from the same external origin so the strict session cookie remains
+first-party. Direct same-origin development does not need `CONTEXT_STILL_ALLOWED_ORIGINS`. When a
+trusted reverse proxy terminates TLS, list the external UI origin so Origin validation can account
+for the internal HTTP hop. Exact origins may also be listed for trusted header-authenticated browser
+clients; wildcards are not supported. The admin UI exchanges the displayed key for a 15-minute
+`HttpOnly`, `SameSite=Strict` session. API keys in URL parameters and browser `localStorage` are
+ignored and removed.
 
 Future Tauri packaging should resolve SQLite DB, logs, backups, runtime settings, daemon state, and MCP registration metadata from app data paths instead of requiring terminal setup.
 
@@ -49,6 +62,7 @@ Runtime task routing can also be edited from the admin Settings page. Each route
 | `CONTEXT_STILL_DISTILLATION_SEARCH_PROVIDERS` | Ordered providers for `search_web` |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API key |
 | `CONTEXT_STILL_EXA_API_KEY` / `EXA_API_KEY` | Exa API key |
+| `CONTEXT_STILL_FETCH_MAX_RESPONSE_BYTES` | Maximum `fetch_content` response size; defaults to 2 MiB and is capped at 16 MiB |
 
 Omit external search API keys when you do not want distillation to call external search providers.
 
@@ -70,7 +84,7 @@ Embedding improves semantic search and distillation quality, but it should not b
 | `CONTEXT_STILL_APP_DATA_DIR` | OS-specific app data directory | Overrides the app data root used by `context-stilld` path, preflight, pid, log, and backup state |
 | `CONTEXT_STILL_SQLITE_CORE_PATH` | `appDataDir/context-still-core.sqlite` | Overrides the SQLite core database path reported by Rust preflight/backup checks |
 | `CONTEXT_STILL_PROJECT_ROOT` | current working directory | Project root used when Rust delegates TypeScript child processes |
-| `CONTEXT_STILL_MCP_HOST` / `CONTEXT_STILL_MCP_PORT` | `127.0.0.1` / `39172` | Managed MCP endpoint host and port |
+| `CONTEXT_STILL_MCP_HOST` / `CONTEXT_STILL_MCP_PORT` | `127.0.0.1` / `39172` | Managed MCP endpoint host and port; host must be `127.0.0.1` or `::1` |
 | `CONTEXT_STILL_ADMIN_API_READY_URL` | derived from `PORT` or `39170` | Admin API readiness URL used by `context-stilld admin-api start` |
 | `CONTEXT_STILL_DAEMON_MANAGED_MCP` | unset | Status-only flag indicating MCP is a Rust-default candidate |
 | `CONTEXT_STILL_DAEMON_MANAGED_QUEUE` | unset | Status-only flag indicating queue is a Rust-default candidate |

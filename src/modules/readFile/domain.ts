@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { groupedConfig } from "../../config.js";
 import { markdownifyContent } from "./markdownify.service.js";
@@ -8,6 +8,8 @@ import {
   stripMarkdownFormatting,
 } from "./normalize.service.js";
 import { sliceTextByTokenWindow } from "./token-window.service.js";
+
+const MAX_READ_FILE_BYTES = 16 * 1024 * 1024;
 
 export type ReadFileDomainInput = {
   path: string;
@@ -32,10 +34,10 @@ function resolveMinify(input: ReadFileDomainInput): boolean {
   return true;
 }
 
-function resolveSafePath(userPath: string): {
+async function resolveSafePath(userPath: string): Promise<{
   rootPath: string;
   absolutePath: string;
-} {
+}> {
   const trimmed = userPath.trim();
   if (!trimmed) {
     throw new Error("path must be a non-empty string");
@@ -50,14 +52,24 @@ function resolveSafePath(userPath: string): {
     throw new Error(`path must be inside read_file root: ${rootPath}`);
   }
 
+  const [canonicalRoot, canonicalPath] = await Promise.all([
+    realpath(rootPath),
+    realpath(absolutePath),
+  ]);
+  const insideCanonicalRoot =
+    canonicalPath === canonicalRoot || canonicalPath.startsWith(`${canonicalRoot}${path.sep}`);
+  if (!insideCanonicalRoot) {
+    throw new Error(`path must be inside read_file root: ${rootPath}`);
+  }
+
   return {
-    rootPath,
-    absolutePath,
+    rootPath: canonicalRoot,
+    absolutePath: canonicalPath,
   };
 }
 
 export async function readFileDomain(input: ReadFileDomainInput): Promise<ReadFileDomainResult> {
-  const { absolutePath } = resolveSafePath(input.path);
+  const { absolutePath } = await resolveSafePath(input.path);
   const fromToken = Math.max(0, Math.floor(input.fromToken ?? 0));
   const maxTokens = Math.max(1, groupedConfig.readFile.maxTokens);
   const requestedTokens = Math.max(
@@ -68,6 +80,10 @@ export async function readFileDomain(input: ReadFileDomainInput): Promise<ReadFi
   const minify = resolveMinify(input);
   const includeFrontmatter = Boolean(input.includeFrontmatter);
 
+  const fileStat = await stat(absolutePath);
+  if (fileStat.size > MAX_READ_FILE_BYTES) {
+    throw new Error(`read_file input exceeds ${MAX_READ_FILE_BYTES} bytes`);
+  }
   const raw = await readFile(absolutePath, "utf8");
   const markdown = markdownifyContent({
     content: raw,

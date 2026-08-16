@@ -2522,6 +2522,8 @@ export type RuntimeSettingsReloadResponse = {
 const ADMIN_API_KEY_STORAGE_KEY = "context_still_admin_api_key";
 const LEGACY_ADMIN_API_KEY_STORAGE_KEY = "memory_router_admin_api_key";
 const ADMIN_API_KEY_QUERY_PARAM_KEYS = ["admin_api_key", "adminApiKey", "x-admin-api-key"];
+export const ADMIN_SESSION_EXPIRED_EVENT = "context-still:admin-session-expired";
+let adminSessionBootstrap: Promise<void> | null = null;
 
 function normalizeAdminApiKey(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -2529,17 +2531,14 @@ function normalizeAdminApiKey(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-function persistAdminApiKey(apiKey: string): void {
+function clearLegacyAdminCredentials(): void {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(ADMIN_API_KEY_STORAGE_KEY, apiKey);
+    window.localStorage.removeItem(ADMIN_API_KEY_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_ADMIN_API_KEY_STORAGE_KEY);
   } catch {
-    // localStorage が使えない場合は無視する
+    // Continue with URL cleanup even when browser storage is unavailable.
   }
-}
-
-function removeAdminApiKeyFromUrl(): void {
-  if (typeof window === "undefined") return;
   try {
     const currentUrl = new URL(window.location.href);
     let mutated = false;
@@ -2553,50 +2552,50 @@ function removeAdminApiKeyFromUrl(): void {
     const nextRelativeUrl = `${currentUrl.pathname}${nextSearch ? `?${nextSearch}` : ""}${currentUrl.hash}`;
     window.history.replaceState(window.history.state, "", nextRelativeUrl);
   } catch {
-    // URL の書き換えが失敗しても API キー自体は保持する
+    // Legacy credentials are never read even when URL cleanup is unavailable.
   }
 }
 
-function readAdminApiKeyFromGlobal(): string | null {
-  const globalKey = normalizeAdminApiKey(
-    (globalThis as { __MEMORY_ROUTER_ADMIN_API_KEY__?: unknown }).__MEMORY_ROUTER_ADMIN_API_KEY__,
-  );
-  if (globalKey) {
-    persistAdminApiKey(globalKey);
-  }
+function takeAdminApiKeyFromGlobal(): string | null {
+  const runtime = globalThis as { __MEMORY_ROUTER_ADMIN_API_KEY__?: unknown };
+  const globalKey = normalizeAdminApiKey(runtime.__MEMORY_ROUTER_ADMIN_API_KEY__);
+  runtime.__MEMORY_ROUTER_ADMIN_API_KEY__ = undefined;
   return globalKey;
 }
 
-function readAdminApiKeyFromUrl(): string | null {
-  if (typeof window === "undefined") return null;
-  const params = new URLSearchParams(window.location.search);
-  for (const key of ADMIN_API_KEY_QUERY_PARAM_KEYS) {
-    const value = normalizeAdminApiKey(params.get(key));
-    if (!value) continue;
-    persistAdminApiKey(value);
-    removeAdminApiKeyFromUrl();
-    return value;
-  }
-  return null;
-}
-
-function readAdminApiKeyFromStorage(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const stored = normalizeAdminApiKey(window.localStorage.getItem(ADMIN_API_KEY_STORAGE_KEY));
-    if (stored) return stored;
-    const legacyStored = normalizeAdminApiKey(
-      window.localStorage.getItem(LEGACY_ADMIN_API_KEY_STORAGE_KEY),
-    );
-    if (legacyStored) persistAdminApiKey(legacyStored);
-    return legacyStored;
-  } catch {
-    return null;
+async function exchangeAdminApiKeyForSession(apiKey: string): Promise<void> {
+  const response = await fetch("/api/admin-session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ apiKey }),
+  });
+  if (!response.ok) {
+    throw new AdminApiError(`Admin session bootstrap failed: ${response.status}`, response.status);
   }
 }
 
-function resolveAdminApiKey(): string | null {
-  return readAdminApiKeyFromGlobal() ?? readAdminApiKeyFromUrl() ?? readAdminApiKeyFromStorage();
+async function ensureAdminSession(): Promise<void> {
+  clearLegacyAdminCredentials();
+  const bootstrapKey = takeAdminApiKeyFromGlobal();
+  if (bootstrapKey) {
+    adminSessionBootstrap = exchangeAdminApiKeyForSession(bootstrapKey);
+  }
+  if (adminSessionBootstrap) {
+    await adminSessionBootstrap;
+  }
+}
+
+export type AdminSessionStatus = {
+  configured: boolean;
+  authenticated: boolean;
+  configurationError: "admin_api_key_not_configured" | "admin_api_key_too_short" | null;
+};
+
+export async function createAdminSession(apiKey: string): Promise<void> {
+  const normalized = normalizeAdminApiKey(apiKey);
+  if (!normalized) throw new Error("Admin API key is required.");
+  adminSessionBootstrap = exchangeAdminApiKeyForSession(normalized);
+  await adminSessionBootstrap;
 }
 
 function buildRequestHeaders(options?: {
@@ -2605,10 +2604,6 @@ function buildRequestHeaders(options?: {
   const headers: Record<string, string> = {};
   if (options?.includeJsonContentType) {
     headers["content-type"] = "application/json";
-  }
-  const adminApiKey = resolveAdminApiKey();
-  if (adminApiKey) {
-    headers["x-admin-api-key"] = adminApiKey;
   }
   return Object.keys(headers).length > 0 ? headers : undefined;
 }
@@ -2656,10 +2651,19 @@ function parseResponseErrorPayload(payload: unknown): {
   return { message, code };
 }
 
+function notifyExpiredAdminSession(url: string, status: number): void {
+  if (status !== 401 || url === "/api/admin-session" || typeof window === "undefined") {
+    return;
+  }
+  window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
+}
+
 async function getJson<T>(url: string): Promise<T> {
+  await ensureAdminSession();
   const headers = buildRequestHeaders();
   const response = headers ? await fetch(url, { headers }) : await fetch(url);
   if (!response.ok) {
+    notifyExpiredAdminSession(url, response.status);
     const payload =
       typeof response.json === "function" ? await response.json().catch(() => null) : null;
     const parsed = parseResponseErrorPayload(payload);
@@ -2695,6 +2699,7 @@ function parseRequestErrorMessage(
 }
 
 async function requestJson<T>(url: string, method: string, body?: unknown): Promise<T> {
+  await ensureAdminSession();
   const headers = buildRequestHeaders({ includeJsonContentType: body !== undefined });
   const response = await fetch(url, {
     method,
@@ -2702,6 +2707,7 @@ async function requestJson<T>(url: string, method: string, body?: unknown): Prom
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
+    notifyExpiredAdminSession(url, response.status);
     const message = await response
       .json()
       .then((payload) => parseRequestErrorMessage(method, url, response.status, payload))
@@ -2712,6 +2718,7 @@ async function requestJson<T>(url: string, method: string, body?: unknown): Prom
 }
 
 async function requestForm<T>(url: string, method: string, body: FormData): Promise<T> {
+  await ensureAdminSession();
   const headers = buildRequestHeaders();
   const response = headers
     ? await fetch(url, {
@@ -2724,6 +2731,7 @@ async function requestForm<T>(url: string, method: string, body: FormData): Prom
         body,
       });
   if (!response.ok) {
+    notifyExpiredAdminSession(url, response.status);
     const message = await response
       .json()
       .then((payload) => parseRequestErrorMessage(method, url, response.status, payload))
@@ -2731,6 +2739,15 @@ async function requestForm<T>(url: string, method: string, body: FormData): Prom
     throw new Error(message);
   }
   return response.json() as Promise<T>;
+}
+
+export async function fetchAdminSessionStatus(): Promise<AdminSessionStatus> {
+  return getJson<AdminSessionStatus>("/api/admin-session");
+}
+
+export async function deleteAdminSession(): Promise<void> {
+  await requestJson<{ ok: true }>("/api/admin-session", "DELETE");
+  adminSessionBootstrap = null;
 }
 
 const encodeSlug = (slug: string): string =>

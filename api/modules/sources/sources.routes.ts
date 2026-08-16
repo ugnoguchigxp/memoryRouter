@@ -26,6 +26,7 @@ import {
   renameFolder,
   writePage,
 } from "../../../src/modules/sources/wiki/content-repo.js";
+import { GIT_OBJECT_ID_PATTERN } from "../../../src/modules/sources/wiki/git-revision.js";
 import {
   extractRemainderFromPathname,
   isSafeSlug,
@@ -63,9 +64,11 @@ const writeFolderSchema = z.object({
   path: folderPathSchema,
 });
 
+const gitObjectIdSchema = z.string().trim().regex(GIT_OBJECT_ID_PATTERN, "Invalid git object ID");
+
 const diffQuerySchema = z.object({
-  from: z.string().optional(),
-  to: z.string().optional(),
+  from: gitObjectIdSchema,
+  to: gitObjectIdSchema,
 });
 
 const searchQuerySchema = z.object({
@@ -532,9 +535,6 @@ export const sourcesRouter = new Hono()
       return c.json(invalidSlugResponse(slug), 400);
     }
     const { from, to } = c.req.valid("query");
-    if (!from || !to) {
-      return c.json({ message: "from and to query are required" }, 400);
-    }
     const diff = await getPageDiff(groupedConfig.sourceContent.root, slug, from, to);
     return c.json({ slug, from, to, diff });
   });

@@ -94,6 +94,7 @@ export type GroupedConfig = {
     coverEvidenceFetchMaxTokensPerSite: number;
     timeoutMs: number;
     resultMaxChars: number;
+    fetchMaxResponseBytes: number;
     searchResultCount: number;
     searchProviders: DistillationSearchProvider[];
     searchMaxProviderAttempts: number;

@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import app from "../api/app.js";
 import { adminApiKeyAuth } from "../api/middleware/admin-auth.js";
+import { adminCors } from "../api/middleware/admin-cors.js";
+import { apiAuthenticationDispatcher } from "../api/middleware/security-intelligence-auth.js";
+import { adminSessionRouter } from "../api/modules/admin-session/admin-session.routes.js";
 import { listAuditLogsForApi } from "../api/modules/audit/audit.repository.js";
 import { auditLogsRouter } from "../api/modules/audit/audit.routes.js";
 import { listCandidateItems } from "../api/modules/candidates/candidates.repository.js";
@@ -55,6 +58,9 @@ import {
   recordVibeMemoryWithDiffEntries,
   retrieveVibeMemoryContext,
 } from "../src/modules/vibe-memory/vibe-memory.service.js";
+
+const TEST_ADMIN_API_KEY = "test-admin-key-0123456789abcdef0123456789abcdef";
+const ROTATED_ADMIN_API_KEY = "rotated-admin-key-0123456789abcdef0123456789abcdef";
 import { compileRunDetailSchema } from "../src/shared/schemas/compile-run.schema.js";
 import { type ContextPack, contextPackSchema } from "../src/shared/schemas/context-pack.schema.js";
 import {
@@ -506,7 +512,7 @@ describe("API route contract tests", () => {
 
   test("adminApiKeyAuth rejects missing key when configured", async () => {
     const originalApiKey = groupedConfig.admin.apiKey;
-    groupedConfig.admin.apiKey = "test-admin-key";
+    groupedConfig.admin.apiKey = TEST_ADMIN_API_KEY;
     try {
       const app = new Hono();
       app.use("/api/*", adminApiKeyAuth());
@@ -516,18 +522,213 @@ describe("API route contract tests", () => {
       expect(unauthorized.status).toBe(401);
 
       const authorized = await app.request("/api/knowledge", {
-        headers: { "x-admin-api-key": "test-admin-key" },
+        headers: { "x-admin-api-key": TEST_ADMIN_API_KEY },
       });
       expect(authorized.status).toBe(200);
+      expect(authorized.headers.get("cache-control")).toBe("no-store");
       await expect(authorized.json()).resolves.toEqual({ ok: true });
 
       const authorizedByBearer = await app.request("/api/knowledge", {
-        headers: { authorization: "Bearer test-admin-key" },
+        headers: { authorization: `Bearer ${TEST_ADMIN_API_KEY}` },
       });
       expect(authorizedByBearer.status).toBe(200);
 
-      const rejectedQueryKey = await app.request("/api/knowledge?api_key=test-admin-key");
+      const rejectedQueryKey = await app.request(`/api/knowledge?api_key=${TEST_ADMIN_API_KEY}`);
       expect(rejectedQueryKey.status).toBe(401);
+    } finally {
+      groupedConfig.admin.apiKey = originalApiKey;
+    }
+  });
+
+  test("adminApiKeyAuth fails closed when no admin key is configured", async () => {
+    const originalApiKey = groupedConfig.admin.apiKey;
+    groupedConfig.admin.apiKey = "";
+    try {
+      const protectedApp = new Hono();
+      protectedApp.use("/api/*", adminApiKeyAuth());
+      protectedApp.get("/api/knowledge", (ctx) => ctx.json({ ok: true }));
+
+      const response = await protectedApp.request("/api/knowledge");
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      await expect(response.json()).resolves.toEqual({
+        error: "admin_api_key_not_configured",
+      });
+    } finally {
+      groupedConfig.admin.apiKey = originalApiKey;
+    }
+  });
+
+  test("adminApiKeyAuth fails closed when the configured key is too short", async () => {
+    const originalApiKey = groupedConfig.admin.apiKey;
+    groupedConfig.admin.apiKey = "too-short";
+    try {
+      const protectedApp = new Hono();
+      protectedApp.use("/api/*", adminApiKeyAuth());
+      protectedApp.get("/api/knowledge", (ctx) => ctx.json({ ok: true }));
+
+      const response = await protectedApp.request("/api/knowledge", {
+        headers: { "x-admin-api-key": "too-short" },
+      });
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      await expect(response.json()).resolves.toEqual({ error: "admin_api_key_too_short" });
+
+      const status = await adminSessionRouter.request("http://localhost/", { method: "GET" });
+      await expect(status.json()).resolves.toEqual({
+        configured: false,
+        authenticated: false,
+        configurationError: "admin_api_key_too_short",
+      });
+
+      const session = await adminSessionRouter.request("http://localhost/", {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: "too-short" }),
+      });
+      expect(session.status).toBe(503);
+      await expect(session.json()).resolves.toEqual({ error: "admin_api_key_too_short" });
+    } finally {
+      groupedConfig.admin.apiKey = originalApiKey;
+    }
+  });
+
+  test("adminCors rejects unknown origins and allows exact configured origins", async () => {
+    const corsApp = new Hono();
+    corsApp.use("*", adminCors(["http://127.0.0.1:5173"]));
+    corsApp.get("/api/knowledge", (ctx) => ctx.json({ ok: true }));
+
+    const rejected = await corsApp.request("/api/knowledge", {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://attacker.example",
+        "access-control-request-method": "DELETE",
+        "access-control-request-headers": "content-type",
+      },
+    });
+    expect(rejected.status).toBe(403);
+    expect(rejected.headers.get("access-control-allow-origin")).toBeNull();
+
+    const allowed = await corsApp.request("/api/knowledge", {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://127.0.0.1:5173",
+        "access-control-request-method": "GET",
+        "access-control-request-headers": "x-admin-api-key",
+      },
+    });
+    expect(allowed.status).toBe(204);
+    expect(allowed.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5173");
+    expect(allowed.headers.get("access-control-allow-headers")).toContain("x-admin-api-key");
+  });
+
+  test("adminCors disables cross-origin preflight when no origins are configured", async () => {
+    const corsApp = new Hono();
+    corsApp.use("*", adminCors([]));
+    corsApp.get("/api/knowledge", (ctx) => ctx.json({ ok: true }));
+
+    const response = await corsApp.request("/api/knowledge", {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://127.0.0.1:5173",
+        "access-control-request-method": "GET",
+      },
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
+  test("adminCors ignores wildcard, opaque, and non-origin configuration values", async () => {
+    const corsApp = new Hono();
+    corsApp.use("*", adminCors(["*", "null", "https://trusted.example/path"]));
+    corsApp.get("/api/knowledge", (ctx) => ctx.json({ ok: true }));
+
+    for (const origin of ["null", "https://trusted.example"]) {
+      const response = await corsApp.request("/api/knowledge", {
+        method: "OPTIONS",
+        headers: {
+          origin,
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(response.status).toBe(403);
+      expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    }
+  });
+
+  test("admin session exchanges the API key for an HttpOnly cookie", async () => {
+    const originalApiKey = groupedConfig.admin.apiKey;
+    groupedConfig.admin.apiKey = TEST_ADMIN_API_KEY;
+    try {
+      const sessionApp = new Hono();
+      sessionApp.use("/api/*", apiAuthenticationDispatcher());
+      sessionApp.route("/api/admin-session", adminSessionRouter);
+      sessionApp.get("/api/protected", (ctx) => ctx.json({ ok: true }));
+      sessionApp.post("/api/protected", (ctx) => ctx.json({ ok: true }));
+
+      const sessionResponse = await sessionApp.request("http://localhost/api/admin-session", {
+        method: "POST",
+        headers: { origin: "http://localhost", "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: TEST_ADMIN_API_KEY }),
+      });
+      expect(sessionResponse.status).toBe(200);
+      const setCookie = sessionResponse.headers.get("set-cookie");
+      expect(setCookie).toContain("HttpOnly");
+      expect(setCookie).toContain("SameSite=Strict");
+      const cookie = setCookie?.split(";", 1)[0] ?? "";
+
+      const status = await sessionApp.request("http://localhost/api/admin-session", {
+        headers: { cookie },
+      });
+      expect(status.status).toBe(200);
+      await expect(status.json()).resolves.toEqual({
+        configured: true,
+        authenticated: true,
+        configurationError: null,
+      });
+
+      const authenticated = await sessionApp.request("http://localhost/api/protected", {
+        headers: { cookie },
+      });
+      expect(authenticated.status).toBe(200);
+
+      const missingOrigin = await sessionApp.request("http://localhost/api/protected", {
+        method: "POST",
+        headers: { cookie },
+      });
+      expect(missingOrigin.status).toBe(403);
+
+      const trustedOrigin = await sessionApp.request("http://localhost/api/protected", {
+        method: "POST",
+        headers: { cookie, origin: "http://localhost" },
+      });
+      expect(trustedOrigin.status).toBe(200);
+
+      groupedConfig.admin.apiKey = ROTATED_ADMIN_API_KEY;
+      const invalidAfterRotation = await sessionApp.request("http://localhost/api/protected", {
+        headers: { cookie },
+      });
+      expect(invalidAfterRotation.status).toBe(401);
+    } finally {
+      groupedConfig.admin.apiKey = originalApiKey;
+    }
+  });
+
+  test("admin session rejects untrusted browser origins", async () => {
+    const originalApiKey = groupedConfig.admin.apiKey;
+    groupedConfig.admin.apiKey = TEST_ADMIN_API_KEY;
+    try {
+      const sessionApp = new Hono();
+      sessionApp.use("/api/*", apiAuthenticationDispatcher());
+      sessionApp.route("/api/admin-session", adminSessionRouter);
+
+      const response = await sessionApp.request("http://localhost/api/admin-session", {
+        method: "POST",
+        headers: { origin: "https://attacker.example", "content-type": "application/json" },
+        body: JSON.stringify({ apiKey: TEST_ADMIN_API_KEY }),
+      });
+      expect(response.status).toBe(403);
+      expect(response.headers.get("set-cookie")).toBeNull();
     } finally {
       groupedConfig.admin.apiKey = originalApiKey;
     }
@@ -535,7 +736,7 @@ describe("API route contract tests", () => {
 
   test("adminApiKeyAuth bypasses health endpoints and OPTIONS preflight", async () => {
     const originalApiKey = groupedConfig.admin.apiKey;
-    groupedConfig.admin.apiKey = "test-admin-key";
+    groupedConfig.admin.apiKey = TEST_ADMIN_API_KEY;
     try {
       const app = new Hono();
       app.use("/api/*", adminApiKeyAuth());
@@ -559,6 +760,7 @@ describe("API route contract tests", () => {
   test("app health endpoints return liveness/readiness payloads", async () => {
     const health = await app.request("/api/health");
     expect(health.status).toBe(200);
+    expect(health.headers.get("x-content-type-options")).toBe("nosniff");
     await expect(health.json()).resolves.toEqual({ status: "ok", service: "context-still-api" });
 
     const live = await app.request("/api/health/live");
@@ -568,6 +770,37 @@ describe("API route contract tests", () => {
     const ready = await app.request("/api/health/ready");
     expect(ready.status).toBe(200);
     await expect(ready.json()).resolves.toEqual({ status: "ready", service: "context-still-api" });
+  });
+
+  test("app request logs redact secret query parameters", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const secret = "should-not-appear-in-request-logs";
+      const response = await app.request(`/api/health?x-admin-api-key=${secret}`);
+
+      expect(response.status).toBe(200);
+      const output = log.mock.calls.flat().join("\n");
+      expect(output).not.toContain(secret);
+      expect(output).toContain("[REMOVED SENSITIVE DATA]");
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("app rejects oversized API requests before route processing", async () => {
+    const response = await app.request("http://localhost/api/admin-session", {
+      method: "POST",
+      headers: {
+        origin: "http://localhost",
+        "content-type": "application/json",
+        "content-length": String(16 * 1024 * 1024 + 1),
+      },
+      body: "{}",
+    });
+
+    expect(response.status).toBe(413);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({ error: "request_too_large" });
   });
 
   test("GET /api/audit-logs rejects invalid query", async () => {

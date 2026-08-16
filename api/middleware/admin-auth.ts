@@ -1,7 +1,12 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { groupedConfig } from "../../src/config.js";
 import { projectIdentity } from "../../src/project-identity.js";
+import {
+  adminApiKeyConfigurationError,
+  hasValidAdminSession,
+  isAuthorizedAdminApiKey,
+  isTrustedAdminOrigin,
+} from "./admin-session.js";
 
 function readApiKeyFromAuthorizationHeader(value: string | undefined): string | null {
   if (!value) return null;
@@ -11,14 +16,6 @@ function readApiKeyFromAuthorizationHeader(value: string | undefined): string | 
   if (!bearerMatch) return null;
   const token = bearerMatch[1]?.trim();
   return token && token.length > 0 ? token : null;
-}
-
-function hashApiKey(value: string): Buffer {
-  return createHash("sha256").update(value).digest();
-}
-
-function isAuthorizedApiKey(configuredKey: string, providedKey: string): boolean {
-  return timingSafeEqual(hashApiKey(configuredKey), hashApiKey(providedKey));
 }
 
 function isPublicHealthPath(path: string): boolean {
@@ -32,19 +29,30 @@ export function adminApiKeyAuth(): MiddlewareHandler {
     }
 
     const configuredKey = groupedConfig.admin.apiKey;
-    if (!configuredKey) {
-      return next();
+    ctx.header("Cache-Control", "no-store");
+    const configurationError = adminApiKeyConfigurationError(configuredKey);
+    if (configurationError) {
+      return ctx.json({ error: configurationError }, 503);
     }
 
-    const provided =
+    const providedHeader =
       ctx.req.header("x-admin-api-key") ??
       readApiKeyFromAuthorizationHeader(ctx.req.header("authorization") ?? undefined) ??
       "";
 
-    if (!provided || !isAuthorizedApiKey(configuredKey, provided)) {
-      ctx.header("WWW-Authenticate", `ApiKey realm="${projectIdentity.adminRealm}"`);
-      return ctx.json({ error: "unauthorized" }, 401);
+    if (providedHeader && isAuthorizedAdminApiKey(configuredKey, providedHeader)) {
+      return next();
     }
-    return next();
+
+    if (hasValidAdminSession(ctx, configuredKey)) {
+      const isSafeMethod = ctx.req.method === "GET" || ctx.req.method === "HEAD";
+      if (!isSafeMethod && !isTrustedAdminOrigin(ctx)) {
+        return ctx.json({ error: "origin_not_allowed" }, 403);
+      }
+      return next();
+    }
+
+    ctx.header("WWW-Authenticate", `ApiKey realm="${projectIdentity.adminRealm}"`);
+    return ctx.json({ error: "unauthorized" }, 401);
   };
 }
