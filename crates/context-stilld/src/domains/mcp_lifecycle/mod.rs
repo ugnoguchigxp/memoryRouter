@@ -1,5 +1,6 @@
 mod dispatch;
 mod endpoint_server;
+pub(crate) use endpoint_server::configured_endpoint_url;
 #[cfg(test)]
 mod endpoint_server_tests;
 mod endpoint_sessions;

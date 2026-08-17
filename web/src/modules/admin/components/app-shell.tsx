@@ -1,5 +1,6 @@
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { type FormEvent, useEffect, useState } from "react";
+import { DEFAULT_ADMIN_API_KEY } from "../../../../../src/shared/admin-api-key";
 import {
   ADMIN_SESSION_EXPIRED_EVENT,
   createAdminSession,
@@ -36,9 +37,19 @@ export function AppShell() {
   useEffect(() => {
     let active = true;
     fetchAdminSessionStatus()
-      .then((status) => {
+      .then(async (status) => {
         if (!active) return;
         setConfigurationError(status.configurationError);
+        if (status.configured && !status.authenticated) {
+          try {
+            await createAdminSession(DEFAULT_ADMIN_API_KEY);
+            if (active) setSessionState("authenticated");
+            return;
+          } catch {
+            // A custom environment key is configured; show the regular login form.
+          }
+        }
+        if (!active) return;
         setSessionState(
           status.authenticated
             ? "authenticated"

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fs2::FileExt;
 use rusqlite::Connection;
@@ -16,13 +16,19 @@ use super::schema;
 type BoxedResult = Result<Box<dyn Any + Send>, String>;
 type WriterJob = Box<dyn FnOnce(&mut Connection) -> BoxedResult + Send + 'static>;
 
+struct WriterResponse {
+    result: BoxedResult,
+    started: Instant,
+    finished: Instant,
+}
+
 enum Command {
     Execute {
         owner: Option<String>,
         transaction_control: TransactionControl,
         operation: String,
         job: WriterJob,
-        response: mpsc::Sender<BoxedResult>,
+        response: mpsc::Sender<WriterResponse>,
     },
     Shutdown {
         response: mpsc::Sender<()>,
@@ -72,12 +78,33 @@ pub struct SqliteWriterHandle {
     queue_capacity: usize,
 }
 
+#[derive(Debug)]
+pub struct WriterExecution<T> {
+    pub result: Result<T, String>,
+    pub queue_wait: Duration,
+    pub work_duration: Duration,
+    pub total_duration: Duration,
+}
+
 impl SqliteWriterHandle {
     pub fn execute<T, F>(&self, operation: impl Into<String>, job: F) -> Result<T, String>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
     {
+        self.execute_observed(operation, job)?.result
+    }
+
+    pub fn execute_observed<T, F>(
+        &self,
+        operation: impl Into<String>,
+        job: F,
+    ) -> Result<WriterExecution<T>, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+    {
+        let enqueued = Instant::now();
         let (response_tx, response_rx) = mpsc::channel();
         self.stats.queue_depth.fetch_add(1, Ordering::SeqCst);
         let send_result = self.sender.send(Command::Execute {
@@ -93,13 +120,23 @@ impl SqliteWriterHandle {
             self.stats.queue_depth.fetch_sub(1, Ordering::SeqCst);
             return Err("SQLite writer is not running".to_string());
         }
-        let boxed = response_rx
+        let response = response_rx
             .recv()
-            .map_err(|_| "SQLite writer stopped before returning a result".to_string())??;
-        boxed
-            .downcast::<T>()
-            .map(|value| *value)
-            .map_err(|_| "SQLite writer returned an unexpected result type".to_string())
+            .map_err(|_| "SQLite writer stopped before returning a result".to_string())?;
+        let result = response.result.and_then(|boxed| {
+            boxed
+                .downcast::<T>()
+                .map(|value| *value)
+                .map_err(|_| "SQLite writer returned an unexpected result type".to_string())
+        });
+        Ok(WriterExecution {
+            result,
+            queue_wait: response.started.saturating_duration_since(enqueued),
+            work_duration: response
+                .finished
+                .saturating_duration_since(response.started),
+            total_duration: enqueued.elapsed(),
+        })
     }
 
     pub fn execute_for_client<T, F>(
@@ -128,10 +165,11 @@ impl SqliteWriterHandle {
             self.stats.queue_depth.fetch_sub(1, Ordering::SeqCst);
             return Err("SQLite writer is not running".to_string());
         }
-        let boxed = response_rx
+        let response = response_rx
             .recv()
-            .map_err(|_| "SQLite writer stopped before returning a result".to_string())??;
-        boxed
+            .map_err(|_| "SQLite writer stopped before returning a result".to_string())?;
+        response
+            .result?
             .downcast::<T>()
             .map(|value| *value)
             .map_err(|_| "SQLite writer returned an unexpected result type".to_string())
@@ -359,6 +397,29 @@ where
     }
 }
 
+pub fn execute_for_path_observed<T, F>(
+    path: &Path,
+    operation: &'static str,
+    job: F,
+) -> Result<WriterExecution<T>, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+{
+    match global_writer_for_path(path) {
+        Ok(writer) => writer.execute_observed(operation, job),
+        #[cfg(test)]
+        Err(_) => {
+            let runtime = SqliteWriterRuntime::start_existing_for_test(path, 16)?;
+            let result = runtime.handle().execute_observed(operation, job);
+            runtime.shutdown()?;
+            result
+        }
+        #[cfg(not(test))]
+        Err(error) => Err(error),
+    }
+}
+
 pub fn is_writer_lock_held(sqlite_path: &Path) -> Result<bool, String> {
     let lock_path = writer_lock_path(sqlite_path);
     if !lock_path.exists() {
@@ -503,8 +564,10 @@ fn run_loop(
                 response,
             } => {
                 stats.queue_depth.fetch_sub(1, Ordering::SeqCst);
+                let started = Instant::now();
                 *stats.active_operation.lock().unwrap() = Some(operation);
                 let result = job(connection);
+                let finished = Instant::now();
                 if result.is_ok() {
                     match transaction_control {
                         TransactionControl::Begin => {
@@ -532,7 +595,11 @@ fn run_loop(
                     *stats.last_error.lock().unwrap() = result.as_ref().err().cloned();
                 }
                 *stats.active_operation.lock().unwrap() = None;
-                let _ = response.send(result);
+                let _ = response.send(WriterResponse {
+                    result,
+                    started,
+                    finished,
+                });
             }
             Command::Shutdown { response } => {
                 let _ = response.send(());
@@ -620,6 +687,40 @@ mod tests {
             .err()
             .expect("second writer must fail");
         assert!(error.contains("another SQLite writer owns"));
+        runtime.shutdown().unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(writer_lock_path(&path));
+    }
+
+    #[test]
+    fn observed_execution_reports_queue_and_work_durations() {
+        let path = temp_path("observed_execution");
+        let runtime = SqliteWriterRuntime::start(&path, 4, 8).unwrap();
+        let handle = runtime.handle();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let first_handle = handle.clone();
+        let first = thread::spawn(move || {
+            first_handle.execute_observed("test.block", move |_| {
+                started_tx.send(()).map_err(|error| error.to_string())?;
+                release_rx.recv().map_err(|error| error.to_string())?;
+                Ok(())
+            })
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let second_handle = handle.clone();
+        let second = thread::spawn(move || {
+            second_handle.execute_observed("test.observed", |_| Ok::<_, String>("done"))
+        });
+        thread::sleep(Duration::from_millis(20));
+        release_tx.send(()).unwrap();
+        let first = first.join().unwrap().unwrap();
+        let second = second.join().unwrap().unwrap();
+        assert!(first.result.is_ok());
+        assert_eq!(second.result.as_deref(), Ok("done"));
+        assert!(second.queue_wait >= Duration::from_millis(10));
+        assert!(second.total_duration >= second.queue_wait);
+        assert!(second.total_duration >= second.work_duration);
         runtime.shutdown().unwrap();
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(writer_lock_path(&path));

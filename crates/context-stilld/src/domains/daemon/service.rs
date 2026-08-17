@@ -1,8 +1,11 @@
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::{
-    domains::bootstrap::service::{resolve_paths, PathReport},
+    domains::{
+        bootstrap::service::{resolve_paths, PathReport},
+        runtime_identity,
+    },
     shared::{
         config::EnvProvider,
         process::{OsSupervisor, ProcessSupervisor},
@@ -43,7 +46,9 @@ pub fn status_with_supervisor<E: EnvProvider, S: ProcessSupervisor>(
     env: &E,
     supervisor: &S,
 ) -> RuntimeStatus {
-    let paths = resolve_paths(env);
+    let mut paths = resolve_paths(env);
+    let database_identity = runtime_identity::resolve(env, supervisor);
+    paths.sqlite_core_path = database_identity.effective_path;
     let run_dir = &paths.run_dir;
 
     let resident_supervisor = resolve_process_status(run_dir, "context-stilld", supervisor);
@@ -66,35 +71,8 @@ pub fn status_with_supervisor<E: EnvProvider, S: ProcessSupervisor>(
             agent_log_sync: env_flag_default(env, "CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC", true),
             admin_api: env_flag(env, "CONTEXT_STILL_DAEMON_MANAGED_ADMIN_API"),
         },
-        paths: paths_with_resident_sqlite_path(env, paths, &resident_supervisor, supervisor),
+        paths,
     }
-}
-
-fn paths_with_resident_sqlite_path<E: EnvProvider, S: ProcessSupervisor>(
-    env: &E,
-    mut paths: PathReport,
-    resident_supervisor_status: &str,
-    supervisor: &S,
-) -> PathReport {
-    if env.var("CONTEXT_STILL_SQLITE_CORE_PATH").is_some() {
-        return paths;
-    }
-    if resident_supervisor_status != "running" {
-        return paths;
-    }
-    let Ok(Some(state)) = repository::read_state(&paths.run_dir, "context-stilld") else {
-        return paths;
-    };
-    let Some(pid) = state.pid else {
-        return paths;
-    };
-    if !supervisor.is_alive(pid) {
-        return paths;
-    }
-    if let Some(sqlite_core_path) = state.sqlite_core_path {
-        paths.sqlite_core_path = PathBuf::from(sqlite_core_path);
-    }
-    paths
 }
 
 fn env_flag<E: EnvProvider>(env: &E, key: &str) -> bool {

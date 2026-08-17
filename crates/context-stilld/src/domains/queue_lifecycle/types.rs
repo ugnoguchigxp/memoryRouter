@@ -137,6 +137,7 @@ pub struct ProviderQueueClaimSpec {
     pub preferred_target_ids: Vec<String>,
     pub route_target_column: Option<&'static str>,
     pub route_target_preferences: Vec<RowTargetPreference>,
+    pub allowed_route_values: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

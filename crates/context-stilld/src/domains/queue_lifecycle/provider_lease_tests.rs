@@ -3,6 +3,151 @@ use super::test_support::*;
 use rusqlite::Connection;
 
 #[test]
+fn rust_provider_claim_respects_allowed_route_values() {
+    let app_dir = temp_app_dir("provider_claim_allowed_routes");
+    let sqlite_path = app_dir.join("queue.sqlite");
+    let mut connection = Connection::open(&sqlite_path).unwrap();
+    create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+    create_provider_lease_table(&connection);
+    connection.execute_batch(r#"
+        with recursive unsupported(n) as (
+          select 1 union all select n + 1 from unsupported where n < 25
+        )
+        insert into finding_candidate_queue (id, status, priority, created_at, updated_at, source_kind)
+          select printf('source-job-%02d', n), 'pending', 100, '2026-01-01', '2026-01-01', 'source'
+          from unsupported;
+        insert into finding_candidate_queue (id, status, priority, created_at, updated_at, source_kind)
+          values ('vibe-job', 'pending', 10, '2026-01-02', '2026-01-02', 'vibe_memory');
+    "#).unwrap();
+    let mut spec = finding_candidate_spec();
+    spec.allowed_route_values = Some(vec!["vibe_memory".to_string()]);
+
+    let claimed = claim_next_job_with_provider_lease_for_connection(
+        &mut connection,
+        &provider_pool(),
+        &[spec],
+        "worker-allowed",
+        "lease-allowed",
+        90,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(claimed.id, "vibe-job");
+    let source_running_count: i64 = connection
+        .query_row(
+            "select count(*) from finding_candidate_queue where source_kind='source' and status='running'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(source_running_count, 0);
+    std::fs::remove_dir_all(&app_dir).unwrap();
+}
+
+#[test]
+fn rust_provider_claim_fails_over_from_recently_unavailable_target() {
+    let app_dir = temp_app_dir("provider_claim_cooldown");
+    let sqlite_path = app_dir.join("queue.sqlite");
+    let mut connection = Connection::open(&sqlite_path).unwrap();
+    create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+    create_provider_lease_table(&connection);
+    connection
+        .execute_batch(
+            r#"
+        insert into finding_candidate_queue (
+          id, status, priority, created_at, updated_at, next_run_at, source_kind
+        ) values ('job-source', 'pending', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, null, null);
+        insert into llm_provider_leases (
+          id, pool_id, target_id, queue_name, queue_job_id, worker_id, status,
+          locked_at, heartbeat_at, expires_at, released_at, release_reason, created_at, updated_at
+        ) values (
+          'lease-failed', 'local-llm-default', 'local-a', 'findingCandidate', 'old-job',
+          'old-worker', 'released', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP, 'provider_unavailable_retry', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+    "#,
+        )
+        .unwrap();
+
+    let claimed = claim_next_job_with_provider_lease_for_connection(
+        &mut connection,
+        &provider_pool(),
+        &[finding_candidate_spec()],
+        "worker-2",
+        "lease-2",
+        90,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(claimed.provider_lease.target_id, "local-b");
+    std::fs::remove_dir_all(&app_dir).unwrap();
+}
+
+#[test]
+fn rust_provider_claim_uses_least_recently_used_free_target() {
+    let app_dir = temp_app_dir("provider_claim_lru");
+    let sqlite_path = app_dir.join("queue.sqlite");
+    let mut connection = Connection::open(&sqlite_path).unwrap();
+    create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+    create_provider_lease_table(&connection);
+    connection.execute_batch(r#"
+        insert into finding_candidate_queue (id, status, priority, created_at, updated_at, source_kind)
+          values ('job-source', 'pending', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, null);
+        insert into llm_provider_leases (
+          id, pool_id, target_id, queue_name, queue_job_id, worker_id, status,
+          locked_at, heartbeat_at, expires_at, released_at, release_reason, created_at, updated_at
+        ) values (
+          'lease-finished', 'local-llm-default', 'local-a', 'findingCandidate', 'old-job',
+          'old-worker', 'released', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP, 'worker_finished', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        );
+    "#).unwrap();
+
+    let claimed = claim_next_job_with_provider_lease_for_connection(
+        &mut connection,
+        &provider_pool(),
+        &[finding_candidate_spec()],
+        "worker-lru",
+        "lease-lru",
+        90,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(claimed.provider_lease.target_id, "local-b");
+    std::fs::remove_dir_all(&app_dir).unwrap();
+}
+
+#[test]
+fn rust_provider_cooldown_clears_after_later_success_in_same_second() {
+    let connection = Connection::open_in_memory().unwrap();
+    create_provider_lease_table(&connection);
+    connection
+        .execute_batch(
+            r#"
+        insert into llm_provider_leases (
+          id, pool_id, target_id, queue_name, queue_job_id, worker_id, status,
+          locked_at, heartbeat_at, expires_at, released_at, release_reason, created_at, updated_at
+        ) values
+          ('failed', 'pool', 'local-a', 'findingCandidate', 'job-1', 'worker-1', 'released',
+           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+           'provider_unavailable_retry', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+          ('success', 'pool', 'local-a', 'findingCandidate', 'job-2', 'worker-2', 'released',
+           CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+           'worker_finished', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+    "#,
+        )
+        .unwrap();
+    let tx = connection.unchecked_transaction().unwrap();
+
+    let cooling = cooling_provider_targets(&tx, 60).unwrap();
+
+    assert!(!cooling.contains("local-a"));
+}
+
+#[test]
 fn rust_provider_claim_picks_route_preferred_target_and_inserts_lease() {
     let app_dir = temp_app_dir("provider_claim_preferred");
     let sqlite_path = app_dir.join("queue.sqlite");
@@ -141,6 +286,7 @@ fn rust_provider_claim_keeps_queue_order_ahead_of_older_higher_priority_episode_
         preferred_target_ids: vec!["local-a".to_string()],
         route_target_column: None,
         route_target_preferences: Vec::new(),
+        allowed_route_values: None,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(
@@ -241,6 +387,7 @@ fn rust_provider_claim_uses_pool_fallback_target_when_route_has_no_preference() 
         preferred_target_ids: Vec::new(),
         route_target_column: Some("source_kind"),
         route_target_preferences: Vec::new(),
+        allowed_route_values: None,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(

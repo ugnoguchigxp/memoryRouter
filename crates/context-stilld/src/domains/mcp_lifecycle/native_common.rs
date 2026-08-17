@@ -34,11 +34,21 @@ impl crate::shared::config::EnvProvider for HandlerEnv {
 }
 
 pub(super) fn open_database(context: &NativeToolContext) -> Result<Connection, String> {
-    Connection::open_with_flags(
+    let connection = Connection::open_with_flags(
         &context.sqlite_core_path,
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
-    .map_err(|error| format!("failed to open sqlite core db: {error}"))
+    .map_err(|error| format!("failed to open sqlite core db: {error}"))?;
+    connection
+        .busy_timeout(std::time::Duration::from_millis(100))
+        .map_err(|error| format!("failed to set sqlite read busy timeout: {error}"))?;
+    connection
+        .pragma_update(None, "query_only", "ON")
+        .map_err(|error| format!("failed to enable sqlite query_only: {error}"))?;
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|error| format!("failed to enable sqlite foreign_keys: {error}"))?;
+    Ok(connection)
 }
 
 pub(super) fn with_writer<T, F>(

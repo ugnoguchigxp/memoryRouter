@@ -16,6 +16,7 @@ use super::episode_executor::{
     run_episode_distiller_job_for_connection, EpisodeExecutionStatus, LocalLlmTargetConfig,
 };
 use super::events::append_queue_event_for_connection;
+use super::finding_executor::{run_finding_candidate_job_for_connection, FindingExecutionStatus};
 use super::provider_lease::{
     claim_next_job_with_provider_lease_for_connection, heartbeat_provider_lease_for_connection,
     release_provider_lease_for_connection,
@@ -35,6 +36,13 @@ const PROVIDER_QUEUE_PRIORITY_ORDER: &[&str] = &[
     "mergeActivationFinalize",
     "finalizeDistille",
 ];
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum LocalExecutionOutcome {
+    Completed,
+    Failed,
+    Retrying,
+}
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,7 +167,7 @@ fn run_executor_tick_with_connection(
         };
         claimed += 1;
 
-        append_queue_event_for_connection(
+        append_queue_event_best_effort(
             connection,
             &format!("rust-queue-event-{}", unique_suffix()),
             &job.queue_name,
@@ -170,11 +178,10 @@ fn run_executor_tick_with_connection(
                 r#"{{"workerId":"{}","executor":"rust"}}"#,
                 worker_id
             )),
-        )?;
-        heartbeat_queue_job_for_connection(connection, &job.queue_name, &job.id)?;
-        heartbeat_provider_lease_for_connection(connection, &job.provider_lease.id)?;
+        );
+        heartbeat_claim_best_effort(connection, &job);
 
-        if job.queue_name == "episodeDistiller" {
+        if job.queue_name == "episodeDistiller" || job.queue_name == "findingCandidate" {
             let target = local_llm_target_config(&settings, &job.provider_lease.target_id)?;
             let secret_key = local_llm_target_secret_key(&settings, &job.provider_lease.target_id)?;
             let api_key = load_secret_value(connection, &secret_key).or_else(|| {
@@ -184,15 +191,39 @@ fn run_executor_tick_with_connection(
                     None
                 }
             });
-            match run_episode_distiller_job_for_connection(
-                connection,
-                &job.id,
-                &job.provider_lease.worker_id,
-                &target,
-                api_key.as_deref(),
-                config.llm_timeout_seconds,
-            )? {
-                EpisodeExecutionStatus::Completed | EpisodeExecutionStatus::Skipped => {
+            let execution_status = if job.queue_name == "findingCandidate" {
+                match run_finding_candidate_job_for_connection(
+                    connection,
+                    &job.id,
+                    &job.provider_lease.worker_id,
+                    &target,
+                    api_key.as_deref(),
+                    config.llm_timeout_seconds,
+                )? {
+                    FindingExecutionStatus::Completed | FindingExecutionStatus::Skipped => {
+                        LocalExecutionOutcome::Completed
+                    }
+                    FindingExecutionStatus::Failed => LocalExecutionOutcome::Failed,
+                    FindingExecutionStatus::Retrying => LocalExecutionOutcome::Retrying,
+                }
+            } else {
+                match run_episode_distiller_job_for_connection(
+                    connection,
+                    &job.id,
+                    &job.provider_lease.worker_id,
+                    &target,
+                    api_key.as_deref(),
+                    config.llm_timeout_seconds,
+                )? {
+                    EpisodeExecutionStatus::Completed | EpisodeExecutionStatus::Skipped => {
+                        LocalExecutionOutcome::Completed
+                    }
+                    EpisodeExecutionStatus::Failed => LocalExecutionOutcome::Failed,
+                    EpisodeExecutionStatus::Retrying => LocalExecutionOutcome::Retrying,
+                }
+            };
+            match execution_status {
+                LocalExecutionOutcome::Completed => {
                     release_provider_lease_for_connection(
                         connection,
                         &job.provider_lease.id,
@@ -200,7 +231,7 @@ fn run_executor_tick_with_connection(
                     )?;
                     completed += 1;
                 }
-                EpisodeExecutionStatus::Failed => {
+                LocalExecutionOutcome::Failed => {
                     release_provider_lease_for_connection(
                         connection,
                         &job.provider_lease.id,
@@ -208,7 +239,7 @@ fn run_executor_tick_with_connection(
                     )?;
                     failed += 1;
                 }
-                EpisodeExecutionStatus::Retrying => {
+                LocalExecutionOutcome::Retrying => {
                     release_provider_lease_for_connection(
                         connection,
                         &job.provider_lease.id,
@@ -230,7 +261,7 @@ fn run_executor_tick_with_connection(
             &job.id,
             &reason,
         )?;
-        append_queue_event_for_connection(
+        append_queue_event_best_effort(
             connection,
             &format!("rust-queue-event-{}", unique_suffix()),
             &job.queue_name,
@@ -241,7 +272,7 @@ fn run_executor_tick_with_connection(
                 r#"{{"workerId":"{}","executor":"rust","reason":"unsupported_executor"}}"#,
                 worker_id
             )),
-        )?;
+        );
         release_provider_lease_for_connection(
             connection,
             &job.provider_lease.id,
@@ -275,6 +306,47 @@ fn run_executor_tick_with_connection(
     };
     write_executor_state(&run_dir, &report)?;
     Ok(report)
+}
+
+fn append_queue_event_best_effort(
+    connection: &Connection,
+    event_id: &str,
+    queue_name: &str,
+    queue_job_id: &str,
+    event_type: &str,
+    message: Option<&str>,
+    metadata_json: Option<&str>,
+) {
+    if let Err(error) = append_queue_event_for_connection(
+        connection,
+        event_id,
+        queue_name,
+        queue_job_id,
+        event_type,
+        message,
+        metadata_json,
+    ) {
+        eprintln!("failed to append {queue_name}/{queue_job_id} {event_type} queue event: {error}");
+    }
+}
+
+fn heartbeat_claim_best_effort(
+    connection: &Connection,
+    job: &super::types::ClaimedProviderLeaseJob,
+) {
+    if let Err(error) = heartbeat_queue_job_for_connection(connection, &job.queue_name, &job.id) {
+        eprintln!(
+            "failed to heartbeat newly claimed {}/{} queue job: {error}",
+            job.queue_name, job.id
+        );
+    }
+    if let Err(error) = heartbeat_provider_lease_for_connection(connection, &job.provider_lease.id)
+    {
+        eprintln!(
+            "failed to heartbeat newly claimed {} provider lease: {error}",
+            job.provider_lease.id
+        );
+    }
 }
 
 fn idle_report(sqlite_core_path: String, status: &str, message: &str) -> QueueExecutorTickReport {
@@ -490,7 +562,7 @@ fn executor_priority_queues_for_pool(
 }
 
 fn rust_executor_supports_queue(queue_name: &str) -> bool {
-    queue_name == "episodeDistiller"
+    matches!(queue_name, "findingCandidate" | "episodeDistiller")
 }
 
 fn queue_spec_for_pool(
@@ -535,6 +607,7 @@ fn queue_spec_for_pool(
                 preferred_target_ids: source_targets,
                 route_target_column: Some("source_kind"),
                 route_target_preferences: preferences,
+                allowed_route_values: Some(vec!["vibe_memory".to_string()]),
             })
         }
         "episodeDistiller" => simple_route_spec(
@@ -568,6 +641,7 @@ fn queue_spec_for_pool(
                 preferred_target_ids: targets.into_iter().collect(),
                 route_target_column: Some("provider_policy"),
                 route_target_preferences: Vec::new(),
+                allowed_route_values: None,
             })
         }
         "deadZoneMergeReview" => simple_route_spec(
@@ -604,6 +678,7 @@ fn simple_route_spec(
         preferred_target_ids: targets,
         route_target_column: None,
         route_target_preferences: Vec::new(),
+        allowed_route_values: None,
     })
 }
 
@@ -876,7 +951,7 @@ mod tests {
         let app_dir = temp_app_dir("executor_tick");
         let sqlite_path = app_dir.join("queue.sqlite");
         let connection = Connection::open(&sqlite_path).unwrap();
-        create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+        create_provider_claim_queue_table(&connection, "covering_evidence_queue");
         create_queue_events_table(&connection);
         create_provider_lease_table(&connection);
         connection
@@ -888,10 +963,10 @@ mod tests {
                   key text not null,
                   value text not null
                 );
-                insert into finding_candidate_queue (
-                  id, status, source_kind, priority, created_at, updated_at, next_run_at
+                insert into covering_evidence_queue (
+                  id, status, priority, created_at, updated_at, next_run_at
                 ) values (
-                  'job-1', 'pending', 'vibe_memory', 10, '2026-06-22 01:00:00', '2026-06-22 01:00:00', null
+                  'job-1', 'pending', 10, '2026-06-22 01:00:00', '2026-06-22 01:00:00', null
                 );
                 "#,
             )
@@ -912,9 +987,8 @@ mod tests {
                     }
                 },
                 "taskRouting": {
-                    "findCandidate": {
-                        "source": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"},
-                        "vibe": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"}
+                    "coverEvidence": {
+                        "sourceSupport": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"}
                     }
                 }
             }
@@ -943,7 +1017,7 @@ mod tests {
         let connection = Connection::open(&sqlite_path).unwrap();
         let row = connection
             .query_row(
-                "select status, last_outcome_kind, last_error is not null, next_run_at is not null from finding_candidate_queue where id = 'job-1'",
+                "select status, last_outcome_kind, last_error is not null, next_run_at is not null from covering_evidence_queue where id = 'job-1'",
                 [],
                 |row| {
                     Ok((
@@ -977,7 +1051,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_executor_filters_unsupported_queues() {
+    fn rust_executor_includes_supported_queues() {
         let settings = json!({
             "providerPools": [{
                 "id": "local-llm-default",
@@ -1007,7 +1081,11 @@ mod tests {
                 .iter()
                 .map(|queue| queue.queue_name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["episodeDistiller"]
+            vec!["findingCandidate", "episodeDistiller"]
+        );
+        assert_eq!(
+            queues[0].allowed_route_values,
+            Some(vec!["vibe_memory".to_string()])
         );
     }
 

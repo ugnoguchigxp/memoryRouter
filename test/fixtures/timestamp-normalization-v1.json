@@ -1,0 +1,5 @@
+{
+  "contractVersion": 1,
+  "valid": ["unix-ms:0", "unix-ms:1700000000000", "unix-ms:8640000000000000"],
+  "invalid": ["unix-ms:-1", "unix-ms:1.0", "unix-ms:99999999999999999", "2026-08-17T00:00:00Z", ""]
+}

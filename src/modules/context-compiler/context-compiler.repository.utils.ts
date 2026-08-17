@@ -5,6 +5,7 @@ import { asRecord } from "../../shared/utils/normalize.js";
 import { renderContextPackMarkdown } from "./pack-renderer.js";
 
 const runStatusValues = new Set(["ok", "degraded", "failed"]);
+export const maxEpochMillis = 8_640_000_000_000_000;
 export const knowledgeVerdictValues = new Set(["used", "not_used", "off_topic", "wrong"]);
 export const feedbackActorValues = new Set(["agent", "user", "system"]);
 
@@ -28,10 +29,12 @@ export function normalizeDate(value: unknown): Date {
   }
   if (typeof value === "string") {
     const trimmed = value.trim();
-    const unixMs = trimmed.match(/^unix-ms:(\d+)$/);
+    const unixMs = trimmed.match(/^unix-ms:(\d{1,16})$/);
     if (unixMs) {
       const parsedMillis = Number(unixMs[1]);
-      if (Number.isSafeInteger(parsedMillis)) return new Date(parsedMillis);
+      if (Number.isSafeInteger(parsedMillis) && parsedMillis >= 0 && parsedMillis <= maxEpochMillis) {
+        return new Date(parsedMillis);
+      }
     }
     const normalized = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(trimmed)
       ? `${trimmed.replace(" ", "T")}Z`

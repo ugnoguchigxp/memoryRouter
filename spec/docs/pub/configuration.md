@@ -9,24 +9,26 @@ The desktop/local path should work with SQLite defaults and without a mandatory 
 | `CONTEXT_STILL_DB_BACKEND` | `sqlite` for the desktop product path | Selects the local SQLite backend |
 | `CONTEXT_STILL_SQLITE_CORE_PATH` | `./data/context-still-core.sqlite` in development | SQLite core database path |
 | `CONTEXT_STILL_SOURCE_CONTENT_ROOT` | `./wiki` | Local source/wiki root |
-| `CONTEXT_STILL_ADMIN_API_KEY` | empty | Required with at least 32 characters for every admin API endpoint except `/api/health*`; protected endpoints return `503` while missing or too short |
+| `CONTEXT_STILL_ADMIN_API_KEY` | `context-still-local-admin-api-key-2026` | Optional override for every admin API endpoint except `/api/health*`; a custom value must contain at least 32 characters |
 | `CONTEXT_STILL_ALLOWED_ORIGINS` | empty | Exact comma-separated browser origins; empty disables cross-origin requests |
 
-For the current Bun/admin development runtime, pass the backend explicitly:
+For the current Bun/admin development runtime, pass the backend explicitly. The built-in local key
+is exchanged for an admin session automatically, so no key setup or login input is needed:
 
 ```bash
-CONTEXT_STILL_DEV_ADMIN_KEY="$(openssl rand -hex 32)"
-printf 'Admin API key: %s\n' "$CONTEXT_STILL_DEV_ADMIN_KEY"
-CONTEXT_STILL_DB_BACKEND=sqlite \
-CONTEXT_STILL_ADMIN_API_KEY="$CONTEXT_STILL_DEV_ADMIN_KEY" \
-bun run dev
+CONTEXT_STILL_DB_BACKEND=sqlite bun run dev
 ```
+
+Set `CONTEXT_STILL_ADMIN_API_KEY` to a custom value of at least 32 characters when the built-in
+local credential is inappropriate. With a custom value, the admin UI displays the login form and
+exchanges the entered key for a session.
 
 Serve the admin UI and API from the same external origin so the strict session cookie remains
 first-party. Direct same-origin development does not need `CONTEXT_STILL_ALLOWED_ORIGINS`. When a
-trusted reverse proxy terminates TLS, list the external UI origin so Origin validation can account
+trusted reverse proxy terminates TLS, override the built-in admin key and list the external UI
+origin so Origin validation can account
 for the internal HTTP hop. Exact origins may also be listed for trusted header-authenticated browser
-clients; wildcards are not supported. The admin UI exchanges the displayed key for a 15-minute
+clients; wildcards are not supported. The admin UI exchanges the built-in or entered key for a 15-minute
 `HttpOnly`, `SameSite=Strict` session. API keys in URL parameters and browser `localStorage` are
 ignored and removed.
 

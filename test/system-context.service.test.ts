@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
 import { verifyPromptMessageHash, verifyRenderedHash } from "s11tnext";
+import { describe, expect, it } from "vitest";
 
 import {
+  combinePromptMessages,
   listPrompts,
-  renderPrompt,
   promptMessage,
+  renderPrompt,
 } from "../src/modules/system-context/system-context.service.js";
 
 describe("system-context.service", () => {
@@ -130,5 +131,25 @@ describe("system-context.service", () => {
         role: "user",
       } as never),
     ).toThrow("message hash mismatch");
+  });
+
+  it("combines verified prompt messages without constructing a new role", () => {
+    const first = promptMessage(renderPrompt("findCandidate.vibeMemory", {}));
+    const second = promptMessage(renderPrompt("findCandidate.extract", {}));
+
+    const combined = combinePromptMessages([first, second]);
+
+    expect(combined.role).toBe("system");
+    expect(combined.content).toBe(`${first.content}\n\n${second.content}`);
+    expect(Object.isFrozen(combined)).toBe(true);
+  });
+
+  it("rejects combining prompt messages with different roles", () => {
+    expect(() =>
+      combinePromptMessages([
+        { role: "system", content: "System" },
+        { role: "user", content: "User" },
+      ]),
+    ).toThrow("Prompt messages must have the same role to be combined");
   });
 });

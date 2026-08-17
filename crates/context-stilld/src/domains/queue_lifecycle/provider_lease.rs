@@ -11,6 +11,8 @@ use super::types::{
     ProviderQueueClaimSpec, RunnableProviderCandidate,
 };
 
+const PROVIDER_UNAVAILABLE_TARGET_COOLDOWN_SECONDS: u64 = 60;
+
 pub fn claim_next_job_with_provider_lease_for_connection(
     connection: &mut Connection,
     pool: &ProviderPoolClaimConfig,
@@ -63,12 +65,15 @@ pub fn claim_next_job_with_provider_lease_for_connection(
     }
 
     let active_targets = active_provider_targets(&tx)?;
+    let cooling_targets =
+        cooling_provider_targets(&tx, PROVIDER_UNAVAILABLE_TARGET_COOLDOWN_SECONDS)?;
     let free_targets = pool
         .targets
         .iter()
-        .filter(|target| !active_targets.contains(*target))
+        .filter(|target| !active_targets.contains(*target) && !cooling_targets.contains(*target))
         .cloned()
         .collect::<Vec<_>>();
+    let free_targets = least_recently_used_targets(&tx, free_targets)?;
     if free_targets.is_empty() {
         tx.commit().map_err(|error| {
             CliError::io(format!("failed to commit provider lease claim: {error}"))
@@ -292,6 +297,62 @@ fn active_provider_targets(tx: &Transaction<'_>) -> Result<BTreeSet<String>, Cli
         .map_err(|error| CliError::io(format!("failed to read active provider targets: {error}")))
 }
 
+pub(super) fn cooling_provider_targets(
+    tx: &Transaction<'_>,
+    cooldown_seconds: u64,
+) -> Result<BTreeSet<String>, CliError> {
+    let mut statement = tx
+        .prepare(
+            "
+            select distinct failed.target_id
+            from llm_provider_leases failed
+            where failed.status = 'released'
+              and failed.release_reason = 'provider_unavailable_retry'
+              and coalesce(failed.released_at, failed.updated_at) >= datetime(CURRENT_TIMESTAMP, '-' || ?1 || ' seconds')
+              and not exists (
+                select 1
+                from llm_provider_leases recovered
+                where recovered.target_id = failed.target_id
+                  and recovered.status = 'released'
+                  and recovered.release_reason = 'worker_finished'
+                  and recovered.rowid > failed.rowid
+              )
+            ",
+        )
+        .map_err(|error| {
+            CliError::io(format!("failed to prepare provider cooldown query: {error}"))
+        })?;
+    let rows = statement
+        .query_map([cooldown_seconds as i64], |row| row.get::<_, String>(0))
+        .map_err(|error| CliError::io(format!("failed to query provider cooldowns: {error}")))?;
+    rows.collect::<Result<BTreeSet<_>, _>>()
+        .map_err(|error| CliError::io(format!("failed to read provider cooldowns: {error}")))
+}
+
+fn least_recently_used_targets(
+    tx: &Transaction<'_>,
+    targets: Vec<String>,
+) -> Result<Vec<String>, CliError> {
+    let mut ranked = Vec::with_capacity(targets.len());
+    for (configured_order, target) in targets.into_iter().enumerate() {
+        let last_lease_rowid = tx
+            .query_row(
+                "select max(rowid) from llm_provider_leases where target_id = ?1",
+                [&target],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(|error| {
+                CliError::io(format!("failed to rank provider target {target}: {error}"))
+            })?
+            .unwrap_or(0);
+        ranked.push((last_lease_rowid, configured_order, target));
+    }
+    ranked.sort_by_key(|(last_lease_rowid, configured_order, _)| {
+        (*last_lease_rowid, *configured_order)
+    });
+    Ok(ranked.into_iter().map(|(_, _, target)| target).collect())
+}
+
 fn runnable_provider_candidates(
     tx: &Transaction<'_>,
     queue_spec: &ProviderQueueClaimSpec,
@@ -301,32 +362,56 @@ fn runnable_provider_candidates(
     aging_seconds: i64,
 ) -> Result<Vec<RunnableProviderCandidate>, CliError> {
     let route_target_column = route_target_column_sql(queue_spec.route_target_column)?;
-    let sql = runnable_provider_sql(&queue_spec.queue_name, table_name, route_target_column);
+    let allowed_route_values = queue_spec
+        .allowed_route_values
+        .as_deref()
+        .unwrap_or_default();
+    if queue_spec.allowed_route_values.is_some() && allowed_route_values.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !allowed_route_values.is_empty() && route_target_column.is_none() {
+        return Err(CliError::invalid_arguments(format!(
+            "queue {} restricts route values without a route target column",
+            queue_spec.queue_name
+        )));
+    }
+    let sql = runnable_provider_sql(
+        &queue_spec.queue_name,
+        table_name,
+        route_target_column,
+        allowed_route_values.len(),
+    );
     let mut statement = tx.prepare(&sql).map_err(|error| {
         CliError::io(format!(
             "failed to prepare runnable provider query: {error}"
         ))
     })?;
     let rows = statement
-        .query_map([], |row| {
-            let id = row.get::<_, String>(0)?;
-            let priority = row.get::<_, i64>(1)?;
-            let created_at = row.get::<_, String>(2)?;
-            let created_at_unix_seconds = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
-            let route_key = row.get::<_, Option<String>>(4)?;
-            let waiting_seconds = (now_unix_seconds - created_at_unix_seconds).max(0);
-            let effective_priority = -(waiting_seconds / aging_seconds);
-            Ok(RunnableProviderCandidate {
-                queue_name: queue_spec.queue_name.clone(),
-                table_name,
-                id,
-                queue_order,
-                effective_priority,
-                priority,
-                created_at,
-                preferred_target_ids: preferred_targets_for_route(queue_spec, route_key.as_deref()),
-            })
-        })
+        .query_map(
+            rusqlite::params_from_iter(allowed_route_values.iter()),
+            |row| {
+                let id = row.get::<_, String>(0)?;
+                let priority = row.get::<_, i64>(1)?;
+                let created_at = row.get::<_, String>(2)?;
+                let created_at_unix_seconds = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
+                let route_key = row.get::<_, Option<String>>(4)?;
+                let waiting_seconds = (now_unix_seconds - created_at_unix_seconds).max(0);
+                let effective_priority = -(waiting_seconds / aging_seconds);
+                Ok(RunnableProviderCandidate {
+                    queue_name: queue_spec.queue_name.clone(),
+                    table_name,
+                    id,
+                    queue_order,
+                    effective_priority,
+                    priority,
+                    created_at,
+                    preferred_target_ids: preferred_targets_for_route(
+                        queue_spec,
+                        route_key.as_deref(),
+                    ),
+                })
+            },
+        )
         .map_err(|error| {
             CliError::io(format!("failed to query runnable provider jobs: {error}"))
         })?;
@@ -349,6 +434,7 @@ fn runnable_provider_sql(
     queue_name: &str,
     table_name: &str,
     route_target_column: Option<&str>,
+    allowed_route_value_count: usize,
 ) -> String {
     let next_run_condition = if queue_name == "finalizeDistille" {
         ""
@@ -358,6 +444,16 @@ fn runnable_provider_sql(
     let route_projection = route_target_column
         .map(|column| format!("{column} as route_key"))
         .unwrap_or_else(|| "null as route_key".to_string());
+    let allowed_route_condition = route_target_column
+        .filter(|_| allowed_route_value_count > 0)
+        .map(|column| {
+            let placeholders = (1..=allowed_route_value_count)
+                .map(|index| format!("?{index}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("and {column} in ({placeholders})")
+        })
+        .unwrap_or_default();
     format!(
         "
         select
@@ -369,6 +465,7 @@ fn runnable_provider_sql(
         from {table_name}
         where status in ('pending', 'paused')
           {next_run_condition}
+          {allowed_route_condition}
         order by priority desc, created_at asc, id asc
         limit 20
         "

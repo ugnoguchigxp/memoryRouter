@@ -3,6 +3,7 @@ mod common;
 mod episode_executor;
 mod events;
 mod executor;
+mod finding_executor;
 mod inspect;
 mod maintenance;
 mod provider_lease;

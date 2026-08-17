@@ -1,13 +1,12 @@
 use std::{
     collections::BTreeSet,
-    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
-use crate::domains::{bootstrap::service::resolve_paths, daemon::repository};
+use crate::domains::runtime_identity;
 use crate::shared::{
     config::EnvProvider,
     errors::CliError,
@@ -25,8 +24,7 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
     supervisor: &S,
 ) -> Result<QueueInspectReport, CliError> {
     let lifecycle = status_report(env, supervisor)?;
-    let paths = resolve_paths(env);
-    let sqlite_path = effective_sqlite_core_path(env, supervisor, &paths);
+    let sqlite_path = runtime_identity::resolve(env, supervisor).effective_path;
     let sqlite_core_path = process::path_to_string(&sqlite_path);
     if !sqlite_path.exists() {
         return Ok(QueueInspectReport {
@@ -131,29 +129,6 @@ fn env_bool<E: EnvProvider>(env: &E, name: &str) -> Option<bool> {
         "0" | "false" | "no" | "off" | "" => Some(false),
         _ => None,
     }
-}
-
-fn effective_sqlite_core_path<E: EnvProvider, S: ProcessSupervisor>(
-    env: &E,
-    supervisor: &S,
-    paths: &crate::domains::bootstrap::service::PathReport,
-) -> PathBuf {
-    if env.var("CONTEXT_STILL_SQLITE_CORE_PATH").is_some() {
-        return paths.sqlite_core_path.clone();
-    }
-    let Ok(Some(state)) = repository::read_state(&paths.run_dir, "context-stilld") else {
-        return paths.sqlite_core_path.clone();
-    };
-    let Some(pid) = state.pid else {
-        return paths.sqlite_core_path.clone();
-    };
-    if !supervisor.is_alive(pid) {
-        return paths.sqlite_core_path.clone();
-    }
-    state
-        .sqlite_core_path
-        .map(PathBuf::from)
-        .unwrap_or_else(|| paths.sqlite_core_path.clone())
 }
 
 fn inspect_queue_tables(connection: &Connection) -> Result<Vec<QueueTableInspect>, CliError> {

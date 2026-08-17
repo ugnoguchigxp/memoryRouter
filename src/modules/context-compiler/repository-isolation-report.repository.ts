@@ -24,6 +24,7 @@ import {
   type RepositoryIsolationSchemaCapabilities,
   buildRepositoryIsolationReport,
 } from "./repository-isolation-report.js";
+import { maxEpochMillis, normalizeDate } from "./context-compiler.repository.utils.js";
 import type {
   RepositoryEntityKind,
   RepositoryFacets,
@@ -125,20 +126,7 @@ function normalizeCandidate(raw: RawCandidate): RepositoryScopeCandidate {
 }
 
 function dateFromUnknown(value: unknown): Date {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
-  if (typeof value === "string" && value.startsWith("unix-ms:")) {
-    const milliseconds = Number(value.slice("unix-ms:".length));
-    if (Number.isFinite(milliseconds)) return new Date(milliseconds);
-  }
-  const normalized =
-    typeof value === "string" &&
-    /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value.trim())
-      ? `${value.trim().replace(" ", "T")}Z`
-      : value;
-  const parsed = new Date(
-    typeof normalized === "string" || typeof normalized === "number" ? normalized : 0,
-  );
-  return Number.isNaN(parsed.getTime()) ? new Date(0) : parsed;
+  return normalizeDate(value);
 }
 
 function runMatchBasis(value: unknown): RepositoryIsolationRunObservation["matchBasis"] {
@@ -241,8 +229,29 @@ function sqliteColumn(columns: Set<string>, name: string, fallback: string): str
 
 function sqliteTimestampMillis(column: string): string {
   return `case
-    when ${column} like 'unix-ms:%' then cast(substr(${column}, 9) as integer)
-    else cast(round((julianday(${column}) - 2440587.5) * 86400000) as integer)
+    when ${column} like 'unix-ms:%'
+      and length(substr(${column}, 9)) between 1 and 16
+      and substr(${column}, 9) not glob '*[^0-9]*'
+      and cast(substr(${column}, 9) as integer) between 0 and ${maxEpochMillis}
+      then cast(substr(${column}, 9) as integer)
+    when typeof(${column}) = 'text'
+      and length(${column}) >= 19
+      and substr(${column}, 1, 4) not glob '*[^0-9]*'
+      and substr(${column}, 5, 1) = '-'
+      and substr(${column}, 6, 2) not glob '*[^0-9]*'
+      and substr(${column}, 8, 1) = '-'
+      and substr(${column}, 9, 2) not glob '*[^0-9]*'
+      and substr(${column}, 11, 1) in (' ', 'T')
+      and substr(${column}, 12, 2) not glob '*[^0-9]*'
+      and substr(${column}, 14, 1) = ':'
+      and substr(${column}, 15, 2) not glob '*[^0-9]*'
+      and substr(${column}, 17, 1) = ':'
+      and substr(${column}, 18, 2) not glob '*[^0-9]*'
+      and julianday(${column}) is not null
+      and cast(round((julianday(${column}) - 2440587.5) * 86400000.0) as integer)
+        between 0 and ${maxEpochMillis}
+      then cast(round((julianday(${column}) - 2440587.5) * 86400000.0) as integer)
+    else null
   end`;
 }
 

@@ -46,6 +46,9 @@ describe("AppShell", () => {
       authenticated: false,
       configurationError: null,
     });
+    sessionMocks.createAdminSession
+      .mockRejectedValueOnce(new Error("unauthorized"))
+      .mockResolvedValueOnce(undefined);
     render(<AppShell />);
 
     const input = await screen.findByLabelText("Admin API key");
@@ -55,6 +58,32 @@ describe("AppShell", () => {
 
     expect(await screen.findByText("outlet-content")).toBeInTheDocument();
     expect(sessionMocks.createAdminSession).toHaveBeenCalledWith(apiKey);
+  });
+
+  it("automatically creates a session with the local default key", async () => {
+    sessionMocks.fetchAdminSessionStatus.mockResolvedValue({
+      configured: true,
+      authenticated: false,
+      configurationError: null,
+    });
+    render(<AppShell />);
+
+    expect(await screen.findByText("outlet-content")).toBeInTheDocument();
+    expect(sessionMocks.createAdminSession).toHaveBeenCalledWith(
+      "context-still-local-admin-api-key-2026",
+    );
+  });
+
+  it("shows the login form when the configured environment key overrides the default", async () => {
+    sessionMocks.fetchAdminSessionStatus.mockResolvedValue({
+      configured: true,
+      authenticated: false,
+      configurationError: null,
+    });
+    sessionMocks.createAdminSession.mockRejectedValue(new Error("unauthorized"));
+    render(<AppShell />);
+
+    expect(await screen.findByLabelText("Admin API key")).toBeInTheDocument();
   });
 
   it("returns to login when an API request reports an expired session", async () => {

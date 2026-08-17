@@ -1,16 +1,22 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::env;
+use std::fs::{self, OpenOptions};
 use std::hash::{Hash, Hasher};
+use std::io::Write;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use reqwest::blocking::Client;
 use rusqlite::Connection;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::domains::context_compile::runtime::CompileFoundationMode;
 
 use super::native_common::{
-    now_iso, pseudo_uuid, request_session_id, score_text, single_line, string_arg, table_exists,
-    tool_error, with_writer,
+    now_iso, open_database, pseudo_uuid, request_session_id, score_text, single_line, string_arg,
+    table_exists, tool_error, with_writer,
 };
 use super::native_tools::NativeToolContext;
 use super::project_identity::{
@@ -20,6 +26,8 @@ use super::repository_scope::{
     applicability_general, eligible_scope_clause, facets_allow, json_string_array,
     parse_json_object, query_params, scope_snapshot, RepositoryRequestFacets,
 };
+
+static FOUNDATION_TELEMETRY_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 fn optional_identity_string_arg(
     args: &serde_json::Map<String, Value>,
@@ -75,6 +83,13 @@ fn optional_string_array_arg(
 }
 
 pub(crate) fn context_compile(params: &Value, context: &NativeToolContext) -> Value {
+    match context.compile_runtime.mode {
+        CompileFoundationMode::Legacy => context_compile_legacy(params, context),
+        mode => context_compile_split(params, context, mode),
+    }
+}
+
+fn context_compile_legacy(params: &Value, context: &NativeToolContext) -> Value {
     let owned_params = params.clone();
     let owned_context = context.clone();
     match with_writer(context, "mcp.context_compile", move |connection| {
@@ -156,6 +171,7 @@ fn context_compile_on_connection(
         8,
         &project_identity,
         &request_facets,
+        false,
     );
     let episodes = search_episode_cards(
         connection,
@@ -163,6 +179,7 @@ fn context_compile_on_connection(
         3,
         &project_identity,
         &request_facets,
+        false,
     );
     let run_id = pseudo_uuid();
     let mut degraded_reasons = degraded_reasons(connection);
@@ -282,7 +299,461 @@ fn context_compile_on_connection(
     json!({"content":[{"type":"text","text":markdown}]})
 }
 
-#[derive(Debug)]
+struct SplitPrepared {
+    started: Instant,
+    retrieval_duration: Duration,
+    compose_duration: Duration,
+    goal: String,
+    session_id: Option<String>,
+    technologies: Vec<String>,
+    change_types: Vec<String>,
+    domains: Vec<String>,
+    project_identity: super::project_identity::ResolvedCompileProjectIdentity,
+    knowledge: Vec<PackKnowledge>,
+    episodes: Vec<PackEpisode>,
+    legacy_knowledge: Vec<PackKnowledge>,
+    legacy_episodes: Vec<PackEpisode>,
+    candidate_knowledge: Vec<PackKnowledge>,
+    candidate_episodes: Vec<PackEpisode>,
+    foundation_knowledge: Vec<PackKnowledge>,
+    foundation_episodes: Vec<PackEpisode>,
+    settings: Option<RuntimeSettings>,
+    degraded_reasons: Vec<String>,
+}
+
+fn context_compile_split(
+    params: &Value,
+    context: &NativeToolContext,
+    mode: CompileFoundationMode,
+) -> Value {
+    let mut prepared = match prepare_split_compile(params, context) {
+        Ok(prepared) => prepared,
+        Err(error) => return tool_error(&error),
+    };
+    if matches!(
+        mode,
+        CompileFoundationMode::SplitShadowRank | CompileFoundationMode::Foundation
+    ) {
+        apply_foundation_ranking(&mut prepared);
+    }
+    if mode == CompileFoundationMode::Foundation {
+        prepared.knowledge = prepared.foundation_knowledge.clone();
+        prepared.episodes = prepared.foundation_episodes.clone();
+    }
+    let compose_started = Instant::now();
+    let composed = compose_context_response_with_settings(
+        prepared.settings.clone(),
+        &prepared.goal,
+        &prepared.knowledge,
+        &prepared.episodes,
+    );
+    prepared.compose_duration = compose_started.elapsed();
+    persist_split_compile(prepared, composed, context, mode)
+}
+
+fn apply_foundation_ranking(prepared: &mut SplitPrepared) {
+    let mut knowledge = prepared
+        .candidate_knowledge
+        .iter()
+        .filter(|item| item.query_score > 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    knowledge.sort_by(|left, right| {
+        right
+            .query_score
+            .cmp(&left.query_score)
+            .then_with(|| {
+                normalized_ranking_score(right.dynamic_score, 0.0, 100.0)
+                    .cmp(&normalized_ranking_score(left.dynamic_score, 0.0, 100.0))
+            })
+            .then_with(|| {
+                normalized_ranking_score(right.importance, 0.0, 100.0)
+                    .cmp(&normalized_ranking_score(left.importance, 0.0, 100.0))
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    for item in &mut knowledge {
+        item.score = foundation_score(item.query_score, item.dynamic_score, item.importance);
+    }
+    knowledge.truncate(8);
+    let mut episodes = prepared
+        .candidate_episodes
+        .iter()
+        .filter(|item| item.query_score > 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    episodes.sort_by(|left, right| {
+        right
+            .query_score
+            .cmp(&left.query_score)
+            .then_with(|| {
+                normalized_ranking_score(right.importance, 0.0, 100.0)
+                    .cmp(&normalized_ranking_score(left.importance, 0.0, 100.0))
+            })
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    for item in &mut episodes {
+        item.score = foundation_score(item.query_score, 0.0, item.importance);
+    }
+    episodes.truncate(3);
+    prepared.foundation_knowledge = knowledge;
+    prepared.foundation_episodes = episodes;
+}
+
+fn prepare_split_compile(
+    params: &Value,
+    context: &NativeToolContext,
+) -> Result<SplitPrepared, String> {
+    let started = Instant::now();
+    let args = params
+        .get("arguments")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "context_compile arguments must be an object".to_string())?;
+    validate_compile_argument_keys(args)?;
+    let goal = string_arg(args, "goal").ok_or_else(|| "goal is required".to_string())?;
+    let session_id = request_session_id(params, args);
+    let technologies = optional_string_array_arg(args, "technologies")?;
+    let change_types = optional_string_array_arg(args, "changeTypes")?;
+    let domains = optional_string_array_arg(args, "domains")?;
+    let identity_input = CompileProjectIdentityInput {
+        project_ref: optional_identity_string_arg(args, "projectRef")?,
+        repo_key: optional_identity_string_arg(args, "repoKey")?,
+        repo_path: optional_identity_string_arg(args, "repoPath")?,
+    };
+    let project_identity = resolve_compile_project_identity(
+        &identity_input,
+        CompileProjectIdentityTrust::RequestHint,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    let search_text = search_text(&goal, &technologies, &change_types, &domains);
+    let request_facets = RepositoryRequestFacets {
+        technologies: technologies.clone(),
+        change_types: change_types.clone(),
+        domains: domains.clone(),
+    };
+    let retrieval_started = Instant::now();
+    let (candidate_knowledge, candidate_episodes, settings, degraded_reasons) = {
+        let connection = open_database(context)?;
+        if !table_exists(&connection, "context_compile_runs") {
+            return Err("context_compile_runs table is not available".to_string());
+        }
+        let knowledge = search_knowledge_items(
+            &connection,
+            &search_text,
+            256,
+            &project_identity,
+            &request_facets,
+            true,
+        );
+        let episodes = search_episode_cards(
+            &connection,
+            &search_text,
+            96,
+            &project_identity,
+            &request_facets,
+            true,
+        );
+        let settings = load_runtime_settings(&connection);
+        let degraded_reasons = degraded_reasons(&connection);
+        (knowledge, episodes, settings, degraded_reasons)
+    };
+    let mut knowledge = candidate_knowledge.clone();
+    knowledge.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    knowledge.truncate(8);
+    let mut episodes = candidate_episodes.clone();
+    episodes.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    episodes.truncate(3);
+    Ok(SplitPrepared {
+        started,
+        retrieval_duration: retrieval_started.elapsed(),
+        compose_duration: Duration::ZERO,
+        goal,
+        session_id,
+        technologies,
+        change_types,
+        domains,
+        project_identity,
+        legacy_knowledge: knowledge.clone(),
+        legacy_episodes: episodes.clone(),
+        knowledge,
+        episodes,
+        candidate_knowledge,
+        candidate_episodes,
+        foundation_knowledge: Vec::new(),
+        foundation_episodes: Vec::new(),
+        settings,
+        degraded_reasons,
+    })
+}
+
+fn persist_split_compile(
+    mut prepared: SplitPrepared,
+    composed: ComposeResult,
+    context: &NativeToolContext,
+    mode: CompileFoundationMode,
+) -> Value {
+    if let Some(reason) = composed.error.as_ref() {
+        prepared.degraded_reasons.push(reason.clone());
+    }
+    let status = if prepared.degraded_reasons.is_empty() {
+        "ok"
+    } else {
+        "degraded"
+    };
+    let run_id = pseudo_uuid();
+    let markdown = composed.markdown.clone();
+    let used_knowledge = composed
+        .used_knowledge
+        .iter()
+        .map(UsedKnowledge::to_json)
+        .collect::<Vec<_>>();
+    let used_episodes = composed
+        .used_episodes
+        .iter()
+        .map(UsedEpisode::to_json)
+        .collect::<Vec<_>>();
+    let foundation_diagnostics = json!({
+        "contractVersion": 1,
+        "snapshotComplete": false,
+        "writerTelemetryExpected": true,
+        "pipelineVersion": "foundation-v1",
+        "pipelineMode": mode.as_str(),
+        "runtime": {
+            "engine": "rust-native",
+            "version": crate::VERSION,
+            "buildId": context.compile_runtime.runtime_build_id,
+            "databaseIdentitySource": context.compile_runtime.database_identity_source,
+            "databaseIdentityFingerprint": context.compile_runtime.database_identity_fingerprint
+        },
+        "timingsUs": {
+            "prepare": prepared.retrieval_duration.as_micros().min(u64::MAX as u128) as u64,
+            "retrieval": prepared.retrieval_duration.as_micros().min(u64::MAX as u128) as u64,
+            "compose": prepared.compose_duration.as_micros().min(u64::MAX as u128) as u64
+        },
+        "llm": {
+            "logicalCalls": if composed.agentic_used { 2 } else { 0 },
+            "providerAttempts": if composed.agentic_used { 2 } else { 0 },
+            "failovers": 0,
+            "attempts": []
+        },
+        "candidates": {
+            "eligibleKnowledge": prepared.candidate_knowledge.len(),
+            "queryMatchedKnowledge": if matches!(mode, CompileFoundationMode::SplitShadowRank | CompileFoundationMode::Foundation) { prepared.foundation_knowledge.len() } else { prepared.knowledge.len() },
+            "deliveredKnowledge": prepared.knowledge.len(),
+            "eligibleEpisodes": prepared.candidate_episodes.len(),
+            "queryMatchedEpisodes": if matches!(mode, CompileFoundationMode::SplitShadowRank | CompileFoundationMode::Foundation) { prepared.foundation_episodes.len() } else { prepared.episodes.len() },
+            "deliveredEpisodes": prepared.episodes.len()
+        },
+        "persistence": {
+            "knowledgeCounterExpected": prepared.knowledge.len(),
+            "knowledgeCounterUpdated": 0,
+            "missingKnowledgeIds": [],
+            "episodeCounterExpected": prepared.episodes.len(),
+            "episodeCounterUpdated": 0,
+            "missingEpisodeIds": []
+        },
+        "compositionRoute": "current_two_call",
+        "rankingPolicy": if mode == CompileFoundationMode::Foundation { "foundation-v1" } else if mode == CompileFoundationMode::SplitShadowRank { "legacy_with_foundation_shadow" } else { "legacy" }
+    });
+    let mut pack = json!({
+        "runId": run_id,
+        "goal": prepared.goal,
+        "rules": prepared.knowledge.iter().filter(|item| item.kind == "rule").map(PackKnowledge::to_json).collect::<Vec<_>>(),
+        "procedures": prepared.knowledge.iter().filter(|item| item.kind == "procedure").map(PackKnowledge::to_json).collect::<Vec<_>>(),
+        "episodes": prepared.episodes.iter().map(PackEpisode::to_json).collect::<Vec<_>>(),
+        "diagnostics": {
+            "engine": "rust-native",
+            "degradedReasons": prepared.degraded_reasons,
+            "selectedKnowledge": prepared.knowledge.len(),
+            "selectedEpisodes": prepared.episodes.len(),
+            "foundation": foundation_diagnostics,
+            "repositoryIsolation": {
+                "mode": "enforced",
+                "matchBasis": prepared.project_identity.match_basis.as_str(),
+                "scopeMode": prepared.project_identity.scope_mode,
+                "identityFingerprint": prepared.project_identity.identity_fingerprint,
+                "missingIdentityGlobalOnly": prepared.project_identity.match_basis.as_str() == "none"
+            },
+            "responseComposer": {
+                "used": composed.agentic_used,
+                "markdownKind": if markdown == "No Content" { "no-content" } else { "narrative" },
+                "error": composed.error,
+                "usedKnowledge": used_knowledge,
+                "usedEpisodes": used_episodes
+            }
+        },
+        "outputMarkdown": markdown
+    });
+    let input = json!({
+        "goal": prepared.goal,
+        "technologies": prepared.technologies,
+        "changeTypes": prepared.change_types,
+        "domains": prepared.domains,
+        "projectRef": prepared.project_identity.project_ref,
+        "repoKey": prepared.project_identity.repo_key,
+        "repoPath": prepared.project_identity.repo_path,
+        "projectIdentity": prepared.project_identity
+    });
+    let started = prepared.started;
+    let run_id_for_write = run_id.clone();
+    let result = crate::domains::sqlite_writer::execute_for_path_observed(
+        &context.sqlite_core_path,
+        "mcp.context_compile.persist",
+        move |connection| {
+            let transaction = connection
+                .transaction()
+                .map_err(|error| format!("failed to start compile transaction: {error}"))?;
+            insert_compile_run(CompileRunInsert {
+                connection: &transaction,
+                run_id: &run_id_for_write,
+                goal: &prepared.goal,
+                session_id: prepared.session_id.as_deref(),
+                project_ref: prepared.project_identity.project_ref.as_deref(),
+                repo_path: prepared.project_identity.repo_path.as_deref(),
+                repo_key: prepared.project_identity.repo_key.as_deref(),
+                match_basis: prepared.project_identity.match_basis.as_str(),
+                identity_contract_version: prepared.project_identity.contract_version,
+                scope_mode: prepared.project_identity.scope_mode,
+                identity_fingerprint: prepared.project_identity.identity_fingerprint.as_deref(),
+                identity_trust: prepared.project_identity.trust.as_str(),
+                binding_status: prepared.project_identity.binding_status.as_str(),
+                input: &input,
+                status,
+                pack: &pack,
+                duration_ms: started.elapsed().as_millis(),
+            })?;
+            insert_compile_items(
+                &transaction,
+                &run_id_for_write,
+                &prepared.knowledge,
+                &prepared.episodes,
+            )?;
+            if matches!(
+                mode,
+                CompileFoundationMode::SplitShadowRank | CompileFoundationMode::Foundation
+            ) {
+                insert_foundation_candidate_traces(
+                    &transaction,
+                    &run_id_for_write,
+                    &prepared.legacy_knowledge,
+                    &prepared.foundation_knowledge,
+                    &prepared.knowledge,
+                )?;
+                insert_foundation_episode_candidate_traces(
+                    &transaction,
+                    &run_id_for_write,
+                    &prepared.legacy_episodes,
+                    &prepared.foundation_episodes,
+                    &prepared.episodes,
+                )?;
+            } else {
+                insert_candidate_traces(&transaction, &run_id_for_write, &prepared.knowledge)?;
+            }
+            insert_knowledge_usage_events(
+                &transaction,
+                &run_id_for_write,
+                &prepared.knowledge,
+                &composed.used_knowledge,
+                composed.agentic_used,
+            )?;
+            insert_episode_retrieval_feedback(
+                &transaction,
+                &run_id_for_write,
+                &prepared.episodes,
+                &composed.used_episodes,
+                composed.agentic_used,
+            )?;
+            let counter_update =
+                increment_compile_counters(&transaction, &prepared.knowledge, &prepared.episodes)?;
+            if let Some(persistence) = pack
+                .pointer_mut("/diagnostics/foundation/persistence")
+                .and_then(Value::as_object_mut)
+            {
+                persistence.insert(
+                    "knowledgeCounterUpdated".to_string(),
+                    json!(counter_update.knowledge_updated),
+                );
+                persistence.insert(
+                    "missingKnowledgeIds".to_string(),
+                    json!(counter_update.missing_knowledge_ids),
+                );
+                persistence.insert(
+                    "episodeCounterUpdated".to_string(),
+                    json!(counter_update.episode_updated),
+                );
+                persistence.insert(
+                    "missingEpisodeIds".to_string(),
+                    json!(counter_update.missing_episode_ids),
+                );
+            }
+            if let Some(foundation) = pack.pointer_mut("/diagnostics/foundation") {
+                foundation["snapshotComplete"] = Value::Bool(true);
+            }
+            transaction
+                .execute(
+                    "update context_compile_runs set pack_snapshot = ?1 where id = ?2",
+                    (pack.to_string(), &run_id_for_write),
+                )
+                .map_err(|error| format!("failed to finalize compile pack snapshot: {error}"))?;
+            transaction
+                .commit()
+                .map_err(|error| format!("failed to commit compile transaction: {error}"))?;
+            Ok(())
+        },
+    );
+    match result {
+        Ok(execution) => {
+            append_foundation_telemetry(
+                context,
+                FoundationTelemetryInput {
+                    run_id: &run_id,
+                    mode,
+                    queue_wait: execution.queue_wait,
+                    work_duration: execution.work_duration,
+                    total_duration: execution.total_duration,
+                    error: execution.result.as_ref().err().map(String::as_str),
+                    pre_ledger_total: started.elapsed(),
+                },
+            );
+            if let Err(error) = execution.result {
+                return tool_error(&error);
+            }
+        }
+        Err(error) => {
+            append_foundation_telemetry(
+                context,
+                FoundationTelemetryInput {
+                    run_id: &run_id,
+                    mode,
+                    queue_wait: Duration::ZERO,
+                    work_duration: Duration::ZERO,
+                    total_duration: Duration::ZERO,
+                    error: Some(error.as_str()),
+                    pre_ledger_total: started.elapsed(),
+                },
+            );
+            return tool_error(&error);
+        }
+    }
+    if markdown == "No Content" {
+        json!({"content":[{"type":"text","text":"No Content"}]})
+    } else {
+        json!({"content":[{"type":"text","text":markdown}]})
+    }
+}
+
+#[derive(Debug, Clone)]
 struct PackKnowledge {
     id: String,
     kind: String,
@@ -290,6 +761,9 @@ struct PackKnowledge {
     body: String,
     polarity: String,
     score: i64,
+    query_score: i64,
+    dynamic_score: f64,
+    importance: f64,
     source_refs: Vec<String>,
     scope_snapshot: Value,
 }
@@ -309,13 +783,15 @@ impl PackKnowledge {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PackEpisode {
     id: String,
     title: String,
     situation: String,
     lesson: String,
     score: i64,
+    query_score: i64,
+    importance: f64,
     scope_snapshot: Value,
 }
 
@@ -349,6 +825,7 @@ fn search_knowledge_items(
     limit: usize,
     identity: &super::project_identity::ResolvedCompileProjectIdentity,
     request_facets: &RepositoryRequestFacets,
+    include_query_matches: bool,
 ) -> Vec<PackKnowledge> {
     if !table_exists(connection, "knowledge_items") {
         return Vec::new();
@@ -357,7 +834,7 @@ fn search_knowledge_items(
     let sql = format!(
         r#"
         select id, type, polarity, title, body, coalesce(dynamic_score, 0), applies_to,
-               scope, project_ref, repo_key, repo_path
+               scope, project_ref, repo_key, repo_path, coalesce(importance, 0)
         from knowledge_items
         where status = 'active' and {scope_clause}
         order by importance desc, updated_at desc
@@ -380,6 +857,7 @@ fn search_knowledge_items(
             row.get::<_, Option<String>>(8)?,
             row.get::<_, Option<String>>(9)?,
             row.get::<_, Option<String>>(10)?,
+            row.get::<_, f64>(11)?,
         ))
     }) {
         Ok(rows) => rows,
@@ -400,6 +878,7 @@ fn search_knowledge_items(
                 project_ref,
                 repo_key,
                 repo_path,
+                importance,
             )| {
                 let applies_to = parse_json_object(&applies_to_raw);
                 let technologies = json_string_array(&applies_to, "technologies");
@@ -414,9 +893,9 @@ fn search_knowledge_items(
                 ) {
                     return None;
                 }
-                let score =
-                    score_text(&format!("{title}\n{body}"), query) + dynamic_score.round() as i64;
-                (score > 0).then(|| PackKnowledge {
+                let query_score = score_text(&format!("{title}\n{body}"), query);
+                let score = query_score + dynamic_score.round() as i64;
+                (score > 0 || (include_query_matches && query_score > 0)).then(|| PackKnowledge {
                     source_refs: knowledge_source_refs(connection, &id),
                     scope_snapshot: scope_snapshot(
                         identity,
@@ -431,13 +910,43 @@ fn search_knowledge_items(
                     body,
                     polarity,
                     score,
+                    query_score,
+                    dynamic_score,
+                    importance,
                 })
             },
         )
         .collect::<Vec<_>>();
-    items.sort_by(|left, right| right.score.cmp(&left.score));
-    items.truncate(limit);
-    items
+    if !include_query_matches {
+        items.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        items.truncate(limit);
+        return items;
+    }
+    foundation_candidate_pool(
+        items,
+        limit,
+        8,
+        |item| item.query_score > 0,
+        |left, right| {
+            right
+                .query_score
+                .cmp(&left.query_score)
+                .then_with(|| {
+                    normalized_ranking_score(right.dynamic_score, 0.0, 100.0)
+                        .cmp(&normalized_ranking_score(left.dynamic_score, 0.0, 100.0))
+                })
+                .then_with(|| {
+                    normalized_ranking_score(right.importance, 0.0, 100.0)
+                        .cmp(&normalized_ranking_score(left.importance, 0.0, 100.0))
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        },
+    )
 }
 
 fn search_episode_cards(
@@ -446,6 +955,7 @@ fn search_episode_cards(
     limit: usize,
     identity: &super::project_identity::ResolvedCompileProjectIdentity,
     request_facets: &RepositoryRequestFacets,
+    include_query_matches: bool,
 ) -> Vec<PackEpisode> {
     if !table_exists(connection, "episode_cards") {
         return Vec::new();
@@ -517,14 +1027,16 @@ fn search_episode_cards(
                 ) {
                     return None;
                 }
-                let score =
-                    score_text(&format!("{title}\n{situation}\n{lesson}"), query) + importance / 10;
-                (score > 0).then_some(PackEpisode {
+                let query_score = score_text(&format!("{title}\n{situation}\n{lesson}"), query);
+                let score = query_score + importance / 10;
+                (score > 0 || (include_query_matches && query_score > 0)).then_some(PackEpisode {
                     id,
                     title,
                     situation,
                     lesson,
                     score,
+                    query_score,
+                    importance: importance as f64,
                     scope_snapshot: scope_snapshot(
                         identity,
                         &item_scope,
@@ -536,9 +1048,123 @@ fn search_episode_cards(
             },
         )
         .collect::<Vec<_>>();
-    items.sort_by(|left, right| right.score.cmp(&left.score));
-    items.truncate(limit);
-    items
+    if !include_query_matches {
+        items.sort_by(|left, right| {
+            right
+                .score
+                .cmp(&left.score)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        items.truncate(limit);
+        return items;
+    }
+    foundation_candidate_pool(
+        items,
+        limit,
+        3,
+        |item| item.query_score > 0,
+        |left, right| {
+            right
+                .query_score
+                .cmp(&left.query_score)
+                .then_with(|| {
+                    normalized_ranking_score(right.importance, 0.0, 100.0)
+                        .cmp(&normalized_ranking_score(left.importance, 0.0, 100.0))
+                })
+                .then_with(|| left.id.cmp(&right.id))
+        },
+    )
+}
+
+fn foundation_candidate_pool<T, QueryMatched, FoundationOrder>(
+    items: Vec<T>,
+    limit: usize,
+    legacy_budget: usize,
+    query_matched: QueryMatched,
+    foundation_order: FoundationOrder,
+) -> Vec<T>
+where
+    T: Clone + CandidateIdentity + LegacyScored,
+    QueryMatched: Fn(&T) -> bool,
+    FoundationOrder: Fn(&T, &T) -> std::cmp::Ordering,
+{
+    let mut legacy = items.iter().collect::<Vec<_>>();
+    legacy.sort_by(|left, right| legacy_candidate_order(*left, *right));
+    legacy.truncate(legacy_budget.min(limit));
+
+    let mut query_matched = items
+        .iter()
+        .filter(|item| query_matched(item))
+        .collect::<Vec<_>>();
+    query_matched.sort_by(|left, right| foundation_order(*left, *right));
+
+    let mut selected = Vec::with_capacity(limit);
+    let mut seen = HashSet::new();
+    for item in legacy.into_iter().chain(query_matched) {
+        if seen.insert(item.candidate_id().to_string()) {
+            selected.push((*item).clone());
+            if selected.len() == limit {
+                break;
+            }
+        }
+    }
+    selected
+}
+
+trait CandidateIdentity {
+    fn candidate_id(&self) -> &str;
+}
+
+trait LegacyScored {
+    fn legacy_score(&self) -> i64;
+}
+
+fn legacy_candidate_order<T: LegacyScored + CandidateIdentity>(
+    left: &T,
+    right: &T,
+) -> std::cmp::Ordering {
+    right
+        .legacy_score()
+        .cmp(&left.legacy_score())
+        .then_with(|| left.candidate_id().cmp(right.candidate_id()))
+}
+
+impl CandidateIdentity for PackKnowledge {
+    fn candidate_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl LegacyScored for PackKnowledge {
+    fn legacy_score(&self) -> i64 {
+        self.score
+    }
+}
+
+impl CandidateIdentity for PackEpisode {
+    fn candidate_id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl LegacyScored for PackEpisode {
+    fn legacy_score(&self) -> i64 {
+        self.score
+    }
+}
+
+fn normalized_ranking_score(value: f64, lower: f64, upper: f64) -> i64 {
+    if !value.is_finite() {
+        return 0;
+    }
+    value.clamp(lower, upper).round() as i64
+}
+
+fn foundation_score(query_score: i64, dynamic_score: f64, importance: f64) -> i64 {
+    query_score
+        .saturating_mul(10_000)
+        .saturating_add(normalized_ranking_score(dynamic_score, 0.0, 100.0).saturating_mul(100))
+        .saturating_add(normalized_ranking_score(importance, 0.0, 100.0))
 }
 
 #[derive(Debug)]
@@ -615,7 +1241,7 @@ impl Default for ComposePlan {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RuntimeSettings {
     agentic_enabled: bool,
     provider: String,
@@ -658,6 +1284,20 @@ fn compose_context_response(
     knowledge: &[PackKnowledge],
     episodes: &[PackEpisode],
 ) -> ComposeResult {
+    compose_context_response_with_settings(
+        load_runtime_settings(connection),
+        goal,
+        knowledge,
+        episodes,
+    )
+}
+
+fn compose_context_response_with_settings(
+    runtime_settings: Option<RuntimeSettings>,
+    goal: &str,
+    knowledge: &[PackKnowledge],
+    episodes: &[PackEpisode],
+) -> ComposeResult {
     if knowledge.is_empty() && episodes.is_empty() {
         return ComposeResult {
             markdown: "No Content".to_string(),
@@ -671,7 +1311,7 @@ fn compose_context_response(
         fallback_used_knowledge(knowledge, episodes, &ComposePlan::default());
     let fallback_used_episodes = fallback_used_episodes(episodes);
     let fallback = build_fallback_compose(goal, knowledge, episodes, &ComposePlan::default());
-    let settings = match load_runtime_settings(connection) {
+    let settings = match runtime_settings {
         Some(settings) if settings.agentic_enabled => settings,
         _ => {
             return ComposeResult {
@@ -2046,6 +2686,246 @@ fn insert_candidate_traces(
     Ok(())
 }
 
+fn insert_foundation_candidate_traces(
+    connection: &Connection,
+    run_id: &str,
+    legacy: &[PackKnowledge],
+    foundation: &[PackKnowledge],
+    delivered: &[PackKnowledge],
+) -> Result<(), String> {
+    if (legacy.is_empty() && foundation.is_empty())
+        || !table_exists(connection, "context_compile_candidate_traces")
+    {
+        return Ok(());
+    }
+    let now = now_iso();
+    let legacy_ids = legacy
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let delivered_ids = delivered
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let foundation_ids = foundation
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let legacy_items = legacy
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let foundation_items = foundation
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let delivered_items = delivered
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut union = Vec::new();
+    let mut seen = HashSet::new();
+    for item in legacy.iter().chain(foundation.iter()) {
+        if seen.insert(item.id.as_str()) {
+            union.push(item);
+        }
+    }
+    for (index, item) in union.into_iter().enumerate() {
+        let legacy_rank = legacy_ids.get(item.id.as_str()).copied();
+        let delivered_rank = delivered_ids.get(item.id.as_str()).copied();
+        let foundation_rank = foundation_ids.get(item.id.as_str()).copied();
+        let selected = delivered_rank.is_some();
+        let legacy_score = legacy_items
+            .get(item.id.as_str())
+            .map(|candidate| candidate.score);
+        let foundation_score = foundation_items
+            .get(item.id.as_str())
+            .map(|candidate| candidate.score);
+        let final_score = delivered_items
+            .get(item.id.as_str())
+            .map(|candidate| candidate.score);
+        let item_kind = if item.kind == "procedure" {
+            "procedure"
+        } else {
+            "rule"
+        };
+        connection
+            .execute(
+                r#"
+                insert into context_compile_candidate_traces (
+                  run_id, item_kind, item_id, text_rank, text_score, merged_rank, merged_score,
+                  final_rank, final_score, selected, suppressed, suppression_reason,
+                  agentic_decision, ranking_reason, community_key, evidence, created_at
+                ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                  'accepted', 'foundation_shadow_union', null, ?13, ?14)
+                "#,
+                (
+                    run_id,
+                    item_kind,
+                    &item.id,
+                    i64::try_from(legacy_rank.unwrap_or(index + 1)).unwrap_or(i64::MAX),
+                    legacy_score.unwrap_or(item.score) as f64,
+                    foundation_rank.map(|rank| i64::try_from(rank).unwrap_or(i64::MAX)),
+                    foundation_score.map(|score| score as f64),
+                    delivered_rank.map(|rank| i64::try_from(rank).unwrap_or(i64::MAX)),
+                    final_score.map(|score| score as f64),
+                    i64::from(selected),
+                    i64::from(!selected),
+                    (!selected).then_some("shadow_only"),
+                    json!({
+                        "engine": "rust-native",
+                        "retrievalMethod": "sqlite_text",
+                        "scopeSnapshot": &item.scope_snapshot,
+                        "foundation": {
+                            "contractVersion": 1,
+                            "legacyRank": legacy_rank,
+                            "foundationRank": foundation_rank,
+                            "legacyScore": legacy_score,
+                            "foundationScore": foundation_score,
+                            "contentVersion": content_version(&item.title, &item.body),
+                            "delivered": selected,
+                            "shadow": !selected
+                        }
+                    })
+                    .to_string(),
+                    &now,
+                ),
+            )
+            .map_err(|error| format!("failed to insert Foundation candidate trace: {error}"))?;
+    }
+    Ok(())
+}
+
+fn insert_foundation_episode_candidate_traces(
+    connection: &Connection,
+    run_id: &str,
+    legacy: &[PackEpisode],
+    foundation: &[PackEpisode],
+    delivered: &[PackEpisode],
+) -> Result<(), String> {
+    if (legacy.is_empty() && foundation.is_empty())
+        || !table_exists(connection, "context_compile_candidate_traces")
+    {
+        return Ok(());
+    }
+    let now = now_iso();
+    let legacy_ids = legacy
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let foundation_ids = foundation
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let delivered_ids = delivered
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.id.as_str(), index + 1))
+        .collect::<std::collections::HashMap<_, _>>();
+    let legacy_items = legacy
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let foundation_items = foundation
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let delivered_items = delivered
+        .iter()
+        .map(|item| (item.id.as_str(), item))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut union = Vec::new();
+    let mut seen = HashSet::new();
+    for item in legacy.iter().chain(foundation.iter()) {
+        if seen.insert(item.id.as_str()) {
+            union.push(item);
+        }
+    }
+    for (index, item) in union.into_iter().enumerate() {
+        let legacy_rank = legacy_ids.get(item.id.as_str()).copied();
+        let foundation_rank = foundation_ids.get(item.id.as_str()).copied();
+        let delivered_rank = delivered_ids.get(item.id.as_str()).copied();
+        let selected = delivered_rank.is_some();
+        let legacy_score = legacy_items
+            .get(item.id.as_str())
+            .map(|candidate| candidate.score);
+        let foundation_score = foundation_items
+            .get(item.id.as_str())
+            .map(|candidate| candidate.score);
+        let final_score = delivered_items
+            .get(item.id.as_str())
+            .map(|candidate| candidate.score);
+        connection
+            .execute(
+                r#"
+                insert into context_compile_candidate_traces (
+                  run_id, item_kind, item_id, text_rank, text_score, merged_rank, merged_score,
+                  final_rank, final_score, selected, suppressed, suppression_reason,
+                  agentic_decision, ranking_reason, community_key, evidence, created_at
+                ) values (?1, 'episode', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                  'accepted', 'foundation_shadow_union', null, ?12, ?13)
+                "#,
+                (
+                    run_id,
+                    &item.id,
+                    i64::try_from(legacy_rank.unwrap_or(index + 1)).unwrap_or(i64::MAX),
+                    legacy_score.unwrap_or(item.score) as f64,
+                    foundation_rank.map(|rank| i64::try_from(rank).unwrap_or(i64::MAX)),
+                    foundation_score.map(|score| score as f64),
+                    delivered_rank.map(|rank| i64::try_from(rank).unwrap_or(i64::MAX)),
+                    final_score.map(|score| score as f64),
+                    i64::from(selected),
+                    i64::from(!selected),
+                    (!selected).then_some("shadow_only"),
+                    json!({
+                        "engine": "rust-native",
+                        "retrievalMethod": "sqlite_text",
+                        "scopeSnapshot": &item.scope_snapshot,
+                        "foundation": {
+                            "contractVersion": 1,
+                            "legacyRank": legacy_rank,
+                            "foundationRank": foundation_rank,
+                            "legacyScore": legacy_score,
+                            "foundationScore": foundation_score,
+                            "contentVersion": episode_content_version(item),
+                            "delivered": selected,
+                            "shadow": !selected
+                        }
+                    })
+                    .to_string(),
+                    &now,
+                ),
+            )
+            .map_err(|error| format!("failed to insert Foundation episode trace: {error}"))?;
+    }
+    Ok(())
+}
+
+fn content_version(title: &str, body: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"context-still-foundation-content-v1\n");
+    hasher.update(title.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(body.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+fn episode_content_version(item: &PackEpisode) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"context-still-foundation-episode-content-v1\n");
+    hasher.update(item.title.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(item.situation.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(item.lesson.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
 fn insert_knowledge_usage_events(
     connection: &Connection,
     run_id: &str,
@@ -2191,6 +3071,118 @@ fn insert_episode_retrieval_feedback(
     Ok(())
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct CompileCounterUpdate {
+    knowledge_updated: usize,
+    missing_knowledge_ids: Vec<String>,
+    episode_updated: usize,
+    missing_episode_ids: Vec<String>,
+}
+
+fn increment_compile_counters(
+    connection: &Connection,
+    knowledge: &[PackKnowledge],
+    episodes: &[PackEpisode],
+) -> Result<CompileCounterUpdate, String> {
+    let now = now_iso();
+    let mut update = CompileCounterUpdate::default();
+    let mut seen_knowledge = HashSet::new();
+    for item in knowledge {
+        if !seen_knowledge.insert(item.id.as_str()) {
+            continue;
+        }
+        let affected = connection
+            .execute(
+                "update knowledge_items set compile_select_count = compile_select_count + 1, last_compiled_at = ?1 where id = ?2",
+                (&now, &item.id),
+            )
+            .map_err(|error| format!("failed to increment knowledge compile counter: {error}"))?;
+        if affected == 0 {
+            update.missing_knowledge_ids.push(item.id.clone());
+        } else {
+            update.knowledge_updated += affected;
+        }
+    }
+    let mut seen_episodes = HashSet::new();
+    for item in episodes {
+        if !seen_episodes.insert(item.id.as_str()) {
+            continue;
+        }
+        let affected = connection
+            .execute(
+                "update episode_cards set compile_use_count = compile_use_count + 1 where id = ?1",
+                [&item.id],
+            )
+            .map_err(|error| format!("failed to increment episode compile counter: {error}"))?;
+        if affected == 0 {
+            update.missing_episode_ids.push(item.id.clone());
+        } else {
+            update.episode_updated += affected;
+        }
+    }
+    Ok(update)
+}
+
+struct FoundationTelemetryInput<'a> {
+    run_id: &'a str,
+    mode: CompileFoundationMode,
+    queue_wait: Duration,
+    work_duration: Duration,
+    total_duration: Duration,
+    error: Option<&'a str>,
+    pre_ledger_total: Duration,
+}
+
+fn append_foundation_telemetry(context: &NativeToolContext, input: FoundationTelemetryInput<'_>) {
+    let directory = context
+        .compile_runtime
+        .logs_dir
+        .join("context-compile-foundation");
+    let lock = FOUNDATION_TELEMETRY_LOCK.get_or_init(|| Mutex::new(()));
+    let Ok(_guard) = lock.lock() else {
+        return;
+    };
+    if fs::create_dir_all(&directory).is_err() {
+        return;
+    }
+    let path = directory.join(format!(
+        "{}.{}.jsonl",
+        &context.compile_runtime.runtime_build_id[..16],
+        std::process::id()
+    ));
+    let record = json!({
+        "contractVersion": 1,
+        "runId": input.run_id,
+        "recordedAt": now_iso(),
+        "pipelineVersion": "foundation-v1",
+        "pipelineMode": input.mode.as_str(),
+        "runtimeVersion": crate::VERSION,
+        "runtimeBuildId": context.compile_runtime.runtime_build_id,
+        "databaseIdentityFingerprint": context.compile_runtime.database_identity_fingerprint,
+        "writer": {
+            "operation": if input.mode == CompileFoundationMode::Legacy { "mcp.context_compile" } else { "mcp.context_compile.persist" },
+            "queueWaitUs": input.queue_wait.as_micros().min(u64::MAX as u128) as u64,
+            "workUs": input.work_duration.as_micros().min(u64::MAX as u128) as u64,
+            "totalUs": input.total_duration.as_micros().min(u64::MAX as u128) as u64,
+            "success": input.error.is_none(),
+            "errorCategory": input.error.map(|_| "writer_error")
+        },
+        "preLedgerEndToEndUs": input.pre_ledger_total.as_micros().min(u64::MAX as u128) as u64
+    });
+    let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) else {
+        return;
+    };
+    let Ok(line) = serde_json::to_vec(&record) else {
+        return;
+    };
+    if line.len() > 16 * 1024 {
+        return;
+    }
+    let _ = file.write_all(&line);
+    let _ = file.write_all(b"\n");
+    let _ = file.flush();
+}
+
 fn knowledge_source_refs(connection: &Connection, knowledge_id: &str) -> Vec<String> {
     let mut statement = match connection.prepare(
         r#"
@@ -2287,6 +3279,8 @@ mod tests {
                   applies_to text not null default '{}',
                   importance real not null default 70,
                   dynamic_score real not null default 0,
+                  compile_select_count integer not null default 0,
+                  last_compiled_at text,
                   created_at text not null default CURRENT_TIMESTAMP,
                   updated_at text not null default CURRENT_TIMESTAMP
                 );
@@ -2390,6 +3384,7 @@ mod tests {
                   repo_key text,
                   repo_path text,
                   importance integer not null default 50,
+                  compile_use_count integer not null default 0,
                   status text not null default 'active',
                   updated_at text not null default CURRENT_TIMESTAMP
                 );
@@ -2611,10 +3606,7 @@ mod tests {
                 "goal": fixture.legacy_reproduction.goal,
                 "projectRef": "project-A"
             }}),
-            &NativeToolContext {
-                project_root: std::env::temp_dir(),
-                sqlite_core_path: db_path.clone(),
-            },
+            &NativeToolContext::for_test(std::env::temp_dir(), db_path.clone()),
         );
         assert_ne!(result["content"][0]["text"], "No Content");
 
@@ -2767,6 +3759,7 @@ mod tests {
             8,
             &project_identity,
             &rust_facets,
+            false,
         );
         assert!(scoped.iter().any(|item| item.id == "knowledge-anchor"));
         assert!(!scoped
@@ -2779,6 +3772,7 @@ mod tests {
             8,
             &project_identity,
             &rust_facets,
+            false,
         );
         assert!(faceted
             .iter()
@@ -2793,6 +3787,7 @@ mod tests {
             3,
             &project_identity,
             &rust_facets,
+            false,
         );
         assert!(episodes.iter().any(|item| item.id == "episode-anchor"));
         assert!(!episodes
@@ -2811,6 +3806,7 @@ mod tests {
             8,
             &global_identity,
             &RepositoryRequestFacets::default(),
+            false,
         );
         assert_eq!(
             global
@@ -2874,10 +3870,7 @@ mod tests {
                 "goal": fixture.legacy_reproduction.goal,
                 "projectRef": "project-A"
             }}),
-            &NativeToolContext {
-                project_root: std::env::temp_dir(),
-                sqlite_core_path: db_path.clone(),
-            },
+            &NativeToolContext::for_test(std::env::temp_dir(), db_path.clone()),
         );
         assert!(!result
             .get("isError")
@@ -2946,6 +3939,9 @@ mod tests {
                 body: "Use when: migrating context_compile to Rust.\nVerification:\n- Output is composed markdown, not a raw context pack.".to_string(),
                 polarity: "positive".to_string(),
                 score: 10,
+                query_score: 10,
+                dynamic_score: 0.0,
+                importance: 70.0,
                 source_refs: vec![],
                 scope_snapshot: json!({}),
             },
@@ -2956,6 +3952,9 @@ mod tests {
                 body: "Workflow:\n1. Load runtime settings from SQLite.\n2. Use taskRouting.agenticCompile.\nVerification:\n- The result has task-focused headings.\nAvoid:\n- Do not expose ranking metadata as the user-facing answer.".to_string(),
                 polarity: "positive".to_string(),
                 score: 9,
+                query_score: 9,
+                dynamic_score: 0.0,
+                importance: 70.0,
                 source_refs: vec![],
                 scope_snapshot: json!({}),
             },
@@ -3077,10 +4076,7 @@ mod tests {
             .unwrap();
         drop(connection);
 
-        let context = NativeToolContext {
-            project_root: std::env::temp_dir(),
-            sqlite_core_path: db_path.clone(),
-        };
+        let context = NativeToolContext::for_test(std::env::temp_dir(), db_path.clone());
         let result = context_compile(
             &json!({"arguments": {
                 "goal": "Rust composer fallback route",
@@ -3238,12 +4234,153 @@ mod tests {
     }
 
     #[test]
+    fn foundation_split_persists_counter_and_diagnostic_contracts() {
+        let db_path = temp_db_path();
+        let connection = Connection::open(&db_path).unwrap();
+        create_minimal_compile_schema(&connection);
+        connection
+            .execute(
+                "insert into knowledge_items (id, type, status, title, body, dynamic_score) values ('rule-foundation', 'rule', 'active', 'Foundation split persistence', 'Persist selected counters through the SQLite writer.', -999)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "insert into knowledge_items (id, type, status, title, body, dynamic_score) values ('rule-unmatched', 'rule', 'active', 'Unrelated candidate', 'This content has no requested terms.', 999)",
+                [],
+            )
+            .unwrap();
+        for index in 0..300 {
+            connection
+                .execute(
+                    "insert into knowledge_items (id, type, status, title, body, dynamic_score) values (?1, 'rule', 'active', 'Unrelated candidate', 'This content has no requested terms.', 1000)",
+                    [format!("rule-unmatched-{index:03}")],
+                )
+                .unwrap();
+        }
+        connection
+            .execute(
+                "insert into episode_cards (id, title, situation, lesson) values ('episode-foundation', 'Foundation split persistence precedent', 'A compile transaction needs verified counters.', 'Commit the pack snapshot and counter changes together.')",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let mut context = NativeToolContext::for_test(std::env::temp_dir(), db_path.clone());
+        context.compile_runtime = std::sync::Arc::new(
+            crate::domains::context_compile::runtime::CompileRuntimeContext {
+                mode: CompileFoundationMode::Foundation,
+                ..(*context.compile_runtime).clone()
+            },
+        );
+        let result = context_compile(
+            &json!({"arguments": {"goal": "Foundation split persistence"}}),
+            &context,
+        );
+        assert!(result.get("isError").is_none());
+
+        let connection = Connection::open(&db_path).unwrap();
+        let knowledge_counter: i64 = connection
+            .query_row(
+                "select compile_select_count from knowledge_items where id = 'rule-foundation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let episode_counter: i64 = connection
+            .query_row(
+                "select compile_use_count from episode_cards where id = 'episode-foundation'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(knowledge_counter, 1);
+        assert_eq!(episode_counter, 1);
+        let pack: Value = connection
+            .query_row(
+                "select pack_snapshot from context_compile_runs limit 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|raw| serde_json::from_str(&raw).unwrap())
+            .unwrap();
+        assert_eq!(pack["diagnostics"]["foundation"]["snapshotComplete"], true);
+        assert_eq!(
+            pack["diagnostics"]["foundation"]["pipelineMode"],
+            "foundation"
+        );
+        assert_eq!(
+            pack["diagnostics"]["foundation"]["persistence"]["knowledgeCounterUpdated"],
+            1
+        );
+        assert_eq!(
+            pack["diagnostics"]["foundation"]["persistence"]["episodeCounterUpdated"],
+            1
+        );
+        assert_eq!(
+            pack["diagnostics"]["foundation"]["candidates"]["eligibleKnowledge"],
+            9
+        );
+        assert_eq!(
+            pack["diagnostics"]["foundation"]["candidates"]["queryMatchedKnowledge"],
+            1
+        );
+        let delivered_ids = connection
+            .prepare("select item_id from context_pack_items where item_kind != 'episode'")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .flatten()
+            .collect::<Vec<_>>();
+        assert_eq!(delivered_ids, vec!["rule-foundation"]);
+        let evidence: Value = connection
+            .query_row(
+                "select evidence from context_compile_candidate_traces where item_id = 'rule-foundation'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|raw| serde_json::from_str(&raw).unwrap())
+            .unwrap();
+        assert_eq!(evidence["foundation"]["delivered"], true);
+        assert_eq!(
+            evidence["foundation"]["contentVersion"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        let shadow_selected: i64 = connection
+            .query_row(
+                "select count(*) from context_compile_candidate_traces where item_kind != 'episode' and selected = 0",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(shadow_selected > 0);
+        let episode_trace: Value = connection
+            .query_row(
+                "select evidence from context_compile_candidate_traces where item_id = 'episode-foundation'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|raw| serde_json::from_str(&raw).unwrap())
+            .unwrap();
+        assert_eq!(episode_trace["foundation"]["delivered"], true);
+        assert_eq!(
+            episode_trace["foundation"]["contentVersion"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        drop(connection);
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
     fn context_compile_rejects_non_string_project_identity() {
         let db_path = temp_db_path();
-        let context = NativeToolContext {
-            project_root: std::env::temp_dir(),
-            sqlite_core_path: db_path.clone(),
-        };
+        let context = NativeToolContext::for_test(std::env::temp_dir(), db_path.clone());
         let result = context_compile(
             &json!({"arguments": {"goal": "Reject malformed identity", "projectRef": 42}}),
             &context,
@@ -3260,10 +4397,7 @@ mod tests {
     #[test]
     fn context_compile_rejects_unknown_and_control_arguments() {
         let db_path = temp_db_path();
-        let context = NativeToolContext {
-            project_root: std::env::temp_dir(),
-            sqlite_core_path: db_path.clone(),
-        };
+        let context = NativeToolContext::for_test(std::env::temp_dir(), db_path.clone());
         let unknown = context_compile(
             &json!({"arguments": {"goal": "Reject unknown argument", "tokenBudget": 1000}}),
             &context,
@@ -3305,6 +4439,8 @@ mod tests {
             situation: "Rust-native compile uses episode precedent.".to_string(),
             lesson: "Persist episode retrieval feedback from composer output.".to_string(),
             score: 8,
+            query_score: 8,
+            importance: 50.0,
             scope_snapshot: json!({}),
         }];
         let parsed = parse_composer_payload(

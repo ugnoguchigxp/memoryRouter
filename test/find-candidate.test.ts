@@ -451,6 +451,29 @@ describe("runFindCandidate", () => {
     expect(result.readRanges).toEqual([{ from: 0, toExclusive: 20 }]);
   });
 
+  test("combines finding instructions into one leading system message", async () => {
+    await runFindCandidate({
+      targetStateId: "target-1",
+      callerMode: "storage",
+      provider: "local-llm",
+    });
+
+    const request = mocks.runDistillationCompletion.mock.calls[0]?.[0];
+    const messages = request?.messages ?? [];
+    const systemMessages = messages.filter(
+      (message: { role: string }) => message.role === "system",
+    );
+
+    expect(systemMessages).toHaveLength(1);
+    expect(systemMessages[0]?.content).toEqual(
+      expect.stringContaining("汎用的に使える知識として体裁を整える"),
+    );
+    expect(systemMessages[0]?.content).toEqual(
+      expect.stringContaining("Use when: / Workflow: / Verification: / Avoid:"),
+    );
+    expect(messages.map((message: { role: string }) => message.role)).toEqual(["system", "user"]);
+  });
+
   test("fails when the LLM returns candidates without using the reader tool", async () => {
     mocks.runDistillationCompletion.mockResolvedValue({
       content: JSON.stringify({ candidates: [] }),
@@ -542,6 +565,17 @@ describe("runFindCandidate", () => {
         usageSource: "find-candidate",
       }),
     );
+    const vibeMessages = mocks.runDistillationCompletion.mock.calls[0]?.[0]?.messages ?? [];
+    expect(vibeMessages.map((message: { role: string }) => message.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    expect(
+      vibeMessages.filter((message: { role: string }) => message.role === "system"),
+    ).toHaveLength(1);
     expect(result.readRanges).toEqual([{ from: 0, toExclusive: 24 }]);
     expect(result.insertedIds).toEqual(["candidate-1"]);
     expect(mocks.getEpisodeCardBySource).not.toHaveBeenCalled();

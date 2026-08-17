@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::domains::{bootstrap::service::resolve_paths, sqlite_writer};
+use crate::domains::{bootstrap::service::resolve_paths, runtime_identity, sqlite_writer};
 use crate::shared::{config::EnvProvider, errors::CliError, process, process::ProcessSupervisor};
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -34,7 +34,8 @@ pub struct ActiveManagedWriter {
 }
 
 pub fn preflight<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) -> BackupPreflight {
-    let paths = resolve_paths(env);
+    let mut paths = resolve_paths(env);
+    paths.sqlite_core_path = runtime_identity::resolve(env, supervisor).effective_path;
     let _ = supervisor;
     let mut active_managed_writers = Vec::new();
     let mut active_managed_writer_details = Vec::new();
@@ -70,8 +71,12 @@ pub fn preflight<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) 
     }
 }
 
-pub fn create<E: EnvProvider>(env: &E) -> Result<BackupCreateReport, CliError> {
-    let paths = resolve_paths(env);
+pub fn create<E: EnvProvider, S: ProcessSupervisor>(
+    env: &E,
+    supervisor: &S,
+) -> Result<BackupCreateReport, CliError> {
+    let mut paths = resolve_paths(env);
+    paths.sqlite_core_path = runtime_identity::resolve(env, supervisor).effective_path;
     let filename = format!(
         "core-{}.sqlite",
         crate::domains::process_lifecycle::service::now_timestamp().replace([':', '.'], "-")

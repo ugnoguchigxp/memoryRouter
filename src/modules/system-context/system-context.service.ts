@@ -8,10 +8,10 @@ import {
 } from "s11tnext";
 
 import {
-  createAppCatalog,
   type PromptKey,
   type PromptMessageRoleMap,
   type PromptValueMap,
+  createAppCatalog,
 } from "../../../.s11tnext/catalog.generated.js";
 
 const artifact: unknown = JSON.parse(
@@ -62,6 +62,20 @@ export function promptMessage<K extends PromptKey>(
   return Object.freeze({
     role: invocation.role,
     content: invocation.content.text,
+  });
+}
+
+export function combinePromptMessages<R extends string>(
+  messages: readonly [{ role: R; content: string }, ...Array<{ role: R; content: string }>],
+  separator = "\n\n",
+): { role: R; content: string } {
+  const role = messages[0].role;
+  if (messages.some((message) => message.role !== role)) {
+    throw new Error("Prompt messages must have the same role to be combined");
+  }
+  return Object.freeze({
+    role,
+    content: messages.map((message) => message.content).join(separator),
   });
 }
 

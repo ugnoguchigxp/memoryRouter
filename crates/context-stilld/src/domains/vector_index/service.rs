@@ -4,8 +4,10 @@ use std::sync::Once;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
-use crate::domains::bootstrap::service::resolve_paths;
-use crate::shared::config::EnvProvider;
+use crate::{
+    domains::{bootstrap::service::resolve_paths, runtime_identity},
+    shared::{config::EnvProvider, process::ProcessSupervisor},
+};
 
 static SQLITE_VEC_REGISTER: Once = Once::new();
 
@@ -68,8 +70,9 @@ pub fn register_sqlite_vec() {
     });
 }
 
-pub fn health<E: EnvProvider>(env: &E) -> VectorHealthReport {
-    let paths = resolve_paths(env);
+pub fn health<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) -> VectorHealthReport {
+    let mut paths = resolve_paths(env);
+    paths.sqlite_core_path = runtime_identity::resolve(env, supervisor).effective_path;
     let sqlite_path = paths.sqlite_core_path.display().to_string();
     let database_exists = paths.sqlite_core_path.exists();
 
@@ -379,7 +382,8 @@ mod tests {
             "CONTEXT_STILL_SQLITE_CORE_PATH",
             sqlite_path.to_str().unwrap(),
         )]);
-        let report = health(&env);
+        let supervisor = crate::shared::process::MockSupervisor::new();
+        let report = health(&env, &supervisor);
 
         assert_eq!(report.status, "ok");
         assert!(report.database_exists);

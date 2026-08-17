@@ -22,7 +22,7 @@ pub struct DoctorSummary {
 pub fn summary<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) -> DoctorSummary {
     let bootstrap = preflight(env);
     let runtime = status_with_supervisor(env, supervisor);
-    let vector = vector_health(env);
+    let vector = vector_health(env, supervisor);
     let mut desktop_blockers = Vec::new();
     let mut server_warnings = Vec::new();
 

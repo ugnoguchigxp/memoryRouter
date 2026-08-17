@@ -15,9 +15,23 @@ function localLlmHeaders(apiKey?: string): HeadersInit {
   return headers;
 }
 
+export function assertLocalLlmMessageCompatibility(
+  messages: DistillationChatRequest["messages"],
+): void {
+  const systemIndexes = messages.flatMap((message, index) =>
+    message.role === "system" ? [index] : [],
+  );
+  if (systemIndexes.length > 1 || (systemIndexes.length === 1 && systemIndexes[0] !== 0)) {
+    throw new Error(
+      "local-llm incompatible message sequence: expected at most one leading system message",
+    );
+  }
+}
+
 export async function callLocalLlmChat(
   request: DistillationChatRequest,
 ): Promise<DistillationChatResponse> {
+  assertLocalLlmMessageCompatibility(request.messages);
   return withRequestTimeout(
     request.timeoutMs ?? groupedConfig.distillation.timeoutMs,
     async (signal) => {

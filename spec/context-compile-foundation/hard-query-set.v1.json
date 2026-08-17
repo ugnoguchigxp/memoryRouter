@@ -1,0 +1,19 @@
+{
+  "contractVersion": 1,
+  "queries": [
+    {
+      "id": "repository-isolation",
+      "goal": "Preserve repository isolation while changing context compile ranking.",
+      "technologies": ["Rust"],
+      "changeTypes": ["implementation"],
+      "domains": ["context-compile"]
+    },
+    {
+      "id": "writer-contention",
+      "goal": "Keep SQLite writer occupancy short while composing a context response.",
+      "technologies": ["Rust", "SQLite"],
+      "changeTypes": ["performance"],
+      "domains": ["runtime"]
+    }
+  ]
+}

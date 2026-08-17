@@ -917,10 +917,7 @@ mod tests {
     }
 
     fn make_context(db_path: &Path) -> NativeToolContext {
-        NativeToolContext {
-            project_root: std::env::temp_dir(),
-            sqlite_core_path: db_path.to_path_buf(),
-        }
+        NativeToolContext::for_test(std::env::temp_dir(), db_path.to_path_buf())
     }
 
     fn create_knowledge_schema(connection: &Connection) {

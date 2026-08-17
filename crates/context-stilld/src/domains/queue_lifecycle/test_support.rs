@@ -143,5 +143,6 @@ pub(crate) fn finding_candidate_spec() -> ProviderQueueClaimSpec {
                 preferred_target_ids: vec!["local-b".to_string()],
             },
         ],
+        allowed_route_values: None,
     }
 }

@@ -228,7 +228,7 @@ bun run docs:check-links
 | PR discard feedback is missing | Run `bun run decision:pr-discard-scan -- --dry-run` and confirm `gh pr view` can resolve the linked PR |
 | Embedding failures | Check daemon URL, CLI fallback paths, and `CONTEXT_STILL_EMBEDDING_DIMENSION` |
 | API returns `401 unauthorized` | Check `CONTEXT_STILL_ADMIN_API_KEY` and client header configuration |
-| API returns `503 admin_api_key_not_configured` | Generate a strong `CONTEXT_STILL_ADMIN_API_KEY`, restart the API, and configure the client to send it |
+| API returns `503 admin_api_key_not_configured` | The built-in local key should prevent this during normal startup; check for runtime configuration mutation and restart the API |
 | API returns `503 admin_api_key_too_short` | Replace `CONTEXT_STILL_ADMIN_API_KEY` with a random value of at least 32 characters and restart the API |
 | Browser preflight returns `403 origin_not_allowed` | Add the exact UI origin to `CONTEXT_STILL_ALLOWED_ORIGINS`; do not use a wildcard |
 | Admin UI asks for a key again | The short-lived `HttpOnly` session expired or the admin key rotated; enter the current key to start a new session |

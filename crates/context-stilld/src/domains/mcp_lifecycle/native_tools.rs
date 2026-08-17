@@ -1,4 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
+
+#[cfg(test)]
+use std::path::Path;
 
 use serde_json::{json, Value};
 
@@ -9,6 +12,23 @@ use super::native_resources;
 pub(crate) struct NativeToolContext {
     pub(crate) project_root: PathBuf,
     pub(crate) sqlite_core_path: PathBuf,
+    pub(crate) compile_runtime:
+        Arc<crate::domains::context_compile::runtime::CompileRuntimeContext>,
+}
+
+impl NativeToolContext {
+    #[cfg(test)]
+    pub(crate) fn for_test(project_root: PathBuf, sqlite_core_path: PathBuf) -> Self {
+        let compile_runtime =
+            crate::domains::context_compile::runtime::CompileRuntimeContext::for_test(Path::new(
+                &sqlite_core_path,
+            ));
+        Self {
+            project_root,
+            sqlite_core_path,
+            compile_runtime: Arc::new(compile_runtime),
+        }
+    }
 }
 
 pub(crate) fn handle_native_dispatch(

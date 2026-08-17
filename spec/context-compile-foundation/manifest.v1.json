@@ -1,0 +1,66 @@
+{
+  "id": "contextstill-utility-rag-foundation-v1",
+  "pipelineVersion": "foundation-v1",
+  "inputs": {
+    "hardQuerySet": "hard-query-set.v1.json",
+    "goldenFixture": "../../test/fixtures/context-compile-foundation-v1.json",
+    "timestampFixture": "../../test/fixtures/timestamp-normalization-v1.json"
+  },
+  "runtimeBinding": {
+    "sourceCommitRequired": true,
+    "runtimeBuildIdRequired": true,
+    "effectiveDatabaseFingerprintRequired": true,
+    "cleanSourceTreeRequiredForPromotion": true
+  },
+  "cohorts": {
+    "historicalIdentityPresentMin": 500,
+    "retrievalFixtureRuns": 500,
+    "rankingHardQueriesMin": 50,
+    "compositionQueriesMinPerRoute": 30,
+    "liveBaselineProbeMin": 100,
+    "shadowIdentityPresentMin": 50,
+    "canaryIdentityPresentMin": 100,
+    "canaryWindowHours": 24
+  },
+  "performance": {
+    "endToEndP50MultiplierMax": 1.02,
+    "endToEndP95MultiplierMax": 1.02,
+    "retrievalP95AbsoluteMsMax": 100,
+    "retrievalP95AddedMsMax": 5,
+    "writerQueueWaitP95MsMax": 20,
+    "persistenceP95MsMax": 25
+  },
+  "availability": {
+    "noContentRateAddedMax": 0.01,
+    "toolErrorRateAddedMax": 0,
+    "composerDegradedRateAddedMax": 0.05
+  },
+  "ranking": {
+    "existingUsedKnowledgeRetentionMin": 0.99,
+    "queryLockoutViolationMax": 0,
+    "mustNotIncludeAddedMax": 0
+  },
+  "telemetry": {
+    "writerLedgerCompleteRateMin": 0.99,
+    "timingConsistencyViolationRateMax": 0.01,
+    "redactionViolationMax": 0
+  },
+  "statistics": {
+    "confidenceLevel": 0.95,
+    "pairedBootstrapIterations": 10000,
+    "bootstrapSeed": 1337
+  },
+  "safety": {
+    "wrongProjectMax": 0,
+    "unresolvedSelectedMax": 0,
+    "shadowOutboundMax": 0,
+    "identityMismatchMax": 0
+  },
+  "stopConditions": [
+    "safety_violation",
+    "database_identity_mismatch",
+    "writer_ownership_violation",
+    "provider_call_increase",
+    "performance_gate_failure"
+  ]
+}

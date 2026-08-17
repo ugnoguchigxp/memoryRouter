@@ -1,0 +1,17 @@
+{
+  "contractVersion": 1,
+  "cases": [
+    {
+      "id": "query-lockout",
+      "goal": "Foundation ranking must exclude a query-unmatched item.",
+      "expectedKnowledgeIds": ["matched-rule"],
+      "mustNotIncludeIds": ["high-dynamic-unmatched"]
+    },
+    {
+      "id": "stable-tie-break",
+      "goal": "Foundation ranking must be deterministic for same-score candidates.",
+      "expectedKnowledgeIds": ["a-stable", "b-stable"],
+      "mustNotIncludeIds": []
+    }
+  ]
+}

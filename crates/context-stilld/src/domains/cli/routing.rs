@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::shared::errors::CliError;
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -70,6 +72,36 @@ pub enum BackupAction {
     Create,
 }
 
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub enum ContextCompileAction {
+    Capabilities {
+        out: Option<PathBuf>,
+    },
+    Baseline {
+        manifest: PathBuf,
+        out: PathBuf,
+        probe: Option<PathBuf>,
+    },
+    Compare {
+        manifest: PathBuf,
+        baseline: PathBuf,
+        candidate: PathBuf,
+        out: PathBuf,
+    },
+    Experiment {
+        manifest: PathBuf,
+        out: PathBuf,
+        allow_provider_calls: bool,
+    },
+    Probe {
+        manifest: PathBuf,
+        entry_report: PathBuf,
+        out: PathBuf,
+        calls: usize,
+        allow_live_writes: bool,
+    },
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliCommand {
     Help,
@@ -118,6 +150,10 @@ pub enum CliCommand {
     },
     Backup {
         action: BackupAction,
+        json: bool,
+    },
+    ContextCompile {
+        action: ContextCompileAction,
         json: bool,
     },
 }
@@ -349,10 +385,237 @@ where
                 json: options.json,
             })
         }
+        "context-compile" => parse_context_compile_command(args),
         _ => Err(CliError::invalid_arguments(format!(
             "unknown command: {command}"
         ))),
     }
+}
+
+fn parse_context_compile_command<I>(mut args: I) -> Result<CliCommand, CliError>
+where
+    I: Iterator<Item = String>,
+{
+    let action_name = required_action(
+        &mut args,
+        "context-compile",
+        "capabilities, baseline, compare, experiment, or probe",
+    )?;
+    let options = parse_context_compile_options(args)?;
+    let action = match action_name.as_str() {
+        "capabilities" => {
+            reject_context_compile_options(&options, &["out"])?;
+            ContextCompileAction::Capabilities { out: options.out }
+        }
+        "baseline" => {
+            reject_context_compile_options(&options, &["manifest", "out", "probe"])?;
+            ContextCompileAction::Baseline {
+                manifest: required_path(&options.manifest, "--manifest")?,
+                out: required_path(&options.out, "--out")?,
+                probe: options.probe,
+            }
+        }
+        "compare" => {
+            reject_context_compile_options(
+                &options,
+                &["manifest", "baseline", "candidate", "out"],
+            )?;
+            ContextCompileAction::Compare {
+                manifest: required_path(&options.manifest, "--manifest")?,
+                baseline: required_path(&options.baseline, "--baseline")?,
+                candidate: required_path(&options.candidate, "--candidate")?,
+                out: required_path(&options.out, "--out")?,
+            }
+        }
+        "experiment" => {
+            reject_context_compile_options(&options, &["manifest", "out", "allow-provider-calls"])?;
+            ContextCompileAction::Experiment {
+                manifest: required_path(&options.manifest, "--manifest")?,
+                out: required_path(&options.out, "--out")?,
+                allow_provider_calls: options.allow_provider_calls,
+            }
+        }
+        "probe" => {
+            reject_context_compile_options(
+                &options,
+                &[
+                    "manifest",
+                    "entry-report",
+                    "out",
+                    "calls",
+                    "allow-live-writes",
+                ],
+            )?;
+            ContextCompileAction::Probe {
+                manifest: required_path(&options.manifest, "--manifest")?,
+                entry_report: required_path(&options.entry_report, "--entry-report")?,
+                out: required_path(&options.out, "--out")?,
+                calls: options.calls.ok_or_else(|| {
+                    CliError::invalid_arguments("probe requires --calls <positive-integer>")
+                })?,
+                allow_live_writes: options.allow_live_writes,
+            }
+        }
+        _ => {
+            return Err(CliError::invalid_arguments(format!(
+                "unknown context-compile action: {action_name}"
+            )))
+        }
+    };
+    Ok(CliCommand::ContextCompile {
+        action,
+        json: options.json,
+    })
+}
+
+#[derive(Debug, Default)]
+struct ContextCompileOptions {
+    json: bool,
+    out: Option<PathBuf>,
+    manifest: Option<PathBuf>,
+    probe: Option<PathBuf>,
+    baseline: Option<PathBuf>,
+    candidate: Option<PathBuf>,
+    entry_report: Option<PathBuf>,
+    calls: Option<usize>,
+    allow_provider_calls: bool,
+    allow_live_writes: bool,
+    supplied: Vec<&'static str>,
+}
+
+fn parse_context_compile_options<I>(args: I) -> Result<ContextCompileOptions, CliError>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut options = ContextCompileOptions::default();
+    let mut args = args.into_iter();
+    while let Some(option) = args.next() {
+        match option.as_str() {
+            "--json" => {
+                set_context_compile_flag(&mut options, "json", |options| options.json = true)?
+            }
+            "--allow-provider-calls" => {
+                set_context_compile_flag(&mut options, "allow-provider-calls", |options| {
+                    options.allow_provider_calls = true
+                })?
+            }
+            "--allow-live-writes" => {
+                set_context_compile_flag(&mut options, "allow-live-writes", |options| {
+                    options.allow_live_writes = true
+                })?
+            }
+            "--out" => {
+                set_context_compile_path(&mut options, "out", args.next(), |options, value| {
+                    options.out = Some(value)
+                })?
+            }
+            "--manifest" => set_context_compile_path(
+                &mut options,
+                "manifest",
+                args.next(),
+                |options, value| options.manifest = Some(value),
+            )?,
+            "--probe" => {
+                set_context_compile_path(&mut options, "probe", args.next(), |options, value| {
+                    options.probe = Some(value)
+                })?
+            }
+            "--baseline" => set_context_compile_path(
+                &mut options,
+                "baseline",
+                args.next(),
+                |options, value| options.baseline = Some(value),
+            )?,
+            "--candidate" => set_context_compile_path(
+                &mut options,
+                "candidate",
+                args.next(),
+                |options, value| options.candidate = Some(value),
+            )?,
+            "--entry-report" => set_context_compile_path(
+                &mut options,
+                "entry-report",
+                args.next(),
+                |options, value| options.entry_report = Some(value),
+            )?,
+            "--calls" => {
+                if !options.supplied.iter().all(|name| *name != "calls") {
+                    return Err(CliError::invalid_arguments("repeated option: --calls"));
+                }
+                let value = args.next().ok_or_else(|| {
+                    CliError::invalid_arguments("--calls requires a positive integer")
+                })?;
+                options.calls = Some(parse_positive_usize("--calls", &value)?);
+                options.supplied.push("calls");
+            }
+            _ => {
+                return Err(CliError::invalid_arguments(format!(
+                    "unknown argument: {option}"
+                )))
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn set_context_compile_flag(
+    options: &mut ContextCompileOptions,
+    name: &'static str,
+    set: impl FnOnce(&mut ContextCompileOptions),
+) -> Result<(), CliError> {
+    if options.supplied.contains(&name) {
+        return Err(CliError::invalid_arguments(format!(
+            "repeated option: --{name}"
+        )));
+    }
+    set(options);
+    options.supplied.push(name);
+    Ok(())
+}
+
+fn set_context_compile_path(
+    options: &mut ContextCompileOptions,
+    name: &'static str,
+    value: Option<String>,
+    set: impl FnOnce(&mut ContextCompileOptions, PathBuf),
+) -> Result<(), CliError> {
+    if options.supplied.contains(&name) {
+        return Err(CliError::invalid_arguments(format!(
+            "repeated option: --{name}"
+        )));
+    }
+    let value =
+        value.ok_or_else(|| CliError::invalid_arguments(format!("--{name} requires a path")))?;
+    if value.is_empty() {
+        return Err(CliError::invalid_arguments(format!(
+            "--{name} requires a non-empty path"
+        )));
+    }
+    set(options, PathBuf::from(value));
+    options.supplied.push(name);
+    Ok(())
+}
+
+fn reject_context_compile_options(
+    options: &ContextCompileOptions,
+    allowed: &[&str],
+) -> Result<(), CliError> {
+    if let Some(name) = options
+        .supplied
+        .iter()
+        .find(|name| name != &&"json" && !allowed.contains(name))
+    {
+        return Err(CliError::invalid_arguments(format!(
+            "--{name} is not valid for this context-compile action"
+        )));
+    }
+    Ok(())
+}
+
+fn required_path(value: &Option<PathBuf>, option: &str) -> Result<PathBuf, CliError> {
+    value
+        .clone()
+        .ok_or_else(|| CliError::invalid_arguments(format!("context-compile requires {option}")))
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -678,6 +941,70 @@ mod tests {
                 json: false,
             },
         );
+    }
+
+    #[test]
+    fn parses_context_compile_actions_with_exact_option_sets() {
+        use super::ContextCompileAction;
+        assert_eq!(
+            parse_args([
+                "context-compile",
+                "capabilities",
+                "--out",
+                "report.json",
+                "--json"
+            ])
+            .expect("capabilities command parsed"),
+            CliCommand::ContextCompile {
+                action: ContextCompileAction::Capabilities {
+                    out: Some("report.json".into()),
+                },
+                json: true,
+            }
+        );
+        assert_eq!(
+            parse_args([
+                "context-compile",
+                "compare",
+                "--candidate",
+                "candidate.json",
+                "--out",
+                "compare.json",
+                "--manifest",
+                "manifest.json",
+                "--baseline",
+                "baseline.json",
+            ])
+            .expect("compare command parsed"),
+            CliCommand::ContextCompile {
+                action: ContextCompileAction::Compare {
+                    manifest: "manifest.json".into(),
+                    baseline: "baseline.json".into(),
+                    candidate: "candidate.json".into(),
+                    out: "compare.json".into(),
+                },
+                json: false,
+            }
+        );
+    }
+
+    #[test]
+    fn context_compile_rejects_repeated_or_wrong_action_options() {
+        let repeated = parse_args([
+            "context-compile",
+            "baseline",
+            "--manifest",
+            "one.json",
+            "--manifest",
+            "two.json",
+            "--out",
+            "out.json",
+        ])
+        .expect_err("repeated option must fail");
+        assert!(repeated.to_string().contains("repeated option"));
+        let wrong_action = parse_args(["context-compile", "capabilities", "--allow-live-writes"])
+            .expect_err("wrong action option must fail");
+        assert!(wrong_action.to_string().contains("not valid"));
     }
 
     #[test]

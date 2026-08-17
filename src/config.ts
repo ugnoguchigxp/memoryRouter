@@ -10,6 +10,7 @@ import type {
 } from "./config.types.js";
 import { APP_CONSTANTS } from "./constants.js";
 import { projectIdentity, readProjectEnv, readProjectEnvWithFallback } from "./project-identity.js";
+import { resolveAdminApiKey } from "./shared/admin-api-key.js";
 
 loadEnv({ quiet: true });
 
@@ -372,7 +373,7 @@ export const groupedConfig: GroupedConfig = {
     ),
   },
   admin: {
-    apiKey: (readProjectEnv("ADMIN_API_KEY") ?? "").trim(),
+    apiKey: resolveAdminApiKey(readProjectEnv("ADMIN_API_KEY")),
     allowedOrigins: parseCsvValues(readProjectEnv("ALLOWED_ORIGINS")),
   },
   doctor: {

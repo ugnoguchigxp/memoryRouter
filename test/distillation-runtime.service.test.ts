@@ -521,6 +521,62 @@ describe("Distillation Runtime Service", () => {
     );
   });
 
+  test("callLocalLlmChat accepts one leading system message", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          choices: [{ message: { content: "ok", tool_calls: [] } }],
+        }),
+    });
+    vi.stubGlobal("fetch", mockFetch);
+
+    const { callLocalLlmCompletionForDistillation } = await import(
+      "../src/modules/distillation/distillation-runtime.service.js"
+    );
+    await callLocalLlmCompletionForDistillation({
+      model: "m1",
+      messages: [
+        { role: "system", content: "System instructions" },
+        { role: "user", content: "User request" },
+      ],
+      maxTokens: 50,
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test.each([
+    {
+      name: "multiple system messages",
+      messages: [
+        { role: "system" as const, content: "First" },
+        { role: "system" as const, content: "Second" },
+        { role: "user" as const, content: "Request" },
+      ],
+    },
+    {
+      name: "a non-leading system message",
+      messages: [
+        { role: "user" as const, content: "Request" },
+        { role: "system" as const, content: "Late instructions" },
+      ],
+    },
+  ])("callLocalLlmChat rejects $name before fetch", async ({ messages }) => {
+    const mockFetch = vi.fn();
+    vi.stubGlobal("fetch", mockFetch);
+
+    const { callLocalLlmCompletionForDistillation } = await import(
+      "../src/modules/distillation/distillation-runtime.service.js"
+    );
+    await expect(
+      callLocalLlmCompletionForDistillation({ model: "m1", messages, maxTokens: 50 }),
+    ).rejects.toThrow(
+      "local-llm incompatible message sequence: expected at most one leading system message",
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   test("callLocalLlmChat forwards required tool choice", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,

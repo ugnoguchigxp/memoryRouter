@@ -16,6 +16,8 @@ pub fn help_text() -> String {
         "  context-stilld vector health|smoke [--json]",
         "  context-stilld doctor [summary] [--json]",
         "  context-stilld backup preflight|create [--json]",
+        "  context-stilld context-compile capabilities [--out <new-report.json>] [--json]",
+        "  context-stilld context-compile baseline|compare|experiment|probe [options] [--json]",
         "  context-stilld --version",
         "",
         "Rust owns resident lifecycle boundaries and migrates daemon runtime surfaces toward Rust-native implementations.",

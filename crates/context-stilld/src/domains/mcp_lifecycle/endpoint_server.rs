@@ -14,8 +14,12 @@ use std::{
 use serde_json::{json, Value};
 
 use crate::{
-    domains::bootstrap::service::resolve_paths,
-    shared::{config::EnvProvider, errors::CliError},
+    domains::{
+        bootstrap::service::resolve_paths,
+        context_compile::runtime::{CompileFoundationMode, CompileRuntimeContext},
+        runtime_identity,
+    },
+    shared::{config::EnvProvider, errors::CliError, process::OsSupervisor},
     VERSION,
 };
 
@@ -83,7 +87,15 @@ pub fn serve<E: EnvProvider>(env: &E) -> Result<(), CliError> {
 }
 
 pub fn start_in_process<E: EnvProvider>(env: &E) -> Result<RunningEndpoint, CliError> {
-    let paths = resolve_paths(env);
+    let mut paths = resolve_paths(env);
+    let supervisor = OsSupervisor;
+    let database_identity = runtime_identity::resolve(env, &supervisor);
+    paths.sqlite_core_path = database_identity.effective_path.clone();
+    let mode = CompileFoundationMode::from_env(env).map_err(CliError::invalid_arguments)?;
+    let compile_runtime = Arc::new(
+        CompileRuntimeContext::new(mode, &database_identity, paths.logs_dir.clone())
+            .map_err(CliError::invalid_arguments)?,
+    );
     let endpoint = endpoint_config(env)?;
     std::fs::create_dir_all(&paths.run_dir)
         .map_err(|error| CliError::io(format!("failed to create MCP run dir: {error}")))?;
@@ -91,7 +103,12 @@ pub fn start_in_process<E: EnvProvider>(env: &E) -> Result<RunningEndpoint, CliE
     let endpoint_path = paths.run_dir.join("mcp-endpoint.json");
     let writer_token_path = paths.run_dir.join("sqlite-writer.token");
     let writer_token = create_writer_token(&writer_token_path, &paths.sqlite_core_path)?;
-    let dispatch = Arc::new(dispatch_config(env, writer_token));
+    let dispatch = Arc::new(dispatch_config(
+        env,
+        paths.sqlite_core_path.clone(),
+        writer_token,
+        compile_runtime,
+    ));
     let sessions_path = paths.run_dir.join("mcp-sessions.json");
     let state = new_state(sessions_path.clone(), SessionPruneConfig::from_env(env));
     persist_sessions(&state)?;
@@ -150,8 +167,12 @@ fn accept_loop(
     }
 }
 
-fn dispatch_config<E: EnvProvider>(env: &E, writer_token: String) -> DispatchConfig {
-    let paths = resolve_paths(env);
+fn dispatch_config<E: EnvProvider>(
+    env: &E,
+    sqlite_core_path: PathBuf,
+    writer_token: String,
+    compile_runtime: Arc<CompileRuntimeContext>,
+) -> DispatchConfig {
     DispatchConfig {
         project_root: env
             .var("CONTEXT_STILL_PROJECT_ROOT")
@@ -159,8 +180,9 @@ fn dispatch_config<E: EnvProvider>(env: &E, writer_token: String) -> DispatchCon
             .unwrap_or_else(|| {
                 std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
             }),
-        sqlite_core_path: paths.sqlite_core_path,
+        sqlite_core_path,
         writer_token,
+        compile_runtime,
     }
 }
 
@@ -195,7 +217,7 @@ fn endpoint_config<E: EnvProvider>(env: &E) -> Result<EndpointConfig, CliError> 
     })
 }
 
-pub(super) fn configured_endpoint_url<E: EnvProvider>(env: &E) -> Result<String, CliError> {
+pub(crate) fn configured_endpoint_url<E: EnvProvider>(env: &E) -> Result<String, CliError> {
     Ok(endpoint_config(env)?.url)
 }
 
@@ -567,6 +589,7 @@ fn native_context(dispatch: &DispatchConfig) -> NativeToolContext {
     NativeToolContext {
         project_root: dispatch.project_root.clone(),
         sqlite_core_path: dispatch.sqlite_core_path.clone(),
+        compile_runtime: Arc::clone(&dispatch.compile_runtime),
     }
 }
 

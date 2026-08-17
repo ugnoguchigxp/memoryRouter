@@ -72,7 +72,7 @@ where
             }
         },
         CliCommand::Vector { action, json } => {
-            domains::vector_index::routing::handle_command(action, json, env)
+            domains::vector_index::routing::handle_command(action, json, env, supervisor)
         }
         CliCommand::Bootstrap { action, json } => match action {
             domains::cli::routing::BootstrapAction::Preflight => {
@@ -97,6 +97,9 @@ where
         }
         CliCommand::Backup { action, json } => {
             domains::backup::routing::handle_command(action, json, env, supervisor)
+        }
+        CliCommand::ContextCompile { action, json } => {
+            domains::context_compile::routing::handle_command(action, json, env, supervisor)
         }
     }
 }

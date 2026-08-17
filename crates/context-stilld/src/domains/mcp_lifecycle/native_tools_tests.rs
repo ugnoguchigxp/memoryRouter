@@ -3,10 +3,10 @@ use serde_json::json;
 use super::native_tools::*;
 
 fn make_context() -> NativeToolContext {
-    NativeToolContext {
-        project_root: std::env::temp_dir(),
-        sqlite_core_path: std::env::temp_dir().join("dummy.sqlite"),
-    }
+    NativeToolContext::for_test(
+        std::env::temp_dir(),
+        std::env::temp_dir().join("dummy.sqlite"),
+    )
 }
 
 #[test]

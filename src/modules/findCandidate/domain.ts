@@ -17,7 +17,11 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveFindCandidateRoute,
 } from "../settings/settings.service.js";
-import { renderPrompt, promptMessage } from "../system-context/system-context.service.js";
+import {
+  combinePromptMessages,
+  promptMessage,
+  renderPrompt,
+} from "../system-context/system-context.service.js";
 import {
   type StorageCandidateParseDiagnostics,
   parseStorageCandidatesWithDiagnostics,
@@ -552,8 +556,10 @@ export async function runFindCandidate(input: FindCandidateInput): Promise<FindC
     );
     const extractSystemContext = renderPrompt("findCandidate.extract", {});
     const messages: DistillationMessage[] = [
-      promptMessage(sourceSystemContext),
-      promptMessage(extractSystemContext),
+      combinePromptMessages([
+        promptMessage(sourceSystemContext),
+        promptMessage(extractSystemContext),
+      ]),
       ...buildInitialUserMessages(target.targetKind),
     ];
     let deterministicInitialRead = false;
