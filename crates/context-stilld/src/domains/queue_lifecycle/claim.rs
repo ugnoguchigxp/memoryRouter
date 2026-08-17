@@ -81,17 +81,13 @@ pub fn claim_next_queue_job_for_connection(
 }
 
 pub(crate) fn stale_recovery_sql(queue_name: &str, table_name: &str) -> String {
-    let next_run_update = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "next_run_at = CURRENT_TIMESTAMP,"
-    };
+    let _ = queue_name;
     format!(
         "
         update {table_name}
         set
           status = 'paused',
-          {next_run_update}
+          next_run_at = CURRENT_TIMESTAMP,
           locked_by = null,
           locked_at = null,
           heartbeat_at = null,
@@ -105,17 +101,13 @@ pub(crate) fn stale_recovery_sql(queue_name: &str, table_name: &str) -> String {
 }
 
 fn pick_next_sql(queue_name: &str, table_name: &str) -> String {
-    let next_run_condition = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)"
-    };
+    let _ = queue_name;
     format!(
         "
         select id
         from {table_name}
         where status in ('pending', 'paused')
-          {next_run_condition}
+          and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
         order by priority desc, created_at asc, id asc
         limit 1
         "
@@ -292,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_claim_finalize_distille_ignores_next_run_at() {
+    fn rust_claim_finalize_distille_respects_next_run_at() {
         let app_dir = temp_app_dir("claim_finalize");
         let sqlite_path = app_dir.join("queue.sqlite");
         let mut connection = Connection::open(&sqlite_path).unwrap();
@@ -312,10 +304,9 @@ mod tests {
             "worker-1",
             90,
         )
-        .unwrap()
         .unwrap();
 
-        assert_eq!(claimed.id, "job-finalize");
+        assert_eq!(claimed, None);
 
         std::fs::remove_dir_all(&app_dir).unwrap();
     }

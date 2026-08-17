@@ -64,7 +64,20 @@ pub struct BootstrapInitReport {
 }
 
 pub fn preflight<E: EnvProvider>(env: &E) -> BootstrapPreflightReport {
-    let paths = resolve_paths(env);
+    preflight_with_paths(resolve_paths(env))
+}
+
+pub fn preflight_with_supervisor<E: EnvProvider, S: crate::shared::process::ProcessSupervisor>(
+    env: &E,
+    supervisor: &S,
+) -> BootstrapPreflightReport {
+    let mut paths = resolve_paths(env);
+    paths.sqlite_core_path =
+        crate::domains::runtime_identity::resolve(env, supervisor).effective_path;
+    preflight_with_paths(paths)
+}
+
+fn preflight_with_paths(paths: PathReport) -> BootstrapPreflightReport {
     let mut checks = Vec::new();
 
     push_path_check(
@@ -109,7 +122,7 @@ pub fn preflight<E: EnvProvider>(env: &E) -> BootstrapPreflightReport {
     checks.push(BootstrapCheck {
         key: "optional_embedding",
         status: "info",
-        message: "Embedding provider reachability is optional and outside daemon bootstrap."
+        message: "Embedding is optional; the resident runtime manages an available local provider and preserves CLI fallback."
             .to_string(),
     });
 

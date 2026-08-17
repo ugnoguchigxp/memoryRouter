@@ -75,9 +75,13 @@ Omit external search API keys when you do not want distillation to call external
 | `CONTEXT_STILL_EMBEDDING_PROVIDER` | `auto` | `auto`, `daemon`, `cli`, or `disabled` |
 | `CONTEXT_STILL_EMBEDDING_DAEMON_URL` | `http://127.0.0.1:44512` | Embedding daemon URL |
 | `CONTEXT_STILL_EMBEDDING_DIMENSION` | `384` | Vector dimension |
-| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_*` | varies | CLI embedding fallback settings |
+| `CONTEXT_STILL_RESIDENT_EMBEDDING` | `1` | Lets `context-stilld run` supervise a loopback local embedding daemon for `auto` or `daemon` providers |
+| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_ROOT` | `../local-llm/embedding` | Local e5embed runtime root |
+| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_PYTHON` | `<root>/.venv/bin/python` | Python executable used for the managed daemon and CLI fallback |
+| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_MODEL_DIR` | `<root>/models/multilingual-e5-small` | Local embedding model directory |
+| `CONTEXT_STILL_EMBEDDING_READY_TIMEOUT_MS` | `60000` | Maximum wait for a newly spawned local daemon to pass `/health` |
 
-Embedding improves semantic search and distillation quality, but it should not block minimal desktop usage.
+Embedding improves semantic search and distillation quality, but it does not block minimal desktop usage. The resident only manages plain HTTP loopback URLs without a path prefix. Remote or prefixed daemon URLs remain externally owned. With provider `auto`, an unavailable daemon uses the existing CLI fallback.
 
 ## Rust Daemon Boundary
 
@@ -106,10 +110,12 @@ These variables are for development, packaging, and advanced runtime integration
 | `CONTEXT_STILL_ANTIGRAVITY_LOG_DIRS` | Additional Antigravity log roots |
 | `CONTEXT_STILL_CLAUDE_PROJECTS_DIR` | Claude projects directory |
 | `CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC` | `1` | Enables resident `context-stilld run` to own scheduled agent log sync |
+| `CONTEXT_STILL_RESIDENT_EMBEDDING` | `1` | Enables resident ownership of an available local e5embed runtime |
 | `CONTEXT_STILL_RESIDENT_QUEUE_MODE` | `rust-managed-one-shot` | Legacy value retained for compatibility; resident queue scheduling is Rust maintenance and no longer starts Bun continuous mode |
 | `CONTEXT_STILL_RESIDENT_QUEUE_INTERVAL_MS` | `5000` | Minimum interval between Rust-managed queue maintenance ticks |
 | `CONTEXT_STILL_RUST_COVERING_MODE` | `negative` (LaunchAgent) / `off` (binary fallback) | Enables the Rust-native negative Covering canary. Set `off` to roll back without starting the legacy worker |
 | `CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS` | `60` | Minimum interval between Rust Covering claims while higher-priority Finding work remains runnable |
+| `CONTEXT_STILL_RUST_FINALIZE_MAX_CLAIMS` | `100` | Maximum local Finalize jobs drained before provider-pool work in one resident tick |
 | `CONTEXT_STILL_QUEUE_STALE_SECONDS` | `120` | Stale threshold for Rust queue maintenance to recover active leases and running jobs |
 | `CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS` | `3600` | Resident daemon / legacy LaunchAgent scheduled sync interval |
 | `CONTEXT_STILL_AGENT_LOG_SYNC_RUN_AT_LOAD` | `0` | Set `1` to run agent log sync immediately when resident daemon starts |

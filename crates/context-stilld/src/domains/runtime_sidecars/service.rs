@@ -62,6 +62,7 @@ pub struct RuntimeSidecarAssessment {
 pub enum SidecarClassification {
     UiTime,
     ManualOneShot,
+    LocalModelRuntime,
     ResidentOwnedTemporary,
     ForbiddenResident,
 }
@@ -80,6 +81,17 @@ struct SidecarDefinition {
 }
 
 const SIDECARS: &[SidecarDefinition] = &[
+    SidecarDefinition {
+        id: "local-embedding-model-runtime",
+        surface: "embedding-daemon",
+        classification: SidecarClassification::LocalModelRuntime,
+        command: "python",
+        args: &["-m", "e5embed.daemon"],
+        owner: "rust-resident",
+        enabled_by_default: true,
+        removal_task_id: None,
+        notes: "Rust owns lifecycle and health while the local model inference runtime remains the packaged Python e5embed implementation.",
+    },
     SidecarDefinition {
         id: "queue-executor-typescript-manual-one-shot",
         surface: "queue-supervisor",
@@ -234,6 +246,7 @@ fn runtime_status_for_definition(
         "mcp-server" | "mcp-tools" => status.mcp_server.clone(),
         "queue-supervisor" => status.queue_supervisor.clone(),
         "agent-log-sync" => status.agent_log_sync.clone(),
+        "embedding-daemon" => status.embedding_daemon.clone(),
         "admin-api" => status.hono_admin_api.clone(),
         "manual-maintenance" => "manual".to_string(),
         _ => "unknown".to_string(),
@@ -293,6 +306,9 @@ fn allowed_reason(entry: &SidecarEntry) -> &'static str {
         SidecarClassification::ManualOneShot => {
             "operator-run manual TypeScript is outside resident daemon runtime"
         }
+        SidecarClassification::LocalModelRuntime => {
+            "local model runtime is lifecycle-managed by the Rust resident"
+        }
         SidecarClassification::ResidentOwnedTemporary => "resident-owned TypeScript is not allowed",
         SidecarClassification::ForbiddenResident => "forbidden resident owner is not a Bun command",
     }
@@ -347,6 +363,11 @@ mod tests {
         assert!(report.sidecars.iter().all(|entry| {
             entry.classification != SidecarClassification::ResidentOwnedTemporary
                 || entry.removal_task_id.is_some()
+        }));
+        assert!(report.sidecars.iter().any(|entry| {
+            entry.id == "local-embedding-model-runtime"
+                && entry.classification == SidecarClassification::LocalModelRuntime
+                && entry.owner == "rust-resident"
         }));
         assert!(report.sidecars.iter().any(|entry| {
             entry.id == "queue-executor-typescript-manual-one-shot"

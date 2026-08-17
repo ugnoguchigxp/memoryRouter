@@ -6,7 +6,7 @@ use std::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 
-use crate::domains::runtime_identity;
+use crate::domains::{bootstrap::service::resolve_paths, daemon::repository, runtime_identity};
 use crate::shared::{
     config::EnvProvider,
     errors::CliError,
@@ -97,7 +97,8 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
     let rust_executor_pid = active_leases
         .iter()
         .filter_map(ActiveProviderLease::rust_executor_pid)
-        .find(|pid| supervisor.is_alive(*pid));
+        .find(|pid| supervisor.is_alive(*pid))
+        .or_else(|| persisted_rust_executor_pid(env, supervisor));
     let rust_executor_running = rust_executor_pid.is_some();
     let external_worker_running = active_leases.iter().any(|lease| !lease.is_rust_executor());
     let executor_running =
@@ -158,7 +159,38 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
     })
 }
 
+fn persisted_rust_executor_pid<E: EnvProvider, S: ProcessSupervisor>(
+    env: &E,
+    supervisor: &S,
+) -> Option<u32> {
+    repository::read_state(&resolve_paths(env).run_dir, QUEUE_SUPERVISOR.state_name)
+        .ok()
+        .flatten()
+        .and_then(|state| state.metadata)
+        .and_then(|metadata| {
+            metadata
+                .get("executorEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+                .then(|| metadata.get("residentPid").and_then(Value::as_u64))
+                .flatten()
+        })
+        .and_then(|pid| u32::try_from(pid).ok())
+        .filter(|pid| supervisor.is_alive(*pid))
+}
+
 fn queue_feature_flags<E: EnvProvider>(env: &E) -> QueueFeatureFlagsInspect {
+    let persisted_covering_mode =
+        repository::read_state(&resolve_paths(env).run_dir, QUEUE_SUPERVISOR.state_name)
+            .ok()
+            .flatten()
+            .and_then(|state| state.metadata)
+            .and_then(|metadata| {
+                metadata
+                    .get("rustCoveringMode")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            });
     QueueFeatureFlagsInspect {
         internal_chunked_distillation: env_bool(env, "CONTEXT_STILL_INTERNAL_CHUNKED_DISTILLATION")
             .unwrap_or_else(|| env_bool(env, "INTERNAL_CHUNKED_DISTILLATION").unwrap_or(false)),
@@ -166,6 +198,7 @@ fn queue_feature_flags<E: EnvProvider>(env: &E) -> QueueFeatureFlagsInspect {
             .var("CONTEXT_STILL_RUST_COVERING_MODE")
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
+            .or(persisted_covering_mode)
             .unwrap_or_else(|| "off".to_string()),
     }
 }
@@ -395,12 +428,10 @@ fn scalar_string(connection: &Connection, sql: &str) -> Result<Option<String>, C
 
 fn runnable_pending(
     connection: &Connection,
-    queue_name: &str,
+    _queue_name: &str,
     table_name: &str,
 ) -> Result<u64, CliError> {
-    let next_run_condition = if queue_name == "finalizeDistille"
-        || !table_has_column(connection, table_name, "next_run_at")?
-    {
+    let next_run_condition = if !table_has_column(connection, table_name, "next_run_at")? {
         ""
     } else {
         "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)"
@@ -1101,6 +1132,36 @@ mod tests {
         assert_eq!(report.executor_mode, "idle");
         assert_eq!(report.active_lease_count, 1);
 
+        std::fs::remove_dir_all(&app_dir).unwrap();
+    }
+
+    #[test]
+    fn persisted_maintenance_pid_is_not_an_active_executor_when_disabled() {
+        let app_dir = temp_app_dir("maintenance_only_pid");
+        let env = MapEnv::from_pairs(vec![(
+            "CONTEXT_STILL_APP_DATA_DIR",
+            app_dir.to_str().unwrap(),
+        )]);
+        let supervisor = MockSupervisor::new();
+        let pid = 42_424;
+        supervisor.alive.lock().unwrap().insert(pid, true);
+        repository::write_state(
+            &app_dir.join("run"),
+            QUEUE_SUPERVISOR.state_name,
+            &crate::domains::daemon::repository::ProcessState {
+                status: "scheduled".to_string(),
+                log_path: String::new(),
+                metadata: Some(serde_json::json!({
+                    "executor":"maintenance_only",
+                    "executorEnabled":false,
+                    "residentPid":pid
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(persisted_rust_executor_pid(&env, &supervisor), None);
         std::fs::remove_dir_all(&app_dir).unwrap();
     }
 

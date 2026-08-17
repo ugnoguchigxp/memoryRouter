@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { groupedConfig } from "../../config.js";
@@ -18,9 +19,13 @@ type EmbeddingResult = {
 export type EmbeddingHealth = {
   configured: boolean;
   provider: typeof groupedConfig.embedding.provider;
+  effectiveMode: "daemon" | "cli_fallback" | "openai" | "disabled" | "unavailable";
   daemon: {
     url: string;
     reachable: boolean;
+    status: "managed_ready" | "external_ready" | "starting" | "offline" | "not_required";
+    managedBy: "rust-resident" | "external" | "none";
+    pid?: number;
     error?: string;
   };
   cli: {
@@ -36,6 +41,78 @@ export type EmbeddingHealth = {
     error?: string;
   };
 };
+
+type ResidentEmbeddingState = {
+  pid?: number;
+  status?: string;
+  command?: string;
+  args?: string[];
+};
+
+function resolveAppDataDir(): string {
+  if (process.env.CONTEXT_STILL_APP_DATA_DIR) return process.env.CONTEXT_STILL_APP_DATA_DIR;
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "contextStill");
+  }
+  if (process.platform === "win32" && process.env.APPDATA) {
+    return path.join(process.env.APPDATA, "contextStill");
+  }
+  if (process.env.XDG_DATA_HOME) return path.join(process.env.XDG_DATA_HOME, "contextStill");
+  return path.join(os.homedir(), ".local", "share", "contextStill");
+}
+
+async function readResidentEmbeddingState(): Promise<ResidentEmbeddingState | null> {
+  try {
+    const raw = await readFile(
+      path.join(resolveAppDataDir(), "run", "embedding-daemon-state.json"),
+      "utf8",
+    );
+    const state = JSON.parse(raw) as ResidentEmbeddingState;
+    if (!state.args?.some((arg) => arg === "e5embed.daemon")) return null;
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function processIsAlive(pid: number | undefined): pid is number {
+  if (!pid || !Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function residentProcessIsOwned(state: ResidentEmbeddingState | null): Promise<boolean> {
+  if (!processIsAlive(state?.pid) || !state?.args) return false;
+  try {
+    const command = process.platform === "win32" ? "powershell" : "ps";
+    const args =
+      process.platform === "win32"
+        ? [
+            "-NoProfile",
+            "-Command",
+            `(Get-CimInstance Win32_Process -Filter \"ProcessId = ${state.pid}\").CommandLine`,
+          ]
+        : ["-o", "command=", "-p", String(state.pid)];
+    const commandLine = await new Promise<string>((resolve, reject) => {
+      execFile(command, args, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(String(stdout).trim());
+      });
+    });
+    if (!commandLine) return false;
+    const commandName = state.command ? path.basename(state.command).toLowerCase() : null;
+    if (commandName && !commandLine.toLowerCase().includes(commandName)) return false;
+    return state.args
+      .filter((argument) => !argument.startsWith("-"))
+      .every((argument) => commandLine.includes(argument));
+  } catch {
+    return false;
+  }
+}
 
 function validateEmbeddingShape(embeddings: unknown, provider: EmbeddingProviderName): number[][] {
   if (!Array.isArray(embeddings)) {
@@ -273,12 +350,16 @@ export async function embedOne(text: string, type: EmbeddingKind): Promise<numbe
 }
 
 export async function embeddingHealth(): Promise<EmbeddingHealth> {
+  const residentStatePromise = readResidentEmbeddingState();
   const health: EmbeddingHealth = {
     configured: groupedConfig.embedding.provider !== "disabled",
     provider: groupedConfig.embedding.provider,
+    effectiveMode: "unavailable",
     daemon: {
       url: groupedConfig.embedding.daemonUrl,
       reachable: false,
+      status: "offline",
+      managedBy: "none",
     },
     cli: {
       python: groupedConfig.localLlm.embeddingPython,
@@ -310,6 +391,23 @@ export async function embeddingHealth(): Promise<EmbeddingHealth> {
     health.daemon.error = error instanceof Error ? error.message : String(error);
   }
 
+  const residentState = await residentStatePromise;
+  const residentPid = (await residentProcessIsOwned(residentState))
+    ? residentState?.pid
+    : undefined;
+  if (health.daemon.reachable && residentPid) {
+    health.daemon.status = "managed_ready";
+    health.daemon.managedBy = "rust-resident";
+    health.daemon.pid = residentPid;
+  } else if (health.daemon.reachable) {
+    health.daemon.status = "external_ready";
+    health.daemon.managedBy = "external";
+  } else if (residentPid) {
+    health.daemon.status = "starting";
+    health.daemon.managedBy = "rust-resident";
+    health.daemon.pid = residentPid;
+  }
+
   try {
     await access(groupedConfig.localLlm.embeddingPython);
     await access(groupedConfig.localLlm.embeddingRoot);
@@ -320,6 +418,7 @@ export async function embeddingHealth(): Promise<EmbeddingHealth> {
   }
 
   if (groupedConfig.embedding.provider === "openai") {
+    health.daemon.status = "not_required";
     if (!groupedConfig.azureOpenAi.apiKey.trim()) {
       health.openai.error = "API key (azureOpenAi.apiKey) is empty";
     } else {
@@ -329,6 +428,19 @@ export async function embeddingHealth(): Promise<EmbeddingHealth> {
         health.openai.error = error instanceof Error ? error.message : String(error);
       }
     }
+  }
+
+  if (groupedConfig.embedding.provider === "disabled") {
+    health.daemon.status = "not_required";
+    health.effectiveMode = "disabled";
+  } else if (groupedConfig.embedding.provider === "openai") {
+    health.effectiveMode = "openai";
+  } else if (health.daemon.reachable) {
+    health.effectiveMode = "daemon";
+  } else if (groupedConfig.embedding.provider === "auto" && health.cli.usable) {
+    health.effectiveMode = "cli_fallback";
+  } else {
+    health.effectiveMode = "unavailable";
   }
 
   return health;

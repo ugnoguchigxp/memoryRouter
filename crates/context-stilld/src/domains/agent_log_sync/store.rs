@@ -295,6 +295,21 @@ fn enqueue_finding_candidate_if_eligible(
     }
     let id = next_id("finding-job");
     let now = now_timestamp();
+    let mut finding_metadata = json!({
+        "enqueuedBy": "vibe-finding-controlled-enqueue",
+        "enqueueReason": "eligible_vibe_memory",
+        "sourceId": source_id,
+        "sessionId": memory_session_id,
+        "chunkIndex": chunk_index,
+        "dedupeKey": dedupe_key,
+        "eligibilityScore": eligibility.score,
+        "eligibilitySignals": eligibility.signals,
+        "sourceCreatedAt": memory_created_at,
+        "backfill": false
+    });
+    if let Some(project_identity) = metadata.get("projectIdentity") {
+        finding_metadata["projectIdentity"] = project_identity.clone();
+    }
     tx.execute(
         "
         insert into finding_candidate_queue (
@@ -307,19 +322,7 @@ fn enqueue_finding_candidate_if_eligible(
             memory_id,
             format!("vibe_memory:{memory_id}"),
             DISTILLATION_VERSION,
-            json!({
-                "enqueuedBy": "vibe-finding-controlled-enqueue",
-                "enqueueReason": "eligible_vibe_memory",
-                "sourceId": source_id,
-                "sessionId": memory_session_id,
-                "chunkIndex": chunk_index,
-                "dedupeKey": dedupe_key,
-                "eligibilityScore": eligibility.score,
-                "eligibilitySignals": eligibility.signals,
-                "sourceCreatedAt": memory_created_at,
-                "backfill": false
-            })
-            .to_string(),
+            finding_metadata.to_string(),
             now,
             now
         ],

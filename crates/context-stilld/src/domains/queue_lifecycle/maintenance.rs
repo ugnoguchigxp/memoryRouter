@@ -1,5 +1,6 @@
 use rusqlite::Connection;
 use serde::Serialize;
+use serde_json::json;
 
 use crate::domains::{
     bootstrap::service::resolve_paths, daemon::repository::ProcessState, sqlite_writer,
@@ -59,6 +60,7 @@ pub fn run_maintenance_once_report<E: EnvProvider>(
     let message = format!(
         "queue-supervisor Rust maintenance completed; recoveredProviderLeases={recovered_provider_leases} recoveredQueueJobs={recovered_queue_jobs}"
     );
+    let executor_enabled = env_flag_default(env, "CONTEXT_STILL_RESIDENT_QUEUE_EXECUTOR", true);
     let state = ProcessState {
         pid: None,
         status: "scheduled".to_string(),
@@ -73,6 +75,21 @@ pub fn run_maintenance_once_report<E: EnvProvider>(
         command: Some("context-stilld".to_string()),
         args: Some(vec!["queue".to_string(), "maintenance".to_string()]),
         sqlite_core_path: Some(sqlite_core_path.clone()),
+        metadata: Some(json!({
+            "executor":if executor_enabled { "rust" } else { "maintenance_only" },
+            "executorEnabled":executor_enabled,
+            "residentPid":std::process::id(),
+            "executionLanes":if executor_enabled {
+                json!(["local_finalize","provider_pool"])
+            } else {
+                json!([])
+            },
+            "rustCoveringMode":env
+                .var("CONTEXT_STILL_RUST_COVERING_MODE")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "off".to_string())
+        })),
         ..ProcessState::default()
     };
     crate::domains::process_lifecycle::service::write_process_state(
@@ -160,6 +177,15 @@ fn env_u64_default<E: EnvProvider>(env: &E, key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+fn env_flag_default<E: EnvProvider>(env: &E, key: &str, default: bool) -> bool {
+    match env.var(key).as_deref() {
+        Some("0") | Some("false") | Some("FALSE") | Some("no") | Some("off") => false,
+        Some("1") | Some("true") | Some("TRUE") | Some("yes") | Some("on") => true,
+        Some(_) => default,
+        None => default,
+    }
+}
+
 impl QueueMaintenanceReport {
     pub fn to_json(&self) -> String {
         serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
@@ -236,6 +262,8 @@ mod tests {
                 sqlite_path.to_str().unwrap(),
             ),
             ("CONTEXT_STILL_QUEUE_STALE_SECONDS", "30"),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "negative"),
+            ("CONTEXT_STILL_RESIDENT_QUEUE_EXECUTOR", "0"),
         ]);
         let report = run_maintenance_once_report(&env).unwrap();
         assert_eq!(report.status, "scheduled");
@@ -259,6 +287,16 @@ mod tests {
             .unwrap();
         assert_eq!(job_status, "paused");
         assert_eq!(lease_status, "stale_recovered");
+        let state = crate::domains::daemon::repository::read_state(
+            &app_dir.join("run"),
+            QUEUE_SUPERVISOR.state_name,
+        )
+        .unwrap()
+        .unwrap();
+        let metadata = state.metadata.unwrap();
+        assert_eq!(metadata["rustCoveringMode"], "negative");
+        assert_eq!(metadata["executorEnabled"], false);
+        assert_eq!(metadata["executionLanes"], json!([]));
 
         std::fs::remove_dir_all(app_dir).unwrap();
     }

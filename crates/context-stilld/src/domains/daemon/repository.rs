@@ -34,6 +34,8 @@ pub struct ProcessState {
     pub project_root: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sqlite_core_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 pub fn write_state(run_dir: &Path, name: &str, state: &ProcessState) -> io::Result<()> {

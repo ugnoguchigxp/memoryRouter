@@ -250,6 +250,7 @@ export async function runVibeFindingEnqueue(
         eligibilityScore: item.score,
         eligibilitySignals: item.signals,
         sourceCreatedAt: row.createdAt,
+        projectIdentity: metadata.projectIdentity,
         backfill: true,
       },
     });

@@ -432,17 +432,12 @@ fn route_target_column_sql(column: Option<&'static str>) -> Result<Option<&'stat
 }
 
 fn runnable_provider_sql(
-    queue_name: &str,
+    _queue_name: &str,
     table_name: &str,
     route_target_column: Option<&str>,
     allowed_route_value_count: usize,
     requires_negative_candidate: bool,
 ) -> String {
-    let next_run_condition = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)"
-    };
     let route_projection = route_target_column
         .map(|column| format!("{column} as route_key"))
         .unwrap_or_else(|| "null as route_key".to_string());
@@ -473,7 +468,7 @@ fn runnable_provider_sql(
           {route_projection}
         from {table_name}
         where status in ('pending', 'paused')
-          {next_run_condition}
+          and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
           {allowed_route_condition}
           {negative_candidate_condition}
         order by priority desc, created_at asc, id asc

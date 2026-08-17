@@ -194,6 +194,13 @@ ALTER TABLE finding_candidate_escalations
   if (!hasColumn(db, "security_candidate_batch_items", "provenance_json")) {
     db.exec("ALTER TABLE security_candidate_batch_items ADD COLUMN provenance_json TEXT;");
   }
+  addColumnIfMissing(
+    db,
+    "finalize_distille_queue",
+    "max_attempts",
+    "max_attempts INTEGER NOT NULL DEFAULT 5",
+  );
+  addColumnIfMissing(db, "finalize_distille_queue", "next_run_at", "next_run_at TEXT");
   db.exec(`
 DROP INDEX IF EXISTS finding_candidate_escalations_source_provider_model_unique_idx;
 CREATE UNIQUE INDEX IF NOT EXISTS finding_candidate_escalations_source_provider_model_unique_idx

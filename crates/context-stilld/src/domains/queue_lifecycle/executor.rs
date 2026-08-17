@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::domains::{
@@ -12,6 +12,7 @@ use crate::domains::{
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process};
 
+use super::claim::claim_next_queue_job_for_connection;
 use super::covering_executor::{
     execute_negative_covering, load_claimed_negative_execution, persist_negative_covering_result,
     NegativeCoveringExecution, NegativeCoveringHeartbeatGuard, NegativeCoveringPersistStatus,
@@ -21,7 +22,8 @@ use super::episode_executor::{
 };
 use super::events::append_queue_event_for_connection;
 use super::finalize_executor::{
-    run_finalize_distille_job_for_connection, FinalizeEmbeddingConfig, FinalizeExecutionStatus,
+    backfill_finalize_project_identity_for_connection, run_finalize_distille_job_for_connection,
+    FinalizeEmbeddingConfig, FinalizeExecutionStatus,
 };
 use super::finding_executor::{run_finding_candidate_job_for_connection, FindingExecutionStatus};
 use super::provider_lease::{
@@ -62,6 +64,7 @@ pub struct QueueExecutorTickReport {
     pub claimed: u64,
     pub completed: u64,
     pub failed: u64,
+    pub retried: u64,
     pub unsupported: u64,
     pub message: String,
 }
@@ -70,6 +73,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
     env: &E,
 ) -> Result<QueueExecutorTickReport, CliError> {
     let paths = resolve_paths(env);
+    let rust_covering_mode = rust_covering_mode(env);
     let sqlite_core_path = process::path_to_string(&paths.sqlite_core_path);
     if !paths.sqlite_core_path.exists() {
         let report = QueueExecutorTickReport {
@@ -81,15 +85,22 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             claimed: 0,
             completed: 0,
             failed: 0,
+            retried: 0,
             unsupported: 0,
             message: "queue executor skipped; SQLite core database is missing".to_string(),
         };
-        write_executor_state(&paths.run_dir, &report)?;
+        write_executor_state(&paths.run_dir, &report, &rust_covering_mode)?;
         return Ok(report);
     }
 
     let config = ExecutorTickConfig {
         max_claims: env_u64_default(env, "CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS", 1).max(1),
+        local_finalize_max_claims: env_u64_default(
+            env,
+            "CONTEXT_STILL_RUST_FINALIZE_MAX_CLAIMS",
+            100,
+        )
+        .clamp(1, 500),
         queue_stale_seconds: env_u64_default(env, "CONTEXT_STILL_QUEUE_STALE_SECONDS", 120)
             .clamp(30, 120),
         llm_timeout_seconds: env_u64_default(env, "CONTEXT_STILL_RUST_LLM_TIMEOUT_SECONDS", 600),
@@ -109,6 +120,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             .var("EMBEDDING_ACCESS_TOKEN")
             .or_else(|| env.var("LOCAL_LLM_ACCESS_TOKEN")),
         azure_openai_api_key: env.var("AZURE_OPENAI_API_KEY"),
+        rust_covering_mode,
     };
     let run_dir = paths.run_dir.clone();
     if covering_negative_enabled(env) {
@@ -145,10 +157,10 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                     "SQLite writer covering persistence failed: {error}"
                 ))
             })?;
-            let (status, completed, failed) = match persisted {
-                NegativeCoveringPersistStatus::Completed => ("executed", 1, 0),
-                NegativeCoveringPersistStatus::Failed => ("degraded", 0, 1),
-                NegativeCoveringPersistStatus::Retrying => ("degraded", 0, 1),
+            let (status, completed, failed, retried) = match persisted {
+                NegativeCoveringPersistStatus::Completed => ("executed", 1, 0, 0),
+                NegativeCoveringPersistStatus::Failed => ("degraded", 0, 1, 0),
+                NegativeCoveringPersistStatus::Retrying => ("degraded", 0, 0, 1),
             };
             let report = QueueExecutorTickReport {
                 process: QUEUE_SUPERVISOR.state_name,
@@ -159,12 +171,13 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                 claimed: 1,
                 completed,
                 failed,
+                retried,
                 unsupported: 0,
                 message: format!(
-                    "queue executor tick completed; coveringMode=negative claimed=1 completed={completed} failed={failed} unsupported=0"
+                    "queue executor tick completed; coveringMode=negative claimed=1 completed={completed} failed={failed} retried={retried} unsupported=0"
                 ),
             };
-            write_executor_state(&run_dir, &report)?;
+            write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
             return Ok(report);
         }
     }
@@ -182,6 +195,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
 #[derive(Clone)]
 struct ExecutorTickConfig {
     max_claims: u64,
+    local_finalize_max_claims: u64,
     queue_stale_seconds: u64,
     llm_timeout_seconds: u64,
     covering_min_interval_seconds: u64,
@@ -189,11 +203,18 @@ struct ExecutorTickConfig {
     project_root: std::path::PathBuf,
     embedding_access_token: Option<String>,
     azure_openai_api_key: Option<String>,
+    rust_covering_mode: String,
 }
 
 fn covering_negative_enabled<E: EnvProvider>(env: &E) -> bool {
+    rust_covering_mode(env) == "negative"
+}
+
+fn rust_covering_mode<E: EnvProvider>(env: &E) -> String {
     env.var("CONTEXT_STILL_RUST_COVERING_MODE")
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("negative"))
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "off".to_string())
 }
 
 fn claim_negative_covering_with_connection(
@@ -357,28 +378,74 @@ fn run_executor_tick_with_connection(
             "executor_unconfigured",
             "queue executor skipped; runtime settings are missing",
         );
-        write_executor_state(&run_dir, &report)?;
+        write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
         return Ok(report);
     };
     let paused_queues = load_paused_queues(connection)?;
+    let mut claimed = 0;
+    let mut completed = 0;
+    let mut failed = 0;
+    let mut retried = 0;
+    let mut unsupported = 0;
+
+    if !paused_queues.contains("finalizeDistille")
+        && table_exists(connection, "finalize_distille_queue")?
+    {
+        backfill_finalize_project_identity_for_connection(
+            connection,
+            config.local_finalize_max_claims as usize,
+        )?;
+        let embedding_config = finalize_embedding_config(connection, &settings, &config);
+        let low_importance_reject_threshold = settings
+            .pointer("/distillationRuntime/lowImportanceRejectThreshold")
+            .and_then(Value::as_f64)
+            .unwrap_or(20.0);
+        let mut local_finalize_claimed = 0;
+        while local_finalize_claimed < config.local_finalize_max_claims {
+            let worker_id = format!("context-stilld-rust-finalize:{}", unique_suffix());
+            let Some(job) = claim_next_queue_job_for_connection(
+                connection,
+                "finalizeDistille",
+                &worker_id,
+                config.queue_stale_seconds,
+            )?
+            else {
+                break;
+            };
+            local_finalize_claimed += 1;
+            claimed += 1;
+            match run_finalize_distille_job_for_connection(
+                connection,
+                &job.id,
+                &worker_id,
+                &embedding_config,
+                low_importance_reject_threshold,
+            )? {
+                FinalizeExecutionStatus::Completed | FinalizeExecutionStatus::Skipped => {
+                    completed += 1;
+                }
+                FinalizeExecutionStatus::Failed => {
+                    failed += 1;
+                }
+                FinalizeExecutionStatus::Retrying => retried += 1,
+            }
+        }
+    }
+
     let pools = provider_pools(&settings);
-    if pools.is_empty() {
+    if pools.is_empty() && claimed == 0 {
         let report = idle_report(
             sqlite_core_path,
             "executor_unconfigured",
             "queue executor skipped; no enabled provider pools are configured",
         );
-        write_executor_state(&run_dir, &report)?;
+        write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
         return Ok(report);
     }
-
-    let mut claimed = 0;
-    let mut completed = 0;
-    let mut failed = 0;
-    let mut unsupported = 0;
+    let mut provider_claimed = 0;
 
     for pool in pools {
-        if claimed >= config.max_claims {
+        if provider_claimed >= config.max_claims {
             break;
         }
         let priority_queues =
@@ -404,6 +471,7 @@ fn run_executor_tick_with_connection(
             continue;
         };
         claimed += 1;
+        provider_claimed += 1;
 
         append_queue_event_best_effort(
             connection,
@@ -418,39 +486,6 @@ fn run_executor_tick_with_connection(
             )),
         );
         heartbeat_claim_best_effort(connection, &job);
-
-        if job.queue_name == "finalizeDistille" {
-            let embedding_config = finalize_embedding_config(connection, &settings, &config);
-            let low_importance_reject_threshold = settings
-                .pointer("/distillationRuntime/lowImportanceRejectThreshold")
-                .and_then(Value::as_f64)
-                .unwrap_or(20.0);
-            match run_finalize_distille_job_for_connection(
-                connection,
-                &job.id,
-                &job.provider_lease.worker_id,
-                &embedding_config,
-                low_importance_reject_threshold,
-            )? {
-                FinalizeExecutionStatus::Completed | FinalizeExecutionStatus::Skipped => {
-                    release_provider_lease_for_connection(
-                        connection,
-                        &job.provider_lease.id,
-                        "worker_finished",
-                    )?;
-                    completed += 1;
-                }
-                FinalizeExecutionStatus::Failed => {
-                    release_provider_lease_for_connection(
-                        connection,
-                        &job.provider_lease.id,
-                        "worker_failed",
-                    )?;
-                    failed += 1;
-                }
-            }
-            continue;
-        }
 
         if job.queue_name == "episodeDistiller" || job.queue_name == "findingCandidate" {
             let target = local_llm_target_config(&settings, &job.provider_lease.target_id)?;
@@ -556,7 +591,7 @@ fn run_executor_tick_with_connection(
         "idle"
     } else if unsupported > 0 {
         "unsupported"
-    } else if failed > 0 {
+    } else if failed > 0 || retried > 0 {
         "degraded"
     } else {
         "executed"
@@ -570,12 +605,13 @@ fn run_executor_tick_with_connection(
         claimed,
         completed,
         failed,
+        retried,
         unsupported,
         message: format!(
-            "queue executor tick completed; claimed={claimed} completed={completed} failed={failed} unsupported={unsupported}"
+            "queue executor tick completed; claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported={unsupported}"
         ),
     };
-    write_executor_state(&run_dir, &report)?;
+    write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
     Ok(report)
 }
 
@@ -630,6 +666,7 @@ fn idle_report(sqlite_core_path: String, status: &str, message: &str) -> QueueEx
         claimed: 0,
         completed: 0,
         failed: 0,
+        retried: 0,
         unsupported: 0,
         message: message.to_string(),
     }
@@ -886,8 +923,12 @@ fn executor_priority_queues_for_pool(
 ) -> Vec<ProviderQueueClaimSpec> {
     priority_queues_for_pool(settings, pool_id, paused_queues)
         .into_iter()
-        .filter(|spec| rust_executor_supports_queue(&spec.queue_name))
+        .filter(|spec| rust_provider_executor_supports_queue(&spec.queue_name))
         .collect()
+}
+
+fn rust_provider_executor_supports_queue(queue_name: &str) -> bool {
+    matches!(queue_name, "findingCandidate" | "episodeDistiller")
 }
 
 pub(crate) fn rust_executor_supports_queue(queue_name: &str) -> bool {
@@ -1247,6 +1288,7 @@ fn unique_suffix() -> String {
 fn write_executor_state(
     run_dir: &std::path::Path,
     report: &QueueExecutorTickReport,
+    rust_covering_mode: &str,
 ) -> Result<(), CliError> {
     let state = ProcessState {
         pid: None,
@@ -1262,6 +1304,13 @@ fn write_executor_state(
         command: Some("context-stilld".to_string()),
         args: Some(vec!["queue".to_string(), "executor_tick".to_string()]),
         sqlite_core_path: Some(report.sqlite_core_path.clone()),
+        metadata: Some(json!({
+            "executor":"rust",
+            "executorEnabled":true,
+            "residentPid":std::process::id(),
+            "executionLanes":["local_finalize","provider_pool"],
+            "rustCoveringMode":rust_covering_mode
+        })),
         ..ProcessState::default()
     };
     process_lifecycle_service::write_process_state(&QUEUE_SUPERVISOR, run_dir, &state)
@@ -1320,6 +1369,25 @@ mod tests {
                 response_body
             );
             reader.get_mut().write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn serve_embedding_response() -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            let body = r#"{"embeddings":[[0.1,0.2,0.3]],"dimension":3}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .unwrap();
         });
         (format!("http://{address}"), handle)
     }
@@ -1439,6 +1507,97 @@ mod tests {
             )
             .unwrap();
         assert_eq!(retried_events, 0);
+
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[test]
+    fn rust_finalize_local_lane_runs_despite_finding_backlog_without_provider_pool() {
+        let app_dir = temp_app_dir("finalize_local_lane");
+        let sqlite_path = app_dir.join("queue.sqlite");
+        let (embedding_url, embedding_server) = serve_embedding_response();
+        crate::domains::vector_index::service::register_sqlite_vec();
+        let mut connection = Connection::open(&sqlite_path).unwrap();
+        crate::domains::sqlite_writer::schema::configure_writer_connection(&connection).unwrap();
+        crate::domains::sqlite_writer::schema::migrate(&mut connection, 3).unwrap();
+        let settings = json!({
+            "settings": {
+                "providerPools": [],
+                "providers": {"local-llm":{"models":[]}},
+                "taskRouting": {},
+                "embedding": {"provider":"daemon","daemonUrl":embedding_url,"timeoutMs":5000},
+                "distillationRuntime": {"lowImportanceRejectThreshold":50}
+            }
+        });
+        connection
+            .execute(
+                "insert into settings (id, namespace, key, value) values ('settings-finalize', 'runtime', 'settings.v1', ?1)",
+                [settings.to_string()],
+            )
+            .unwrap();
+        connection.execute_batch(r#"
+            insert into vibe_memories (id,session_id,content,memory_type,metadata,created_at)
+            values ('memory-finalize','session-1','source','chat','{"rustAgentLogSync":true,"projectRoot":"/work/project"}',CURRENT_TIMESTAMP);
+            insert into finding_candidate_queue (
+              id,input_kind,source_kind,source_key,source_uri,distillation_version,status,priority,metadata,created_at,updated_at
+            ) values
+              ('finding-backlog','source_target','vibe_memory','memory-backlog','vibe_memory:memory-backlog','v1','pending',50,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+              ('finding-finalize','source_target','vibe_memory','memory-finalize','vibe_memory:memory-finalize','v1','completed',50,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+            insert into found_candidates (
+              id,finding_job_id,candidate_index,type,title,content,origin,metadata,created_at,updated_at
+            ) values ('candidate-finalize','finding-finalize',0,'rule','Finalize local lane','Persist only after embedding succeeds.','{}','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+            insert into evidence_coverage_results (
+              id,found_candidate_id,producer_queue,producer_job_id,distillation_version,status,stage,type,title,body,importance,confidence,applies_to,"references",duplicate_refs,tool_events,created_at,updated_at
+            ) values (
+              'evidence-finalize','candidate-finalize','coveringEvidence','cover-finalize','v1','knowledge_ready','final','rule','Finalize local lane',
+              'Persist only after embedding succeeds.',80,90,
+              '{"technologies":["Rust"],"changeTypes":["bug_fix"],"domains":["queue"],"repoPath":"/work/project"}',
+              '[]','[]','[]',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
+            );
+            insert into finalize_distille_queue (
+              id,evidence_result_id,distillation_version,status,priority,attempt_count,max_attempts,metadata,created_at,updated_at
+            ) values ('finalize-local','evidence-finalize','v1','pending',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+        "#).unwrap();
+        drop(connection);
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+            ("CONTEXT_STILL_PROJECT_ROOT", app_dir.to_str().unwrap()),
+        ]);
+
+        let report = run_executor_tick_report(&env).unwrap();
+        embedding_server.join().unwrap();
+
+        assert_eq!(report.status, "executed");
+        assert_eq!((report.claimed, report.completed), (1, 1));
+        let connection = Connection::open(&sqlite_path).unwrap();
+        let statuses = connection
+            .query_row(
+                "select (select status from finalize_distille_queue where id='finalize-local'), (select status from finding_candidate_queue where id='finding-backlog')",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(statuses, ("completed".to_string(), "pending".to_string()));
+        let vectors: i64 = connection
+            .query_row(
+                "select count(*) from knowledge_items_vec_fallback where embedding_dimension=3",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(vectors, 1);
+        let claimed_events: i64 = connection
+            .query_row(
+                "select count(*) from distillation_queue_events where queue_name='finalizeDistille' and queue_job_id='finalize-local' and event_type='claimed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(claimed_events, 1);
 
         std::fs::remove_dir_all(app_dir).unwrap();
     }
@@ -1671,7 +1830,8 @@ mod tests {
                     "source": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"},
                     "vibe": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"}
                 },
-                "episodeDistiller": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"}
+                "episodeDistiller": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"},
+                "finalizeDistille": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"}
             }
         });
 
@@ -1685,6 +1845,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["findingCandidate", "episodeDistiller"]
         );
+        assert!(rust_executor_supports_queue("finalizeDistille"));
+        assert!(!rust_provider_executor_supports_queue("finalizeDistille"));
         assert_eq!(
             queues[0].allowed_route_values,
             Some(vec!["vibe_memory".to_string()])

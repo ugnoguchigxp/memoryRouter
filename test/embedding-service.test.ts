@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { groupedConfig } from "../src/config.js";
 import { embedOne, embeddingHealth } from "../src/modules/embedding/embedding.service.js";
@@ -41,11 +41,14 @@ vi.mock("node:child_process", () => ({
 // Mock fs/promises
 vi.mock("node:fs/promises", () => ({
   access: vi.fn(),
+  readFile: vi.fn().mockRejectedValue(new Error("No resident state")),
 }));
 
 describe("embedding service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(execFile).mockReset();
+    vi.mocked(readFile).mockReset().mockRejectedValue(new Error("No resident state"));
     groupedConfig.embedding.provider = "auto";
   });
 
@@ -239,7 +242,63 @@ describe("embedding service", () => {
 
       expect(health.configured).toBe(true);
       expect(health.daemon.reachable).toBe(true);
+      expect(health.daemon.status).toBe("external_ready");
+      expect(health.effectiveMode).toBe("daemon");
       expect(health.cli.usable).toBe(true);
+    });
+
+    test("reports a live resident-owned daemon from the persisted runtime ledger", async () => {
+      mockFetch.mockResolvedValue({ ok: true });
+      (access as any).mockResolvedValue(undefined);
+      vi.mocked(readFile).mockResolvedValue(
+        JSON.stringify({
+          pid: process.pid,
+          status: "managed_ready",
+          command: "/usr/bin/python",
+          args: ["-m", "e5embed.daemon"],
+        }),
+      );
+      vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+        const callback = args.at(-1) as (
+          error: Error | null,
+          stdout: string,
+          stderr: string,
+        ) => void;
+        callback(null, "/usr/bin/python -m e5embed.daemon", "");
+      }) as typeof execFile);
+
+      const health = await embeddingHealth();
+
+      expect(health.daemon.status).toBe("managed_ready");
+      expect(health.daemon.managedBy).toBe("rust-resident");
+      expect(health.daemon.pid).toBe(process.pid);
+    });
+
+    test("does not claim a reused resident PID owned by another process", async () => {
+      mockFetch.mockResolvedValue({ ok: true });
+      (access as any).mockResolvedValue(undefined);
+      vi.mocked(readFile).mockResolvedValue(
+        JSON.stringify({
+          pid: process.pid,
+          status: "managed_ready",
+          command: "/usr/bin/python",
+          args: ["-m", "e5embed.daemon"],
+        }),
+      );
+      vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
+        const callback = args.at(-1) as (
+          error: Error | null,
+          stdout: string,
+          stderr: string,
+        ) => void;
+        callback(null, "/usr/bin/node vitest", "");
+      }) as typeof execFile);
+
+      const health = await embeddingHealth();
+
+      expect(health.daemon.status).toBe("external_ready");
+      expect(health.daemon.managedBy).toBe("external");
+      expect(health.daemon.pid).toBeUndefined();
     });
 
     test("returns reachable false and error if daemon health check fails", async () => {
@@ -252,6 +311,7 @@ describe("embedding service", () => {
       expect(health.daemon.error).toBe("HTTP 500");
       expect(health.cli.usable).toBe(false);
       expect(health.cli.error).toBe("File not found");
+      expect(health.effectiveMode).toBe("unavailable");
     });
 
     test("returns configured false or error if openai provider is active but apiKey is empty", async () => {

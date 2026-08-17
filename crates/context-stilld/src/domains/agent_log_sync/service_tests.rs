@@ -347,6 +347,12 @@ fn rust_agent_log_sync_enqueues_eligible_vibe_memory_finding_job() {
         metadata.get("backfill").and_then(Value::as_bool),
         Some(false)
     );
+    assert_eq!(
+        metadata
+            .pointer("/projectIdentity/repoPath")
+            .and_then(Value::as_str),
+        Some("/tmp/contextStill")
+    );
     let memory_created_at: String = connection
         .query_row("select created_at from vibe_memories limit 1", [], |row| {
             row.get(0)

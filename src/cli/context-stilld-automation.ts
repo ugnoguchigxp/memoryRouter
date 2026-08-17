@@ -170,6 +170,7 @@ function renderPlist(): string {
     .replaceAll("{{DB_BACKEND}}", process.env.CONTEXT_STILL_DB_BACKEND ?? "sqlite")
     .replaceAll("{{SQLITE_CORE_PATH}}", sqliteCorePath)
     .replaceAll("{{RESIDENT_MCP}}", resolveResidentMcpFlag())
+    .replaceAll("{{RESIDENT_EMBEDDING}}", process.env.CONTEXT_STILL_RESIDENT_EMBEDDING ?? "1")
     .replaceAll("{{RESIDENT_QUEUE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE ?? "1")
     .replaceAll(
       "{{RESIDENT_QUEUE_MODE}}",

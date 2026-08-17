@@ -63,11 +63,6 @@ pub fn keep_queue_job_waiting_for_worker_for_connection(
     reason: &str,
 ) -> Result<Option<QueueStateRow>, CliError> {
     let table_name = queue_table_name(queue_name)?;
-    let next_run_update = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "next_run_at = datetime('now', '+30 seconds'),"
-    };
     update_queue_state(
         connection,
         &format!(
@@ -75,7 +70,7 @@ pub fn keep_queue_job_waiting_for_worker_for_connection(
             update {table_name}
             set
               status = 'pending',
-              {next_run_update}
+              next_run_at = datetime('now', '+30 seconds'),
               last_error = ?1,
               last_outcome_kind = 'worker_unavailable',
               locked_by = null,
@@ -97,11 +92,6 @@ pub fn resume_queue_job_for_connection(
     id: &str,
 ) -> Result<Option<QueueStateRow>, CliError> {
     let table_name = queue_table_name(queue_name)?;
-    let next_run_update = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "next_run_at = null,"
-    };
     update_queue_state(
         connection,
         &format!(
@@ -109,7 +99,7 @@ pub fn resume_queue_job_for_connection(
             update {table_name}
             set
               status = 'pending',
-              {next_run_update}
+              next_run_at = null,
               locked_by = null,
               locked_at = null,
               heartbeat_at = null,
@@ -180,11 +170,6 @@ pub fn retry_queue_job_for_connection(
         );
     }
 
-    let next_run_update = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "next_run_at = null,"
-    };
     update_queue_state(
         connection,
         &format!(
@@ -193,7 +178,7 @@ pub fn retry_queue_job_for_connection(
             set
               status = 'pending',
               attempt_count = 0,
-              {next_run_update}
+              next_run_at = null,
               completed_at = null,
               locked_by = null,
               locked_at = null,
@@ -215,11 +200,6 @@ pub fn pause_running_queue_jobs_for_connection(
     reason: &str,
 ) -> Result<u64, CliError> {
     let table_name = queue_table_name(queue_name)?;
-    let next_run_update = if queue_name == "finalizeDistille" {
-        ""
-    } else {
-        "next_run_at = CURRENT_TIMESTAMP,"
-    };
     let changed = connection
         .execute(
             &format!(
@@ -228,7 +208,7 @@ pub fn pause_running_queue_jobs_for_connection(
                 set
                   status = 'paused',
                   last_error = ?1,
-                  {next_run_update}
+                  next_run_at = CURRENT_TIMESTAMP,
                   locked_by = null,
                   locked_at = null,
                   heartbeat_at = null,
@@ -440,7 +420,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_queue_state_pauses_running_finalize_without_next_run_at() {
+    fn rust_queue_state_pauses_running_finalize_with_immediate_next_run_at() {
         let app_dir = temp_app_dir("state_pause_running_finalize");
         let sqlite_path = app_dir.join("queue.sqlite");
         let connection = Connection::open(&sqlite_path).unwrap();
@@ -480,10 +460,9 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(
-            row,
-            ("paused".to_string(), "global pause".to_string(), None)
-        );
+        assert_eq!(row.0, "paused");
+        assert_eq!(row.1, "global pause");
+        assert!(row.2.is_some());
 
         std::fs::remove_dir_all(&app_dir).unwrap();
     }

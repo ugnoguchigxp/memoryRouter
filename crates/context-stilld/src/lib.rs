@@ -163,9 +163,11 @@ mod tests {
         assert_eq!(json["mcpServer"], "stopped");
         assert_eq!(json["queueSupervisor"], "stopped");
         assert_eq!(json["agentLogSync"], "stopped");
+        assert_eq!(json["embeddingDaemon"], "stopped");
         assert_eq!(json["managedDefaultFlags"]["mcp"], true);
         assert_eq!(json["managedDefaultFlags"]["queue"], true);
         assert_eq!(json["managedDefaultFlags"]["agentLogSync"], true);
+        assert_eq!(json["managedDefaultFlags"]["embedding"], true);
         assert_eq!(json["managedDefaultFlags"]["adminApi"], false);
         assert!(json["version"].is_string());
 
@@ -180,7 +182,7 @@ mod tests {
         );
 
         let obj = json.as_object().expect("JSON must be an object");
-        assert_eq!(obj.len(), 9);
+        assert_eq!(obj.len(), 10);
     }
 
     #[test]
@@ -202,6 +204,7 @@ mod tests {
             ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
             ("CONTEXT_STILL_PROJECT_ROOT", app_dir.to_str().unwrap()),
             ("CONTEXT_STILL_MCP_PORT", "0"),
+            ("CONTEXT_STILL_EMBEDDING_DAEMON_URL", "http://127.0.0.1:1"),
         ]);
         let supervisor = MockSupervisor::new();
 
@@ -209,17 +212,19 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
         assert_eq!(report["action"], "run");
         assert_eq!(report["status"], "exited");
-        assert_eq!(report["surfaces"].as_array().unwrap().len(), 5);
+        assert_eq!(report["surfaces"].as_array().unwrap().len(), 6);
         assert_eq!(report["surfaces"][0]["name"], "sqlite-writer");
         assert_eq!(report["surfaces"][0]["status"], "running");
-        assert_eq!(report["surfaces"][1]["name"], "mcp-server");
-        assert_eq!(report["surfaces"][1]["status"], "running");
-        assert_eq!(report["surfaces"][2]["name"], "queue-supervisor");
-        assert_eq!(report["surfaces"][2]["status"], "executor_unconfigured");
-        assert_eq!(report["surfaces"][3]["name"], "agent-log-sync");
-        assert_eq!(report["surfaces"][3]["status"], "scheduled");
-        assert_eq!(report["surfaces"][4]["name"], "mcp-server");
-        assert_eq!(report["surfaces"][4]["status"], "stopped");
+        assert_eq!(report["surfaces"][1]["name"], "embedding-daemon");
+        assert_eq!(report["surfaces"][1]["status"], "unavailable");
+        assert_eq!(report["surfaces"][2]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][2]["status"], "running");
+        assert_eq!(report["surfaces"][3]["name"], "queue-supervisor");
+        assert_eq!(report["surfaces"][3]["status"], "executor_unconfigured");
+        assert_eq!(report["surfaces"][4]["name"], "agent-log-sync");
+        assert_eq!(report["surfaces"][4]["status"], "scheduled");
+        assert_eq!(report["surfaces"][5]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][5]["status"], "stopped");
 
         let status_json = crate::run(["status", "--json"], &env, &supervisor).unwrap();
         let status: serde_json::Value = serde_json::from_str(&status_json).unwrap();
@@ -250,6 +255,7 @@ mod tests {
             ("CONTEXT_STILL_PROJECT_ROOT", app_dir.to_str().unwrap()),
             ("CONTEXT_STILL_MCP_PORT", "0"),
             ("CONTEXT_STILL_RESIDENT_REQUIRE_RUST_ONLY", "1"),
+            ("CONTEXT_STILL_EMBEDDING_DAEMON_URL", "http://127.0.0.1:1"),
         ]);
         let supervisor = MockSupervisor::new();
 
@@ -257,17 +263,19 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&output).expect("valid JSON");
 
         assert_eq!(report["status"], "exited");
-        assert_eq!(report["surfaces"].as_array().unwrap().len(), 5);
+        assert_eq!(report["surfaces"].as_array().unwrap().len(), 6);
         assert_eq!(report["surfaces"][0]["name"], "sqlite-writer");
         assert_eq!(report["surfaces"][0]["status"], "running");
-        assert_eq!(report["surfaces"][1]["name"], "mcp-server");
-        assert_eq!(report["surfaces"][1]["status"], "running");
-        assert_eq!(report["surfaces"][2]["name"], "queue-supervisor");
-        assert_eq!(report["surfaces"][2]["status"], "executor_unconfigured");
-        assert_eq!(report["surfaces"][3]["name"], "agent-log-sync");
-        assert_eq!(report["surfaces"][3]["status"], "scheduled");
-        assert_eq!(report["surfaces"][4]["name"], "mcp-server");
-        assert_eq!(report["surfaces"][4]["status"], "stopped");
+        assert_eq!(report["surfaces"][1]["name"], "embedding-daemon");
+        assert_eq!(report["surfaces"][1]["status"], "unavailable");
+        assert_eq!(report["surfaces"][2]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][2]["status"], "running");
+        assert_eq!(report["surfaces"][3]["name"], "queue-supervisor");
+        assert_eq!(report["surfaces"][3]["status"], "executor_unconfigured");
+        assert_eq!(report["surfaces"][4]["name"], "agent-log-sync");
+        assert_eq!(report["surfaces"][4]["status"], "scheduled");
+        assert_eq!(report["surfaces"][5]["name"], "mcp-server");
+        assert_eq!(report["surfaces"][5]["status"], "stopped");
         assert!(!supervisor
             .spawned
             .lock()

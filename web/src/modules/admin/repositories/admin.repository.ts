@@ -325,7 +325,15 @@ export type DoctorReport = {
   embedding?: {
     configured: boolean;
     provider: string;
-    daemon: { url: string; reachable: boolean; error?: string };
+    effectiveMode?: "daemon" | "cli_fallback" | "openai" | "disabled" | "unavailable";
+    daemon: {
+      url: string;
+      reachable: boolean;
+      status?: "managed_ready" | "external_ready" | "starting" | "offline" | "not_required";
+      managedBy?: "rust-resident" | "external" | "none";
+      pid?: number;
+      error?: string;
+    };
     cli: { python: string; root: string; modelDir: string; usable: boolean; error?: string };
   };
   agenticLlm?: {

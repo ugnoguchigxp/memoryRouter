@@ -785,7 +785,7 @@ fn merge_applicability(origin: &Value, metadata: &Value, parsed: &Value) -> Valu
                 }
             }
         }
-        for key in ["repoPath", "repoKey"] {
+        for key in ["projectRef", "repoPath", "repoKey"] {
             if let Some(text) = source
                 .get(key)
                 .and_then(Value::as_str)
@@ -797,6 +797,25 @@ fn merge_applicability(origin: &Value, metadata: &Value, parsed: &Value) -> Valu
         }
         if let Some(general) = source.get("general").and_then(Value::as_bool) {
             merged.insert("general".to_string(), json!(general));
+        }
+    }
+    for identity in [
+        origin.get("projectIdentity"),
+        metadata.get("projectIdentity"),
+        metadata.pointer("/sourceMetadata/projectIdentity"),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for key in ["projectRef", "repoPath", "repoKey"] {
+            if let Some(text) = identity
+                .get(key)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                merged.insert(key.to_string(), json!(text));
+            }
         }
     }
     Value::Object(merged)
@@ -1090,6 +1109,31 @@ mod tests {
             result.tool_events[0]["metadata"]["intentTags"],
             json!(["data_integrity"])
         );
+    }
+
+    #[test]
+    fn covering_applicability_preserves_canonical_source_project_identity() {
+        let merged = merge_applicability(
+            &json!({}),
+            &json!({
+                "sourceMetadata": {
+                    "projectIdentity": {
+                        "projectRef": "project-1",
+                        "repoPath": "/work/contextStill",
+                        "repoKey": "context-still"
+                    }
+                }
+            }),
+            &json!({
+                "technologies": ["Rust"],
+                "changeTypes": ["bug_fix"],
+                "domains": ["queue"]
+            }),
+        );
+
+        assert_eq!(merged["projectRef"], "project-1");
+        assert_eq!(merged["repoPath"], "/work/contextStill");
+        assert_eq!(merged["repoKey"], "context-still");
     }
 
     #[test]

@@ -67,8 +67,14 @@ describe("Doctor Service", () => {
     vi.mocked(embeddingHealth).mockResolvedValue({
       configured: true,
       provider: "daemon",
+      effectiveMode: "daemon",
 
-      daemon: { url: "http://localhost:1234", reachable: true },
+      daemon: {
+        url: "http://localhost:1234",
+        reachable: true,
+        status: "external_ready",
+        managedBy: "external",
+      },
       cli: { python: "python3", root: "/tmp", modelDir: "/tmp/models", usable: true },
       openai: { configured: false, model: "" },
     });
@@ -520,7 +526,13 @@ describe("Doctor Service", () => {
     vi.mocked(embeddingHealth).mockResolvedValue({
       configured: true,
       provider: "daemon",
-      daemon: { url: "http://localhost:1234", reachable: false },
+      effectiveMode: "unavailable",
+      daemon: {
+        url: "http://localhost:1234",
+        reachable: false,
+        status: "offline",
+        managedBy: "none",
+      },
       cli: { python: "python3", root: "/tmp", modelDir: "/tmp/models", usable: false },
       openai: { configured: false, model: "" },
     });
@@ -531,6 +543,29 @@ describe("Doctor Service", () => {
     vi.mocked(getDb).mockReturnValue(mockDb as any);
 
     const report = await runDoctor();
+    expect(report.reasons).toContain("EMBEDDING_PROVIDER_UNAVAILABLE");
+  });
+
+  test("detects an unconfigured OpenAI embedding provider", async () => {
+    vi.mocked(embeddingHealth).mockResolvedValue({
+      configured: true,
+      provider: "openai",
+      effectiveMode: "openai",
+      daemon: {
+        url: "http://localhost:1234",
+        reachable: false,
+        status: "not_required",
+        managedBy: "none",
+      },
+      cli: { python: "python3", root: "/tmp", modelDir: "/tmp/models", usable: false },
+      openai: { configured: false, model: "", error: "API key is empty" },
+    });
+    vi.mocked(getDb).mockReturnValue({
+      execute: vi.fn().mockResolvedValue({ rows: [] }),
+    } as any);
+
+    const report = await runDoctor();
+
     expect(report.reasons).toContain("EMBEDDING_PROVIDER_UNAVAILABLE");
   });
 

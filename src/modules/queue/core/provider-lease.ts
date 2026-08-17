@@ -203,12 +203,12 @@ function staleCutoffTimestamp(pool: RuntimeProviderPool): string {
   return sqliteTimestamp(new Date(Date.now() - seconds * 1000));
 }
 
-function recoverStaleQueueJobsSql(queueName: DistillationQueueName, tableName: string): string {
+function recoverStaleQueueJobsSql(tableName: string): string {
   return `
     update ${tableName}
     set
       status = 'paused',
-      ${queueName === "finalizeDistille" ? "" : "next_run_at = CURRENT_TIMESTAMP,"}
+      next_run_at = CURRENT_TIMESTAMP,
       locked_by = null,
       locked_at = null,
       heartbeat_at = null,
@@ -222,9 +222,7 @@ function recoverStaleQueueJobsSql(queueName: DistillationQueueName, tableName: s
 
 function runnableSql(queueName: DistillationQueueName, tableName: string): string {
   const nextRunCondition =
-    queueName === "finalizeDistille"
-      ? ""
-      : "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)";
+    "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)";
   const extraColumns =
     queueName === "findingCandidate"
       ? ", source_kind"
@@ -398,7 +396,7 @@ export async function claimNextJobWithProviderLease(params: {
     for (const [queueOrder, queueName] of params.priorityQueues.entries()) {
       if (pausedQueues.has(queueName)) continue;
       const tableName = queueTableNameByQueue[queueName];
-      sqlite.db.query(recoverStaleQueueJobsSql(queueName, tableName)).run(queueStaleCutoff);
+      sqlite.db.query(recoverStaleQueueJobsSql(tableName)).run(queueStaleCutoff);
       const rows = sqlite.db.query<RunnableQueueRow, []>(runnableSql(queueName, tableName)).all();
       for (const row of rows) {
         const createdAtMs = rowCreatedAtMs(row.created_at);

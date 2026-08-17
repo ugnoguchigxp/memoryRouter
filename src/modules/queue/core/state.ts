@@ -64,11 +64,7 @@ export async function keepQueueJobWaitingForProvider(params: {
       queueName: params.queueName,
       setSql: `
         status = 'pending',
-        ${
-          params.queueName === "finalizeDistille"
-            ? ""
-            : "next_run_at = datetime('now', '+' || ? || ' seconds'),"
-        }
+        next_run_at = datetime('now', '+' || ? || ' seconds'),
         attempt_count = attempt_count + 1,
         last_error = ?,
         last_outcome_kind = 'provider_unavailable_retry',
@@ -78,10 +74,7 @@ export async function keepQueueJobWaitingForProvider(params: {
         updated_at = CURRENT_TIMESTAMP
       `,
       whereSql: "id = ? and status = 'running'",
-      values:
-        params.queueName === "finalizeDistille"
-          ? [params.reason, params.id]
-          : [retryAfterSeconds, params.reason, params.id],
+      values: [retryAfterSeconds, params.reason, params.id],
     });
   }
 
@@ -170,11 +163,7 @@ export async function keepQueueJobWaitingForWorker(params: {
       queueName: params.queueName,
       setSql: `
         status = 'pending',
-        ${
-          params.queueName === "finalizeDistille"
-            ? ""
-            : `next_run_at = datetime('now', '+' || ${workerUnavailableBackoffSecondsSql} || ' seconds'),`
-        }
+        next_run_at = datetime('now', '+' || ${workerUnavailableBackoffSecondsSql} || ' seconds'),
         attempt_count = attempt_count + 1,
         last_error = ?,
         last_outcome_kind = 'worker_unavailable',
@@ -234,7 +223,7 @@ export async function resumeQueueJob(params: {
       queueName: params.queueName,
       setSql: `
         status = 'pending',
-        ${params.queueName === "finalizeDistille" ? "" : "next_run_at = null,"}
+        next_run_at = null,
         locked_by = null,
         locked_at = null,
         heartbeat_at = null,
@@ -328,7 +317,7 @@ export async function retryQueueJob(params: {
       setSql: `
         status = 'pending',
         attempt_count = 0,
-        ${params.queueName === "finalizeDistille" ? "" : "next_run_at = null,"}
+        next_run_at = null,
         completed_at = null,
         locked_by = null,
         locked_at = null,
@@ -459,7 +448,7 @@ export async function pauseRunningQueueJobs(params: {
         set
           status = 'paused',
           last_error = ?,
-          ${params.queueName === "finalizeDistille" ? "" : "next_run_at = CURRENT_TIMESTAMP,"}
+          next_run_at = CURRENT_TIMESTAMP,
           locked_by = null,
           locked_at = null,
           heartbeat_at = null,

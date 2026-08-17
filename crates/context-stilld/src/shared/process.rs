@@ -25,6 +25,7 @@ pub trait ProcessSupervisor {
     ) -> io::Result<WaitOutcome>;
     fn kill(&self, pid: u32, signal: &str) -> io::Result<()>;
     fn is_alive(&self, pid: u32) -> bool;
+    fn command_line(&self, pid: u32) -> Option<String>;
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -48,7 +49,7 @@ impl ProcessSupervisor for OsSupervisor {
 
         let log_file = File::options().create(true).append(true).open(log_path)?;
 
-        let child = std::process::Command::new(command)
+        let mut child = std::process::Command::new(command)
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::null())
@@ -56,8 +57,12 @@ impl ProcessSupervisor for OsSupervisor {
             .stderr(Stdio::from(log_file))
             .with_detached_process_group()
             .spawn()?;
+        let pid = child.id();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
 
-        Ok(child.id())
+        Ok(pid)
     }
 
     fn run_and_wait(
@@ -148,16 +153,48 @@ impl ProcessSupervisor for OsSupervisor {
             } else {
                 false
             }
-        } else if let Ok(status) = std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-        {
-            status.success()
         } else {
-            false
+            if let Ok(output) = std::process::Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+            {
+                let process_state = String::from_utf8_lossy(&output.stdout);
+                if process_state.trim_start().starts_with('Z') {
+                    return false;
+                }
+            }
+            std::process::Command::new("kill")
+                .args(["-0", &pid.to_string()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success())
         }
+    }
+
+    fn command_line(&self, pid: u32) -> Option<String> {
+        let output = if cfg!(target_os = "windows") {
+            std::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-Command",
+                    &format!(
+                        "(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").CommandLine"
+                    ),
+                ])
+                .output()
+                .ok()?
+        } else {
+            std::process::Command::new("ps")
+                .args(["-o", "command=", "-p", &pid.to_string()])
+                .output()
+                .ok()?
+        };
+        if !output.status.success() {
+            return None;
+        }
+        let command_line = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        (!command_line.is_empty()).then_some(command_line)
     }
 }
 
@@ -285,6 +322,15 @@ impl ProcessSupervisor for MockSupervisor {
 
     fn is_alive(&self, pid: u32) -> bool {
         *self.alive.lock().unwrap().get(&pid).unwrap_or(&false)
+    }
+
+    fn command_line(&self, pid: u32) -> Option<String> {
+        self.spawned.lock().unwrap().get(&pid).map(|call| {
+            std::iter::once(call.command.as_str())
+                .chain(call.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
     }
 }
 

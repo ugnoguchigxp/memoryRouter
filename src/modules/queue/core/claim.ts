@@ -38,7 +38,7 @@ export async function claimNextQueueJob(params: {
           update ${tableName}
           set
             status = 'paused',
-            ${params.queueName === "finalizeDistille" ? "" : "next_run_at = CURRENT_TIMESTAMP,"}
+            next_run_at = CURRENT_TIMESTAMP,
             locked_by = null,
             locked_at = null,
             heartbeat_at = null,
@@ -57,31 +57,18 @@ export async function claimNextQueueJob(params: {
         sqlite.db.query("COMMIT").run();
         return null;
       }
-      const picked =
-        params.queueName === "finalizeDistille"
-          ? sqlite.db
-              .query<{ id: string }, []>(
-                `
-                select id
-                from ${tableName}
-                where status in ('pending', 'paused')
-                order by priority desc, created_at asc, id asc
-                limit 1
-              `,
-              )
-              .get()
-          : sqlite.db
-              .query<{ id: string }, []>(
-                `
-                select id
-                from ${tableName}
-                where status in ('pending', 'paused')
-                  and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
-                order by priority desc, created_at asc, id asc
-                limit 1
-              `,
-              )
-              .get();
+      const picked = sqlite.db
+        .query<{ id: string }, []>(
+          `
+          select id
+          from ${tableName}
+          where status in ('pending', 'paused')
+            and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+          order by priority desc, created_at asc, id asc
+          limit 1
+        `,
+        )
+        .get();
       if (!picked?.id) {
         sqlite.db.query("COMMIT").run();
         return null;

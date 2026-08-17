@@ -283,8 +283,24 @@ function CoreInfrastructureDomain({ data }: { data: DoctorCoreInfrastructureDoma
     : "danger";
   const doctorTotalTone = durationTone(data.totalDurationMs, { warningMs: 5000, dangerMs: 15000 });
   const requiredTablesTone: HealthTone = missingTables > 0 ? "danger" : "safe";
-  const embeddingDaemonTone: HealthTone = data.embedding?.daemon.reachable ? "safe" : "warning";
+  const embeddingMode = data.embedding?.effectiveMode;
+  const embeddingDaemonTone: HealthTone = data.embedding?.daemon.reachable
+    ? "safe"
+    : embeddingMode === "disabled" || embeddingMode === "openai"
+      ? "muted"
+      : "warning";
   const embeddingCliTone: HealthTone = data.embedding?.cli.usable ? "safe" : "warning";
+  const embeddingDaemonLabel = data.embedding?.daemon.reachable
+    ? data.embedding.daemon.status === "managed_ready"
+      ? "Managed / Ready"
+      : "Reachable"
+    : embeddingMode === "cli_fallback"
+      ? "CLI Fallback"
+      : embeddingMode === "disabled" || embeddingMode === "openai"
+        ? "Not Required"
+        : data.embedding?.daemon.status === "starting"
+          ? "Starting"
+          : "Offline";
 
   return (
     <DomainShell
@@ -382,8 +398,15 @@ function CoreInfrastructureDomain({ data }: { data: DoctorCoreInfrastructureDoma
           </div>
           <div className="flex items-center justify-between">
             <span>Embedding Daemon</span>
-            <strong className={healthTextClass(embeddingDaemonTone)}>
-              {data.embedding?.daemon.reachable ? "Reachable" : "Offline"}
+            <strong
+              className={healthTextClass(embeddingDaemonTone)}
+              title={
+                data.embedding?.daemon.managedBy
+                  ? `managed by ${data.embedding.daemon.managedBy}`
+                  : undefined
+              }
+            >
+              {embeddingDaemonLabel}
             </strong>
           </div>
           <div className="flex items-center justify-between">

@@ -1695,6 +1695,7 @@ async function processFinalizeJob(jobId: string, signal?: AbortSignal): Promise<
         set status = ?,
             attempt_count = ?,
             knowledge_id = ?,
+            next_run_at = null,
             completed_at = ?,
             locked_by = null,
             locked_at = null,

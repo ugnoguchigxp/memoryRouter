@@ -38,7 +38,13 @@ const baseReport = {
   embedding: {
     configured: true,
     provider: "daemon",
-    daemon: { url: "http://127.0.0.1:44512", reachable: true },
+    effectiveMode: "daemon",
+    daemon: {
+      url: "http://127.0.0.1:44512",
+      reachable: true,
+      status: "managed_ready",
+      managedBy: "rust-resident",
+    },
     cli: {
       python: "/tmp/.venv/bin/python",
       root: "/tmp/root",
@@ -429,6 +435,7 @@ describe("DoctorPage", () => {
     expect(screen.getByText("Doctor")).toBeInTheDocument();
     expect(screen.getAllByText("degraded").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Core Infrastructure")).toBeInTheDocument();
+    expect(screen.getByText("Managed / Ready")).toBeInTheDocument();
     expect(screen.getByText("Desktop Readiness")).toBeInTheDocument();
     expect(screen.getByText("SQLite local database")).toBeInTheDocument();
     expect(screen.queryByText("pgvector")).not.toBeInTheDocument();
@@ -527,6 +534,33 @@ describe("DoctorPage", () => {
     expect(screen.getByText("2500ms")).toHaveClass("text-red-600");
     expect(screen.getByText("Missing 1")).toHaveClass("text-red-600");
     expect(screen.getByText("6000ms")).toHaveClass("text-amber-600");
+  });
+
+  it("shows CLI fallback instead of Offline when the daemon is down but CLI is usable", () => {
+    const core = {
+      ...coreInfrastructureDomain,
+      embedding: {
+        ...baseReport.embedding,
+        effectiveMode: "cli_fallback",
+        daemon: {
+          ...baseReport.embedding.daemon,
+          reachable: false,
+          status: "offline",
+          managedBy: "none",
+        },
+      },
+    };
+
+    mockDoctorDomainQueries({ core: { data: core } });
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <DoctorPage />
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByText("CLI Fallback")).toBeInTheDocument();
+    expect(screen.getByText("Embedding Daemon").parentElement).toHaveTextContent("CLI Fallback");
   });
 
   it("renders error card when doctor query fails", () => {

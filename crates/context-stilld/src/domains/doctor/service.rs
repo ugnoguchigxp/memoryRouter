@@ -1,8 +1,9 @@
 use serde::Serialize;
 
 use crate::domains::{
-    bootstrap::service::{preflight, BootstrapPreflightReport},
+    bootstrap::service::{preflight_with_supervisor, BootstrapPreflightReport},
     daemon::service::{status_with_supervisor, RuntimeStatus},
+    embedding_lifecycle::service::{health_report as embedding_health, EmbeddingHealthReport},
     queue_lifecycle::service::inspect_report as inspect_queue,
     vector_index::service::{health as vector_health, VectorHealthReport},
 };
@@ -17,13 +18,15 @@ pub struct DoctorSummary {
     pub bootstrap: BootstrapPreflightReport,
     pub runtime: RuntimeStatus,
     pub vector: VectorHealthReport,
+    pub embedding: EmbeddingHealthReport,
     pub readiness_check: &'static str,
 }
 
 pub fn summary<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) -> DoctorSummary {
-    let bootstrap = preflight(env);
+    let bootstrap = preflight_with_supervisor(env, supervisor);
     let runtime = status_with_supervisor(env, supervisor);
     let vector = vector_health(env, supervisor);
+    let embedding = embedding_health(env, supervisor);
     let mut desktop_blockers = Vec::new();
     let mut server_warnings = Vec::new();
 
@@ -53,6 +56,10 @@ pub fn summary<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) ->
         _ => {}
     }
 
+    if embedding.configured && embedding.effective_mode == "unavailable" {
+        server_warnings.push("EMBEDDING_PROVIDER_UNAVAILABLE".to_string());
+    }
+
     let overall_status = if desktop_blockers.is_empty() {
         "ok"
     } else {
@@ -66,6 +73,7 @@ pub fn summary<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) ->
         bootstrap,
         runtime,
         vector,
+        embedding,
         readiness_check: "context-stilld doctor summary --json",
     }
 }
@@ -84,6 +92,8 @@ impl DoctorSummary {
             format!("vectorStatus={}", self.vector.status),
             format!("vectorEngine={}", self.vector.engine),
             format!("vectorUsable={}", self.vector.vec_usable),
+            format!("embeddingMode={}", self.embedding.effective_mode),
+            format!("embeddingDaemonStatus={}", self.embedding.daemon.status),
             self.runtime.to_text(),
         ]
         .join("\n")
@@ -146,6 +156,47 @@ mod tests {
             warning == "QUEUE_EXECUTOR_UNSUPPORTED_BACKLOG: coveringEvidence=1"
         }));
 
+        std::fs::remove_dir_all(&app_dir).unwrap();
+    }
+
+    #[test]
+    fn doctor_bootstrap_uses_the_live_resident_sqlite_identity() {
+        let app_dir = temp_app_dir("doctor_live_identity");
+        let live_sqlite_path = app_dir.join("live.sqlite");
+        crate::domains::vector_index::service::register_sqlite_vec();
+        let mut connection = Connection::open(&live_sqlite_path).unwrap();
+        crate::domains::sqlite_writer::schema::configure_writer_connection(&connection).unwrap();
+        crate::domains::sqlite_writer::schema::migrate(&mut connection, 3).unwrap();
+        drop(connection);
+        let pid = 42_424;
+        crate::domains::daemon::repository::write_state(
+            &app_dir.join("run"),
+            "context-stilld",
+            &crate::domains::daemon::repository::ProcessState {
+                pid: Some(pid),
+                status: "running".to_string(),
+                log_path: String::new(),
+                sqlite_core_path: Some(live_sqlite_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let supervisor = MockSupervisor::new();
+        supervisor.alive.lock().unwrap().insert(pid, true);
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            ("CONTEXT_STILL_EMBEDDING_PROVIDER", "disabled"),
+        ]);
+
+        let report = summary(&env, &supervisor);
+
+        assert_eq!(report.bootstrap.paths.sqlite_core_path, live_sqlite_path);
+        assert_eq!(report.bootstrap.overall_status, "ready");
+        assert!(report
+            .bootstrap
+            .checks
+            .iter()
+            .any(|check| check.key == "migration_state" && check.status == "ok"));
         std::fs::remove_dir_all(&app_dir).unwrap();
     }
 }

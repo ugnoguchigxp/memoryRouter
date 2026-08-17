@@ -8,7 +8,7 @@ use crate::domains::vector_index;
 // additive schema revision, so keeping this at v1 allows a v1 binary to open a database after a
 // rollback. Additive revisions are tracked independently in `schema_migrations`.
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
-pub const CURRENT_SCHEMA_REVISION: i64 = 5;
+pub const CURRENT_SCHEMA_REVISION: i64 = 6;
 
 const TYPESCRIPT_SCHEMA_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -69,7 +69,9 @@ pub fn migrate(connection: &mut Connection, vector_dimension: usize) -> Result<i
             INSERT OR IGNORE INTO schema_migrations(version, name)
             VALUES (4, 'repository_identity_backfill_audit_v1');
             INSERT OR IGNORE INTO schema_migrations(version, name)
-            VALUES ({CURRENT_SCHEMA_REVISION}, 'security_candidate_item_provenance_v1');
+            VALUES (5, 'security_candidate_item_provenance_v1');
+            INSERT OR IGNORE INTO schema_migrations(version, name)
+            VALUES ({CURRENT_SCHEMA_REVISION}, 'finalize_retry_schedule_v1');
             PRAGMA user_version = {CURRENT_SCHEMA_VERSION};
             "#
         ))
@@ -198,6 +200,20 @@ fn apply_legacy_migrations(connection: &Connection) -> Result<(), String> {
             "security_candidate_batch_items",
             "provenance_json",
             "ALTER TABLE security_candidate_batch_items ADD COLUMN provenance_json TEXT",
+        )?;
+    }
+    if table_exists(connection, "finalize_distille_queue")? {
+        add_column_if_missing(
+            connection,
+            "finalize_distille_queue",
+            "max_attempts",
+            "ALTER TABLE finalize_distille_queue ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 5",
+        )?;
+        add_column_if_missing(
+            connection,
+            "finalize_distille_queue",
+            "next_run_at",
+            "ALTER TABLE finalize_distille_queue ADD COLUMN next_run_at TEXT",
         )?;
     }
     Ok(())

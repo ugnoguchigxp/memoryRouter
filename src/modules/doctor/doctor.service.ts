@@ -152,6 +152,15 @@ function canQueryAgentLogSyncTables(): boolean {
   return backend === "postgres" || backend === "sqlite";
 }
 
+function isEmbeddingReady(embedding: DoctorReport["embedding"]): boolean {
+  if (embedding.effectiveMode) {
+    if (embedding.effectiveMode === "unavailable") return false;
+    if (embedding.effectiveMode === "openai") return embedding.openai?.configured === true;
+    return true;
+  }
+  return !embedding.configured || embedding.daemon.reachable || embedding.cli.usable;
+}
+
 function buildDesktopReadiness(input: {
   database: DatabaseInspection;
   embedding: DoctorReport["embedding"];
@@ -164,8 +173,7 @@ function buildDesktopReadiness(input: {
   const isPostgres = backend === "postgres";
   const defaultBackendReady =
     isSqlite && input.database.reachable && input.database.missingTables.length === 0;
-  const embeddingReady =
-    !input.embedding.configured || input.embedding.daemon.reachable || input.embedding.cli.usable;
+  const embeddingReady = isEmbeddingReady(input.embedding);
   const mcpReady = Boolean(input.mcp && input.mcp.missingPrimaryTools.length === 0);
   const llmReady =
     !input.agenticLlm || !groupedConfig.agenticCompile.enabled || input.agenticLlm.reachable;
@@ -346,7 +354,7 @@ export async function runDoctor(rawOptions?: DoctorOptions): Promise<DoctorRepor
 
   reasons.push(...database.reasons);
 
-  if (embedding.configured && !embedding.daemon.reachable && !embedding.cli.usable) {
+  if (!isEmbeddingReady(embedding)) {
     reasons.push("EMBEDDING_PROVIDER_UNAVAILABLE");
   }
 
@@ -450,7 +458,7 @@ export async function runDoctorCoreInfrastructure(
   ]);
 
   const reasons = [...database.reasons];
-  if (embedding.configured && !embedding.daemon.reachable && !embedding.cli.usable) {
+  if (!isEmbeddingReady(embedding)) {
     reasons.push("EMBEDDING_PROVIDER_UNAVAILABLE");
   }
 
