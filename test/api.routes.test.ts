@@ -4,6 +4,10 @@ import { z } from "zod";
 import app from "../api/app.js";
 import { adminApiKeyAuth } from "../api/middleware/admin-auth.js";
 import { adminCors } from "../api/middleware/admin-cors.js";
+import {
+  createAdminSessionToken,
+  isValidAdminSessionToken,
+} from "../api/middleware/admin-session.js";
 import { apiAuthenticationDispatcher } from "../api/middleware/security-intelligence-auth.js";
 import { adminSessionRouter } from "../api/modules/admin-session/admin-session.routes.js";
 import { listAuditLogsForApi } from "../api/modules/audit/audit.repository.js";
@@ -675,6 +679,7 @@ describe("API route contract tests", () => {
       const setCookie = sessionResponse.headers.get("set-cookie");
       expect(setCookie).toContain("HttpOnly");
       expect(setCookie).toContain("SameSite=Strict");
+      expect(setCookie).not.toMatch(/(?:Max-Age|Expires)=/i);
       const cookie = setCookie?.split(";", 1)[0] ?? "";
 
       const status = await sessionApp.request("http://localhost/api/admin-session", {
@@ -704,6 +709,15 @@ describe("API route contract tests", () => {
       });
       expect(trustedOrigin.status).toBe(200);
 
+      const signOut = await sessionApp.request("http://localhost/api/admin-session", {
+        method: "DELETE",
+        headers: { cookie, origin: "http://localhost" },
+      });
+      expect(signOut.status).toBe(200);
+      expect(signOut.headers.get("set-cookie")).toMatch(
+        /context_still_admin_session=;.*Max-Age=0/i,
+      );
+
       groupedConfig.admin.apiKey = ROTATED_ADMIN_API_KEY;
       const invalidAfterRotation = await sessionApp.request("http://localhost/api/protected", {
         headers: { cookie },
@@ -712,6 +726,13 @@ describe("API route contract tests", () => {
     } finally {
       groupedConfig.admin.apiKey = originalApiKey;
     }
+  });
+
+  test("admin session tokens remain valid until sign-out or admin key rotation", () => {
+    const token = createAdminSessionToken(TEST_ADMIN_API_KEY);
+
+    expect(isValidAdminSessionToken(TEST_ADMIN_API_KEY, token)).toBe(true);
+    expect(isValidAdminSessionToken(ROTATED_ADMIN_API_KEY, token)).toBe(false);
   });
 
   test("admin session rejects untrusted browser origins", async () => {

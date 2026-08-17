@@ -24,7 +24,7 @@ use super::types::QUEUE_SUPERVISOR;
 pub use super::types::{
     ActiveProviderLease, ClaimedProviderLeaseJob, ClaimedQueueJob, ProviderLeaseAssignment,
     ProviderPoolClaimConfig, ProviderQueueClaimSpec, QueueInspectReport, QueueStateRow,
-    QueueStatusCount, QueueTableInspect, RowTargetPreference,
+    QueueStatusCount, QueueTableInspect, RowTargetPreference, UnsupportedQueueBacklog,
 };
 
 pub fn start<E: EnvProvider, S: ProcessSupervisor>(

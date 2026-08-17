@@ -1,8 +1,10 @@
 mod claim;
 mod common;
+mod covering_executor;
 mod episode_executor;
 mod events;
 mod executor;
+mod finalize_executor;
 mod finding_executor;
 mod inspect;
 mod maintenance;

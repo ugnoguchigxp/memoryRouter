@@ -5,9 +5,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "../../../web/src/modules/admin/components/app-shell";
 
 const sessionMocks = vi.hoisted(() => ({
-  ADMIN_SESSION_EXPIRED_EVENT: "context-still:admin-session-expired",
+  ADMIN_SESSION_INVALID_EVENT: "context-still:admin-session-invalid",
   createAdminSession: vi.fn(),
-  deleteAdminSession: vi.fn(),
   fetchAdminSessionStatus: vi.fn(),
 }));
 
@@ -23,7 +22,6 @@ describe("AppShell", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     sessionMocks.createAdminSession.mockResolvedValue(undefined);
-    sessionMocks.deleteAdminSession.mockResolvedValue(undefined);
     sessionMocks.fetchAdminSessionStatus.mockResolvedValue({
       configured: true,
       authenticated: true,
@@ -38,6 +36,7 @@ describe("AppShell", () => {
     expect(labels.indexOf("Graph")).toBeLessThan(labels.indexOf("Compile"));
     expect(labels.indexOf("Compile")).toBeLessThan(labels.indexOf("Audit"));
     expect(labels.indexOf("Doctor")).toBeLessThan(labels.indexOf("Settings"));
+    expect(screen.queryByRole("button", { name: "Sign out" })).not.toBeInTheDocument();
   });
 
   it("keeps the admin key in the login form only long enough to create a session", async () => {
@@ -86,13 +85,13 @@ describe("AppShell", () => {
     expect(await screen.findByLabelText("Admin API key")).toBeInTheDocument();
   });
 
-  it("returns to login when an API request reports an expired session", async () => {
+  it("returns to login when an API request reports an invalid session", async () => {
     render(<AppShell />);
     expect(await screen.findByText("outlet-content")).toBeInTheDocument();
 
-    fireEvent(window, new Event(sessionMocks.ADMIN_SESSION_EXPIRED_EVENT));
+    fireEvent(window, new Event(sessionMocks.ADMIN_SESSION_INVALID_EVENT));
 
     expect(await screen.findByLabelText("Admin API key")).toBeInTheDocument();
-    expect(screen.getByText(/admin session expired/i)).toBeInTheDocument();
+    expect(screen.getByText(/admin session is no longer valid/i)).toBeInTheDocument();
   });
 });

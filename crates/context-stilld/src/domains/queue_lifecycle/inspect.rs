@@ -13,10 +13,12 @@ use crate::shared::{
     process::{self, ProcessSupervisor},
 };
 
+use super::executor::rust_executor_supports_queue;
 use super::service::status_report;
 use super::types::{
     ActiveProviderLease, EpisodeDistillerProgressInspect, QueueFeatureFlagsInspect,
-    QueueInspectReport, QueueStatusCount, QueueTableInspect, QUEUE_SUPERVISOR, QUEUE_TABLES,
+    QueueInspectReport, QueueStatusCount, QueueTableInspect, UnsupportedQueueBacklog,
+    QUEUE_SUPERVISOR, QUEUE_TABLES,
 };
 
 pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
@@ -36,6 +38,8 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
             executor_running: false,
             executor_pid: None,
             runnable_pending_count: 0,
+            unsupported_runnable_count: 0,
+            unsupported_queues: Vec::new(),
             blocked_reason: Some("SQLite core database is missing".to_string()),
             sqlite_status: "missing",
             sqlite_core_path,
@@ -54,6 +58,7 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
                 "failed to open SQLite core database read-only: {error}"
             ))
         })?;
+    let feature_flags = queue_feature_flags(env);
     let queues = inspect_queue_tables(&connection)?;
     let active_leases = inspect_active_leases(&connection)?;
     let active_target_ids = active_leases
@@ -63,6 +68,32 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
         .into_iter()
         .collect::<Vec<_>>();
     let runnable_pending_count = queues.iter().map(|queue| queue.runnable_pending).sum();
+    let mut unsupported_queues = Vec::new();
+    for queue in queues.iter().filter(|queue| queue.runnable_pending > 0) {
+        let runnable_pending = unsupported_runnable_for_queue(
+            &connection,
+            queue.queue_name,
+            queue.runnable_pending,
+            &feature_flags.rust_covering_mode,
+        )?;
+        if runnable_pending > 0 {
+            unsupported_queues.push(UnsupportedQueueBacklog {
+                queue_name: queue.queue_name,
+                runnable_pending,
+                reason: if queue.queue_name == "coveringEvidence"
+                    && feature_flags.rust_covering_mode == "negative"
+                {
+                    "rust_native_executor_partial_support"
+                } else {
+                    "rust_native_executor_not_implemented"
+                },
+            });
+        }
+    }
+    let unsupported_runnable_count = unsupported_queues
+        .iter()
+        .map(|queue| queue.runnable_pending)
+        .sum();
     let rust_executor_pid = active_leases
         .iter()
         .filter_map(ActiveProviderLease::rust_executor_pid)
@@ -82,11 +113,21 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
     } else {
         "idle".to_string()
     };
-    let blocked_reason = if executor_mode == "maintenance_only" {
-        Some("runnable queue jobs exist but no executor is active".to_string())
-    } else {
-        None
-    };
+    let blocked_reason =
+        if unsupported_runnable_count > 0 && lifecycle.pid.is_none() && !external_worker_running {
+            Some(format!(
+                "runnable jobs exist for queues unsupported by the Rust native executor: {}",
+                unsupported_queues
+                    .iter()
+                    .map(|queue| format!("{}={}", queue.queue_name, queue.runnable_pending))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        } else if executor_mode == "maintenance_only" {
+            Some("runnable queue jobs exist but no executor is active".to_string())
+        } else {
+            None
+        };
     let last_heartbeat_at = latest_timestamp(
         queues
             .iter()
@@ -103,6 +144,8 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
         executor_running,
         executor_pid: lifecycle.pid.or(rust_executor_pid),
         runnable_pending_count,
+        unsupported_runnable_count,
+        unsupported_queues,
         blocked_reason,
         sqlite_status: "ok",
         sqlite_core_path,
@@ -111,7 +154,7 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
         active_target_ids,
         active_leases,
         last_heartbeat_at,
-        feature_flags: queue_feature_flags(env),
+        feature_flags,
     })
 }
 
@@ -119,7 +162,50 @@ fn queue_feature_flags<E: EnvProvider>(env: &E) -> QueueFeatureFlagsInspect {
     QueueFeatureFlagsInspect {
         internal_chunked_distillation: env_bool(env, "CONTEXT_STILL_INTERNAL_CHUNKED_DISTILLATION")
             .unwrap_or_else(|| env_bool(env, "INTERNAL_CHUNKED_DISTILLATION").unwrap_or(false)),
+        rust_covering_mode: env
+            .var("CONTEXT_STILL_RUST_COVERING_MODE")
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "off".to_string()),
     }
+}
+
+fn unsupported_runnable_for_queue(
+    connection: &Connection,
+    queue_name: &str,
+    runnable_pending: u64,
+    rust_covering_mode: &str,
+) -> Result<u64, CliError> {
+    if rust_executor_supports_queue(queue_name) {
+        return Ok(0);
+    }
+    if queue_name != "coveringEvidence" || rust_covering_mode != "negative" {
+        return Ok(runnable_pending);
+    }
+    if !table_exists(connection, "found_candidates")?
+        || !table_has_column(connection, "covering_evidence_queue", "found_candidate_id")?
+    {
+        return Ok(runnable_pending);
+    }
+    connection
+        .query_row(
+            "
+            select count(*)
+            from covering_evidence_queue cq
+            left join found_candidates fc on fc.id = cq.found_candidate_id
+            where cq.status in ('pending', 'paused')
+              and (cq.next_run_at is null or datetime(cq.next_run_at) <= CURRENT_TIMESTAMP)
+              and coalesce(json_extract(fc.origin, '$.polarity'), '') != 'negative'
+            ",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|count| count.max(0) as u64)
+        .map_err(|error| {
+            CliError::io(format!(
+                "failed to inspect unsupported covering backlog: {error}"
+            ))
+        })
 }
 
 fn env_bool<E: EnvProvider>(env: &E, name: &str) -> Option<bool> {
@@ -427,11 +513,12 @@ impl QueueInspectReport {
 
     pub fn to_text(&self) -> String {
         format!(
-            "queue-supervisor inspect: {} sqlite={} activeLeases={} internalChunkedDistillation={}",
+            "queue-supervisor inspect: {} sqlite={} activeLeases={} internalChunkedDistillation={} rustCoveringMode={}",
             self.status,
             self.sqlite_status,
             self.active_lease_count,
-            self.feature_flags.internal_chunked_distillation
+            self.feature_flags.internal_chunked_distillation,
+            self.feature_flags.rust_covering_mode
         )
     }
 }
@@ -574,6 +661,117 @@ mod tests {
                 .iter()
                 .any(|queue| queue.queue_name == "coveringEvidence"
                     && queue.table_status == "missing")
+        );
+
+        std::fs::remove_dir_all(&app_dir).unwrap();
+    }
+
+    #[test]
+    fn inspect_surfaces_runnable_backlog_for_unsupported_rust_queue() {
+        let app_dir = temp_app_dir("unsupported_backlog");
+        let sqlite_path = app_dir.join("queue.sqlite");
+        let connection = Connection::open(&sqlite_path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                create table covering_evidence_queue (
+                  id text primary key,
+                  status text not null,
+                  created_at text not null,
+                  heartbeat_at text,
+                  next_run_at text
+                );
+                insert into covering_evidence_queue (
+                  id, status, created_at, heartbeat_at, next_run_at
+                ) values
+                  ('cover-1', 'pending', '2026-08-17T01:00:00.000Z', null, null),
+                  ('cover-2', 'pending', '2026-08-17T02:00:00.000Z', null, null);
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+        ]);
+        let supervisor = MockSupervisor::new();
+
+        let report = inspect_report(&env, &supervisor).unwrap();
+
+        assert_eq!(report.runnable_pending_count, 2);
+        assert_eq!(report.unsupported_runnable_count, 2);
+        assert_eq!(report.unsupported_queues.len(), 1);
+        assert_eq!(report.unsupported_queues[0].queue_name, "coveringEvidence");
+        assert_eq!(report.unsupported_queues[0].runnable_pending, 2);
+        assert_eq!(
+            report.unsupported_queues[0].reason,
+            "rust_native_executor_not_implemented"
+        );
+        assert!(report
+            .blocked_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("coveringEvidence=2")));
+
+        std::fs::remove_dir_all(&app_dir).unwrap();
+    }
+
+    #[test]
+    fn inspect_counts_only_non_negative_covering_as_unsupported_when_mode_is_enabled() {
+        let app_dir = temp_app_dir("negative_covering_mode");
+        let sqlite_path = app_dir.join("queue.sqlite");
+        let connection = Connection::open(&sqlite_path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                create table found_candidates (
+                  id text primary key,
+                  origin text
+                );
+                create table covering_evidence_queue (
+                  id text primary key,
+                  found_candidate_id text not null,
+                  status text not null,
+                  created_at text not null,
+                  heartbeat_at text,
+                  next_run_at text
+                );
+                insert into found_candidates (id, origin) values
+                  ('candidate-negative', '{"polarity":"negative"}'),
+                  ('candidate-positive', '{"polarity":"positive"}');
+                insert into covering_evidence_queue (
+                  id, found_candidate_id, status, created_at, heartbeat_at, next_run_at
+                ) values
+                  ('cover-negative', 'candidate-negative', 'pending', CURRENT_TIMESTAMP, null, null),
+                  ('cover-positive', 'candidate-positive', 'pending', CURRENT_TIMESTAMP, null, null);
+                "#,
+            )
+            .unwrap();
+        drop(connection);
+
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "negative"),
+        ]);
+        let supervisor = MockSupervisor::new();
+
+        let report = inspect_report(&env, &supervisor).unwrap();
+
+        assert_eq!(report.runnable_pending_count, 2);
+        assert_eq!(report.unsupported_runnable_count, 1);
+        assert_eq!(report.feature_flags.rust_covering_mode, "negative");
+        assert_eq!(report.unsupported_queues.len(), 1);
+        assert_eq!(report.unsupported_queues[0].runnable_pending, 1);
+        assert_eq!(
+            report.unsupported_queues[0].reason,
+            "rust_native_executor_partial_support"
         );
 
         std::fs::remove_dir_all(&app_dir).unwrap();

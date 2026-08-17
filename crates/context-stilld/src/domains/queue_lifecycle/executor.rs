@@ -12,10 +12,17 @@ use crate::domains::{
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process};
 
+use super::covering_executor::{
+    execute_negative_covering, load_claimed_negative_execution, persist_negative_covering_result,
+    NegativeCoveringExecution, NegativeCoveringHeartbeatGuard, NegativeCoveringPersistStatus,
+};
 use super::episode_executor::{
     run_episode_distiller_job_for_connection, EpisodeExecutionStatus, LocalLlmTargetConfig,
 };
 use super::events::append_queue_event_for_connection;
+use super::finalize_executor::{
+    run_finalize_distille_job_for_connection, FinalizeEmbeddingConfig, FinalizeExecutionStatus,
+};
 use super::finding_executor::{run_finding_candidate_job_for_connection, FindingExecutionStatus};
 use super::provider_lease::{
     claim_next_job_with_provider_lease_for_connection, heartbeat_provider_lease_for_connection,
@@ -86,9 +93,81 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         queue_stale_seconds: env_u64_default(env, "CONTEXT_STILL_QUEUE_STALE_SECONDS", 120)
             .clamp(30, 120),
         llm_timeout_seconds: env_u64_default(env, "CONTEXT_STILL_RUST_LLM_TIMEOUT_SECONDS", 600),
+        covering_min_interval_seconds: env_u64_default(
+            env,
+            "CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS",
+            60,
+        )
+        .clamp(10, 3_600),
         local_llm_api_key: env.var("LOCAL_LLM_API_KEY"),
+        project_root: env
+            .var("CONTEXT_STILL_PROJECT_ROOT")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from(".")),
+        embedding_access_token: env
+            .var("EMBEDDING_ACCESS_TOKEN")
+            .or_else(|| env.var("LOCAL_LLM_ACCESS_TOKEN")),
+        azure_openai_api_key: env.var("AZURE_OPENAI_API_KEY"),
     };
     let run_dir = paths.run_dir.clone();
+    if covering_negative_enabled(env) {
+        let claim_config = config.clone();
+        let claimed = sqlite_writer::execute_for_path(
+            &paths.sqlite_core_path,
+            "queue.covering_negative_claim",
+            move |connection| {
+                claim_negative_covering_with_connection(connection, &claim_config)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| CliError::io(format!("SQLite writer covering claim failed: {error}")))?;
+        if let Some(execution) = claimed {
+            let _heartbeat =
+                NegativeCoveringHeartbeatGuard::start(&paths.sqlite_core_path, &execution)?;
+            let result = execute_negative_covering(&execution, config.llm_timeout_seconds);
+            let persist_execution = execution.clone();
+            let persist_result = result.clone();
+            let persisted = sqlite_writer::execute_for_path(
+                &paths.sqlite_core_path,
+                "queue.covering_negative_persist",
+                move |connection| {
+                    persist_negative_covering_result(
+                        connection,
+                        &persist_execution,
+                        &persist_result,
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            )
+            .map_err(|error| {
+                CliError::io(format!(
+                    "SQLite writer covering persistence failed: {error}"
+                ))
+            })?;
+            let (status, completed, failed) = match persisted {
+                NegativeCoveringPersistStatus::Completed => ("executed", 1, 0),
+                NegativeCoveringPersistStatus::Failed => ("degraded", 0, 1),
+                NegativeCoveringPersistStatus::Retrying => ("degraded", 0, 1),
+            };
+            let report = QueueExecutorTickReport {
+                process: QUEUE_SUPERVISOR.state_name,
+                action: "executor_tick",
+                status: status.to_string(),
+                sqlite_status: "ok",
+                sqlite_core_path,
+                claimed: 1,
+                completed,
+                failed,
+                unsupported: 0,
+                message: format!(
+                    "queue executor tick completed; coveringMode=negative claimed=1 completed={completed} failed={failed} unsupported=0"
+                ),
+            };
+            write_executor_state(&run_dir, &report)?;
+            return Ok(report);
+        }
+    }
     sqlite_writer::execute_for_path(
         &paths.sqlite_core_path,
         "queue.executor_tick",
@@ -100,11 +179,170 @@ pub fn run_executor_tick_report<E: EnvProvider>(
     .map_err(|error| CliError::io(format!("SQLite writer executor tick failed: {error}")))
 }
 
+#[derive(Clone)]
 struct ExecutorTickConfig {
     max_claims: u64,
     queue_stale_seconds: u64,
     llm_timeout_seconds: u64,
+    covering_min_interval_seconds: u64,
     local_llm_api_key: Option<String>,
+    project_root: std::path::PathBuf,
+    embedding_access_token: Option<String>,
+    azure_openai_api_key: Option<String>,
+}
+
+fn covering_negative_enabled<E: EnvProvider>(env: &E) -> bool {
+    env.var("CONTEXT_STILL_RUST_COVERING_MODE")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("negative"))
+}
+
+fn claim_negative_covering_with_connection(
+    connection: &mut Connection,
+    config: &ExecutorTickConfig,
+) -> Result<Option<NegativeCoveringExecution>, CliError> {
+    let Some(settings) = load_settings_document(connection)? else {
+        return Ok(None);
+    };
+    let paused_queues = load_paused_queues(connection)?;
+    if paused_queues.contains("coveringEvidence") {
+        return Ok(None);
+    }
+    if !paused_queues.contains("findingCandidate")
+        && has_runnable_finding_candidate(connection)?
+        && !negative_covering_turn_due(connection, config.covering_min_interval_seconds)?
+    {
+        return Ok(None);
+    }
+    for pool in provider_pools(&settings) {
+        let Some(mut covering_spec) =
+            queue_spec_for_pool(&settings, "coveringEvidence", &pool.pool_id)
+        else {
+            continue;
+        };
+        covering_spec.requires_negative_candidate = true;
+        let worker_id = format!(
+            "context-stilld-rust-executor:{}:{}",
+            pool.pool_id,
+            unique_suffix()
+        );
+        let lease_id = format!("rust-lease-{}", unique_suffix());
+        let Some(claimed) = claim_next_job_with_provider_lease_for_connection(
+            connection,
+            &pool,
+            &[covering_spec],
+            &worker_id,
+            &lease_id,
+            config.queue_stale_seconds,
+        )?
+        else {
+            continue;
+        };
+        append_queue_event_best_effort(
+            connection,
+            &format!("rust-covering-event-{}", unique_suffix()),
+            "coveringEvidence",
+            &claimed.id,
+            "claimed",
+            Some("negative covering job claimed by Rust resident executor"),
+            Some(
+                &serde_json::json!({
+                    "workerId": worker_id,
+                    "executor": "rust",
+                    "coveringMode": "negative"
+                })
+                .to_string(),
+            ),
+        );
+        heartbeat_claim_best_effort(connection, &claimed);
+        let claimed_job_id = claimed.id.clone();
+        let claimed_lease_id = claimed.provider_lease.id.clone();
+        let execution = (|| {
+            let target = local_llm_target_config(&settings, &claimed.provider_lease.target_id)?;
+            let secret_key =
+                local_llm_target_secret_key(&settings, &claimed.provider_lease.target_id)?;
+            let api_key = load_secret_value(connection, &secret_key).or_else(|| {
+                if secret_key == "localLlmApiKey" {
+                    config.local_llm_api_key.clone()
+                } else {
+                    None
+                }
+            });
+            load_claimed_negative_execution(connection, claimed, target, api_key)
+        })();
+        match execution {
+            Ok(execution) => return Ok(Some(execution)),
+            Err(error) => {
+                let reason = format!("covering_execution_setup_failed:{error}");
+                let _ = keep_queue_job_waiting_for_worker_for_connection(
+                    connection,
+                    "coveringEvidence",
+                    &claimed_job_id,
+                    &reason,
+                );
+                let _ = release_provider_lease_for_connection(
+                    connection,
+                    &claimed_lease_id,
+                    "worker_setup_failed",
+                );
+                return Err(error);
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn negative_covering_turn_due(
+    connection: &Connection,
+    min_interval_seconds: u64,
+) -> Result<bool, CliError> {
+    if !table_exists(connection, "distillation_queue_events")? {
+        return Ok(true);
+    }
+    let interval = format!("-{} seconds", min_interval_seconds.max(1));
+    connection
+        .query_row(
+            "
+            select not exists(
+              select 1
+              from distillation_queue_events
+              where queue_name = 'coveringEvidence'
+                and event_type = 'claimed'
+                and json_extract(metadata, '$.executor') = 'rust'
+                and datetime(created_at) >= datetime(CURRENT_TIMESTAMP, ?1)
+            )
+            ",
+            [&interval],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value != 0)
+        .map_err(|error| {
+            CliError::io(format!(
+                "failed to inspect negative covering execution cadence: {error}"
+            ))
+        })
+}
+
+fn has_runnable_finding_candidate(connection: &Connection) -> Result<bool, CliError> {
+    connection
+        .query_row(
+            "
+            select exists(
+              select 1
+              from finding_candidate_queue
+              where status in ('pending', 'paused')
+                and source_kind = 'vibe_memory'
+                and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+            )
+            ",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value != 0)
+        .map_err(|error| {
+            CliError::io(format!(
+                "failed to inspect higher-priority finding queue: {error}"
+            ))
+        })
 }
 
 fn run_executor_tick_with_connection(
@@ -180,6 +418,39 @@ fn run_executor_tick_with_connection(
             )),
         );
         heartbeat_claim_best_effort(connection, &job);
+
+        if job.queue_name == "finalizeDistille" {
+            let embedding_config = finalize_embedding_config(connection, &settings, &config);
+            let low_importance_reject_threshold = settings
+                .pointer("/distillationRuntime/lowImportanceRejectThreshold")
+                .and_then(Value::as_f64)
+                .unwrap_or(20.0);
+            match run_finalize_distille_job_for_connection(
+                connection,
+                &job.id,
+                &job.provider_lease.worker_id,
+                &embedding_config,
+                low_importance_reject_threshold,
+            )? {
+                FinalizeExecutionStatus::Completed | FinalizeExecutionStatus::Skipped => {
+                    release_provider_lease_for_connection(
+                        connection,
+                        &job.provider_lease.id,
+                        "worker_finished",
+                    )?;
+                    completed += 1;
+                }
+                FinalizeExecutionStatus::Failed => {
+                    release_provider_lease_for_connection(
+                        connection,
+                        &job.provider_lease.id,
+                        "worker_failed",
+                    )?;
+                    failed += 1;
+                }
+            }
+            continue;
+        }
 
         if job.queue_name == "episodeDistiller" || job.queue_name == "findingCandidate" {
             let target = local_llm_target_config(&settings, &job.provider_lease.target_id)?;
@@ -390,6 +661,64 @@ fn load_settings_document(connection: &Connection) -> Result<Option<Value>, CliE
     Ok(Some(document.get("settings").cloned().unwrap_or(document)))
 }
 
+fn finalize_embedding_config(
+    connection: &Connection,
+    settings: &Value,
+    config: &ExecutorTickConfig,
+) -> FinalizeEmbeddingConfig {
+    let embedding_root = config
+        .project_root
+        .parent()
+        .unwrap_or(&config.project_root)
+        .join("local-llm")
+        .join("embedding");
+    let timeout_ms = settings
+        .pointer("/embedding/timeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or(30_000);
+    let expected_dimension = connection
+        .query_row(
+            "select dimension from core_vector_metadata where name = 'knowledge_items' limit 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0);
+    FinalizeEmbeddingConfig {
+        provider: settings
+            .pointer("/embedding/provider")
+            .and_then(Value::as_str)
+            .unwrap_or("auto")
+            .to_string(),
+        daemon_url: settings
+            .pointer("/embedding/daemonUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("http://127.0.0.1:44512")
+            .to_string(),
+        access_token: config.embedding_access_token.clone(),
+        timeout_seconds: timeout_ms.div_ceil(1_000).max(1),
+        expected_dimension,
+        openai_api_base_url: settings
+            .pointer("/providers/azure-openai/apiBaseUrl")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        openai_api_version: settings
+            .pointer("/providers/azure-openai/apiVersion")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        openai_model: settings
+            .pointer("/embedding/openaiModel")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        openai_api_key: load_secret_value(connection, "azureOpenAiApiKey")
+            .or_else(|| config.azure_openai_api_key.clone()),
+        cli_python: embedding_root.join(".venv/bin/python"),
+        cli_model_dir: embedding_root.join("models/multilingual-e5-small"),
+        cli_root: embedding_root,
+    }
+}
+
 fn load_paused_queues(connection: &Connection) -> Result<HashSet<String>, CliError> {
     if !table_exists(connection, "settings")? {
         return Ok(HashSet::new());
@@ -561,8 +890,11 @@ fn executor_priority_queues_for_pool(
         .collect()
 }
 
-fn rust_executor_supports_queue(queue_name: &str) -> bool {
-    matches!(queue_name, "findingCandidate" | "episodeDistiller")
+pub(crate) fn rust_executor_supports_queue(queue_name: &str) -> bool {
+    matches!(
+        queue_name,
+        "findingCandidate" | "episodeDistiller" | "finalizeDistille"
+    )
 }
 
 fn queue_spec_for_pool(
@@ -608,6 +940,7 @@ fn queue_spec_for_pool(
                 route_target_column: Some("source_kind"),
                 route_target_preferences: preferences,
                 allowed_route_values: Some(vec!["vibe_memory".to_string()]),
+                requires_negative_candidate: false,
             })
         }
         "episodeDistiller" => simple_route_spec(
@@ -642,6 +975,7 @@ fn queue_spec_for_pool(
                 route_target_column: Some("provider_policy"),
                 route_target_preferences: Vec::new(),
                 allowed_route_values: None,
+                requires_negative_candidate: false,
             })
         }
         "deadZoneMergeReview" => simple_route_spec(
@@ -679,6 +1013,7 @@ fn simple_route_spec(
         route_target_column: None,
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
+        requires_negative_candidate: false,
     })
 }
 
@@ -945,6 +1280,64 @@ mod tests {
     use crate::shared::config::MapEnv;
     use rusqlite::Connection;
     use serde_json::json;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    fn serve_covering_response(content: Value) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let response_body = json!({
+            "choices": [{"message": {"content": content.to_string()}}]
+        })
+        .to_string();
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(stream);
+            let mut content_length = 0usize;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(value) = line
+                    .to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                {
+                    content_length = value;
+                }
+            }
+            let mut body = vec![0_u8; content_length];
+            reader.read_exact(&mut body).unwrap();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            );
+            reader.get_mut().write_all(response.as_bytes()).unwrap();
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[test]
+    fn negative_covering_turn_is_rate_limited_but_not_starved_by_finding_backlog() {
+        let connection = Connection::open_in_memory().unwrap();
+        create_queue_events_table(&connection);
+
+        assert!(negative_covering_turn_due(&connection, 60).unwrap());
+        connection
+            .execute(
+                "insert into distillation_queue_events (id, queue_name, queue_job_id, event_type, metadata) values ('event-1', 'coveringEvidence', 'cover-1', 'claimed', '{\"executor\":\"rust\"}')",
+                [],
+            )
+            .unwrap();
+        assert!(!negative_covering_turn_due(&connection, 60).unwrap());
+    }
 
     #[test]
     fn rust_executor_tick_does_not_claim_unsupported_queue() {
@@ -1048,6 +1441,215 @@ mod tests {
         assert_eq!(retried_events, 0);
 
         std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[test]
+    fn rust_executor_negative_covering_tick_claims_executes_and_persists() {
+        let app_dir = temp_app_dir("negative_covering_tick");
+        let sqlite_path = app_dir.join("queue.sqlite");
+        let (api_base_url, server) = serve_covering_response(json!({
+            "status": "ready",
+            "polarity": "negative",
+            "intentTags": ["data_integrity"],
+            "appliesTo": {
+                "technologies": ["sqlite"],
+                "changeTypes": ["implementation"],
+                "domains": ["queue"]
+            },
+            "distilled": {
+                "failure": "複数writerがキュー状態を競合更新する",
+                "impact": "キュー状態を失う",
+                "trigger": "resident以外がSQLiteへ直接書き込む",
+                "fix": "resident writer経由へ統一する",
+                "verification": "queue smoke testを実行する",
+                "decisionSignal": null
+            },
+            "evidence": ["競合を再現した", "単一writerで解消した"],
+            "originRefs": ["vibe_memory:memory-1"]
+        }));
+        let connection = Connection::open(&sqlite_path).unwrap();
+        create_provider_lease_table(&connection);
+        create_queue_events_table(&connection);
+        connection
+            .execute_batch(
+                r#"
+                create table settings (
+                  id text primary key,
+                  namespace text not null,
+                  key text not null,
+                  value text not null
+                );
+                create table finding_candidate_queue (
+                  id text primary key,
+                  input_kind text not null,
+                  source_kind text not null,
+                  source_key text not null,
+                  source_uri text not null,
+                  status text not null,
+                  next_run_at text,
+                  created_at text not null,
+                  updated_at text not null
+                );
+                create table found_candidates (
+                  id text primary key,
+                  finding_job_id text not null,
+                  title text not null,
+                  content text not null,
+                  origin text not null default '{}',
+                  metadata text not null default '{}'
+                );
+                create table covering_evidence_queue (
+                  id text primary key,
+                  found_candidate_id text not null,
+                  distillation_version text not null,
+                  status text not null,
+                  priority integer not null,
+                  attempt_count integer not null,
+                  max_attempts integer not null,
+                  provider_policy text,
+                  next_run_at text,
+                  completed_at text,
+                  locked_by text,
+                  locked_at text,
+                  heartbeat_at text,
+                  last_error text,
+                  last_outcome_kind text,
+                  created_at text not null,
+                  updated_at text not null
+                );
+                create table evidence_coverage_results (
+                  id text primary key,
+                  found_candidate_id text not null,
+                  producer_queue text not null,
+                  producer_job_id text not null,
+                  distillation_version text not null,
+                  status text not null,
+                  stage text not null,
+                  type text,
+                  title text,
+                  body text,
+                  importance integer,
+                  confidence integer,
+                  applies_to text not null default '{}',
+                  "references" text not null default '[]',
+                  duplicate_refs text not null default '[]',
+                  tool_events text not null default '[]',
+                  reason text,
+                  metadata text not null default '{}',
+                  created_at text not null,
+                  updated_at text not null
+                );
+                create table finalize_distille_queue (
+                  id text primary key,
+                  evidence_result_id text not null,
+                  distillation_version text not null,
+                  status text not null,
+                  priority integer not null,
+                  provider_policy text,
+                  metadata text not null,
+                  created_at text not null,
+                  updated_at text not null
+                );
+                insert into finding_candidate_queue (
+                  id, input_kind, source_kind, source_key, source_uri, status, created_at, updated_at
+                ) values (
+                  'finding-1', 'source_target', 'vibe_memory', 'memory-1',
+                  'vibe_memory:memory-1', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                );
+                insert into found_candidates (
+                  id, finding_job_id, title, content, origin, metadata
+                ) values (
+                  'candidate-1', 'finding-1', 'SQLite writer ownership regression',
+                  '複数writerによる競合をresident writerへの統一で防ぐ。',
+                  '{"polarity":"negative"}', '{}'
+                );
+                insert into covering_evidence_queue (
+                  id, found_candidate_id, distillation_version, status, priority,
+                  attempt_count, max_attempts, provider_policy, created_at, updated_at
+                ) values (
+                  'cover-1', 'candidate-1', 'v-test', 'pending', 50,
+                  0, 2, 'default', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                );
+                "#,
+            )
+            .unwrap();
+        let settings = json!({
+            "settings": {
+                "providerPools": [{
+                    "id": "local-llm-default",
+                    "enabled": true,
+                    "targets": [{"provider": "local-llm", "localLlmModelId": "local-cover"}],
+                    "maxConcurrent": 1,
+                    "staleLeaseSeconds": 120,
+                    "lowPriorityAgingSeconds": 1800
+                }],
+                "providers": {
+                    "local-llm": {
+                        "models": [{
+                            "id": "local-cover",
+                            "apiBaseUrl": api_base_url,
+                            "apiPath": "/v1/chat/completions",
+                            "model": "qwen"
+                        }]
+                    }
+                },
+                "taskRouting": {
+                    "coverEvidence": {
+                        "sourceSupport": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"},
+                        "externalEvidence": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"},
+                        "mcpEvidence": {"provider": "local-llm", "providerPoolId": "local-llm-default", "model": "qwen"}
+                    }
+                }
+            }
+        });
+        connection
+            .execute(
+                "insert into settings (id, namespace, key, value) values ('settings-1', 'runtime', 'settings.v1', ?1)",
+                [settings.to_string()],
+            )
+            .unwrap();
+        drop(connection);
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "negative"),
+            ("CONTEXT_STILL_RUST_LLM_TIMEOUT_SECONDS", "30"),
+        ]);
+
+        let report = run_executor_tick_report(&env).unwrap();
+        server.join().unwrap();
+
+        assert_eq!(report.status, "executed");
+        assert_eq!(report.claimed, 1);
+        assert_eq!(report.completed, 1);
+        let connection = Connection::open(&sqlite_path).unwrap();
+        let queue_status: String = connection
+            .query_row(
+                "select status from covering_evidence_queue where id = 'cover-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let evidence_count: i64 = connection
+            .query_row(
+                "select count(*) from evidence_coverage_results where status = 'knowledge_ready'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let finalize_count: i64 = connection
+            .query_row("select count(*) from finalize_distille_queue", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(queue_status, "completed");
+        assert_eq!(evidence_count, 1);
+        assert_eq!(finalize_count, 1);
+
+        std::fs::remove_dir_all(&app_dir).unwrap();
     }
 
     #[test]

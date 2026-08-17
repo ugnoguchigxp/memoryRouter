@@ -25,6 +25,14 @@ vi.mock("../src/db/index.js", () => ({
   },
 }));
 
+vi.mock("../src/db/backend.js", () => ({
+  resolveDatabaseBackendConfig: vi.fn(() => ({
+    kind: "postgres",
+    url: "postgres://test/knowledge_repository_test",
+    sqlitePath: null,
+  })),
+}));
+
 vi.mock("../src/modules/audit/audit-log.service.js", () => ({
   auditEventTypes: {
     knowledgeCreated: "KNOWLEDGE_CREATED",

@@ -2522,7 +2522,7 @@ export type RuntimeSettingsReloadResponse = {
 const ADMIN_API_KEY_STORAGE_KEY = "context_still_admin_api_key";
 const LEGACY_ADMIN_API_KEY_STORAGE_KEY = "memory_router_admin_api_key";
 const ADMIN_API_KEY_QUERY_PARAM_KEYS = ["admin_api_key", "adminApiKey", "x-admin-api-key"];
-export const ADMIN_SESSION_EXPIRED_EVENT = "context-still:admin-session-expired";
+export const ADMIN_SESSION_INVALID_EVENT = "context-still:admin-session-invalid";
 let adminSessionBootstrap: Promise<void> | null = null;
 
 function normalizeAdminApiKey(value: unknown): string | null {
@@ -2651,11 +2651,11 @@ function parseResponseErrorPayload(payload: unknown): {
   return { message, code };
 }
 
-function notifyExpiredAdminSession(url: string, status: number): void {
+function notifyInvalidAdminSession(url: string, status: number): void {
   if (status !== 401 || url === "/api/admin-session" || typeof window === "undefined") {
     return;
   }
-  window.dispatchEvent(new Event(ADMIN_SESSION_EXPIRED_EVENT));
+  window.dispatchEvent(new Event(ADMIN_SESSION_INVALID_EVENT));
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -2663,7 +2663,7 @@ async function getJson<T>(url: string): Promise<T> {
   const headers = buildRequestHeaders();
   const response = headers ? await fetch(url, { headers }) : await fetch(url);
   if (!response.ok) {
-    notifyExpiredAdminSession(url, response.status);
+    notifyInvalidAdminSession(url, response.status);
     const payload =
       typeof response.json === "function" ? await response.json().catch(() => null) : null;
     const parsed = parseResponseErrorPayload(payload);
@@ -2707,7 +2707,7 @@ async function requestJson<T>(url: string, method: string, body?: unknown): Prom
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
-    notifyExpiredAdminSession(url, response.status);
+    notifyInvalidAdminSession(url, response.status);
     const message = await response
       .json()
       .then((payload) => parseRequestErrorMessage(method, url, response.status, payload))
@@ -2731,7 +2731,7 @@ async function requestForm<T>(url: string, method: string, body: FormData): Prom
         body,
       });
   if (!response.ok) {
-    notifyExpiredAdminSession(url, response.status);
+    notifyInvalidAdminSession(url, response.status);
     const message = await response
       .json()
       .then((payload) => parseRequestErrorMessage(method, url, response.status, payload))

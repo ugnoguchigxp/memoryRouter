@@ -28,9 +28,9 @@ first-party. Direct same-origin development does not need `CONTEXT_STILL_ALLOWED
 trusted reverse proxy terminates TLS, override the built-in admin key and list the external UI
 origin so Origin validation can account
 for the internal HTTP hop. Exact origins may also be listed for trusted header-authenticated browser
-clients; wildcards are not supported. The admin UI exchanges the built-in or entered key for a 15-minute
-`HttpOnly`, `SameSite=Strict` session. API keys in URL parameters and browser `localStorage` are
-ignored and removed.
+clients; wildcards are not supported. The admin UI exchanges the built-in or entered key for an
+`HttpOnly`, `SameSite=Strict` browser session with no time-based server expiry. API keys in URL
+parameters and browser `localStorage` are ignored and removed.
 
 Future Tauri packaging should resolve SQLite DB, logs, backups, runtime settings, daemon state, and MCP registration metadata from app data paths instead of requiring terminal setup.
 
@@ -108,6 +108,8 @@ These variables are for development, packaging, and advanced runtime integration
 | `CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC` | `1` | Enables resident `context-stilld run` to own scheduled agent log sync |
 | `CONTEXT_STILL_RESIDENT_QUEUE_MODE` | `rust-managed-one-shot` | Legacy value retained for compatibility; resident queue scheduling is Rust maintenance and no longer starts Bun continuous mode |
 | `CONTEXT_STILL_RESIDENT_QUEUE_INTERVAL_MS` | `5000` | Minimum interval between Rust-managed queue maintenance ticks |
+| `CONTEXT_STILL_RUST_COVERING_MODE` | `negative` (LaunchAgent) / `off` (binary fallback) | Enables the Rust-native negative Covering canary. Set `off` to roll back without starting the legacy worker |
+| `CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS` | `60` | Minimum interval between Rust Covering claims while higher-priority Finding work remains runnable |
 | `CONTEXT_STILL_QUEUE_STALE_SECONDS` | `120` | Stale threshold for Rust queue maintenance to recover active leases and running jobs |
 | `CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS` | `3600` | Resident daemon / legacy LaunchAgent scheduled sync interval |
 | `CONTEXT_STILL_AGENT_LOG_SYNC_RUN_AT_LOAD` | `0` | Set `1` to run agent log sync immediately when resident daemon starts |

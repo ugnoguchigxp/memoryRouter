@@ -16,10 +16,12 @@ the application receives the proxied request over an internal HTTP hop.
 
 With the built-in local key, the browser UI creates the session automatically. With an environment
 override, the browser UI sends the entered admin key once to `POST /api/admin-session`. The
-response sets a 15-minute `HttpOnly`, `SameSite=Strict` cookie; the long-lived key is not stored in
+response sets an `HttpOnly`, `SameSite=Strict` browser-session cookie; the long-lived key is not stored in
 the URL or browser storage. `GET /api/admin-session` reports whether a session is
 configured/authenticated and includes a machine-readable `configurationError` when the configured
-key is missing or too short. `DELETE /api/admin-session` signs out. Session creation and
+key is missing or too short. The session has no time-based server expiry; `DELETE
+/api/admin-session` signs out, closing the browser session drops the cookie, and rotating the admin
+key invalidates existing session signatures. Session creation and
 state-changing cookie-authenticated requests require an exact trusted `Origin`. CLI clients
 continue to use `x-admin-api-key` or Bearer authentication.
 

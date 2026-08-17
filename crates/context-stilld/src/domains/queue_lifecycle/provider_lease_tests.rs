@@ -287,6 +287,7 @@ fn rust_provider_claim_keeps_queue_order_ahead_of_older_higher_priority_episode_
         route_target_column: None,
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
+        requires_negative_candidate: false,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(
@@ -388,6 +389,7 @@ fn rust_provider_claim_uses_pool_fallback_target_when_route_has_no_preference() 
         route_target_column: Some("source_kind"),
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
+        requires_negative_candidate: false,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(
@@ -510,6 +512,74 @@ fn rust_provider_claim_recovers_stale_lease_and_reuses_target() {
     );
 
     std::fs::remove_dir_all(&app_dir).unwrap();
+}
+
+#[test]
+fn rust_provider_claim_filters_covering_to_negative_candidates() {
+    let mut connection = Connection::open_in_memory().unwrap();
+    create_provider_lease_table(&connection);
+    connection
+        .execute_batch(
+            r#"
+            create table found_candidates (
+              id text primary key,
+              origin text not null default '{}'
+            );
+            create table covering_evidence_queue (
+              id text primary key,
+              found_candidate_id text not null,
+              status text not null,
+              priority integer not null default 0,
+              created_at text not null,
+              updated_at text not null,
+              next_run_at text,
+              locked_by text,
+              locked_at text,
+              heartbeat_at text,
+              last_error text,
+              last_outcome_kind text,
+              provider_policy text
+            );
+            insert into found_candidates (id, origin) values
+              ('candidate-positive', '{"polarity":"positive"}'),
+              ('candidate-negative', '{"polarity":"negative"}');
+            insert into covering_evidence_queue (
+              id, found_candidate_id, status, priority, created_at, updated_at, provider_policy
+            ) values
+              ('cover-positive', 'candidate-positive', 'pending', 100, '2026-08-17 00:00:00', '2026-08-17 00:00:00', 'default'),
+              ('cover-negative', 'candidate-negative', 'pending', 50, '2026-08-17 01:00:00', '2026-08-17 01:00:00', 'default');
+            "#,
+        )
+        .unwrap();
+    let spec = super::types::ProviderQueueClaimSpec {
+        queue_name: "coveringEvidence".to_string(),
+        preferred_target_ids: Vec::new(),
+        route_target_column: Some("provider_policy"),
+        route_target_preferences: Vec::new(),
+        allowed_route_values: None,
+        requires_negative_candidate: true,
+    };
+
+    let claimed = claim_next_job_with_provider_lease_for_connection(
+        &mut connection,
+        &provider_pool(),
+        &[spec],
+        "worker-negative-covering",
+        "lease-negative-covering",
+        90,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(claimed.id, "cover-negative");
+    let positive_status: String = connection
+        .query_row(
+            "select status from covering_evidence_queue where id = 'cover-positive'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(positive_status, "pending");
 }
 
 #[test]

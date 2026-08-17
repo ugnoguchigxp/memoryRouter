@@ -6,7 +6,6 @@ import { isExactHttpOrigin } from "./admin-cors.js";
 
 export const ADMIN_SESSION_PATH = "/api/admin-session";
 export const ADMIN_SESSION_COOKIE = "context_still_admin_session";
-export const ADMIN_SESSION_TTL_SECONDS = 15 * 60;
 export const ADMIN_API_KEY_MIN_LENGTH = 32;
 
 export type AdminApiKeyConfigurationError =
@@ -33,28 +32,17 @@ function sessionSignature(configuredKey: string, payload: string): Buffer {
   return createHmac("sha256", configuredKey).update(payload).digest();
 }
 
-export function createAdminSessionToken(
-  configuredKey: string,
-  now = Date.now(),
-): { token: string; expiresAt: number } {
-  const expiresAt = now + ADMIN_SESSION_TTL_SECONDS * 1000;
-  const payload = `${expiresAt}.${randomBytes(18).toString("base64url")}`;
-  const signature = sessionSignature(configuredKey, payload).toString("base64url");
-  return { token: `${payload}.${signature}`, expiresAt };
+export function createAdminSessionToken(configuredKey: string): string {
+  const nonce = randomBytes(18).toString("base64url");
+  const signature = sessionSignature(configuredKey, nonce).toString("base64url");
+  return `${nonce}.${signature}`;
 }
 
-export function isValidAdminSessionToken(
-  configuredKey: string,
-  token: string,
-  now = Date.now(),
-): boolean {
+export function isValidAdminSessionToken(configuredKey: string, token: string): boolean {
   const parts = token.split(".");
-  if (parts.length !== 3) return false;
-  const [expiresRaw, nonce, signatureRaw] = parts;
-  if (!expiresRaw || !nonce || !signatureRaw || !/^\d+$/.test(expiresRaw)) return false;
-  const expiresAt = Number(expiresRaw);
-  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) return false;
-  if (expiresAt > now + ADMIN_SESSION_TTL_SECONDS * 1000) return false;
+  if (parts.length !== 2) return false;
+  const [nonce, signatureRaw] = parts;
+  if (!nonce || !signatureRaw) return false;
   if (!/^[A-Za-z0-9_-]{20,}$/.test(nonce)) return false;
 
   let providedSignature: Buffer;
@@ -63,7 +51,7 @@ export function isValidAdminSessionToken(
   } catch {
     return false;
   }
-  const expectedSignature = sessionSignature(configuredKey, `${expiresRaw}.${nonce}`);
+  const expectedSignature = sessionSignature(configuredKey, nonce);
   return (
     providedSignature.length === expectedSignature.length &&
     timingSafeEqual(providedSignature, expectedSignature)

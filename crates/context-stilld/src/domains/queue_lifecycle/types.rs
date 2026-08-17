@@ -30,6 +30,8 @@ pub struct QueueInspectReport {
     pub executor_running: bool,
     pub executor_pid: Option<u32>,
     pub runnable_pending_count: u64,
+    pub unsupported_runnable_count: u64,
+    pub unsupported_queues: Vec<UnsupportedQueueBacklog>,
     pub blocked_reason: Option<String>,
     pub sqlite_status: &'static str,
     pub sqlite_core_path: String,
@@ -43,8 +45,17 @@ pub struct QueueInspectReport {
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UnsupportedQueueBacklog {
+    pub queue_name: &'static str,
+    pub runnable_pending: u64,
+    pub reason: &'static str,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct QueueFeatureFlagsInspect {
     pub internal_chunked_distillation: bool,
+    pub rust_covering_mode: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -138,6 +149,7 @@ pub struct ProviderQueueClaimSpec {
     pub route_target_column: Option<&'static str>,
     pub route_target_preferences: Vec<RowTargetPreference>,
     pub allowed_route_values: Option<Vec<String>>,
+    pub requires_negative_candidate: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

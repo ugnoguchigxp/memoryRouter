@@ -180,6 +180,14 @@ function renderPlist(): string {
       process.env.CONTEXT_STILL_RESIDENT_QUEUE_INTERVAL_MS ?? "5000",
     )
     .replaceAll(
+      "{{RUST_COVERING_MODE}}",
+      process.env.CONTEXT_STILL_RUST_COVERING_MODE ?? "negative",
+    )
+    .replaceAll(
+      "{{RUST_COVERING_MIN_INTERVAL_SECONDS}}",
+      process.env.CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS ?? "60",
+    )
+    .replaceAll(
       "{{RESIDENT_AGENT_LOG_SYNC}}",
       process.env.CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC ?? "1",
     )

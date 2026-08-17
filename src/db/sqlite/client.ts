@@ -6,6 +6,7 @@ import { groupedConfig } from "../../config.js";
 import { createSqliteCoreSchemaSql } from "./core-schema.js";
 import { RemoteWriterSqliteClient } from "./remote-client.js";
 import * as schema from "./schema.js";
+import { assertSafeDirectWriteTestPath } from "./test-path-safety.js";
 
 type BunSqliteDatabase = {
   filename: string;
@@ -49,6 +50,7 @@ export async function openSqliteCoreDatabase(input: {
   vectorDimension?: number;
   loadVectorExtension?: boolean;
 }): Promise<SqliteCoreDatabase> {
+  assertSafeDirectWriteTestPath(input.path);
   if (!isDirectWriteTestRuntime()) {
     const sqlite = await import("bun:sqlite");
     const readOnly = new sqlite.Database(input.path, {

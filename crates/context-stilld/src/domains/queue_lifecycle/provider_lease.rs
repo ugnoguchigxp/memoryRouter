@@ -380,6 +380,7 @@ fn runnable_provider_candidates(
         table_name,
         route_target_column,
         allowed_route_values.len(),
+        queue_spec.requires_negative_candidate,
     );
     let mut statement = tx.prepare(&sql).map_err(|error| {
         CliError::io(format!(
@@ -435,6 +436,7 @@ fn runnable_provider_sql(
     table_name: &str,
     route_target_column: Option<&str>,
     allowed_route_value_count: usize,
+    requires_negative_candidate: bool,
 ) -> String {
     let next_run_condition = if queue_name == "finalizeDistille" {
         ""
@@ -454,6 +456,13 @@ fn runnable_provider_sql(
             format!("and {column} in ({placeholders})")
         })
         .unwrap_or_default();
+    let negative_candidate_condition = if requires_negative_candidate {
+        format!(
+            "and exists (select 1 from found_candidates covering_candidate where covering_candidate.id = {table_name}.found_candidate_id and lower(coalesce(json_extract(covering_candidate.origin, '$.polarity'), '')) = 'negative')"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "
         select
@@ -466,6 +475,7 @@ fn runnable_provider_sql(
         where status in ('pending', 'paused')
           {next_run_condition}
           {allowed_route_condition}
+          {negative_candidate_condition}
         order by priority desc, created_at asc, id asc
         limit 20
         "

@@ -231,7 +231,7 @@ bun run docs:check-links
 | API returns `503 admin_api_key_not_configured` | The built-in local key should prevent this during normal startup; check for runtime configuration mutation and restart the API |
 | API returns `503 admin_api_key_too_short` | Replace `CONTEXT_STILL_ADMIN_API_KEY` with a random value of at least 32 characters and restart the API |
 | Browser preflight returns `403 origin_not_allowed` | Add the exact UI origin to `CONTEXT_STILL_ALLOWED_ORIGINS`; do not use a wildcard |
-| Admin UI asks for a key again | The short-lived `HttpOnly` session expired or the admin key rotated; enter the current key to start a new session |
+| Admin UI asks for a key again | The browser session ended, the session cookie became invalid, or the admin key rotated; enter the current key to start a new session |
 | MCP fails to start with a host error | Set `CONTEXT_STILL_MCP_HOST` to `127.0.0.1` or `::1`; remote MCP binding is intentionally rejected |
 | Integration tests hit live DB | Stop immediately and set a `DATABASE_URL` whose database name includes `test` |
 

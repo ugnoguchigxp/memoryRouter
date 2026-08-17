@@ -1,14 +1,27 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { resolveDatabaseBackendConfig } from "../src/db/backend.js";
+import { assertSafeDirectWriteTestPath } from "../src/db/sqlite/test-path-safety.js";
 
 const originalDatabaseUrl = process.env.DATABASE_URL;
 const originalBackend = process.env.CONTEXT_STILL_DB_BACKEND;
 const originalSqlitePath = process.env.CONTEXT_STILL_SQLITE_CORE_PATH;
+const originalAllowDestructiveDbTests = process.env.CONTEXT_STILL_ALLOW_DESTRUCTIVE_DB_TESTS;
 
 afterEach(() => {
   restoreEnv("DATABASE_URL", originalDatabaseUrl);
   restoreEnv("CONTEXT_STILL_DB_BACKEND", originalBackend);
   restoreEnv("CONTEXT_STILL_SQLITE_CORE_PATH", originalSqlitePath);
+  restoreEnv("CONTEXT_STILL_ALLOW_DESTRUCTIVE_DB_TESTS", originalAllowDestructiveDbTests);
+});
+
+describe("sqlite test write safety", () => {
+  test("refuses direct test writes outside the OS temporary directory", () => {
+    clearEnv("CONTEXT_STILL_ALLOW_DESTRUCTIVE_DB_TESTS");
+
+    expect(() => assertSafeDirectWriteTestPath("/workspace/context-still-core.sqlite")).toThrow(
+      "Refusing to open a non-temporary SQLite database",
+    );
+  });
 });
 
 describe("database backend config", () => {

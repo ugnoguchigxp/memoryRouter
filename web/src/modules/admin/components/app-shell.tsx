@@ -2,9 +2,8 @@ import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { type FormEvent, useEffect, useState } from "react";
 import { DEFAULT_ADMIN_API_KEY } from "../../../../../src/shared/admin-api-key";
 import {
-  ADMIN_SESSION_EXPIRED_EVENT,
+  ADMIN_SESSION_INVALID_EVENT,
   createAdminSession,
-  deleteAdminSession,
   fetchAdminSessionStatus,
 } from "../repositories/admin.repository";
 
@@ -69,12 +68,12 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
-    const handleExpiredSession = () => {
-      setSessionError("The admin session expired. Enter the current key to continue.");
+    const handleInvalidSession = () => {
+      setSessionError("The admin session is no longer valid. Enter the current key to continue.");
       setSessionState("unauthenticated");
     };
-    window.addEventListener(ADMIN_SESSION_EXPIRED_EVENT, handleExpiredSession);
-    return () => window.removeEventListener(ADMIN_SESSION_EXPIRED_EVENT, handleExpiredSession);
+    window.addEventListener(ADMIN_SESSION_INVALID_EVENT, handleInvalidSession);
+    return () => window.removeEventListener(ADMIN_SESSION_INVALID_EVENT, handleInvalidSession);
   }, []);
 
   const submitSession = async (event: FormEvent<HTMLFormElement>) => {
@@ -86,14 +85,6 @@ export function AppShell() {
       setSessionState("authenticated");
     } catch (error) {
       setSessionError(error instanceof Error ? error.message : String(error));
-    }
-  };
-
-  const logout = async () => {
-    try {
-      await deleteAdminSession();
-    } finally {
-      setSessionState("unauthenticated");
     }
   };
 
@@ -168,9 +159,6 @@ export function AppShell() {
               {item.label}
             </Link>
           ))}
-          <button type="button" className="nav-link" onClick={logout}>
-            Sign out
-          </button>
         </nav>
       </header>
       <main

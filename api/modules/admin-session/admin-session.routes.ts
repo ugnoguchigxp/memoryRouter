@@ -7,7 +7,6 @@ import { groupedConfig } from "../../../src/config.js";
 import { readProjectEnv } from "../../../src/project-identity.js";
 import {
   ADMIN_SESSION_COOKIE,
-  ADMIN_SESSION_TTL_SECONDS,
   adminApiKeyConfigurationError,
   createAdminSessionToken,
   hasValidAdminSession,
@@ -61,15 +60,14 @@ export const adminSessionRouter = new Hono()
       return ctx.json({ error: "unauthorized" }, 401);
     }
 
-    const session = createAdminSessionToken(configuredKey);
-    setCookie(ctx, ADMIN_SESSION_COOKIE, session.token, {
+    const sessionToken = createAdminSessionToken(configuredKey);
+    setCookie(ctx, ADMIN_SESSION_COOKIE, sessionToken, {
       httpOnly: true,
       sameSite: "Strict",
       secure: secureCookieRequired(ctx.req.url),
       path: "/",
-      maxAge: ADMIN_SESSION_TTL_SECONDS,
     });
-    return ctx.json({ ok: true, expiresAt: new Date(session.expiresAt).toISOString() });
+    return ctx.json({ ok: true });
   })
   .delete("/", (ctx) => {
     ctx.header("Cache-Control", "no-store");

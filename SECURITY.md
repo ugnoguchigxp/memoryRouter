@@ -24,7 +24,7 @@ Important boundaries:
 - Do not expose the admin API or MCP server to untrusted networks.
 - The built-in admin API key is intended only for loopback/local use. Before exposing the service through a proxy or any non-local interface, override `CONTEXT_STILL_ADMIN_API_KEY` with a unique value of at least 32 characters; protected endpoints fail closed when a custom key is too short.
 - Keep `CONTEXT_STILL_ALLOWED_ORIGINS` empty for direct same-origin use. List only exact trusted browser origins; a TLS-terminating reverse proxy must include the external admin UI origin.
-- The admin UI uses a short-lived `HttpOnly` session; do not place the admin key in URLs or browser storage.
+- The admin UI uses an `HttpOnly` browser session with no time-based server expiry; explicit sign-out, browser-session termination, or admin-key rotation invalidates it. Do not place the admin key in URLs or browser storage.
 - `CONTEXT_STILL_MCP_HOST` accepts loopback IP literals only. Remote MCP transport requires a separately designed authenticated TLS boundary.
 - Keep `.env` and provider credentials out of Git.
 - Review source and agent-log content before sending it to external LLM or search providers.

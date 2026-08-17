@@ -144,5 +144,6 @@ pub(crate) fn finding_candidate_spec() -> ProviderQueueClaimSpec {
             },
         ],
         allowed_route_values: None,
+        requires_negative_candidate: false,
     }
 }
