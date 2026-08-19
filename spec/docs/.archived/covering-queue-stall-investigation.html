@@ -1,0 +1,149 @@
+<article lang="ja">
+  <h1 id="covering-queue-stall-investigation">Covering Queue Stall Investigation</h1>
+  <h2 id="status">Status</h2>
+  <p>
+    2026-08-19 JST時点のlive SQLite databaseとresident
+    runtimeをread-onlyで調査した。停止原因はprovider障害、queue pause、実行時errorではない。Rust
+    resident executorがpositiveまたはpolarity未設定の
+    <code>coveringEvidence</code>を実装対象外としてclaim候補から除外し、同時にlegacy TypeScript
+    supervisorはresident ownerから撤去されているため、対象591件に実行主体が存在しない。
+  </p>
+  <h2 id="live-evidence">Live Evidence</h2>
+  <ul>
+    <li>
+      Effective database:
+      <code>/Users/y.noguchi/Code/contextStill/data/context-still-core.sqlite</code>
+    </li>
+    <li>
+      Resident process: <code>context-stilld run</code>、PID <code>76316</code>、LaunchAgent
+      <code>com.context-still.daemon</code>。
+    </li>
+    <li>
+      <code>queue inspect --json</code>は<code>executorMode=rust_native</code>、
+      <code>executorRunning=true</code>、<code>rustCoveringMode=negative</code>を返した。
+    </li>
+    <li>
+      Coveringは<code>pending=591</code>、<code>running=0</code>、runnable pending
+      <code>591</code>。oldest pendingは<code>2026-08-16 16:13:07</code>。
+    </li>
+    <li>
+      Doctor warningは<code>QUEUE_EXECUTOR_UNSUPPORTED_BACKLOG: coveringEvidence=591</code>。 Queue
+      inspectのreasonは<code>rust_native_executor_partial_support</code>。
+    </li>
+    <li>
+      591件の内訳はpositive <code>554</code>件、polarity未設定<code>37</code>件。全件
+      <code>provider_policy=default</code>、source kind <code>vibe_memory</code>、
+      <code>attempt_count=0</code>、delayなしである。
+    </li>
+    <li>
+      Queue controlは<code>paused=false</code>。active provider leaseは0で、591件には
+      <code>last_error</code>も<code>last_outcome_kind</code>もない。
+    </li>
+    <li>
+      Negative coveringはRust residentにより処理されている。直近のclaim/completed eventは
+      <code>2026-08-19 09:02:38</code>/<code>09:03:18</code>で、executor metadataは
+      <code>rust</code>だった。現在negative pendingは0件である。
+    </li>
+    <li>
+      Legacy <code>queue-supervisor</code> processとLaunchAgentは存在しない。legacy logの最終更新は
+      <code>2026-06-23 06:45:09 +0900</code>で、最後はSIGTERM graceful shutdown
+      timeoutで終了している。
+    </li>
+  </ul>
+  <h2 id="causal-chain">Causal Chain</h2>
+  <ol>
+    <li>
+      Rust Finding executorがcandidateを作成し、positiveを含む後続
+      <code>covering_evidence_queue</code> rowを正常にenqueueする。
+    </li>
+    <li>
+      Resident automationは<code>CONTEXT_STILL_RUST_COVERING_MODE=negative</code>を既定にする。
+    </li>
+    <li>
+      Rust executorの通常provider-pool claim対象は<code>findingCandidate</code>と
+      <code>episodeDistiller</code>だけで、<code>coveringEvidence</code>を含まない。
+    </li>
+    <li>
+      Coveringには別のcanary経路があるが、<code>origin.polarity=negative</code>だけをclaimする。
+      Positiveとpolarity未設定rowは意図的にfail-closedで残る。
+    </li>
+    <li>
+      Resident runtimeはTypeScript queue executorを起動しない。TypeScriptの
+      <code>queue:covering:once</code>はmanual recovery commandとしてのみ残っている。
+    </li>
+    <li>
+      結果として、negative rowは流れる一方、positive/missing-polarity rowは一度もclaimされず、
+      2026-08-16以降591件まで蓄積した。
+    </li>
+  </ol>
+  <h2 id="implementation-evidence">Implementation Evidence</h2>
+  <ul>
+    <li>
+      <code>crates/context-stilld/src/domains/queue_lifecycle/executor.rs</code>の
+      <code>rust_provider_executor_supports_queue</code>は
+      <code>findingCandidate | episodeDistiller</code>だけを返す。
+    </li>
+    <li>
+      同fileのnegative covering claimは<code>requires_negative_candidate=true</code>を設定する。
+    </li>
+    <li>
+      <code>crates/context-stilld/src/domains/queue_lifecycle/inspect.rs</code
+      >はnegative以外のrunnable Coveringをunsupported countへ含める。
+    </li>
+    <li>
+      <code>src/cli/context-stilld-automation.ts</code>はRust covering modeの既定値を
+      <code>negative</code>とし、legacy queue ownerをunloadする。
+    </li>
+    <li>
+      <code>spec/docs/pub/configuration.md</code>もこのmodeを「Rust-native negative Covering
+      canary」と記載し、<code>off</code>へ戻してもlegacy workerを起動しないと明記する。
+    </li>
+    <li>
+      commit <code>3fbf3de</code>でresident Bun queue executionを削除し、commit
+      <code>09fb4a6</code>でunsupported queueをRust claim候補から除外した。その後のcommit
+      <code>e601db0</code>はnegative Covering専用executorを追加したが、positive Covering
+      parityは追加していない。
+    </li>
+  </ul>
+  <h2 id="ruled-out-causes">Ruled-out Causes</h2>
+  <ul>
+    <li>Queue pause: <code>paused=false</code>。</li>
+    <li>Backoff: 591件すべて現在runnableで、future <code>next_run_at</code>は0件。</li>
+    <li>Provider failure: 未claimのためattempt、error、leaseが存在しない。</li>
+    <li>
+      Daemon停止: resident processとRust executorは稼働し、negative Coveringは同日完了している。
+    </li>
+    <li>投入不足: 591件がpendingで、Findingからのenqueueは継続している。</li>
+  </ul>
+  <h2 id="impact">Impact</h2>
+  <p>
+    影響はCovering lane全体ではなく、positiveとpolarity未設定のCovering pathである。Negative
+    pathは処理される。
+    ただし通常candidateの大半がpositiveであるため、ユーザーからはCovering全体が停止したように見える。未処理rowから
+    <code>evidence_coverage_results</code
+    >と<code>finalize_distille_queue</code>が作られず、該当candidateはKnowledgeへ到達しない。
+  </p>
+  <h2 id="recommended-resolution">Recommended Resolution</h2>
+  <p>
+    詳細な実装順序、検証gate、canary、rollbackは
+    <a href="positive-covering-rust-executor-implementation-plan.html"
+      >Positive Covering Rust Executor Implementation Plan</a
+    >で定義する。
+  </p>
+  <ol>
+    <li>
+      恒久対応はpositive/default CoveringのTypeScript contractをRustへ移植し、provider-pool
+      claim対象へ
+      <code>coveringEvidence</code>を追加する。positive、negative、polarity未設定のrouting
+      fixtureと、Coveringから Finalizeまでのtransaction/state transition testをgateにする。
+    </li>
+    <li>
+      backlogの短期解消が必要なら、既存の<code>bun run queue:covering:once</code>をcontrolled manual
+      recoveryとして使用できる。ただしlive DB mutationを伴うため、本調査では実行していない。
+    </li>
+    <li>
+      Legacy continuous supervisorの復活はRust resident単独ownership
+      contractと競合するため、恒久対応にしない。
+    </li>
+  </ol>
+</article>

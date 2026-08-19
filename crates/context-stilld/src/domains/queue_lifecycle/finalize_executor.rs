@@ -103,6 +103,17 @@ pub(crate) fn backfill_finalize_project_identity_for_connection(
             return Ok(0);
         }
     }
+    for (table, column) in [
+        ("finalize_distille_queue", "metadata"),
+        ("evidence_coverage_results", "applies_to"),
+        ("found_candidates", "metadata"),
+        ("finding_candidate_queue", "metadata"),
+        ("vibe_memories", "metadata"),
+    ] {
+        if !column_exists(connection, table, column)? {
+            return Ok(0);
+        }
+    }
     let mut statement = connection
         .prepare(
             r#"
@@ -1722,6 +1733,21 @@ fn table_exists(connection: &Connection, name: &str) -> Result<bool, CliError> {
         )
         .map(|value| value != 0)
         .map_err(|error| CliError::io(format!("failed to inspect SQLite table {name}: {error}")))
+}
+
+fn column_exists(connection: &Connection, table: &str, column: &str) -> Result<bool, CliError> {
+    connection
+        .query_row(
+            "select exists(select 1 from pragma_table_info(?1) where name = ?2)",
+            params![table, column],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|value| value != 0)
+        .map_err(|error| {
+            CliError::io(format!(
+                "failed to inspect SQLite column {table}.{column}: {error}"
+            ))
+        })
 }
 
 fn truncate(value: &str, limit: usize) -> String {

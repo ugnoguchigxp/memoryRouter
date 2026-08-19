@@ -8,7 +8,7 @@ The desktop/local path should work with SQLite defaults and without a mandatory 
 |---|---|---|
 | `CONTEXT_STILL_DB_BACKEND` | `sqlite` for the desktop product path | Selects the local SQLite backend |
 | `CONTEXT_STILL_SQLITE_CORE_PATH` | `./data/context-still-core.sqlite` in development | SQLite core database path |
-| `CONTEXT_STILL_SOURCE_CONTENT_ROOT` | `./wiki` | Local source/wiki root |
+| `CONTEXT_STILL_SOURCE_CONTENT_ROOT` | `<project-root>/wiki` | Local source/wiki root. Rust reads relative `wiki_file` keys below its canonicalized `pages/` boundary; `web_ingest` URLs use the guarded HTTP fetch path instead |
 | `CONTEXT_STILL_ADMIN_API_KEY` | `context-still-local-admin-api-key-2026` | Optional override for every admin API endpoint except `/api/health*`; a custom value must contain at least 32 characters |
 | `CONTEXT_STILL_ALLOWED_ORIGINS` | empty | Exact comma-separated browser origins; empty disables cross-origin requests |
 
@@ -113,8 +113,10 @@ These variables are for development, packaging, and advanced runtime integration
 | `CONTEXT_STILL_RESIDENT_EMBEDDING` | `1` | Enables resident ownership of an available local e5embed runtime |
 | `CONTEXT_STILL_RESIDENT_QUEUE_MODE` | `rust-managed-one-shot` | Legacy value retained for compatibility; resident queue scheduling is Rust maintenance and no longer starts Bun continuous mode |
 | `CONTEXT_STILL_RESIDENT_QUEUE_INTERVAL_MS` | `5000` | Minimum interval between Rust-managed queue maintenance ticks |
-| `CONTEXT_STILL_RUST_COVERING_MODE` | `negative` (LaunchAgent) / `off` (binary fallback) | Enables the Rust-native negative Covering canary. Set `off` to roll back without starting the legacy worker |
-| `CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS` | `60` | Minimum interval between Rust Covering claims while higher-priority Finding work remains runnable |
+| `CONTEXT_STILL_RUST_COVERING_MODE` | `all` (LaunchAgent) / `off` (binary fallback) | Selects `off`, `negative`, `canary`, or `all`. `negative` is the rollback mode; no mode starts the legacy worker |
+| `CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST` | unset | Required in `canary` mode. Points to a versioned JSON manifest bound to the exact SQLite path and an allowlist of Covering job IDs |
+| `CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS` | `60` | Minimum interval between Rust Covering claims while Finding or Episode work remains runnable. A Covering claim also yields the next provider turn to another runnable queue |
+| `CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS` | `2` (LaunchAgent) / `1` (binary fallback) | Maximum Covering jobs claimed per tick; actual concurrency remains bounded by provider-pool capacity |
 | `CONTEXT_STILL_RUST_FINALIZE_MAX_CLAIMS` | `100` | Maximum local Finalize jobs drained before provider-pool work in one resident tick |
 | `CONTEXT_STILL_QUEUE_STALE_SECONDS` | `120` | Stale threshold for Rust queue maintenance to recover active leases and running jobs |
 | `CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS` | `3600` | Resident daemon / legacy LaunchAgent scheduled sync interval |

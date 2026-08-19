@@ -287,7 +287,8 @@ fn rust_provider_claim_keeps_queue_order_ahead_of_older_higher_priority_episode_
         route_target_column: None,
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
-        requires_negative_candidate: false,
+        candidate_polarity_filter: super::types::CandidatePolarityFilter::Any,
+        allowed_job_ids: None,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(
@@ -389,7 +390,8 @@ fn rust_provider_claim_uses_pool_fallback_target_when_route_has_no_preference() 
         route_target_column: Some("source_kind"),
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
-        requires_negative_candidate: false,
+        candidate_polarity_filter: super::types::CandidatePolarityFilter::Any,
+        allowed_job_ids: None,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(
@@ -542,12 +544,16 @@ fn rust_provider_claim_filters_covering_to_negative_candidates() {
             );
             insert into found_candidates (id, origin) values
               ('candidate-positive', '{"polarity":"positive"}'),
-              ('candidate-negative', '{"polarity":"negative"}');
+              ('candidate-negative', '{"polarity":"negative"}'),
+              ('candidate-uppercase', '{"polarity":"Negative"}'),
+              ('candidate-missing', '{}');
             insert into covering_evidence_queue (
               id, found_candidate_id, status, priority, created_at, updated_at, provider_policy
             ) values
               ('cover-positive', 'candidate-positive', 'pending', 100, '2026-08-17 00:00:00', '2026-08-17 00:00:00', 'default'),
-              ('cover-negative', 'candidate-negative', 'pending', 50, '2026-08-17 01:00:00', '2026-08-17 01:00:00', 'default');
+              ('cover-negative', 'candidate-negative', 'pending', 50, '2026-08-17 01:00:00', '2026-08-17 01:00:00', 'default'),
+              ('cover-uppercase', 'candidate-uppercase', 'pending', 90, '2026-08-17 00:10:00', '2026-08-17 00:10:00', 'default'),
+              ('cover-missing', 'candidate-missing', 'pending', 80, '2026-08-17 00:20:00', '2026-08-17 00:20:00', 'default');
             "#,
         )
         .unwrap();
@@ -557,7 +563,8 @@ fn rust_provider_claim_filters_covering_to_negative_candidates() {
         route_target_column: Some("provider_policy"),
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
-        requires_negative_candidate: true,
+        candidate_polarity_filter: super::types::CandidatePolarityFilter::Negative,
+        allowed_job_ids: None,
     };
 
     let claimed = claim_next_job_with_provider_lease_for_connection(
@@ -580,6 +587,39 @@ fn rust_provider_claim_filters_covering_to_negative_candidates() {
         )
         .unwrap();
     assert_eq!(positive_status, "pending");
+
+    let non_negative_spec = super::types::ProviderQueueClaimSpec {
+        queue_name: "coveringEvidence".to_string(),
+        preferred_target_ids: Vec::new(),
+        route_target_column: Some("provider_policy"),
+        route_target_preferences: Vec::new(),
+        allowed_route_values: None,
+        candidate_polarity_filter: super::types::CandidatePolarityFilter::NonNegative,
+        allowed_job_ids: Some(vec![
+            "cover-missing".to_string(),
+            "cover-uppercase".to_string(),
+        ]),
+    };
+    let claimed = claim_next_job_with_provider_lease_for_connection(
+        &mut connection,
+        &provider_pool(),
+        &[non_negative_spec],
+        "worker-positive-covering",
+        "lease-positive-covering",
+        90,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(claimed.id, "cover-uppercase");
+    let missing_status: String = connection
+        .query_row(
+            "select status from covering_evidence_queue where id = 'cover-missing'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(missing_status, "pending");
 }
 
 #[test]

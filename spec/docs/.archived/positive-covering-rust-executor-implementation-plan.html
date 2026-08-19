@@ -1,0 +1,641 @@
+<article lang="ja">
+  <h1 id="positive-covering-rust-executor-implementation-plan">
+    Positive Covering Rust Executor Implementation Plan
+  </h1>
+  <h2 id="status">Status</h2>
+  <p>
+    Status: implemented / archived。作成日: 2026-08-19、完了日: 2026-08-20。実装、offline
+    rehearsal、live backup、12件canary、<code>all</code> rollout、baseline
+    591件のdrainと照合を完了した。
+  </p>
+  <p>
+    本文書は
+    <a href="covering-queue-stall-investigation.html">Covering Queue Stall Investigation</a>
+    で確定した原因に対する恒久改修と、既存backlogを安全に復旧する手順を定義する。
+    <a href="rust-runtime-closeout-implementation-plan.html"
+      >Rust Runtime Closeout Implementation Plan</a
+    >のRust resident単独ownership、fail-closed、verified mutationの各contractを維持する。 完了証拠は
+    <a href="positive-covering-rust-executor-closeout-evidence.html"
+      >Positive Covering Rust Executor Closeout Evidence</a
+    >へ集約した。
+  </p>
+  <h2 id="decision">1. Decision</h2>
+  <ol>
+    <li>
+      Positiveおよびpolarity未設定の<code>coveringEvidence</code> contractをRustへ移植し、
+      <code>context-stilld run</code>を唯一のresident queue ownerに保つ。
+    </li>
+    <li>
+      Coveringを既存のgeneric provider優先列へ単純追加しない。専用Covering laneでclaimし、Findingと
+      Episodeの進行を保証する公平性制御を置く。
+    </li>
+    <li>
+      現行のnegative executorを共通実行基盤へ統合するが、negativeの入出力contractは変更しない。
+    </li>
+    <li>
+      Source-only、external evidence、dedupe、procedure quality、persistence、retryを含むTypeScript
+      contract parityが揃うまで、live既定値は<code>negative</code>のままにする。
+    </li>
+    <li>
+      実装後は固定manifestによるpositive canaryを経て<code>all</code>へ進み、591件という
+      2026-08-19時点のbaselineを照合しながらdrainする。
+    </li>
+  </ol>
+  <h2 id="goals-and-non-goals">2. Goals and Non-Goals</h2>
+  <h3 id="goals">2.1 Goals</h3>
+  <ul>
+    <li>Positiveとpolarity未設定CoveringがRust residentからclaim、実行、確定される。</li>
+    <li>各jobがTypeScript実装と同じevidence status、candidate、参照、retry結果を作る。</li>
+    <li>Knowledge-ready時だけFinalizeを一度enqueueし、重複実行でも増殖しない。</li>
+    <li>External evidenceをSSRF防御、prompt-injection guard、引用境界付きで処理する。</li>
+    <li>Backlog復旧中もFinding、Episode、negative Coveringを停止させない。</li>
+    <li><code>queue inspect</code>とdoctorがsupported/unsupported backlogを正確に報告する。</li>
+  </ul>
+  <h3 id="non-goals">2.2 Non-Goals</h3>
+  <ul>
+    <li>Legacy TypeScript continuous supervisorをresident runtimeへ戻さない。</li>
+    <li>Pending rowを一括reset、skip、deleteしない。</li>
+    <li>Live databaseを暗黙に移動、置換、schema再設計しない。</li>
+    <li>Provider pool全体のschedulerを本改修と同時に全面再設計しない。</li>
+    <li>Promptの意味、importance threshold、dedupe thresholdを移植時に変更しない。</li>
+    <li>Canary gate前にlive positive rowを処理しない。</li>
+  </ul>
+  <h2 id="confirmed-baseline">3. Confirmed Baseline</h2>
+  <p>2026-08-19 JSTのread-only調査値を実装前baselineとする。</p>
+  <table>
+    <caption>
+      Table: 3.1 Covering backlog baseline
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Measure</th>
+        <th scope="col">Value</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Runnable pending / running</td>
+        <td>591 / 0</td>
+      </tr>
+      <tr>
+        <td>Positive / polarity missing</td>
+        <td>554 / 37</td>
+      </tr>
+      <tr>
+        <td>Rule / procedure</td>
+        <td>570 / 21</td>
+      </tr>
+      <tr>
+        <td>Source-only / external evidence required</td>
+        <td>578 / 13</td>
+      </tr>
+      <tr>
+        <td>Provider policy</td>
+        <td>全件 <code>default</code></td>
+      </tr>
+      <tr>
+        <td>Source kind</td>
+        <td>全件 <code>vibe_memory</code></td>
+      </tr>
+      <tr>
+        <td>Attempt / delay / error</td>
+        <td>全件attempt 0、delayなし、errorなし</td>
+      </tr>
+      <tr>
+        <td>Rust Covering mode</td>
+        <td><code>negative</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    数値は実装開始時に再取得する。差分があってもrowをbaseline値へ戻さず、新しいread-only
+    manifestを正とする。
+  </p>
+  <h2 id="target-contract">4. Target Contract</h2>
+  <h3 id="polarity-routing">4.1 Polarity routing</h3>
+  <p>
+    Candidate origin JSONの<code>polarity</code>が文字列<code>negative</code>と完全一致する場合だけ
+    negativeとする。大文字小文字変換やtrimは行わない。欠落、null、空文字、
+    <code>positive</code>、その他の値はすべてnon-negativeとしてpositive executorへ送る。これは現行
+    TypeScriptの分岐と同じで、元のorigin JSONは書き換えない。
+  </p>
+  <p>
+    <code>ProviderQueueClaimSpec.requires_negative_candidate: bool</code>は表現力が不足するため、
+    次の明示filterへ置換する。
+  </p>
+  <pre><code class="language-rust">enum CandidatePolarityFilter {
+    Any,
+    Negative,
+    NonNegative,
+}
+</code></pre>
+  <p>
+    SQL
+    predicateは<code>Negative</code>と<code>NonNegative</code>を排他的にし、同一rowを両laneがclaim
+    できないことをfixtureで証明する。
+  </p>
+  <h3 id="execution-modes">4.2 Execution modes</h3>
+  <p><code>CONTEXT_STILL_RUST_COVERING_MODE</code>を次の4値contractへ拡張する。</p>
+  <table>
+    <caption>
+      Table: 4.2 Covering execution modes
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Mode</th>
+        <th scope="col">Claim可能なCovering</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>off</code></td>
+        <td>なし。Legacy workerは起動しない。</td>
+      </tr>
+      <tr>
+        <td><code>negative</code></td>
+        <td>Negativeのみ。移行中とrollback後の既定値。</td>
+      </tr>
+      <tr>
+        <td><code>canary</code></td>
+        <td>Negativeと、検証済みcanary manifestに列挙されたnon-negative job ID。</td>
+      </tr>
+      <tr>
+        <td><code>all</code></td>
+        <td>Negativeと全non-negative。Parityとcanary合格後だけ使用する。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    不明なmode、読めないmanifest、database identity不一致、manifest digest不一致は
+    <code>negative</code>へ暗黙fallbackせず起動時configuration errorとしてfail-closedにする。
+    Automationの既定値はrollout完了まで<code>negative</code>を維持する。
+  </p>
+  <h3 id="fair-scheduling">4.3 Fair scheduling</h3>
+  <p>
+    現在のprovider candidate比較はqueue
+    orderをagingやpriorityより先に評価するため、Coveringをgeneric
+    listへ追加すると長いbacklogがEpisodeを飢餓させる可能性がある。次の専用laneで回避する。
+  </p>
+  <ul>
+    <li>
+      現行<code>negative_covering_turn_due</code>をpolarity非依存の
+      <code>covering_turn_due</code>へ一般化する。
+    </li>
+    <li>
+      FindingまたはEpisodeがrunnableなら、同一provider poolのCovering
+      claimは既定60秒に最大1件とする。
+    </li>
+    <li>
+      FindingとEpisodeがともにrunnableでない場合は、pool capacityの範囲でCoveringを連続drainできる。
+    </li>
+    <li>同一jobと同一targetに二重leaseを作らない。</li>
+    <li>
+      Fairness testはCovering
+      backlog存在中もFindingとEpisodeのclaim/completionが継続することを検証する。
+    </li>
+  </ul>
+  <h3 id="provider-contract">4.4 Provider contract</h3>
+  <ul>
+    <li>
+      Queue rowのroute target候補はsource support、external evidence、MCP
+      evidenceのroute設定から解決する。
+    </li>
+    <li>取得したprovider lease targetを、そのjob内の全LLM stageに固定する。</li>
+    <li>
+      <code>provider_policy=cloud_api</code>はcloud targetだけを許可する。利用可能なtargetがなければ
+      <code>cloud_api_provider_unavailable</code>としてretryし、localへ黙ってfallbackしない。
+    </li>
+    <li>
+      Busy、timeout、connection failure、parse failureは分類を保ち、provider cooldownとqueue retryを
+      二重加算しない。
+    </li>
+  </ul>
+  <h3 id="positive-pipeline">4.5 Positive pipeline</h3>
+  <p>Rust positive executorは次の順序と短絡条件を維持する。</p>
+  <ol>
+    <li>Queue、candidate、finding、source、provider leaseを読み、audit startを記録する。</li>
+    <li>
+      <code>knowledge_candidate</code>、<code>wiki_file</code>、<code>web_ingest</code>、
+      <code>vibe_memory</code>を同じtoken window規則で読み、source referenceを構築する。
+    </li>
+    <li>Base candidate、importance、applicability、procedure qualityを正規化する。</li>
+    <li>Deterministic source-support判定を行う。</li>
+    <li>Active/draft Knowledgeに対するlexical/semantic dedupeを行う。</li>
+    <li>
+      URL、public specification、pricing/rate limit、latest/current等の同一predicateでexternal
+      evidence 要否を決める。
+    </li>
+    <li>
+      Source-onlyならvalue assessmentへ進む。External requiredならquery生成、search、fetch、final
+      assessmentを実行し、設定時だけMCP evidenceを追加する。
+    </li>
+    <li>Applicability refinementを行う。</li>
+    <li>Procedureをaccept、repair、ruleへdemote、またはinsufficientへ分類する。</li>
+    <li>Resultを検証して保存し、knowledge-ready時だけFinalizeをenqueueする。</li>
+    <li>Audit completed/failedとtool/provider metadataを記録する。</li>
+  </ol>
+  <h3 id="result-and-retry">4.6 Result, retry, and idempotency</h3>
+  <table>
+    <caption>
+      Table: 4.6 Result handling
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Result</th>
+        <th scope="col">Queue transition</th>
+        <th scope="col">Required mutation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>knowledge_ready</code></td>
+        <td>completed</td>
+        <td>Evidence upsertとFinalize enqueue</td>
+      </tr>
+      <tr>
+        <td><code>duplicate</code> / <code>near_duplicate</code></td>
+        <td>completed</td>
+        <td>Evidence upsert、Finalizeなし</td>
+      </tr>
+      <tr>
+        <td><code>insufficient</code></td>
+        <td>completed</td>
+        <td>Evidence upsert、Finalizeなし</td>
+      </tr>
+      <tr>
+        <td>
+          <code>reprocess_requested</code> / <code>tool_failed</code> /
+          <code>provider_failed</code> / <code>parse_failed</code>
+        </td>
+        <td>30秒、60秒、最大300秒の指数backoff。max attempts到達後failed。</td>
+        <td>診断可能なEvidence/audit、Finalizeなし</td>
+      </tr>
+      <tr>
+        <td>未定義またはschema不正</td>
+        <td>failed</td>
+        <td>Validation error、Finalizeなし</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Evidence upsert、Finalize enqueue、queue terminal/retry transition、terminal event
+    appendは同一SQLite writer transactionで行う。Commit成功後にprovider
+    leaseをreleaseする。安定IDまたは既存unique keyを用い、同一<code
+      >(found_candidate_id, producer)</code
+    >のEvidenceと同一EvidenceのFinalizeは 高々1件とする。Commit失敗時はcompletedを返さない。
+  </p>
+  <h3 id="prompt-contract">4.7 Prompt contract</h3>
+  <p>
+    Positive promptをRust
+    sourceへ手作業で複製しない。<code>.s11tnext/catalog.json</code>からruntime-neutralな segment
+    bundleを生成し、Rustは<code>include_str!</code>で取り込んで同じvariable/trust encodingを行う。
+  </p>
+  <ul>
+    <li>
+      生成対象はvalue assessment、applicability refinement、procedure repair、external search
+      query、 external fetch selection、external final、MCP evidenceとする。
+    </li>
+    <li>
+      <code>scripts/export-rust-covering-prompts.mjs</code>を追加し、
+      <code>system-context:build</code>後に
+      <code>shared/prompts/generated/cover-evidence-rust.json</code>を生成する。
+    </li>
+    <li>
+      <code>system-context:check</code>は生成物の差分も失敗にし、TypeScript/Rustのrender parity
+      fixtureを gateにする。
+    </li>
+  </ul>
+  <h3 id="external-evidence-security">4.8 External evidence security</h3>
+  <p>
+    External pathは<code>canary</code>前のblocking scopeである。Rust
+    fetcherは現行TypeScriptと同等以上の 次を実装する。
+  </p>
+  <ul>
+    <li>HTTP/HTTPS以外、credential、明示port、localhost、private/link-local IPを拒否する。</li>
+    <li>DNSの全解決先を検査し、接続先をpinし、redirectごとに再検査する。</li>
+    <li>Response byte、redirect、site数、token budget、timeoutを制限する。</li>
+    <li>Readable text抽出、cache profile、force-refresh semanticsを維持する。</li>
+    <li>
+      Hidden instruction、policy override、tool invocation、source suppression、secret
+      exfiltrationを検査する。
+    </li>
+    <li>
+      Guardの<code>deny</code>と<code>unavailable</code>は<code>ok=false</code>のtool
+      resultにし、未検査本文を LLMへ渡さない。
+    </li>
+    <li>許可された本文もuntrusted/tainted/citation-requiredとしてpromptへ境界付きで渡す。</li>
+  </ul>
+  <p>
+    Optional MCP evidenceは設定されたContext7/DeepWiki routeをbounded
+    callで実行する。未設定時は現行どおり no-opとする。設定済みなのにRust
+    adapterが未対応の場合、<code>all</code>へ進めない。
+  </p>
+  <h2 id="implementation-slices">5. Implementation Slices</h2>
+  <h3 id="slice-a-claim-and-rollout">5.1 Slice A: Claim and rollout control</h3>
+  <ul>
+    <li><code>CandidatePolarityFilter</code>と排他的SQL predicateを実装する。</li>
+    <li><code>off | negative | canary | all</code> parserとfail-closed validationを実装する。</li>
+    <li>Versioned canary manifest loaderとDB identity/content digest検証を実装する。</li>
+    <li>専用Covering laneと60秒fairness gateを実装する。</li>
+    <li>
+      <code>queue inspect</code>へnegative、positive supported、positive canary、positive
+      unsupportedの runnable countを追加する。
+    </li>
+  </ul>
+  <h3 id="slice-b-common-and-source-only">5.2 Slice B: Common and source-only execution</h3>
+  <ul>
+    <li>Negative executorからclaim/heartbeat/provider/persistence共通部を分離する。</li>
+    <li>全source kind reader、token window、source refsをRustへ移植する。</li>
+    <li>Source support、base candidate、value assessment、parserを移植する。</li>
+    <li>Dedupe、applicability、procedure repair/demotionを移植する。</li>
+    <li>Atomic Evidence/Finalize/queue transition writerを実装する。</li>
+  </ul>
+  <h3 id="slice-c-external-and-mcp">5.3 Slice C: External evidence and MCP</h3>
+  <ul>
+    <li>External evidence predicateとstage orchestrationを移植する。</li>
+    <li>Search provider adapter、secure fetcher、guard、cacheを移植する。</li>
+    <li>Optional MCP adapterとbounded timeoutを移植する。</li>
+    <li>Tool call/audit event schemaをTypeScript側とcanonical比較する。</li>
+  </ul>
+  <h3 id="slice-d-observability">5.4 Slice D: Observability and recovery commands</h3>
+  <ul>
+    <li>
+      Executor stateへmode、last positive claim/outcome、canary manifest
+      digest、polarity別countsを追加する。
+    </li>
+    <li>
+      Event metadataへ<code>executor=rust</code>、mode、route、target ID、source kind、polarity
+      class、prompt catalog digestを記録する。Secretとraw source本文は記録しない。
+    </li>
+    <li>Read-only backlog manifest、canary plan、reconciliation report commandを追加する。</li>
+    <li>
+      Doctorの<code>QUEUE_EXECUTOR_UNSUPPORTED_BACKLOG</code>は、<code>all</code>で実際に未対応rowが0件に
+      なった時だけ解消する。
+    </li>
+  </ul>
+  <h3 id="expected-file-layout">5.5 Expected file layout</h3>
+  <ul>
+    <li>
+      <code>crates/context-stilld/src/domains/queue_lifecycle/executor.rs</code>: lane
+      schedulingとdispatch
+    </li>
+    <li>
+      <code>crates/context-stilld/src/domains/queue_lifecycle/provider_lease.rs</code>、
+      <code>types.rs</code>: polarity filterとclaim
+    </li>
+    <li>
+      <code>crates/context-stilld/src/domains/queue_lifecycle/covering_executor.rs</code>: common
+      dispatch
+    </li>
+    <li><code>positive_covering_executor.rs</code>: positive stage orchestration</li>
+    <li><code>covering_source.rs</code>: source load/support/dedupe input</li>
+    <li><code>covering_external.rs</code>: search/fetch/guard/MCP</li>
+    <li><code>covering_prompt.rs</code>: generated bundle renderer/parser boundary</li>
+    <li><code>covering_rollout.rs</code>: mode、manifest、reconciliation</li>
+    <li>
+      <code>scripts/export-rust-covering-prompts.mjs</code>、shared parity fixtures、queue smoke
+      script
+    </li>
+  </ul>
+  <p>
+    実装時にmodule分割を多少変更してよいが、claim、source、external、prompt、persistenceの責務境界は
+    保つ。
+  </p>
+  <h2 id="shared-contract-fixtures">6. Shared Contract Fixtures</h2>
+  <p>
+    TypeScript referenceとRust executorは同じsource snapshot、mock LLM completion、search/fetch/MCP
+    resultを入力し、時刻とIDを固定したcanonical JSONを比較する。
+  </p>
+  <table>
+    <caption>
+      Table: 6.1 Required fixture matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Area</th>
+        <th scope="col">Required cases</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Routing</td>
+        <td>positive、missing polarity、exact negative、その他のpolarity値</td>
+      </tr>
+      <tr>
+        <td>Source</td>
+        <td>4 source kinds、missing source、default 1500-token window、explicit ranges</td>
+      </tr>
+      <tr>
+        <td>Assessment</td>
+        <td>supported rule、low importance、insufficient、parse failure</td>
+      </tr>
+      <tr>
+        <td>Dedupe</td>
+        <td>exact duplicate、0.93以上duplicate、0.82以上near duplicate、no match</td>
+      </tr>
+      <tr>
+        <td>Applicability</td>
+        <td>present、missing、refined、invalid refinement</td>
+      </tr>
+      <tr>
+        <td>Procedure</td>
+        <td>accept、repair、rule demotion、insufficient</td>
+      </tr>
+      <tr>
+        <td>External</td>
+        <td>
+          required/not required、search failure、redirect block、guard deny/unavailable、valid
+          citations
+        </td>
+      </tr>
+      <tr>
+        <td>Provider</td>
+        <td>default、cloud target、cloud unavailable、busy/cooldown</td>
+      </tr>
+      <tr>
+        <td>Persistence</td>
+        <td>knowledge-ready、terminal non-ready、retry、max attempts、commit failure、rerun</td>
+      </tr>
+      <tr>
+        <td>Lifecycle</td>
+        <td>pause、heartbeat、stale recovery、shutdown、negative regression、fairness</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    比較対象はstatus、stage、candidate type/content、importance、applicability、source/external
+    refs、 duplicate IDs、tool events、attempt/next-run、Evidence/Finalize
+    row数とする。順序非意味的な配列だけsortして 比較し、意味のある差をgolden更新で隠さない。
+  </p>
+  <h2 id="implementation-phases">7. Implementation Phases</h2>
+  <h3 id="phase-t0-baseline">T0: Baseline and fixtures</h3>
+  <ul>
+    <li>
+      Live DBをread-onlyで再集計し、job IDとcandidate/source content digestのmanifestを保存する。
+    </li>
+    <li>Live DBの一時copyと小型fixture DBを作り、live DBへは書かない。</li>
+    <li>TypeScript reference runnerとcanonical fixture formatを固定する。</li>
+  </ul>
+  <p>Gate: baseline全IDが重複なくmanifestへ入り、source欠落と既存Evidenceの有無が説明できる。</p>
+  <h3 id="phase-t1-claim">T1: Claim, mode, fairness, and prompts</h3>
+  <ul>
+    <li>Polarity filter、4 mode、manifest validation、専用lane、fairnessを実装する。</li>
+    <li>Prompt bundle generator/rendererとrender parity testを実装する。</li>
+    <li>Live automationは<code>negative</code>のまま維持する。</li>
+  </ul>
+  <p>
+    Gate: non-negativeを一切実行しない状態でnegative regression、排他的claim、fairness、invalid
+    manifest fail-closedがpassする。
+  </p>
+  <h3 id="phase-t2-source-only">T2: Source-only positive parity</h3>
+  <ul>
+    <li>
+      Source load、support、dedupe、assessment、applicability、procedure、persistenceを実装する。
+    </li>
+    <li>Source-only shared fixturesとretry/idempotency testをpassさせる。</li>
+    <li>Live modeは引き続き<code>negative</code>とする。</li>
+  </ul>
+  <p>Gate: source-only canonical outputとDB side effectがTypeScript referenceと一致する。</p>
+  <h3 id="phase-t3-external">T3: External evidence and MCP parity</h3>
+  <ul>
+    <li>Search/fetch/final assessment、SSRF defense、guard、cache、optional MCPを実装する。</li>
+    <li>Adversarial URL、DNS rebinding、redirect、prompt injection fixtureをpassさせる。</li>
+  </ul>
+  <p>
+    Gate: guard fail-openが0件で、external fixtureのcanonical resultとaudit metadataが一致する。
+  </p>
+  <h3 id="phase-t4-offline-rehearsal">T4: Offline rehearsal</h3>
+  <ul>
+    <li>専用test DBで全fixtureとqueue smokeを実行する。</li>
+    <li>Live DB copyに対してbaseline全591件相当をdrainするrehearsalを行う。</li>
+    <li>
+      Provider callはrecorded fixtureを使う決定的runと、staging providerを使うintegration
+      runに分ける。
+    </li>
+    <li>Reconciliation reportと推定drain時間、provider負荷、failure比率を保存する。</li>
+  </ul>
+  <p>
+    Gate: job消失0、重複Evidence/Finalize 0、completion-without-mutation 0、unsupported non-negative
+    0。
+  </p>
+  <h3 id="phase-t5-live-canary">T5: Live canary</h3>
+  <ol>
+    <li>Effective DB identityを再確認し、<code>context-stilld backup</code>で事前backupを作る。</li>
+    <li>
+      Read-only canary plannerで最大12件を選ぶ。内訳はsource-only rule 4、procedure 3、external
+      required 2、missing polarity 3とし、不足cohortはsource-only ruleで補う。
+    </li>
+    <li>
+      Manifestへversion、canonical DB path、schema version、job ID、candidate/source
+      digest、生成時刻を 記録する。Raw contentとsecretは含めない。
+    </li>
+    <li>Manifestをvalidate後、modeを<code>canary</code>にしてresidentを1回restartする。</li>
+    <li>選択jobのterminal resultと、非選択positiveが未claimのままであることを確認する。</li>
+  </ol>
+  <p>Canary pass条件:</p>
+  <ul>
+    <li>選択jobがterminalまたは正当なretry backoffにあり、job消失がない。</li>
+    <li>Terminal jobごとにEvidenceがちょうど1件ある。</li>
+    <li>Finalizeはknowledge-ready Evidenceにだけ、ちょうど1件ある。</li>
+    <li>Negative regression、stuck lease、heartbeat lossがない。</li>
+    <li>FindingとEpisodeのcompletionが観測期間中も継続する。</li>
+    <li>External guard bypassが0で、operatorがEvidence品質を手動確認する。</li>
+  </ul>
+  <h3 id="phase-t6-live-drain">T6: Full rollout and backlog drain</h3>
+  <ol>
+    <li>Canary pass後にmodeを<code>all</code>へ変更し、residentを1回restartする。</li>
+    <li>既定60秒fairness gateで開始し、provider error率と他lane latencyを観測する。</li>
+    <li>
+      Cadence変更が必要ならconfigurationだけを段階変更し、同時にconcurrency、provider
+      target、promptを 変更しない。
+    </li>
+    <li>15分ごとにreconciliation summaryを取得し、stop conditionを評価する。</li>
+    <li>Baseline全件がaccountedになった後、遅延retryの期限を待って最終照合する。</li>
+  </ol>
+  <h3 id="phase-t7-closeout">T7: Closeout</h3>
+  <ul>
+    <li>Configuration、queue recovery、doctorの公開文書を更新する。</li>
+    <li>実測結果とmanifest digestを別のcloseout evidence Spec HTMLへ残す。</li>
+    <li>
+      <code>queue:covering:once</code>は直ちに削除せずmanual break-glassとして2 release
+      cycle維持し、 resident ownerと同時実行できないguardを追加する。
+    </li>
+    <li>本計画はcloseout evidenceから置換された時点でarchiveする。</li>
+  </ul>
+  <h2 id="verification">8. Verification</h2>
+  <p>各sliceのtargeted test後、T4とrelease前に次を実行する。</p>
+  <pre><code class="language-bash">bun run system-context:check
+bun test src/modules/coverEvidence
+cargo test -p context-stilld queue_lifecycle
+bun run rust:queue:smoke
+bun run verify:rust-daemon
+bun run verify:sqlite
+bun run verify
+</code></pre>
+  <p>
+    Live ownership smokeは明示opt-inかつread-only commandを既定とする。Mutation smokeは専用test
+    DBまたは live DB copyでだけ行い、T5手順以外でlive DBを変更しない。
+  </p>
+  <h2 id="reconciliation">9. Backlog Reconciliation</h2>
+  <p>
+    Baseline manifestの各jobは最終reportで必ず次のいずれかへ分類する。単にpending
+    countが減ったことを成功と しない。
+  </p>
+  <ul>
+    <li><code>completed_knowledge_ready</code>: Evidence 1、Finalize 1</li>
+    <li><code>completed_terminal_non_ready</code>: Evidence 1、Finalize 0</li>
+    <li><code>retry_scheduled</code>: attempt、next run、原因が存在する</li>
+    <li><code>failed_exhausted</code>: max attemptsと最終原因が存在する</li>
+    <li><code>blocked_source_missing</code>: source欠落を明示し、completedへ偽装しない</li>
+  </ul>
+  <p>最終invariant:</p>
+  <ul>
+    <li>Manifest ID総数 = 上記分類の合計で、missing/duplicate IDは0。</li>
+    <li>期限到来済みでsupportedなnon-negative runnable pendingは0。</li>
+    <li>Completed rowにEvidenceがなく、またはknowledge-ready以外にFinalizeがある状態は0。</li>
+    <li>同一producerの重複Evidenceと同一Evidenceの重複Finalizeは0。</li>
+    <li>新規投入rowはbaseline cohortと別に集計し、復旧率の分母へ混ぜない。</li>
+  </ul>
+  <h2 id="stop-and-rollback">10. Stop and Rollback</h2>
+  <h3 id="stop-conditions">10.1 Immediate stop conditions</h3>
+  <ul>
+    <li>Wrong polarity dispatchまたはcanary manifest外のpositive claimを1件でも検出する。</li>
+    <li>
+      Duplicate Evidence、orphan/duplicate Finalize、completion-without-mutationを1件でも検出する。
+    </li>
+    <li>SSRF controlまたはexternal evidence guardがfail-openする。</li>
+    <li>Provider lease heartbeatが途切れ、stale recovery後も同一jobがrunningに残る。</li>
+    <li>Covering開始後にFindingまたはEpisode completionが公平性windowを超えて停止する。</li>
+    <li>Canonical parityに説明できない差が出る。</li>
+    <li>Unexpected provider/parse failureが同一classで連続3件発生する。</li>
+  </ul>
+  <h3 id="rollback-procedure">10.2 Rollback procedure</h3>
+  <ol>
+    <li><code>CONTEXT_STILL_RUST_COVERING_MODE=negative</code>へ戻す。</li>
+    <li>
+      新規claimを停止し、active jobはheartbeatを保ってcommitまたはretry transitionまで完了させる。
+    </li>
+    <li>Residentを1回restartし、negativeのみclaim可能であることをinspectする。</li>
+    <li>Legacy TypeScript supervisorは起動しない。</li>
+    <li>
+      Correctに確定済みのrowは巻き戻さない。影響job
+      IDをreconciliationで特定し、誤mutationがある場合だけ 事前backupと監査付きrepair
+      commandを使う。
+    </li>
+    <li>Bulk resetやDB全体restoreは行わず、実データ破損が証明された場合に限り別承認で実施する。</li>
+  </ol>
+  <h2 id="definition-of-done">11. Definition of Done</h2>
+  <ul>
+    <li>
+      Positive、missing polarity、negativeのshared contract fixturesがTypeScript/Rustで一致する。
+    </li>
+    <li>
+      External evidence security fixture、idempotency、fairness、shutdown/recovery testがpassする。
+    </li>
+    <li><code>all</code> modeでsupported non-negative backlogがRust residentから処理される。</li>
+    <li>Baseline manifest全件がreconciliation分類され、job消失と重複mutationが0である。</li>
+    <li>Finding、Episode、negative Coveringの継続性にregressionがない。</li>
+    <li>Queue inspect、doctor、events、SQLite rowsが同じruntime truthを示す。</li>
+    <li>公開configuration/recovery文書とcloseout evidenceが実測値で更新される。</li>
+  </ul>
+</article>

@@ -1,8 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::Connection;
-use serde::Serialize;
+use rusqlite::{Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -14,8 +16,9 @@ use crate::shared::{config::EnvProvider, errors::CliError, process};
 
 use super::claim::claim_next_queue_job_for_connection;
 use super::covering_executor::{
-    execute_negative_covering, load_claimed_negative_execution, persist_negative_covering_result,
-    NegativeCoveringExecution, NegativeCoveringHeartbeatGuard, NegativeCoveringPersistStatus,
+    execute_covering, load_claimed_negative_execution, persist_negative_covering_result,
+    CoveringExternalSearchConfig, NegativeCoveringExecution, NegativeCoveringHeartbeatGuard,
+    NegativeCoveringPersistStatus, NegativeCoveringResult,
 };
 use super::episode_executor::{
     run_episode_distiller_job_for_connection, EpisodeExecutionStatus, LocalLlmTargetConfig,
@@ -34,7 +37,8 @@ use super::state::{
     heartbeat_queue_job_for_connection, keep_queue_job_waiting_for_worker_for_connection,
 };
 use super::types::{
-    ProviderPoolClaimConfig, ProviderQueueClaimSpec, RowTargetPreference, QUEUE_SUPERVISOR,
+    CandidatePolarityFilter, ProviderPoolClaimConfig, ProviderQueueClaimSpec, RowTargetPreference,
+    QUEUE_SUPERVISOR,
 };
 
 const PROVIDER_QUEUE_PRIORITY_ORDER: &[&str] = &[
@@ -51,6 +55,37 @@ enum LocalExecutionOutcome {
     Completed,
     Failed,
     Retrying,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RustCoveringMode {
+    Off,
+    Negative,
+    Canary,
+    All,
+}
+
+impl RustCoveringMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Negative => "negative",
+            Self::Canary => "canary",
+            Self::All => "all",
+        }
+    }
+
+    fn enabled(self) -> bool {
+        self != Self::Off
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CoveringCanaryManifest {
+    version: u64,
+    database_path: String,
+    job_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -73,8 +108,9 @@ pub fn run_executor_tick_report<E: EnvProvider>(
     env: &E,
 ) -> Result<QueueExecutorTickReport, CliError> {
     let paths = resolve_paths(env);
-    let rust_covering_mode = rust_covering_mode(env);
     let sqlite_core_path = process::path_to_string(&paths.sqlite_core_path);
+    let (rust_covering_mode, covering_canary_job_ids) =
+        rust_covering_config(env, &paths.sqlite_core_path)?;
     if !paths.sqlite_core_path.exists() {
         let report = QueueExecutorTickReport {
             process: QUEUE_SUPERVISOR.state_name,
@@ -89,12 +125,31 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             unsupported: 0,
             message: "queue executor skipped; SQLite core database is missing".to_string(),
         };
-        write_executor_state(&paths.run_dir, &report, &rust_covering_mode)?;
+        write_executor_state(
+            &paths.run_dir,
+            &report,
+            rust_covering_mode.as_str(),
+            &covering_canary_job_ids,
+        )?;
         return Ok(report);
     }
 
+    let project_root = env
+        .var("CONTEXT_STILL_PROJECT_ROOT")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let source_read_root = env
+        .var("CONTEXT_STILL_SOURCE_CONTENT_ROOT")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| project_root.join("wiki"));
     let config = ExecutorTickConfig {
-        max_claims: env_u64_default(env, "CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS", 1).max(1),
+        max_claims: env_u64_default(env, "CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS", 1)
+            .clamp(1, 32),
         local_finalize_max_claims: env_u64_default(
             env,
             "CONTEXT_STILL_RUST_FINALIZE_MAX_CLAIMS",
@@ -111,56 +166,163 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         )
         .clamp(10, 3_600),
         local_llm_api_key: env.var("LOCAL_LLM_API_KEY"),
-        project_root: env
-            .var("CONTEXT_STILL_PROJECT_ROOT")
-            .map(std::path::PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from(".")),
+        project_root,
+        source_read_root,
         embedding_access_token: env
             .var("EMBEDDING_ACCESS_TOKEN")
             .or_else(|| env.var("LOCAL_LLM_ACCESS_TOKEN")),
         azure_openai_api_key: env.var("AZURE_OPENAI_API_KEY"),
         rust_covering_mode,
+        covering_canary_job_ids,
     };
     let run_dir = paths.run_dir.clone();
-    if covering_negative_enabled(env) {
-        let claim_config = config.clone();
-        let claimed = sqlite_writer::execute_for_path(
+    let pending_finalize = sqlite_writer::execute_for_path(
+        &paths.sqlite_core_path,
+        "queue.finalize_pending_check",
+        move |connection| {
+            if !table_exists(connection, "finalize_distille_queue")
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(false);
+            }
+            connection
+                .query_row(
+                    "select exists(
+                       select 1
+                       from finalize_distille_queue
+                       where status in ('pending', 'paused')
+                     )",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|value| value != 0)
+                .map_err(|error| format!("failed to inspect pending finalize jobs: {error}"))
+        },
+    )
+    .map_err(|error| CliError::io(format!("SQLite writer finalize check failed: {error}")))?;
+    let mut prior_generic_report = None;
+    if pending_finalize {
+        let report = run_generic_executor_tick_for_path(
             &paths.sqlite_core_path,
-            "queue.covering_negative_claim",
-            move |connection| {
-                claim_negative_covering_with_connection(connection, &claim_config)
-                    .map_err(|error| error.to_string())
-            },
-        )
-        .map_err(|error| CliError::io(format!("SQLite writer covering claim failed: {error}")))?;
-        if let Some(execution) = claimed {
-            let _heartbeat =
-                NegativeCoveringHeartbeatGuard::start(&paths.sqlite_core_path, &execution)?;
-            let result = execute_negative_covering(&execution, config.llm_timeout_seconds);
-            let persist_execution = execution.clone();
-            let persist_result = result.clone();
-            let persisted = sqlite_writer::execute_for_path(
-                &paths.sqlite_core_path,
-                "queue.covering_negative_persist",
-                move |connection| {
-                    persist_negative_covering_result(
-                        connection,
-                        &persist_execution,
-                        &persist_result,
+            sqlite_core_path.clone(),
+            run_dir.clone(),
+            config.clone(),
+        )?;
+        if report.claimed > 0 || !config.rust_covering_mode.enabled() {
+            return Ok(report);
+        }
+        prior_generic_report = Some(report);
+    }
+    if config.rust_covering_mode.enabled() {
+        let mut claimed = 0;
+        let mut completed = 0;
+        let mut failed = 0;
+        let mut retried = 0;
+        while claimed < config.max_claims {
+            let mut covering_executions = Vec::new();
+            for _ in claimed..config.max_claims {
+                let claim_config = config.clone();
+                let next = sqlite_writer::execute_for_path(
+                    &paths.sqlite_core_path,
+                    "queue.covering_claim",
+                    move |connection| {
+                        claim_covering_with_connection(connection, &claim_config)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    CliError::io(format!("SQLite writer covering claim failed: {error}"))
+                })?;
+                let Some(execution) = next else {
+                    break;
+                };
+                covering_executions.push(execution);
+            }
+            if covering_executions.is_empty() {
+                break;
+            }
+            claimed += covering_executions.len() as u64;
+            let mut handles = Vec::with_capacity(covering_executions.len());
+            let mut execution_results = Vec::with_capacity(covering_executions.len());
+            for execution in covering_executions {
+                let sqlite_path = paths.sqlite_core_path.clone();
+                let timeout_seconds = config.llm_timeout_seconds;
+                let fallback_execution = execution.clone();
+                let spawned = thread::Builder::new()
+                    .name("context-still-covering-executor".to_string())
+                    .spawn(move || {
+                        let outcome = catch_unwind(AssertUnwindSafe(|| {
+                            let _heartbeat =
+                                NegativeCoveringHeartbeatGuard::start(&sqlite_path, &execution)?;
+                            Ok::<_, CliError>(execute_covering(&execution, timeout_seconds))
+                        }));
+                        let result = match outcome {
+                            Ok(Ok(result)) => result,
+                            Ok(Err(error)) => covering_worker_failure_result(&format!(
+                                "covering_heartbeat_setup_failed:{error}"
+                            )),
+                            Err(_) => covering_worker_failure_result("covering_executor_panicked"),
+                        };
+                        (execution, result)
+                    });
+                match spawned {
+                    Ok(handle) => handles.push((fallback_execution, handle)),
+                    Err(error) => execution_results.push((
+                        fallback_execution,
+                        covering_worker_failure_result(&format!(
+                            "covering_executor_thread_start_failed:{error}"
+                        )),
+                    )),
+                }
+            }
+            for (fallback_execution, handle) in handles {
+                execution_results.push(handle.join().unwrap_or_else(|_| {
+                    (
+                        fallback_execution,
+                        covering_worker_failure_result("covering_executor_thread_panicked"),
                     )
-                    .map_err(|error| error.to_string())
-                },
-            )
-            .map_err(|error| {
-                CliError::io(format!(
-                    "SQLite writer covering persistence failed: {error}"
-                ))
-            })?;
-            let (status, completed, failed, retried) = match persisted {
-                NegativeCoveringPersistStatus::Completed => ("executed", 1, 0, 0),
-                NegativeCoveringPersistStatus::Failed => ("degraded", 0, 1, 0),
-                NegativeCoveringPersistStatus::Retrying => ("degraded", 0, 0, 1),
+                }));
+            }
+            let mut first_persistence_error = None;
+            for (execution, result) in execution_results {
+                let persisted = sqlite_writer::execute_for_path(
+                    &paths.sqlite_core_path,
+                    "queue.covering_persist",
+                    move |connection| {
+                        persist_negative_covering_result(connection, &execution, &result)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    CliError::io(format!(
+                        "SQLite writer covering persistence failed: {error}"
+                    ))
+                });
+                let persisted = match persisted {
+                    Ok(persisted) => persisted,
+                    Err(error) => {
+                        if first_persistence_error.is_none() {
+                            first_persistence_error = Some(error);
+                        }
+                        continue;
+                    }
+                };
+                match persisted {
+                    NegativeCoveringPersistStatus::Completed => completed += 1,
+                    NegativeCoveringPersistStatus::Failed => failed += 1,
+                    NegativeCoveringPersistStatus::Retrying => retried += 1,
+                    NegativeCoveringPersistStatus::Superseded => retried += 1,
+                }
+            }
+            if let Some(error) = first_persistence_error {
+                return Err(error);
+            }
+        }
+        if claimed > 0 {
+            let status = if failed > 0 || retried > 0 {
+                "degraded"
+            } else {
+                "executed"
             };
             let report = QueueExecutorTickReport {
                 process: QUEUE_SUPERVISOR.state_name,
@@ -168,27 +330,63 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                 status: status.to_string(),
                 sqlite_status: "ok",
                 sqlite_core_path,
-                claimed: 1,
+                claimed,
                 completed,
                 failed,
                 retried,
                 unsupported: 0,
                 message: format!(
-                    "queue executor tick completed; coveringMode=negative claimed=1 completed={completed} failed={failed} retried={retried} unsupported=0"
+                    "queue executor tick completed; coveringMode={} claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported=0",
+                    config.rust_covering_mode.as_str(),
                 ),
             };
-            write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
+            write_executor_state(
+                &run_dir,
+                &report,
+                config.rust_covering_mode.as_str(),
+                &config.covering_canary_job_ids,
+            )?;
             return Ok(report);
         }
     }
-    sqlite_writer::execute_for_path(
-        &paths.sqlite_core_path,
-        "queue.executor_tick",
-        move |connection| {
-            run_executor_tick_with_connection(connection, sqlite_core_path, run_dir, config)
-                .map_err(|error| error.to_string())
-        },
-    )
+    if let Some(report) = prior_generic_report {
+        Ok(report)
+    } else {
+        run_generic_executor_tick_for_path(
+            &paths.sqlite_core_path,
+            sqlite_core_path,
+            run_dir,
+            config,
+        )
+    }
+}
+
+fn covering_worker_failure_result(reason: &str) -> NegativeCoveringResult {
+    NegativeCoveringResult {
+        status: "tool_failed".to_string(),
+        stage: "load",
+        candidate: None,
+        references: Vec::new(),
+        duplicate_refs: Vec::new(),
+        tool_events: vec![json!({
+            "name": "covering_executor",
+            "ok": false,
+            "error": reason
+        })],
+        reason: Some(reason.chars().take(500).collect()),
+    }
+}
+
+fn run_generic_executor_tick_for_path(
+    sqlite_path: &std::path::Path,
+    sqlite_core_path: String,
+    run_dir: std::path::PathBuf,
+    config: ExecutorTickConfig,
+) -> Result<QueueExecutorTickReport, CliError> {
+    sqlite_writer::execute_for_path(sqlite_path, "queue.executor_tick", move |connection| {
+        run_executor_tick_with_connection(connection, sqlite_core_path, run_dir, config)
+            .map_err(|error| error.to_string())
+    })
     .map_err(|error| CliError::io(format!("SQLite writer executor tick failed: {error}")))
 }
 
@@ -201,23 +399,100 @@ struct ExecutorTickConfig {
     covering_min_interval_seconds: u64,
     local_llm_api_key: Option<String>,
     project_root: std::path::PathBuf,
+    source_read_root: std::path::PathBuf,
     embedding_access_token: Option<String>,
     azure_openai_api_key: Option<String>,
-    rust_covering_mode: String,
+    rust_covering_mode: RustCoveringMode,
+    covering_canary_job_ids: Vec<String>,
 }
 
-fn covering_negative_enabled<E: EnvProvider>(env: &E) -> bool {
-    rust_covering_mode(env) == "negative"
-}
-
-fn rust_covering_mode<E: EnvProvider>(env: &E) -> String {
-    env.var("CONTEXT_STILL_RUST_COVERING_MODE")
+fn rust_covering_mode<E: EnvProvider>(env: &E) -> Result<RustCoveringMode, CliError> {
+    let value = env
+        .var("CONTEXT_STILL_RUST_COVERING_MODE")
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "off".to_string())
+        .unwrap_or_else(|| "off".to_string());
+    match value.as_str() {
+        "off" => Ok(RustCoveringMode::Off),
+        "negative" => Ok(RustCoveringMode::Negative),
+        "canary" => Ok(RustCoveringMode::Canary),
+        "all" => Ok(RustCoveringMode::All),
+        _ => Err(CliError::invalid_arguments(format!(
+            "unsupported CONTEXT_STILL_RUST_COVERING_MODE: {value}; expected off, negative, canary, or all"
+        ))),
+    }
 }
 
-fn claim_negative_covering_with_connection(
+fn rust_covering_config<E: EnvProvider>(
+    env: &E,
+    sqlite_path: &std::path::Path,
+) -> Result<(RustCoveringMode, Vec<String>), CliError> {
+    let mode = rust_covering_mode(env)?;
+    if mode != RustCoveringMode::Canary {
+        return Ok((mode, Vec::new()));
+    }
+    let manifest_path = env
+        .var("CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            CliError::invalid_arguments(
+                "CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST is required in canary mode",
+            )
+        })?;
+    let raw = std::fs::read_to_string(&manifest_path).map_err(|error| {
+        CliError::io(format!(
+            "failed to read covering canary manifest {manifest_path}: {error}"
+        ))
+    })?;
+    let manifest: CoveringCanaryManifest = serde_json::from_str(&raw).map_err(|error| {
+        CliError::invalid_arguments(format!(
+            "invalid covering canary manifest {manifest_path}: {error}"
+        ))
+    })?;
+    if manifest.version != 1 {
+        return Err(CliError::invalid_arguments(format!(
+            "unsupported covering canary manifest version: {}",
+            manifest.version
+        )));
+    }
+    let expected_path = std::fs::canonicalize(sqlite_path).map_err(|error| {
+        CliError::io(format!(
+            "failed to canonicalize covering database {}: {error}",
+            sqlite_path.display()
+        ))
+    })?;
+    let manifest_database_path =
+        std::fs::canonicalize(&manifest.database_path).map_err(|error| {
+            CliError::invalid_arguments(format!(
+                "failed to canonicalize covering canary database {}: {error}",
+                manifest.database_path
+            ))
+        })?;
+    if expected_path != manifest_database_path {
+        return Err(CliError::invalid_arguments(format!(
+            "covering canary manifest database mismatch: expected {}, got {}",
+            expected_path.display(),
+            manifest_database_path.display()
+        )));
+    }
+    let job_ids = manifest
+        .job_ids
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if job_ids.is_empty() || job_ids.len() > 100 {
+        return Err(CliError::invalid_arguments(
+            "covering canary manifest must contain between 1 and 100 unique jobIds",
+        ));
+    }
+    Ok((mode, job_ids))
+}
+
+fn claim_covering_with_connection(
     connection: &mut Connection,
     config: &ExecutorTickConfig,
 ) -> Result<Option<NegativeCoveringExecution>, CliError> {
@@ -228,19 +503,39 @@ fn claim_negative_covering_with_connection(
     if paused_queues.contains("coveringEvidence") {
         return Ok(None);
     }
-    if !paused_queues.contains("findingCandidate")
-        && has_runnable_finding_candidate(connection)?
-        && !negative_covering_turn_due(connection, config.covering_min_interval_seconds)?
+    if has_runnable_other_provider_work(connection, &paused_queues)?
+        && !covering_turn_due(connection, config.covering_min_interval_seconds)?
     {
         return Ok(None);
     }
     for pool in provider_pools(&settings) {
-        let Some(mut covering_spec) =
-            queue_spec_for_pool(&settings, "coveringEvidence", &pool.pool_id)
+        let Some(covering_spec) = queue_spec_for_pool(&settings, "coveringEvidence", &pool.pool_id)
         else {
             continue;
         };
-        covering_spec.requires_negative_candidate = true;
+        let mut covering_specs = Vec::new();
+        match config.rust_covering_mode {
+            RustCoveringMode::Off => continue,
+            RustCoveringMode::Negative => {
+                let mut spec = covering_spec;
+                spec.candidate_polarity_filter = CandidatePolarityFilter::Negative;
+                covering_specs.push(spec);
+            }
+            RustCoveringMode::Canary => {
+                let mut negative = covering_spec.clone();
+                negative.candidate_polarity_filter = CandidatePolarityFilter::Negative;
+                covering_specs.push(negative);
+                let mut positive = covering_spec;
+                positive.candidate_polarity_filter = CandidatePolarityFilter::NonNegative;
+                positive.allowed_job_ids = Some(config.covering_canary_job_ids.clone());
+                covering_specs.push(positive);
+            }
+            RustCoveringMode::All => {
+                let mut spec = covering_spec;
+                spec.candidate_polarity_filter = CandidatePolarityFilter::Any;
+                covering_specs.push(spec);
+            }
+        }
         let worker_id = format!(
             "context-stilld-rust-executor:{}:{}",
             pool.pool_id,
@@ -250,7 +545,7 @@ fn claim_negative_covering_with_connection(
         let Some(claimed) = claim_next_job_with_provider_lease_for_connection(
             connection,
             &pool,
-            &[covering_spec],
+            &covering_specs,
             &worker_id,
             &lease_id,
             config.queue_stale_seconds,
@@ -264,12 +559,12 @@ fn claim_negative_covering_with_connection(
             "coveringEvidence",
             &claimed.id,
             "claimed",
-            Some("negative covering job claimed by Rust resident executor"),
+            Some("covering job claimed by Rust resident executor"),
             Some(
                 &serde_json::json!({
                     "workerId": worker_id,
                     "executor": "rust",
-                    "coveringMode": "negative"
+                    "coveringMode": config.rust_covering_mode.as_str()
                 })
                 .to_string(),
             ),
@@ -288,7 +583,53 @@ fn claim_negative_covering_with_connection(
                     None
                 }
             });
-            load_claimed_negative_execution(connection, claimed, target, api_key)
+            let low_importance_reject_threshold = settings
+                .pointer("/distillationRuntime/lowImportanceRejectThreshold")
+                .and_then(Value::as_f64)
+                .unwrap_or(50.0)
+                .round() as i64;
+            let provider_order = settings
+                .pointer("/search/providerOrder")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .filter(|provider| {
+                    settings
+                        .pointer(&format!("/search/providers/{provider}/enabled"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true)
+                })
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            let external_search = CoveringExternalSearchConfig {
+                provider_order: if provider_order.is_empty() {
+                    vec!["duckduckgo".to_string()]
+                } else {
+                    provider_order
+                },
+                max_provider_attempts: settings
+                    .pointer("/search/maxProviderAttempts")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(1)
+                    .clamp(1, 3) as usize,
+                result_count: settings
+                    .pointer("/search/resultCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3)
+                    .clamp(1, 8) as usize,
+                brave_api_key: load_secret_value(connection, "braveApiKey"),
+                exa_api_key: load_secret_value(connection, "exaApiKey"),
+            };
+            load_claimed_negative_execution(
+                connection,
+                claimed,
+                target,
+                api_key,
+                low_importance_reject_threshold,
+                config.source_read_root.clone(),
+                external_search,
+            )
         })();
         match execution {
             Ok(execution) => return Ok(Some(execution)),
@@ -312,12 +653,32 @@ fn claim_negative_covering_with_connection(
     Ok(None)
 }
 
-fn negative_covering_turn_due(
-    connection: &Connection,
-    min_interval_seconds: u64,
-) -> Result<bool, CliError> {
+fn covering_turn_due(connection: &Connection, min_interval_seconds: u64) -> Result<bool, CliError> {
     if !table_exists(connection, "distillation_queue_events")? {
         return Ok(true);
+    }
+    let latest_provider_claim = connection
+        .query_row(
+            "
+            select queue_name
+            from distillation_queue_events
+            where event_type = 'claimed'
+              and queue_name in ('coveringEvidence', 'findingCandidate', 'episodeDistiller')
+              and json_extract(metadata, '$.executor') = 'rust'
+            order by rowid desc
+            limit 1
+            ",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| {
+            CliError::io(format!(
+                "failed to inspect latest provider queue claim: {error}"
+            ))
+        })?;
+    if latest_provider_claim.as_deref() == Some("coveringEvidence") {
+        return Ok(false);
     }
     let interval = format!("-{} seconds", min_interval_seconds.max(1));
     connection
@@ -338,20 +699,56 @@ fn negative_covering_turn_due(
         .map(|value| value != 0)
         .map_err(|error| {
             CliError::io(format!(
-                "failed to inspect negative covering execution cadence: {error}"
+                "failed to inspect covering execution cadence: {error}"
             ))
         })
 }
 
-fn has_runnable_finding_candidate(connection: &Connection) -> Result<bool, CliError> {
-    connection
-        .query_row(
-            "
+fn has_runnable_other_provider_work(
+    connection: &Connection,
+    paused_queues: &HashSet<String>,
+) -> Result<bool, CliError> {
+    let finding_runnable = if paused_queues.contains("findingCandidate")
+        || !table_exists(connection, "finding_candidate_queue")?
+    {
+        false
+    } else {
+        connection
+            .query_row(
+                "
             select exists(
               select 1
               from finding_candidate_queue
               where status in ('pending', 'paused')
                 and source_kind = 'vibe_memory'
+                and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+            )
+            ",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|error| {
+                CliError::io(format!(
+                    "failed to inspect higher-priority finding queue: {error}"
+                ))
+            })?
+    };
+    if finding_runnable {
+        return Ok(true);
+    }
+    if paused_queues.contains("episodeDistiller")
+        || !table_exists(connection, "episode_distiller_queue")?
+    {
+        return Ok(false);
+    }
+    connection
+        .query_row(
+            "
+            select exists(
+              select 1
+              from episode_distiller_queue
+              where status in ('pending', 'paused')
                 and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
             )
             ",
@@ -361,7 +758,7 @@ fn has_runnable_finding_candidate(connection: &Connection) -> Result<bool, CliEr
         .map(|value| value != 0)
         .map_err(|error| {
             CliError::io(format!(
-                "failed to inspect higher-priority finding queue: {error}"
+                "failed to inspect higher-priority episode queue: {error}"
             ))
         })
 }
@@ -378,7 +775,12 @@ fn run_executor_tick_with_connection(
             "executor_unconfigured",
             "queue executor skipped; runtime settings are missing",
         );
-        write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
+        write_executor_state(
+            &run_dir,
+            &report,
+            config.rust_covering_mode.as_str(),
+            &config.covering_canary_job_ids,
+        )?;
         return Ok(report);
     };
     let paused_queues = load_paused_queues(connection)?;
@@ -439,7 +841,12 @@ fn run_executor_tick_with_connection(
             "executor_unconfigured",
             "queue executor skipped; no enabled provider pools are configured",
         );
-        write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
+        write_executor_state(
+            &run_dir,
+            &report,
+            config.rust_covering_mode.as_str(),
+            &config.covering_canary_job_ids,
+        )?;
         return Ok(report);
     }
     let mut provider_claimed = 0;
@@ -611,7 +1018,12 @@ fn run_executor_tick_with_connection(
             "queue executor tick completed; claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported={unsupported}"
         ),
     };
-    write_executor_state(&run_dir, &report, &config.rust_covering_mode)?;
+    write_executor_state(
+        &run_dir,
+        &report,
+        config.rust_covering_mode.as_str(),
+        &config.covering_canary_job_ids,
+    )?;
     Ok(report)
 }
 
@@ -981,7 +1393,8 @@ fn queue_spec_for_pool(
                 route_target_column: Some("source_kind"),
                 route_target_preferences: preferences,
                 allowed_route_values: Some(vec!["vibe_memory".to_string()]),
-                requires_negative_candidate: false,
+                candidate_polarity_filter: CandidatePolarityFilter::Any,
+                allowed_job_ids: None,
             })
         }
         "episodeDistiller" => simple_route_spec(
@@ -1015,8 +1428,9 @@ fn queue_spec_for_pool(
                 preferred_target_ids: targets.into_iter().collect(),
                 route_target_column: Some("provider_policy"),
                 route_target_preferences: Vec::new(),
-                allowed_route_values: None,
-                requires_negative_candidate: false,
+                allowed_route_values: Some(vec!["default".to_string()]),
+                candidate_polarity_filter: CandidatePolarityFilter::Any,
+                allowed_job_ids: None,
             })
         }
         "deadZoneMergeReview" => simple_route_spec(
@@ -1054,7 +1468,8 @@ fn simple_route_spec(
         route_target_column: None,
         route_target_preferences: Vec::new(),
         allowed_route_values: None,
-        requires_negative_candidate: false,
+        candidate_polarity_filter: CandidatePolarityFilter::Any,
+        allowed_job_ids: None,
     })
 }
 
@@ -1289,6 +1704,7 @@ fn write_executor_state(
     run_dir: &std::path::Path,
     report: &QueueExecutorTickReport,
     rust_covering_mode: &str,
+    covering_canary_job_ids: &[String],
 ) -> Result<(), CliError> {
     let state = ProcessState {
         pid: None,
@@ -1309,7 +1725,8 @@ fn write_executor_state(
             "executorEnabled":true,
             "residentPid":std::process::id(),
             "executionLanes":["local_finalize","provider_pool"],
-            "rustCoveringMode":rust_covering_mode
+            "rustCoveringMode":rust_covering_mode,
+            "rustCoveringCanaryJobIds":covering_canary_job_ids
         })),
         ..ProcessState::default()
     };
@@ -1317,6 +1734,10 @@ fn write_executor_state(
 }
 
 impl QueueExecutorTickReport {
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
     pub fn to_text(&self) -> String {
         self.message.clone()
     }
@@ -1393,18 +1814,82 @@ mod tests {
     }
 
     #[test]
-    fn negative_covering_turn_is_rate_limited_but_not_starved_by_finding_backlog() {
+    fn covering_turn_is_rate_limited_but_not_starved_by_other_provider_backlog() {
         let connection = Connection::open_in_memory().unwrap();
         create_queue_events_table(&connection);
 
-        assert!(negative_covering_turn_due(&connection, 60).unwrap());
+        assert!(covering_turn_due(&connection, 60).unwrap());
         connection
             .execute(
                 "insert into distillation_queue_events (id, queue_name, queue_job_id, event_type, metadata) values ('event-1', 'coveringEvidence', 'cover-1', 'claimed', '{\"executor\":\"rust\"}')",
                 [],
             )
             .unwrap();
-        assert!(!negative_covering_turn_due(&connection, 60).unwrap());
+        assert!(!covering_turn_due(&connection, 60).unwrap());
+
+        connection
+            .execute(
+                "update distillation_queue_events set created_at = datetime(CURRENT_TIMESTAMP, '-2 minutes') where id = 'event-1'",
+                [],
+            )
+            .unwrap();
+        assert!(!covering_turn_due(&connection, 60).unwrap());
+        connection
+            .execute(
+                "insert into distillation_queue_events (id, queue_name, queue_job_id, event_type, metadata) values ('event-2', 'episodeDistiller', 'episode-1', 'claimed', '{\"executor\":\"rust\"}')",
+                [],
+            )
+            .unwrap();
+        assert!(covering_turn_due(&connection, 60).unwrap());
+    }
+
+    #[test]
+    fn rust_covering_mode_accepts_rollout_states_and_rejects_unknown_values() {
+        for (value, expected) in [
+            ("off", RustCoveringMode::Off),
+            ("negative", RustCoveringMode::Negative),
+            ("canary", RustCoveringMode::Canary),
+            ("all", RustCoveringMode::All),
+        ] {
+            let env = MapEnv::from_pairs(vec![("CONTEXT_STILL_RUST_COVERING_MODE", value)]);
+            assert_eq!(rust_covering_mode(&env).unwrap(), expected);
+        }
+        let env = MapEnv::from_pairs(vec![("CONTEXT_STILL_RUST_COVERING_MODE", "positive")]);
+        assert!(rust_covering_mode(&env)
+            .unwrap_err()
+            .to_string()
+            .contains("expected off, negative, canary, or all"));
+    }
+
+    #[test]
+    fn covering_canary_manifest_is_database_bound_and_deduplicated() {
+        let app_dir = temp_app_dir("covering_canary_manifest");
+        let sqlite_path = app_dir.join("queue.sqlite");
+        Connection::open(&sqlite_path).unwrap();
+        let manifest_path = app_dir.join("covering-canary.json");
+        std::fs::write(
+            &manifest_path,
+            json!({
+                "version": 1,
+                "databasePath": sqlite_path,
+                "jobIds": ["cover-b", "cover-a", "cover-a"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "canary"),
+            (
+                "CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST",
+                manifest_path.to_str().unwrap(),
+            ),
+        ]);
+
+        let (mode, ids) = rust_covering_config(&env, &sqlite_path).unwrap();
+
+        assert_eq!(mode, RustCoveringMode::Canary);
+        assert_eq!(ids, vec!["cover-a".to_string(), "cover-b".to_string()]);
+        std::fs::remove_dir_all(&app_dir).unwrap();
     }
 
     #[test]
@@ -1512,7 +1997,7 @@ mod tests {
     }
 
     #[test]
-    fn rust_finalize_local_lane_runs_despite_finding_backlog_without_provider_pool() {
+    fn rust_finalize_local_lane_preempts_covering_and_finding_provider_backlog() {
         let app_dir = temp_app_dir("finalize_local_lane");
         let sqlite_path = app_dir.join("queue.sqlite");
         let (embedding_url, embedding_server) = serve_embedding_response();
@@ -1522,9 +2007,27 @@ mod tests {
         crate::domains::sqlite_writer::schema::migrate(&mut connection, 3).unwrap();
         let settings = json!({
             "settings": {
-                "providerPools": [],
-                "providers": {"local-llm":{"models":[]}},
-                "taskRouting": {},
+                "providerPools": [{
+                    "id": "local-llm-default",
+                    "enabled": true,
+                    "targets": [{"provider": "local-llm", "localLlmModelId": "local-cover"}],
+                    "maxConcurrent": 1,
+                    "staleLeaseSeconds": 120,
+                    "lowPriorityAgingSeconds": 1800
+                }],
+                "providers": {"local-llm":{"models":[{
+                    "id": "local-cover",
+                    "apiBaseUrl": embedding_url,
+                    "apiPath": "/v1/chat/completions",
+                    "model": "qwen"
+                }]}},
+                "taskRouting": {"coverEvidence": {
+                    "sourceSupport": {
+                        "provider": "local-llm",
+                        "providerPoolId": "local-llm-default",
+                        "model": "qwen"
+                    }
+                }},
                 "embedding": {"provider":"daemon","daemonUrl":embedding_url,"timeoutMs":5000},
                 "distillationRuntime": {"lowImportanceRejectThreshold":50}
             }
@@ -1545,7 +2048,12 @@ mod tests {
               ('finding-finalize','source_target','vibe_memory','memory-finalize','vibe_memory:memory-finalize','v1','completed',50,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
             insert into found_candidates (
               id,finding_job_id,candidate_index,type,title,content,origin,metadata,created_at,updated_at
-            ) values ('candidate-finalize','finding-finalize',0,'rule','Finalize local lane','Persist only after embedding succeeds.','{}','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+            ) values
+              ('candidate-finalize','finding-finalize',0,'rule','Finalize local lane','Persist only after embedding succeeds.','{}','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),
+              ('candidate-covering','finding-finalize',1,'rule','Covering provider lane','This job must remain pending until Finalize is durable.','{"polarity":"negative"}','{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+            insert into covering_evidence_queue (
+              id,found_candidate_id,distillation_version,status,priority,attempt_count,max_attempts,metadata,created_at,updated_at
+            ) values ('covering-backlog','candidate-covering','v1','pending',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
             insert into evidence_coverage_results (
               id,found_candidate_id,producer_queue,producer_job_id,distillation_version,status,stage,type,title,body,importance,confidence,applies_to,"references",duplicate_refs,tool_events,created_at,updated_at
             ) values (
@@ -1556,7 +2064,7 @@ mod tests {
             );
             insert into finalize_distille_queue (
               id,evidence_result_id,distillation_version,status,priority,attempt_count,max_attempts,metadata,created_at,updated_at
-            ) values ('finalize-local','evidence-finalize','v1','pending',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+            ) values ('finalize-local','evidence-finalize','v1','paused',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
         "#).unwrap();
         drop(connection);
         let env = MapEnv::from_pairs(vec![
@@ -1566,6 +2074,7 @@ mod tests {
                 sqlite_path.to_str().unwrap(),
             ),
             ("CONTEXT_STILL_PROJECT_ROOT", app_dir.to_str().unwrap()),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "all"),
         ]);
 
         let report = run_executor_tick_report(&env).unwrap();
@@ -1576,12 +2085,25 @@ mod tests {
         let connection = Connection::open(&sqlite_path).unwrap();
         let statuses = connection
             .query_row(
-                "select (select status from finalize_distille_queue where id='finalize-local'), (select status from finding_candidate_queue where id='finding-backlog')",
+                "select (select status from finalize_distille_queue where id='finalize-local'), (select status from covering_evidence_queue where id='covering-backlog'), (select status from finding_candidate_queue where id='finding-backlog')",
                 [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
             )
             .unwrap();
-        assert_eq!(statuses, ("completed".to_string(), "pending".to_string()));
+        assert_eq!(
+            statuses,
+            (
+                "completed".to_string(),
+                "pending".to_string(),
+                "pending".to_string(),
+            )
+        );
         let vectors: i64 = connection
             .query_row(
                 "select count(*) from knowledge_items_vec_fallback where embedding_dimension=3",
@@ -1598,6 +2120,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(claimed_events, 1);
+        let active_provider_leases: i64 = connection
+            .query_row(
+                "select count(*) from llm_provider_leases where status='active'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_provider_leases, 0);
 
         std::fs::remove_dir_all(app_dir).unwrap();
     }
@@ -1652,6 +2182,7 @@ mod tests {
                 create table found_candidates (
                   id text primary key,
                   finding_job_id text not null,
+                  type text not null default 'rule',
                   title text not null,
                   content text not null,
                   origin text not null default '{}',
@@ -1675,6 +2206,10 @@ mod tests {
                   last_outcome_kind text,
                   created_at text not null,
                   updated_at text not null
+                );
+                create table vibe_memories (
+                  id text primary key,
+                  content text not null
                 );
                 create table evidence_coverage_results (
                   id text primary key,
@@ -1714,6 +2249,9 @@ mod tests {
                 ) values (
                   'finding-1', 'source_target', 'vibe_memory', 'memory-1',
                   'vibe_memory:memory-1', 'completed', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                );
+                insert into vibe_memories (id, content) values (
+                  'memory-1', '複数writerによる競合をresident writerへの統一で防ぐ。'
                 );
                 insert into found_candidates (
                   id, finding_job_id, title, content, origin, metadata

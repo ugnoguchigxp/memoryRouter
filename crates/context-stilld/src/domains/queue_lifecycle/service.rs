@@ -2,6 +2,7 @@ use crate::domains::{
     bootstrap::service::resolve_paths,
     daemon::repository::ProcessState,
     process_lifecycle::service::{self, LifecycleReport},
+    sqlite_writer,
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 
@@ -26,6 +27,49 @@ pub use super::types::{
     ProviderPoolClaimConfig, ProviderQueueClaimSpec, QueueInspectReport, QueueStateRow,
     QueueStatusCount, QueueTableInspect, RowTargetPreference, UnsupportedQueueBacklog,
 };
+
+/// Runs one executor tick under a process-local single writer. This is intended
+/// for controlled offline databases; it fails closed when another writer owns
+/// the database lock.
+pub fn run_offline_executor_tick_report<E: EnvProvider>(
+    env: &E,
+) -> Result<QueueExecutorTickReport, CliError> {
+    let paths = resolve_paths(env);
+    let queue_capacity = env
+        .var("CONTEXT_STILL_SQLITE_WRITER_QUEUE_CAPACITY")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(256)
+        .min(65_536);
+    let vector_dimension = env
+        .var("CONTEXT_STILL_EMBEDDING_DIMENSION")
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(384)
+        .min(65_536);
+    let writer = sqlite_writer::SqliteWriterRuntime::start(
+        &paths.sqlite_core_path,
+        queue_capacity,
+        vector_dimension,
+    )
+    .map_err(|error| {
+        CliError::runtime(format!("failed to start offline SQLite writer: {error}"))
+    })?;
+    sqlite_writer::install_global_writer(writer.handle()).map_err(|error| {
+        CliError::runtime(format!("failed to install offline SQLite writer: {error}"))
+    })?;
+
+    let report = run_executor_tick_report(env);
+    sqlite_writer::clear_global_writer(&paths.sqlite_core_path);
+    let shutdown = writer.shutdown().map_err(|error| {
+        CliError::runtime(format!("failed to stop offline SQLite writer: {error}"))
+    });
+    match (report, shutdown) {
+        (Ok(report), Ok(())) => Ok(report),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+    }
+}
 
 pub fn start<E: EnvProvider, S: ProcessSupervisor>(
     env: &E,

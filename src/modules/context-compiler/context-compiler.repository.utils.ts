@@ -32,7 +32,11 @@ export function normalizeDate(value: unknown): Date {
     const unixMs = trimmed.match(/^unix-ms:(\d{1,16})$/);
     if (unixMs) {
       const parsedMillis = Number(unixMs[1]);
-      if (Number.isSafeInteger(parsedMillis) && parsedMillis >= 0 && parsedMillis <= maxEpochMillis) {
+      if (
+        Number.isSafeInteger(parsedMillis) &&
+        parsedMillis >= 0 &&
+        parsedMillis <= maxEpochMillis
+      ) {
         return new Date(parsedMillis);
       }
     }

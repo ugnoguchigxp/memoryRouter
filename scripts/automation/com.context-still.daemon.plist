@@ -25,6 +25,8 @@
         <string>{{PATH}}</string>
         <key>CONTEXT_STILL_PROJECT_ROOT</key>
         <string>{{PROJECT_ROOT}}</string>
+        <key>CONTEXT_STILL_SOURCE_CONTENT_ROOT</key>
+        <string>{{SOURCE_CONTENT_ROOT}}</string>
         <key>CONTEXT_STILL_APP_DATA_DIR</key>
         <string>{{APP_DATA_DIR}}</string>
         <key>CONTEXT_STILL_DB_BACKEND</key>
@@ -43,8 +45,12 @@
         <string>{{RESIDENT_QUEUE_INTERVAL_MS}}</string>
         <key>CONTEXT_STILL_RUST_COVERING_MODE</key>
         <string>{{RUST_COVERING_MODE}}</string>
+        <key>CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST</key>
+        <string>{{RUST_COVERING_CANARY_MANIFEST}}</string>
         <key>CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS</key>
         <string>{{RUST_COVERING_MIN_INTERVAL_SECONDS}}</string>
+        <key>CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS</key>
+        <string>{{RUST_QUEUE_EXECUTOR_MAX_CLAIMS}}</string>
         <key>CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC</key>
         <string>{{RESIDENT_AGENT_LOG_SYNC}}</string>
         <key>CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS</key>

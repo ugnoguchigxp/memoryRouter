@@ -145,6 +145,15 @@ function readInstalledResidentMcpFlag(plistPath: string): string | null {
   );
 }
 
+function escapePlistXml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
 function renderPlist(): string {
   const template = readFileSync(path.resolve(plistDir, plist), "utf8");
   const appDataDir =
@@ -162,44 +171,53 @@ function renderPlist(): string {
   const sqliteCorePath =
     process.env.CONTEXT_STILL_SQLITE_CORE_PATH ??
     path.resolve(projectRoot, "data", "context-still-core.sqlite");
-  return template
-    .replaceAll("{{CONTEXT_STILLD_PATH}}", ensureContextStilldBinary())
-    .replaceAll("{{PROJECT_ROOT}}", projectRoot)
-    .replaceAll("{{PATH}}", launchPath)
-    .replaceAll("{{APP_DATA_DIR}}", appDataDir)
-    .replaceAll("{{DB_BACKEND}}", process.env.CONTEXT_STILL_DB_BACKEND ?? "sqlite")
-    .replaceAll("{{SQLITE_CORE_PATH}}", sqliteCorePath)
-    .replaceAll("{{RESIDENT_MCP}}", resolveResidentMcpFlag())
-    .replaceAll("{{RESIDENT_EMBEDDING}}", process.env.CONTEXT_STILL_RESIDENT_EMBEDDING ?? "1")
-    .replaceAll("{{RESIDENT_QUEUE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE ?? "1")
-    .replaceAll(
-      "{{RESIDENT_QUEUE_MODE}}",
-      process.env.CONTEXT_STILL_RESIDENT_QUEUE_MODE ?? "continuous",
-    )
-    .replaceAll(
+  const replacements: Array<readonly [string, string]> = [
+    ["{{CONTEXT_STILLD_PATH}}", ensureContextStilldBinary()],
+    ["{{PROJECT_ROOT}}", projectRoot],
+    [
+      "{{SOURCE_CONTENT_ROOT}}",
+      process.env.CONTEXT_STILL_SOURCE_CONTENT_ROOT ?? path.resolve(projectRoot, "wiki"),
+    ],
+    ["{{PATH}}", launchPath],
+    ["{{APP_DATA_DIR}}", appDataDir],
+    ["{{DB_BACKEND}}", process.env.CONTEXT_STILL_DB_BACKEND ?? "sqlite"],
+    ["{{SQLITE_CORE_PATH}}", sqliteCorePath],
+    ["{{RESIDENT_MCP}}", resolveResidentMcpFlag()],
+    ["{{RESIDENT_EMBEDDING}}", process.env.CONTEXT_STILL_RESIDENT_EMBEDDING ?? "1"],
+    ["{{RESIDENT_QUEUE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE ?? "1"],
+    ["{{RESIDENT_QUEUE_MODE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE_MODE ?? "continuous"],
+    [
       "{{RESIDENT_QUEUE_INTERVAL_MS}}",
       process.env.CONTEXT_STILL_RESIDENT_QUEUE_INTERVAL_MS ?? "5000",
-    )
-    .replaceAll(
-      "{{RUST_COVERING_MODE}}",
-      process.env.CONTEXT_STILL_RUST_COVERING_MODE ?? "negative",
-    )
-    .replaceAll(
+    ],
+    ["{{RUST_COVERING_MODE}}", process.env.CONTEXT_STILL_RUST_COVERING_MODE ?? "all"],
+    [
+      "{{RUST_COVERING_CANARY_MANIFEST}}",
+      process.env.CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST ?? "",
+    ],
+    [
       "{{RUST_COVERING_MIN_INTERVAL_SECONDS}}",
       process.env.CONTEXT_STILL_RUST_COVERING_MIN_INTERVAL_SECONDS ?? "60",
-    )
-    .replaceAll(
-      "{{RESIDENT_AGENT_LOG_SYNC}}",
-      process.env.CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC ?? "1",
-    )
-    .replaceAll(
+    ],
+    [
+      "{{RUST_QUEUE_EXECUTOR_MAX_CLAIMS}}",
+      process.env.CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS ?? "2",
+    ],
+    ["{{RESIDENT_AGENT_LOG_SYNC}}", process.env.CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC ?? "1"],
+    [
       "{{AGENT_LOG_SYNC_INTERVAL_SECONDS}}",
       process.env.CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS ?? "3600",
-    )
-    .replaceAll(
-      "{{AGENT_LOG_SYNC_RUN_AT_LOAD}}",
-      process.env.CONTEXT_STILL_AGENT_LOG_SYNC_RUN_AT_LOAD ?? "0",
-    );
+    ],
+    ["{{AGENT_LOG_SYNC_RUN_AT_LOAD}}", process.env.CONTEXT_STILL_AGENT_LOG_SYNC_RUN_AT_LOAD ?? "0"],
+  ];
+  const replacementMap = new Map(replacements);
+  return template.replace(/\{\{[A-Z0-9_]+\}\}/g, (placeholder) => {
+    const value = replacementMap.get(placeholder);
+    if (value === undefined) {
+      throw new Error(`unknown LaunchAgent template placeholder: ${placeholder}`);
+    }
+    return escapePlistXml(value);
+  });
 }
 
 function install(): void {

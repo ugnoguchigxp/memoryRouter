@@ -125,7 +125,9 @@ const findCandidateProvider = parseDistillationProvider(
   "openai",
 );
 
-const sourceContentRoot = path.resolve(process.cwd(), "wiki");
+const sourceContentRoot = path.resolve(
+  readProjectEnv("SOURCE_CONTENT_ROOT")?.trim() || path.resolve(process.cwd(), "wiki"),
+);
 const readFileRoot = path.resolve(sourceContentRoot, "pages");
 
 export const groupedConfig: GroupedConfig = {

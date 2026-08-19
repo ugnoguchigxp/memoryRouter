@@ -23,6 +23,14 @@ pub fn handle_command<E: EnvProvider, S: ProcessSupervisor>(
                 Ok(report.to_text())
             }
         }
+        QueueAction::ExecutorTick => {
+            let report = super::service::run_offline_executor_tick_report(env)?;
+            if json {
+                Ok(report.to_json())
+            } else {
+                Ok(report.to_text())
+            }
+        }
     }
 }
 

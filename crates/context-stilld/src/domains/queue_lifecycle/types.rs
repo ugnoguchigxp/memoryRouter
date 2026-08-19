@@ -149,7 +149,15 @@ pub struct ProviderQueueClaimSpec {
     pub route_target_column: Option<&'static str>,
     pub route_target_preferences: Vec<RowTargetPreference>,
     pub allowed_route_values: Option<Vec<String>>,
-    pub requires_negative_candidate: bool,
+    pub candidate_polarity_filter: CandidatePolarityFilter,
+    pub allowed_job_ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CandidatePolarityFilter {
+    Any,
+    Negative,
+    NonNegative,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]

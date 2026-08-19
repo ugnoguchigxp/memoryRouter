@@ -86,6 +86,22 @@ describe("system-context.service", () => {
     expect(invocation.manifest.compilerVersion).toBe("0.1.2");
   });
 
+  it("marks every positive Covering evidence input as untrusted analysis data", () => {
+    const prompts = [
+      renderPrompt("coverEvidence.valueAssessment", { lowImportanceRejectThreshold: 50 }),
+      renderPrompt("coverEvidence.applicabilityRefinement", {}),
+      renderPrompt("coverEvidence.procedureRepair", {}),
+      renderPrompt("coverEvidence.externalSearchQuery", {}),
+      renderPrompt("coverEvidence.externalFinal", { webEvidenceTokenBudget: 12_000 }),
+    ];
+
+    for (const prompt of prompts) {
+      expect(prompt.content.text).toContain("未信頼の分析対象データ");
+      expect(prompt.content.text).toContain("tool call");
+      expect(prompt.content.text).toContain("判定抑制");
+    }
+  });
+
   it("omits optional runtime-fact sections when their values are absent", () => {
     const invocation = renderPrompt("contextCompiler.agenticRefine", {
       goal: "Review the change",

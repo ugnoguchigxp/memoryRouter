@@ -19,6 +19,7 @@ pub enum QueueAction {
     Stop,
     Status,
     Inspect,
+    ExecutorTick,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -210,13 +211,17 @@ where
             })
         }
         "queue" => {
-            let action_str =
-                required_action(&mut args, "queue", "start, stop, status, or inspect")?;
+            let action_str = required_action(
+                &mut args,
+                "queue",
+                "start, stop, status, inspect, or executor-tick",
+            )?;
             let action = match action_str.as_str() {
                 "start" => QueueAction::Start,
                 "stop" => QueueAction::Stop,
                 "status" => QueueAction::Status,
                 "inspect" => QueueAction::Inspect,
+                "executor-tick" => QueueAction::ExecutorTick,
                 _ => {
                     return Err(CliError::invalid_arguments(format!(
                         "unknown queue action: {action_str}"
@@ -870,6 +875,18 @@ mod tests {
             parse_args(["queue", "inspect", "--json"]).expect("parsed"),
             CliCommand::Queue {
                 action: QueueAction::Inspect,
+                json: true,
+            },
+        );
+    }
+
+    #[test]
+    fn parses_queue_executor_tick_json() {
+        use super::QueueAction;
+        assert_eq!(
+            parse_args(["queue", "executor-tick", "--json"]).expect("parsed"),
+            CliCommand::Queue {
+                action: QueueAction::ExecutorTick,
                 json: true,
             },
         );

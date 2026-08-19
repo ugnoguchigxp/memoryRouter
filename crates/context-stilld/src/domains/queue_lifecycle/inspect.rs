@@ -59,6 +59,7 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
             ))
         })?;
     let feature_flags = queue_feature_flags(env);
+    let covering_canary_job_ids = inspect_covering_canary_job_ids(env, &sqlite_path);
     let queues = inspect_queue_tables(&connection)?;
     let active_leases = inspect_active_leases(&connection)?;
     let active_target_ids = active_leases
@@ -75,14 +76,17 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
             queue.queue_name,
             queue.runnable_pending,
             &feature_flags.rust_covering_mode,
+            covering_canary_job_ids.as_ref(),
         )?;
         if runnable_pending > 0 {
             unsupported_queues.push(UnsupportedQueueBacklog {
                 queue_name: queue.queue_name,
                 runnable_pending,
                 reason: if queue.queue_name == "coveringEvidence"
-                    && feature_flags.rust_covering_mode == "negative"
-                {
+                    && matches!(
+                        feature_flags.rust_covering_mode.as_str(),
+                        "negative" | "canary" | "all"
+                    ) {
                     "rust_native_executor_partial_support"
                 } else {
                     "rust_native_executor_not_implemented"
@@ -208,29 +212,80 @@ fn unsupported_runnable_for_queue(
     queue_name: &str,
     runnable_pending: u64,
     rust_covering_mode: &str,
+    covering_canary_job_ids: Option<&BTreeSet<String>>,
 ) -> Result<u64, CliError> {
     if rust_executor_supports_queue(queue_name) {
         return Ok(0);
     }
-    if queue_name != "coveringEvidence" || rust_covering_mode != "negative" {
+    if queue_name == "coveringEvidence" && rust_covering_mode == "all" {
+        if !table_has_column(connection, "covering_evidence_queue", "provider_policy")? {
+            return Ok(runnable_pending);
+        }
+        return connection
+            .query_row(
+                "
+                select count(*)
+                from covering_evidence_queue
+                where status in ('pending', 'paused')
+                  and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+                  and coalesce(provider_policy, 'default') != 'default'
+                ",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count.max(0) as u64)
+            .map_err(|error| {
+                CliError::io(format!(
+                    "failed to inspect unsupported covering provider policy: {error}"
+                ))
+            });
+    }
+    if queue_name != "coveringEvidence" || !matches!(rust_covering_mode, "negative" | "canary") {
+        return Ok(runnable_pending);
+    }
+    if rust_covering_mode == "canary" && covering_canary_job_ids.is_none() {
         return Ok(runnable_pending);
     }
     if !table_exists(connection, "found_candidates")?
         || !table_has_column(connection, "covering_evidence_queue", "found_candidate_id")?
+        || !table_has_column(connection, "covering_evidence_queue", "provider_policy")?
     {
         return Ok(runnable_pending);
     }
+    let covering_canary_job_ids = covering_canary_job_ids.cloned().unwrap_or_default();
+    let canary_exclusion = if rust_covering_mode == "canary" && !covering_canary_job_ids.is_empty()
+    {
+        let placeholders = (1..=covering_canary_job_ids.len())
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("and cq.id not in ({placeholders})")
+    } else {
+        String::new()
+    };
     connection
         .query_row(
-            "
+            &format!(
+                "
             select count(*)
             from covering_evidence_queue cq
             left join found_candidates fc on fc.id = cq.found_candidate_id
             where cq.status in ('pending', 'paused')
               and (cq.next_run_at is null or datetime(cq.next_run_at) <= CURRENT_TIMESTAMP)
-              and coalesce(json_extract(fc.origin, '$.polarity'), '') != 'negative'
-            ",
-            [],
+              and (
+                coalesce(cq.provider_policy, 'default') != 'default'
+                or (
+                  json_extract(fc.origin, '$.polarity') is not 'negative'
+                  {canary_exclusion}
+                )
+              )
+            "
+            ),
+            rusqlite::params_from_iter(
+                covering_canary_job_ids
+                    .iter()
+                    .filter(|_| rust_covering_mode == "canary"),
+            ),
             |row| row.get::<_, i64>(0),
         )
         .map(|count| count.max(0) as u64)
@@ -239,6 +294,67 @@ fn unsupported_runnable_for_queue(
                 "failed to inspect unsupported covering backlog: {error}"
             ))
         })
+}
+
+fn inspect_covering_canary_job_ids<E: EnvProvider>(
+    env: &E,
+    sqlite_path: &std::path::Path,
+) -> Option<BTreeSet<String>> {
+    let explicit_manifest = env
+        .var("CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(manifest_path) = explicit_manifest {
+        return std::fs::read_to_string(manifest_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .filter(|manifest| manifest.get("version").and_then(Value::as_u64) == Some(1))
+            .filter(|manifest| {
+                let Some(database_path) = manifest.get("databasePath").and_then(Value::as_str)
+                else {
+                    return false;
+                };
+                matches!(
+                    (
+                        std::fs::canonicalize(database_path),
+                        std::fs::canonicalize(sqlite_path)
+                    ),
+                    (Ok(manifest_path), Ok(sqlite_path)) if manifest_path == sqlite_path
+                )
+            })
+            .and_then(|manifest| manifest.get("jobIds").and_then(Value::as_array).cloned())
+            .map(|job_ids| {
+                job_ids
+                    .into_iter()
+                    .filter_map(|job_id| job_id.as_str().map(str::trim).map(ToOwned::to_owned))
+                    .filter(|job_id| !job_id.is_empty())
+                    .collect::<BTreeSet<_>>()
+            })
+            .filter(|job_ids| !job_ids.is_empty() && job_ids.len() <= 100);
+    }
+    if env
+        .var("CONTEXT_STILL_RUST_COVERING_MODE")
+        .is_some_and(|mode| mode.trim().eq_ignore_ascii_case("canary"))
+    {
+        return None;
+    }
+    let job_ids = repository::read_state(&resolve_paths(env).run_dir, QUEUE_SUPERVISOR.state_name)
+        .ok()
+        .flatten()
+        .and_then(|state| state.metadata)
+        .and_then(|metadata| {
+            metadata
+                .get("rustCoveringCanaryJobIds")
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .into_iter()
+        .flatten()
+        .filter_map(|job_id| job_id.as_str().map(str::trim).map(ToOwned::to_owned))
+        .filter(|job_id| !job_id.is_empty())
+        .take(100)
+        .collect::<BTreeSet<_>>();
+    (!job_ids.is_empty()).then_some(job_ids)
 }
 
 fn env_bool<E: EnvProvider>(env: &E, name: &str) -> Option<bool> {
@@ -768,16 +884,20 @@ mod tests {
                   status text not null,
                   created_at text not null,
                   heartbeat_at text,
-                  next_run_at text
+                  next_run_at text,
+                  provider_policy text not null default 'default'
                 );
                 insert into found_candidates (id, origin) values
                   ('candidate-negative', '{"polarity":"negative"}'),
-                  ('candidate-positive', '{"polarity":"positive"}');
+                  ('candidate-positive', '{"polarity":"positive"}'),
+                  ('candidate-cloud-negative', '{"polarity":"negative"}');
                 insert into covering_evidence_queue (
-                  id, found_candidate_id, status, created_at, heartbeat_at, next_run_at
+                  id, found_candidate_id, status, created_at, heartbeat_at, next_run_at,
+                  provider_policy
                 ) values
-                  ('cover-negative', 'candidate-negative', 'pending', CURRENT_TIMESTAMP, null, null),
-                  ('cover-positive', 'candidate-positive', 'pending', CURRENT_TIMESTAMP, null, null);
+                  ('cover-negative', 'candidate-negative', 'pending', CURRENT_TIMESTAMP, null, null, 'default'),
+                  ('cover-positive', 'candidate-positive', 'pending', CURRENT_TIMESTAMP, null, null, 'default'),
+                  ('cover-cloud-negative', 'candidate-cloud-negative', 'pending', CURRENT_TIMESTAMP, null, null, 'cloud_api');
                 "#,
             )
             .unwrap();
@@ -795,14 +915,68 @@ mod tests {
 
         let report = inspect_report(&env, &supervisor).unwrap();
 
-        assert_eq!(report.runnable_pending_count, 2);
-        assert_eq!(report.unsupported_runnable_count, 1);
+        assert_eq!(report.runnable_pending_count, 3);
+        assert_eq!(report.unsupported_runnable_count, 2);
         assert_eq!(report.feature_flags.rust_covering_mode, "negative");
         assert_eq!(report.unsupported_queues.len(), 1);
-        assert_eq!(report.unsupported_queues[0].runnable_pending, 1);
+        assert_eq!(report.unsupported_queues[0].runnable_pending, 2);
         assert_eq!(
             report.unsupported_queues[0].reason,
             "rust_native_executor_partial_support"
+        );
+
+        let all_env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "all"),
+        ]);
+        let all_report = inspect_report(&all_env, &supervisor).unwrap();
+        assert_eq!(all_report.unsupported_runnable_count, 1);
+        assert_eq!(all_report.unsupported_queues[0].runnable_pending, 1);
+
+        let manifest_path = app_dir.join("covering-canary.json");
+        std::fs::write(
+            &manifest_path,
+            serde_json::json!({
+                "version": 1,
+                "databasePath": sqlite_path,
+                "jobIds": ["cover-positive"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let canary_env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "canary"),
+            (
+                "CONTEXT_STILL_RUST_COVERING_CANARY_MANIFEST",
+                manifest_path.to_str().unwrap(),
+            ),
+        ]);
+        let canary_report = inspect_report(&canary_env, &supervisor).unwrap();
+        assert_eq!(canary_report.unsupported_runnable_count, 1);
+        assert_eq!(canary_report.unsupported_queues[0].runnable_pending, 1);
+
+        let invalid_canary_env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            (
+                "CONTEXT_STILL_SQLITE_CORE_PATH",
+                sqlite_path.to_str().unwrap(),
+            ),
+            ("CONTEXT_STILL_RUST_COVERING_MODE", "canary"),
+        ]);
+        let invalid_canary_report = inspect_report(&invalid_canary_env, &supervisor).unwrap();
+        assert_eq!(invalid_canary_report.unsupported_runnable_count, 3);
+        assert_eq!(
+            invalid_canary_report.unsupported_queues[0].runnable_pending,
+            3
         );
 
         std::fs::remove_dir_all(&app_dir).unwrap();

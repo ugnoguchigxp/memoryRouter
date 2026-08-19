@@ -380,39 +380,48 @@ fn runnable_provider_candidates(
         table_name,
         route_target_column,
         allowed_route_values.len(),
-        queue_spec.requires_negative_candidate,
+        queue_spec.candidate_polarity_filter,
+        queue_spec
+            .allowed_job_ids
+            .as_deref()
+            .unwrap_or_default()
+            .len(),
     );
     let mut statement = tx.prepare(&sql).map_err(|error| {
         CliError::io(format!(
             "failed to prepare runnable provider query: {error}"
         ))
     })?;
-    let rows = statement
-        .query_map(
-            rusqlite::params_from_iter(allowed_route_values.iter()),
-            |row| {
-                let id = row.get::<_, String>(0)?;
-                let priority = row.get::<_, i64>(1)?;
-                let created_at = row.get::<_, String>(2)?;
-                let created_at_unix_seconds = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
-                let route_key = row.get::<_, Option<String>>(4)?;
-                let waiting_seconds = (now_unix_seconds - created_at_unix_seconds).max(0);
-                let effective_priority = -(waiting_seconds / aging_seconds);
-                Ok(RunnableProviderCandidate {
-                    queue_name: queue_spec.queue_name.clone(),
-                    table_name,
-                    id,
-                    queue_order,
-                    effective_priority,
-                    priority,
-                    created_at,
-                    preferred_target_ids: preferred_targets_for_route(
-                        queue_spec,
-                        route_key.as_deref(),
-                    ),
-                })
-            },
+    let query_parameters = allowed_route_values
+        .iter()
+        .chain(
+            queue_spec
+                .allowed_job_ids
+                .as_deref()
+                .unwrap_or_default()
+                .iter(),
         )
+        .collect::<Vec<_>>();
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(query_parameters), |row| {
+            let id = row.get::<_, String>(0)?;
+            let priority = row.get::<_, i64>(1)?;
+            let created_at = row.get::<_, String>(2)?;
+            let created_at_unix_seconds = row.get::<_, Option<i64>>(3)?.unwrap_or(0);
+            let route_key = row.get::<_, Option<String>>(4)?;
+            let waiting_seconds = (now_unix_seconds - created_at_unix_seconds).max(0);
+            let effective_priority = -(waiting_seconds / aging_seconds);
+            Ok(RunnableProviderCandidate {
+                queue_name: queue_spec.queue_name.clone(),
+                table_name,
+                id,
+                queue_order,
+                effective_priority,
+                priority,
+                created_at,
+                preferred_target_ids: preferred_targets_for_route(queue_spec, route_key.as_deref()),
+            })
+        })
         .map_err(|error| {
             CliError::io(format!("failed to query runnable provider jobs: {error}"))
         })?;
@@ -436,7 +445,8 @@ fn runnable_provider_sql(
     table_name: &str,
     route_target_column: Option<&str>,
     allowed_route_value_count: usize,
-    requires_negative_candidate: bool,
+    candidate_polarity_filter: super::types::CandidatePolarityFilter,
+    allowed_job_id_count: usize,
 ) -> String {
     let route_projection = route_target_column
         .map(|column| format!("{column} as route_key"))
@@ -451,10 +461,22 @@ fn runnable_provider_sql(
             format!("and {column} in ({placeholders})")
         })
         .unwrap_or_default();
-    let negative_candidate_condition = if requires_negative_candidate {
-        format!(
-            "and exists (select 1 from found_candidates covering_candidate where covering_candidate.id = {table_name}.found_candidate_id and lower(coalesce(json_extract(covering_candidate.origin, '$.polarity'), '')) = 'negative')"
-        )
+    let candidate_polarity_condition = match candidate_polarity_filter {
+        super::types::CandidatePolarityFilter::Any => String::new(),
+        super::types::CandidatePolarityFilter::Negative => format!(
+            "and exists (select 1 from found_candidates covering_candidate where covering_candidate.id = {table_name}.found_candidate_id and json_extract(covering_candidate.origin, '$.polarity') = 'negative')"
+        ),
+        super::types::CandidatePolarityFilter::NonNegative => format!(
+            "and exists (select 1 from found_candidates covering_candidate where covering_candidate.id = {table_name}.found_candidate_id and json_extract(covering_candidate.origin, '$.polarity') is not 'negative')"
+        ),
+    };
+    let allowed_job_condition = if allowed_job_id_count > 0 {
+        let first_index = allowed_route_value_count + 1;
+        let placeholders = (first_index..first_index + allowed_job_id_count)
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("and id in ({placeholders})")
     } else {
         String::new()
     };
@@ -470,7 +492,8 @@ fn runnable_provider_sql(
         where status in ('pending', 'paused')
           and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
           {allowed_route_condition}
-          {negative_candidate_condition}
+          {candidate_polarity_condition}
+          {allowed_job_condition}
         order by priority desc, created_at asc, id asc
         limit 20
         "
