@@ -1,0 +1,2407 @@
+<article lang="ja">
+  <h1 id="contextstill-utility-rag-concept">ContextStill Utility-RAG Concept</h1>
+  <h2 id="status">Status</h2>
+  <ul>
+    <li>Status: Discussion Draft / Architecture Concept</li>
+    <li>Concept ID: contextstill-utility-rag-v1</li>
+    <li>Version: 0.3</li>
+    <li>Last updated: 2026-08-16</li>
+    <li>
+      Applies to: ContextStill SQLite local runtime, context-stilld native MCP, Context Compiler
+    </li>
+    <li>
+      Primary decision: adopt bounded hybrid retrieval and a purpose-built Utility Graph; do not
+      adopt a general-purpose semantic Knowledge Graph as the runtime retrieval core
+    </li>
+  </ul>
+  <p>
+    この文書は、ContextStillの現行RAGを置き換えず、検索性能を維持または改善しながら、検索精度、関係知識の発見能力、出力の情報密度を高めるための共通コンセプトを定義する。
+  </p>
+  <p>この文書の中心命題は次の通りである。</p>
+  <blockquote>
+    <p>
+      ContextStillが最適化すべき対象は、意味的に近い文書の件数ではない。与えられたtaskに対して、実際に使える、根拠付きで、重複の少ない、最小のKnowledge集合を、厳格なlatencyとtoken
+      budgetの中で構成することである。
+    </p>
+  </blockquote>
+  <p>この構想をUtility-RAGと呼ぶ。</p>
+  <p>
+    Utility-RAGは、FTS、Vector Search、Facet Search、Episode Retrieval、限定的なGraph
+    Expansionを候補生成手段として使う。ただし、最終目的は各retrieverのscore最大化ではない。Task
+    coverage、historical utility、provenance、freshness、novelty、risk、token
+    costを考慮し、期待効用が最大になるContext Packを選ぶ。
+  </p>
+  <p>
+    この文書は詳細実装計画ではない。最終的なphysical schema、migration番号、embedding model、ranking
+    weight、feature flag名、module分割を確定しない。一方、後続の実装計画とcode
+    reviewが守るべき設計境界、性能条件、評価方法、段階導入順序を定義する。
+  </p>
+  <p>この文書では、採用状態を次のように区別する。</p>
+  <ul>
+    <li>
+      Required foundation: 後続laneより先に完了するPhase 0 / 0.5の測定、安全境界、現行ranking補正。
+    </li>
+    <li>Core v1 lane: 最初にpromotion対象とするFTS、exact identifier、facet、RRF。</li>
+    <li>
+      Conditional lane: data-readinessと個別gateを満たした場合だけpromoteするVector、Utility
+      Graph、Density Selector。
+    </li>
+    <li>Deferred experiment: 初期roadmapへ含めず、別文書で再評価条件を管理する案。</li>
+  </ul>
+  <p>
+    Conditional laneがgateを満たさずshadowまたはdisabledのままでも、Required foundationとCore v1
+    laneの成立を否定しない。
+  </p>
+  <hr />
+  <h2 id="section-1-review-request">1. Review Request</h2>
+  <p>
+    この文書をレビューするAIまたは人間は、文章の一般的な改善より、次の設計上の誤りを優先して指摘する。
+  </p>
+  <ol>
+    <li>
+      現行runtimeの読み違い
+      <ul>
+        <li>
+          activeなRust native MCP経路と、inactiveまたはsidecarのTypeScript経路を混同していないか。
+        </li>
+      </ul>
+    </li>
+    <li>
+      性能条件の不備
+      <ul>
+        <li>
+          network LLM、embedding、SQLite writer queue、index rebuild、cold startを含むend-to-end
+          costを過小評価していないか。
+        </li>
+      </ul>
+    </li>
+    <li>
+      評価の循環性
+      <ul>
+        <li>
+          composer自身が作ったused/not_usedやagent generated
+          compile_evalを、独立した正解ラベルとして扱っていないか。
+        </li>
+      </ul>
+    </li>
+    <li>
+      Repository isolation
+      <ul>
+        <li>
+          candidate limitより前にscopeとclassificationが適用され、別repositoryの候補が混入しないか。
+        </li>
+      </ul>
+    </li>
+    <li>
+      Graph drift
+      <ul>
+        <li>
+          popularity bias、誤ったco-selection、stale edge、誤ったmulti-hopによってsemantic
+          driftを起こさないか。
+        </li>
+      </ul>
+    </li>
+    <li>
+      情報圧縮による欠落
+      <ul>
+        <li>delivery textの短縮が、条件、例外、verification、provenanceを失わせないか。</li>
+      </ul>
+    </li>
+    <li>
+      Rollback可能性
+      <ul>
+        <li>新しいlaneを個別に無効化し、既存のlexical経路へ即時復帰できるか。</li>
+      </ul>
+    </li>
+    <li>
+      より単純な代替
+      <ul>
+        <li>同等の効果を、Graphや新schemaなしで達成できないか。</li>
+      </ul>
+    </li>
+  </ol>
+  <p>レビュー指摘には、可能であれば次を含める。</p>
+  <ul>
+    <li>Priority: P0 / P1 / P2</li>
+    <li>Affected section</li>
+    <li>Broken assumption or failure scenario</li>
+    <li>Evidence</li>
+    <li>Smallest safe correction</li>
+    <li>Promotionをblockする問題か、follow-upでよい問題か</li>
+  </ul>
+  <hr />
+  <h2 id="section-2-executive-decision">2. Executive Decision</h2>
+  <p>ContextStillは、Semantica型の汎用GraphRAG基盤へ移行しない。</p>
+  <p>代わりに、次の構成を採用候補とする。</p>
+  <ol>
+    <li>SQLite FTS5を使うscope-aware lexical retrieval。</li>
+    <li>scope metadataを持つSQLite Vector retrieval。</li>
+    <li>exact identifierとtask facetを扱うdeterministic retrieval。</li>
+    <li>各laneのrankをReciprocal Rank Fusionで統合するcandidate fusion。</li>
+    <li>Knowledge間のtask utilityだけを表現するbounded Utility Graph。</li>
+    <li>relevanceではなくmarginal utility per tokenで選ぶDensity Selector。</li>
+    <li>現行のplanner / Composer経路を増やさず、必要なら削減して使う最終構成。</li>
+    <li>exposure、selection、use、outcomeを分離したfeedback loop。</li>
+  </ol>
+  <p>
+    Graphはprimary source of truthではなく、direct
+    retrievalで得たseedを補強する追加laneとする。Graphだけで候補を生成しない。online
+    traversalは原則1-hop、固定fan-out、固定candidate capとする。
+  </p>
+  <p>
+    検索時に新しいLLM callを追加しない。現行runtimeが行うplannerとComposerのlogical call、各provider
+    attempt、fallback-route
+    failoverを別々に計測し、deterministic構成、1-call構成、現行2-call構成を同じcohortで比較する。Query
+    expansion、Knowledge atomization、relation extraction、compact delivery text、context
+    capsuleは、必要なものだけをingestionまたはbackground processingで事前計算する。
+  </p>
+  <hr />
+  <h2 id="section-3-background">3. Background</h2>
+  <p>ContextStillの価値は、大量の文書を検索すること自体ではない。</p>
+  <p>
+    ContextStillは、Sources、Agent logs、Episodes、Knowledge
+    candidatesを蒸留し、再利用可能なRuleとProcedureとして保持し、現在のcoding
+    taskに必要な最小Contextへcompileする。したがって、一般的なdocument QA RAGとは成功条件が異なる。
+  </p>
+  <p>
+    一般的なRAGでは、retrieval recallやanswer
+    correctnessが主要指標になりやすい。ContextStillでは、さらに次が必要になる。
+  </p>
+  <ul>
+    <li>Repository scopeを越えないこと。</li>
+    <li>現在のtaskに適用可能であること。</li>
+    <li>Positive guidanceとNegative guardrailを混同しないこと。</li>
+    <li>古いKnowledgeやsuperseded Knowledgeを抑制すること。</li>
+    <li>実装手順だけでなくverificationとavoid条件を含むこと。</li>
+    <li>Sourceと過去の利用実績を辿れること。</li>
+    <li>Token budget内で重複が少ないこと。</li>
+    <li>Agentが実際に使ったかを追跡できること。</li>
+    <li>RetrievalやGraphが停止しても安全にdegradeできること。</li>
+  </ul>
+  <p>
+    Semanticaは、vector similarityとtyped graph relationship、multi-hop
+    path、provenanceを組み合わせる方向性を示している。このうち、direct
+    similarityだけでは拾えない関係知識をgraph proximityで補う考え方はContextStillにも有用である。
+  </p>
+  <p>
+    一方、ContextStillに必要なのは、Person、Organization、Eventなどの一般entityを中心としたworld
+    modelではない。必要なのは、Rule、Procedure、Guardrail、Episode、Sourceが、あるtaskでどのように共同利用されるかを表すpurpose-bound
+    projectionである。
+  </p>
+  <hr />
+  <h2 id="section-4-current-runtime-truth">4. Current Runtime Truth</h2>
+  <h3 id="section-41-active-path">4.1 Active path</h3>
+  <p>2026-08-16時点で、activeなMCP context_compileはcontext-stilldのRust native実装を通る。</p>
+  <p>Rust native pathは概ね次の処理を行う。</p>
+  <ol>
+    <li>goal、technologies、changeTypes、domains、project identityを読む。</li>
+    <li>eligible scope内のactive KnowledgeをSQLiteから読む。</li>
+    <li>titleとbodyに対する単純なsubstring/token matchへdynamic scoreを加える。</li>
+    <li>上位8件を選ぶ。</li>
+    <li>Episodeを最大3件選ぶ。</li>
+    <li>
+      Agentic
+      Composerが設定されている場合、構成plan生成と最終composeを順次実行する。Composeが失敗してfallback
+      providerへ進むと、次のproviderでplanとcomposeを再度試すため、provider attempt数は増える。
+    </li>
+    <li>Run、Pack、Candidate Trace、Usage EventをSQLiteへ保存する。</li>
+  </ol>
+  <p>
+    このpathでは、SQLite上に作成済みのknowledge_items_ftsを検索に使用していない。Vector
+    laneも使用していない。
+  </p>
+  <p>
+    現行の構成planは出力構成のために使われる。生成したquery
+    hintを候補検索へ戻していないため、planner callをretrieval query
+    expansionとして扱ってはならない。
+  </p>
+  <h3 id="section-42-typescript-pathとの乖離">4.2 TypeScript pathとの乖離</h3>
+  <p>TypeScript側には、次のより高度な要素が存在する。</p>
+  <ul>
+    <li>intent / domain / combined query round</li>
+    <li>positive / negative Knowledgeの分離</li>
+    <li>text / vector candidate evidence</li>
+    <li>rank and dedupe</li>
+    <li>near duplicate suppression</li>
+    <li>agentic refinement</li>
+    <li>section token budget</li>
+    <li>co-selection / exploration / negative inverseのutility trace</li>
+  </ul>
+  <p>
+    ただし、これらを存在するという理由だけでactive runtimeの能力として扱ってはならない。Rust native
+    pathへ移植され、runtime smokeとtraceで確認されるまで、設計上の参考実装またはinactive
+    capabilityとして扱う。
+  </p>
+  <h3 id="section-43-provisional-baseline">4.3 Provisional baseline</h3>
+  <p>
+    2026-08-16にlive
+    SQLiteをread-onlyで調査したsnapshotの暫定値は次の通りである。運用中のDBは変化するため、この表を継続的なsource
+    of truthにはせず、Phase 0の再現可能なbaseline reportで置き換える。
+  </p>
+  <table>
+    <caption>
+      Table: 4.3 Provisional baseline
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Metric</th>
+        <th scope="col">Observed value</th>
+        <th scope="col">Caveat</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Active Knowledge</td>
+        <td>7,180</td>
+        <td>scope/classification別の利用可能数ではない</td>
+      </tr>
+      <tr>
+        <td>Active classified Knowledge</td>
+        <td>98</td>
+        <td>全repository合計。通常検索へ入れる候補の上限</td>
+      </tr>
+      <tr>
+        <td>Active unresolved Knowledge</td>
+        <td>7,082</td>
+        <td>fail-closedで通常検索から除外される</td>
+      </tr>
+      <tr>
+        <td>contextStill eligible Knowledge</td>
+        <td>33</td>
+        <td>global 29 + repo-path exact 4のpoint-in-time値</td>
+      </tr>
+      <tr>
+        <td>Latest 500 compile p50</td>
+        <td>10,965 ms</td>
+        <td>row insertion orderで抽出</td>
+      </tr>
+      <tr>
+        <td>Latest 500 compile p95</td>
+        <td>18,387 ms</td>
+        <td>LLM Composerを含む</td>
+      </tr>
+      <tr>
+        <td>Latest 500 compile p99</td>
+        <td>20,292 ms</td>
+        <td>provider状態の影響を含む</td>
+      </tr>
+      <tr>
+        <td>All recorded compile p50</td>
+        <td>12,088 ms</td>
+        <td>planner、Composer、provider attemptをphase分離していない</td>
+      </tr>
+      <tr>
+        <td>All recorded compile p95</td>
+        <td>19,870 ms</td>
+        <td>同上</td>
+      </tr>
+      <tr>
+        <td>All recorded compile p99</td>
+        <td>25,212 ms</td>
+        <td>同上</td>
+      </tr>
+      <tr>
+        <td>Selected Knowledge per run</td>
+        <td>8.0</td>
+        <td>native pathの固定上限</td>
+      </tr>
+      <tr>
+        <td>Usage verdict used</td>
+        <td>3,008 / 4,000, 75.2%</td>
+        <td>Composer自己申告でありhuman goldではない</td>
+      </tr>
+      <tr>
+        <td>Usage verdict not_used</td>
+        <td>992 / 4,000, 24.8%</td>
+        <td>同上</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Snapshotの抽出contractは、Knowledge件数を<code>status</code>と<code>classification_status</code>で集計し、eligible件数にはactive
+    Rust
+    pathと同じ<code>eligible_scope_clause</code>を適用する。Latencyは<code>context_compile_runs.duration_ms</code>、usage比率は同じlatest-500
+    run cohortのusage eventを使用する。Phase 0ではquery text、DB fingerprint、取得時刻、row
+    countをbaseline reportへ保存する。
+  </p>
+  <p>
+    このbaselineは最終的な採否判定には不十分である。eligible corpusはrepositoryとidentity match
+    basisごとに大きく異なるため、全active件数をretrieval規模として使用しない。Unresolved
+    7,082件はrepository isolationを守るfail-closed分類の結果であり、全件解消をrollout
+    blockerにはしない。一方、各repositoryで品質差を測れるeligible件数がなければ、そのlaneはshadowのままとする。
+  </p>
+  <p>
+    また、現在のcreated_atにはISO timestampとunix-ms prefix形式が混在し、一部reportがSQLite
+    datetime関数でunix-ms形式を正しく扱えない。compile_select_countもactive Rust native
+    pathで更新されないため、cold Knowledge rateをそのまま信用できない。
+  </p>
+  <p>
+    最初のimplementation phaseでは、time normalization、phase timing、counter update、runtime path
+    identificationを修正し、再現可能なbaselineを作る。
+  </p>
+  <hr />
+  <h2 id="section-5-problem-statement">5. Problem Statement</h2>
+  <p>現行pathには、品質面と性能面で別々の問題がある。</p>
+  <h3 id="section-51-quality-problems">5.1 Quality problems</h3>
+  <ul>
+    <li>Token containmentだけでは、言い換え、暗黙の前提、関連する失敗事例を拾いにくい。</li>
+    <li>
+      title/bodyのraw text scoreは最大16である一方、dynamic
+      scoreは0から100相当の尺度で加算される。Raw加算により、query matchが強くてもdynamic
+      score差を逆転できない候補が存在する。
+    </li>
+    <li>FTS、Vector、Facetのscore scaleを比較できるfusion contractがない。</li>
+    <li>Candidateを8件へ早期に切るため、rerankerが見る前に有用候補を失う可能性がある。</li>
+    <li>
+      Positive guidance、negative
+      guardrail、prerequisite、verificationのcoverageを最適化していない。
+    </li>
+    <li>上位候補間の重複を、最終token costと関連付けて評価していない。</li>
+    <li>
+      Historical feedbackは独立featureとしてcalibrateされず、dynamic scoreへ集約された状態でraw text
+      scoreに直接加算される。
+    </li>
+    <li>Source-linked Knowledge、origin-linked Knowledge、unsupported Knowledgeの扱いが弱い。</li>
+  </ul>
+  <h3 id="section-52-performance-problems">5.2 Performance problems</h3>
+  <ul>
+    <li>Read、external LLM call、writeが同じSQLite writer job内で行われる。</li>
+    <li>Long-running Composer callがsingle writer queueを占有し得る。</li>
+    <li>Read-only search toolもwriter pathを利用する箇所がある。</li>
+    <li>
+      Retrieval phase、queue wait、Composer phase、persistence phaseの時間が分離記録されていない。
+    </li>
+    <li>
+      Planner、Composer、provider attempt、fallback-route
+      failoverの回数と個別latencyが分離記録されていない。
+    </li>
+    <li>
+      Query embeddingを追加した場合、provider latencyがそのままcritical pathへ入る恐れがある。
+    </li>
+    <li>Scopeを持たないvector top-Kを後段filterすると、correctnessかrecallのどちらかを失う。</li>
+  </ul>
+  <h3 id="section-53-information-density-problems">5.3 Information density problems</h3>
+  <p>Current top-Kは、各itemが新しく何を追加するかではなく、個別scoreだけで決まる。</p>
+  <p>そのため、次が起き得る。</p>
+  <ul>
+    <li>同じ原則を言い換えたKnowledgeが複数入る。</li>
+    <li>Workflowは多いがVerificationがない。</li>
+    <li>General guidanceが多く、repository-specific constraintが埋もれる。</li>
+    <li>Guardrailがpositive sectionを圧迫する。</li>
+    <li>長いProcedureがtoken budgetを使うが、現在taskに必要なのは一部だけである。</li>
+    <li>短いが根拠のないKnowledgeが、長いが重要なKnowledgeより有利になる。</li>
+  </ul>
+  <p>
+    必要なのは単純な要約ではない。必要条件、例外、確認方法、provenanceを維持したまま、重複を除き、task
+    decisionに必要なdistinct informationを増やすことである。
+  </p>
+  <hr />
+  <h2 id="section-6-goals">6. Goals</h2>
+  <h3 id="g1-preserve-or-improve-performance">G1. Preserve or improve performance</h3>
+  <ul>
+    <li>End-to-end context_compile latencyを悪化させない。</li>
+    <li>Retrieval lane追加によってSQLite writer queueを長時間占有しない。</li>
+    <li>EmbeddingまたはGraphが利用不能でも、FTS/facet経路へ即時fallbackする。</li>
+    <li>
+      Runtime LLM call数を増やさない。現行のplanner +
+      Composerを固定前提にせず、deterministic構成または1-call構成への削減も比較する。
+    </li>
+  </ul>
+  <h3 id="g2-improve-retrieval-recall-without-increasing-composition-input">
+    G2. Improve retrieval recall without increasing composition input
+  </h3>
+  <ul>
+    <li>Candidate generation段階では現行8件より広い候補を探索する。</li>
+    <li>
+      Fusionとlightweight rankingで候補を絞り、composition routeへ渡すtoken数はcorrected
+      baseline以下にする。
+    </li>
+    <li>Exact symbol、error、file path、Japanese query、semantic paraphraseのそれぞれを扱う。</li>
+  </ul>
+  <h3 id="g3-improve-task-coverage">G3. Improve task coverage</h3>
+  <ul>
+    <li>Workflow、Prerequisite、Verification、Failure、Avoidの不足を検出する。</li>
+    <li>Positive、Negative、Episodeを別laneとして扱う。</li>
+    <li>Relationからしか見つからないsupporting Knowledgeを限定的に追加する。</li>
+  </ul>
+  <h3 id="g4-improve-information-density">G4. Improve information density</h3>
+  <ul>
+    <li>Selected item数ではなく、useful information per tokenを最大化する。</li>
+    <li>重複するKnowledgeを抑制する。</li>
+    <li>Retrieval向けの冗長な語彙と、LLMへ渡すcompact textを分離する。</li>
+    <li>圧縮されたstatementからsourceとfull bodyへ辿れるようにする。</li>
+  </ul>
+  <h3 id="g5-learn-safely-from-feedback">G5. Learn safely from feedback</h3>
+  <ul>
+    <li>Retrieved、Selected、Used、Outcomeを別イベントとして記録する。</li>
+    <li>Popularityだけで同じKnowledgeが強化され続けるfeedback loopを避ける。</li>
+    <li>Wrong、off_topic、stale、supersededを明示的にpenalizeする。</li>
+    <li>新laneはshadow observationから始める。</li>
+  </ul>
+  <hr />
+  <h2 id="section-7-non-goals">7. Non-goals</h2>
+  <p>この構想では次を行わない。</p>
+  <ul>
+    <li>Semanticaまたは他のGraph platformへの全面移行。</li>
+    <li>RDF、OWL、SHACL、SPARQLをContext Compilerの必須runtimeにする。</li>
+    <li>すべてのSourceから一般entityとrelationを抽出してworld modelを作る。</li>
+    <li>Runtimeで任意深度のmulti-hop reasoningを行う。</li>
+    <li>GraphだけでKnowledge candidateを決める。</li>
+    <li>検索ごとにLLM query expansionまたはcross-encoderを追加する。</li>
+    <li>PostgreSQL parityをSQLite local rolloutのblockerにする。</li>
+    <li>Coldまたは未選択という理由だけでKnowledgeを削除する。</li>
+    <li>LLM Composerのused判定だけで自動的にKnowledgeをactive、deprecated、mergeする。</li>
+    <li>Token削減を、coverageやcorrectnessより優先する。</li>
+  </ul>
+  <hr />
+  <h2 id="section-8-core-definition">8. Core Definition</h2>
+  <p>Utility-RAGを次のように定義する。</p>
+  <pre><code class="language-text">Given:
+  task query Q
+  repository scope S
+  token budget B
+  latency budget L
+  candidate knowledge set K
+
+Select:
+  context set C subset of K
+
+Maximize:
+  expected task utility
+  + required decision coverage
+  + evidence and provenance strength
+  + useful relation coverage
+  - redundancy
+  - stale or contradiction risk
+  - token cost
+
+Subject to:
+  repository isolation
+  token budget B
+  latency budget L
+  deterministic fallback availability
+</code></pre>
+  <p>
+    Utilityは単一の学習済みscoreではない。初期段階では、観測可能なfeatureを組み合わせた説明可能なrankingとgreedy
+    selectionを使う。
+  </p>
+  <hr />
+  <h2 id="section-9-design-principles">9. Design Principles</h2>
+  <h3 id="section-91-direct-retrieval-remains-primary">9.1 Direct retrieval remains primary</h3>
+  <p>
+    FTS、exact match、facet、vectorがdirect
+    seedを作る。Graphはseedを補強するだけで、seedがない状態から自由探索しない。
+  </p>
+  <h3 id="section-92-scope-before-limit">9.2 Scope before limit</h3>
+  <p>
+    Repository identity、classification、status、polarity、typeのeligibilityをcandidate
+    limitより前に適用する。
+  </p>
+  <p>
+    Globalとrepository-specificを同時に扱う場合も、unscoped
+    top-Kを取得して後からfilterしない。各scope partitionを個別に検索し、eligible
+    resultだけをmergeする。
+  </p>
+  <h3 id="section-93-one-query-representation-per-run">9.3 One query representation per run</h3>
+  <p>
+    Goal、facets、identifiers、query embeddingをQuery Planとして一度だけ生成し、positive
+    Knowledge、negative Knowledge、Source、Episodeで共有する。
+  </p>
+  <h3 id="section-94-rank-fusion-before-learned-ranking">9.4 Rank fusion before learned ranking</h3>
+  <p>
+    FTS score、vector cosine、facet score、historical
+    scoreを直接足さない。まずlane内rankをRRFで融合し、その後に共通featureでrankingする。
+  </p>
+  <h3 id="section-95-graph-expansion-is-bounded">9.5 Graph expansion is bounded</h3>
+  <p>
+    原則1-hop、固定seed数、固定fan-out、固定relation allowlist、固定candidate
+    capとする。Latencyとsemantic driftを構造的に上限化する。
+  </p>
+  <h3 id="section-96-retrieval-text-and-delivery-text-are-different-products">
+    9.6 Retrieval text and delivery text are different products
+  </h3>
+  <p>Search recallのためのtextと、Context Packのためのtextを同じbodyへ押し込まない。</p>
+  <h3 id="section-97-optimize-a-set-not-independent-items">
+    9.7 Optimize a set, not independent items
+  </h3>
+  <p>
+    最終選択では、すでに選ばれたitemに対して何を追加するかを評価する。個別score上位だけを取らない。
+  </p>
+  <h3 id="section-98-feedback-is-evidence-not-truth">9.8 Feedback is evidence, not truth</h3>
+  <p>
+    Composer、Agent、Human、Systemのfeedback sourceを区別する。Self-generated labelsだけでranking
+    modelを学習しない。
+  </p>
+  <h3 id="section-99-every-new-lane-can-be-disabled-independently">
+    9.9 Every new lane can be disabled independently
+  </h3>
+  <p>
+    FTS、Vector、Graph、Utility Ranker、Density Selector、Capsuleは独立feature
+    flagとtraceを持つ。障害時はcurrent lexical path相当へ戻せる。
+  </p>
+  <h3 id="section-910-data-readiness-before-lane-complexity">
+    9.10 Data readiness before lane complexity
+  </h3>
+  <p>
+    Eligible corpus、独立label、query
+    cohortが小さすぎて改善を測れないlaneはuser-visibleへ昇格しない。実装可能であることと、現時点で導入価値を測定できることを分ける。
+  </p>
+  <hr />
+  <h2 id="section-10-target-system-model">10. Target System Model</h2>
+  <figure>
+    <pre class="mermaid" data-spec-html-source="markdown">flowchart LR
+    Q[&quot;Goal + Facets + Repository Identity&quot;] --&gt; P[&quot;Query Plan&quot;]
+
+    P --&gt; F[&quot;FTS5 / BM25 Lane&quot;]
+    P --&gt; T[&quot;Trigram / Exact Identifier Lane&quot;]
+    P --&gt; V[&quot;Scoped Vector Lane&quot;]
+    P --&gt; A[&quot;Applicability / Intent Lane&quot;]
+    P --&gt; E[&quot;Episode Lane&quot;]
+
+    F --&gt; R[&quot;Rank Fusion&quot;]
+    T --&gt; R
+    V --&gt; R
+    A --&gt; R
+    E --&gt; R
+
+    R --&gt; S[&quot;Direct Seeds&quot;]
+    S --&gt; G[&quot;Bounded Utility Graph Expansion&quot;]
+    G --&gt; L[&quot;Explainable Feature Ranker&quot;]
+    L --&gt; D[&quot;Density Selector&quot;]
+    D --&gt; C[&quot;Composition Route: deterministic / 1-call / 2-call&quot;]
+    C --&gt; PERSIST[&quot;Short Persistence Transaction&quot;]
+
+    OFF[&quot;Offline Projection Builder&quot;] --&gt; F
+    OFF --&gt; T
+    OFF --&gt; V
+    OFF --&gt; G
+    OFF --&gt; D
+
+    FEEDBACK[&quot;Exposure / Use / Outcome Feedback&quot;] --&gt; OFF
+</pre>
+    <figcaption>Diagram: 10. Target System Model</figcaption>
+  </figure>
+  <h3 id="section-101-offline-path">10.1 Offline path</h3>
+  <p>Offline pathは、Knowledgeが作成または更新された時、またはbackground rebuild時に次を行う。</p>
+  <ul>
+    <li>search text projection生成</li>
+    <li>compact delivery text生成</li>
+    <li>coverage key抽出</li>
+    <li>exact identifier抽出</li>
+    <li>token cost計算</li>
+    <li>embedding生成</li>
+    <li>source/provenance summary計算</li>
+    <li>duplicate fingerprint計算</li>
+    <li>Utility edge materialization</li>
+    <li>index更新</li>
+  </ul>
+  <p>
+    Retrieval alias、relation extraction、delivery
+    projectionなど、検索高度化のために追加するLLM処理はoffline
+    pathに限定する。最終Contextのcomposition
+    routeはこの制限の例外だが、現行call数を増やさず、provider callをwriter
+    ownership外で実行する。LLM生成結果はversioned derived projectionであり、Knowledge
+    bodyまたはSourceの正本を置き換えない。
+  </p>
+  <h3 id="section-102-online-path">10.2 Online path</h3>
+  <p>Online pathは固定budgetで次を行う。</p>
+  <ol>
+    <li>Query Planを構築する。</li>
+    <li>EnabledなRetrieval laneを並列または短絡評価する。</li>
+    <li>RRFでcandidateを融合する。</li>
+    <li>Graph laneがenabledかつdata-readyな場合だけ、Direct top seedsから1-hop展開する。</li>
+    <li>Explainable featureでrerankする。</li>
+    <li>
+      Density Selectorがenabledな場合はcoverageとtoken
+      costを考慮して最小Contextを選び、disabledまたはfailure時はbounded rank orderへfallbackする。
+    </li>
+    <li>
+      選択済みContextをdeterministic formatter、single compose、または現行planner + Composerへ渡す。
+    </li>
+    <li>構成終了後、短いtransactionでtraceとfeedbackを保存する。</li>
+  </ol>
+  <hr />
+  <h2 id="section-11-query-plan">11. Query Plan</h2>
+  <p>
+    Query Planの構造とidentifier / facet抽出はruntime generative
+    LLMを使わず、deterministicに生成する。Query embeddingはoptional derived
+    fieldであり、model/versionを記録し、deadline内に得られなければunavailableとする。
+  </p>
+  <p>最低限、次を保持する。</p>
+  <ul>
+    <li>normalized goal</li>
+    <li>
+      exact identifiers
+      <ul>
+        <li>file path</li>
+        <li>basename</li>
+        <li>extension</li>
+        <li>snake_case / camelCase symbol</li>
+        <li>package name</li>
+        <li>error code</li>
+        <li>command</li>
+      </ul>
+    </li>
+    <li>technologies</li>
+    <li>changeTypes</li>
+    <li>domains</li>
+    <li>inferred constrained intents</li>
+    <li>repository identity snapshot</li>
+    <li>positive / negative query role</li>
+    <li>query embedding</li>
+    <li>embedding status、provider、model、dimension</li>
+    <li>query hash</li>
+    <li>deadline</li>
+  </ul>
+  <p>Japanese queryはwhitespace tokenizationだけに依存しない。</p>
+  <p>初期案は次の三系統である。</p>
+  <ul>
+    <li>
+      Unicode word/normalized-term FTS
+      <ul>
+        <li>distillation時に抽出した検索語をspace-separated textとしてindexする。</li>
+      </ul>
+    </li>
+    <li>
+      Trigram FTS
+      <ul>
+        <li>3文字以上の日本語、長いidentifier、部分path、error fragmentを扱う。</li>
+      </ul>
+    </li>
+    <li>
+      Scope-filter済みsubstring fallback
+      <ul>
+        <li>Trigramでは検索できない1から2文字のCJK termを、eligible集合へのbounded LIKEで扱う。</li>
+      </ul>
+    </li>
+  </ul>
+  <p>
+    FTS5 queryへraw user
+    textを演算子として渡さない。Hyphen、quote、parenthesisなどを安全にescapeまたはphrase化し、identifierをFTS5のNOT等へ誤解釈させない。
+  </p>
+  <p>
+    FTS5のtrigram tokenizerはsubstring matchingに利用できるが、index
+    sizeとranking特性が異なる。単一indexへ即決せず、shadow benchmarkでword index、trigram
+    index、短いCJK termのLIKE
+    fallback、組み合わせを比較する。形態素解析tokenizerやBM25Qは、標準BM25とのfusionを含む将来experimentとし、初期必須要件にしない。
+  </p>
+  <hr />
+  <h2 id="section-12-retrieval-lanes">12. Retrieval Lanes</h2>
+  <h3 id="section-121-lexical-lane">12.1 Lexical lane</h3>
+  <p>FTS5を使い、title、normalized retrieval terms、bodyへ異なるweightを与える。</p>
+  <p>初期candidate cap:</p>
+  <ul>
+    <li>repo scope: 16</li>
+    <li>global scope: 8</li>
+    <li>merged lexical cap: 20</li>
+  </ul>
+  <p>
+    Better matchを表すFTS5 rankの向きを正規化し、candidate traceにはraw BM25 rankとnormalized
+    rankの両方を残す。
+  </p>
+  <h3 id="section-122-exact-identifier-lane">12.2 Exact identifier lane</h3>
+  <p>次はsemantic similarityよりexact matchを優先する。</p>
+  <ul>
+    <li>file path</li>
+    <li>source locator</li>
+    <li>class/function/table/column名</li>
+    <li>error code</li>
+    <li>CLI command</li>
+    <li>environment variable名</li>
+    <li>framework/module名</li>
+  </ul>
+  <p>
+    Exact laneは高いprecisionを持つが、単独一致で最終選択を保証しない。Repository
+    scope、status、applicability、stalenessを引き続き適用する。
+  </p>
+  <h3 id="section-123-facet-and-applicability-lane">12.3 Facet and applicability lane</h3>
+  <p>technologies、changeTypes、domains、intentTags、general applicabilityを扱う。</p>
+  <p>
+    Facet matchは候補生成とranking featureの両方に使う。ただし、広いgeneral Knowledgeがspecific
+    Knowledgeを押し出さないよう、specific scopeとexact facet matchへ追加weightを与える。
+  </p>
+  <h3 id="section-124-vector-lane">12.4 Vector lane</h3>
+  <p>Vector laneはsemantic paraphraseを拾う追加laneとする。</p>
+  <p>
+    Physical strategyにかかわらず、vector rowまたは対象Knowledgeから最低限次を解決できるようにする。
+  </p>
+  <ul>
+    <li>scope partition</li>
+    <li>classification status</li>
+    <li>Knowledge status</li>
+    <li>type</li>
+    <li>polarity</li>
+    <li>embedding</li>
+    <li>content hash</li>
+    <li>embedding model/version</li>
+  </ul>
+  <p>
+    Scope-filter済みeligible集合をRustでbrute-force cosineする方式と、metadata filter /
+    partitionを持つvec0方式をbenchmarkする。Globalとresolved
+    repositoryを別のeligible集合として検索し、結果だけをmergeする。Unscoped
+    KNNの後段filterは禁止する。
+  </p>
+  <p>
+    Query embeddingはrunごとに最大1回生成する。Goal
+    hash、model、dimensionが一致するcacheを利用できる。Soft deadlineを超えた場合は待たず、embedding
+    unavailableとしてlexical resultを採用する。
+  </p>
+  <p>Vector laneはmandatory dependencyにしない。</p>
+  <h3 id="section-125-negative-lane">12.5 Negative lane</h3>
+  <p>Negative Knowledgeはpositive candidateと同じ順位列へ混ぜない。</p>
+  <p>
+    Negative laneはexplicit polarity
+    negativeであり、さらに次の少なくとも一つに一致した場合だけ候補を返す。
+  </p>
+  <ul>
+    <li>constrained intent</li>
+    <li>exact identifierまたはmatching facet</li>
+    <li>direct relation from selected positive Knowledge</li>
+  </ul>
+  <p>
+    Historical guardrail utilityは候補生成条件にせず、上記で得たnegative candidate内のbounded
+    ranking featureとしてだけ使う。
+  </p>
+  <p>最終ContextではAvoid、Guardrail、Verification failureとして別budgetを持つ。</p>
+  <h3 id="section-126-episode-lane">12.6 Episode lane</h3>
+  <p>EpisodeはRule/Procedureと同じitemとして競争させない。</p>
+  <p>Episodeは次の価値を持つ場合に選ぶ。</p>
+  <ul>
+    <li>same failure signature</li>
+    <li>same change type</li>
+    <li>same repository/module</li>
+    <li>same verification outcome</li>
+    <li>direct relation to selected Knowledge</li>
+  </ul>
+  <p>
+    Episode上限は初期値2件とし、長いsituation全文ではなくtask-relevant
+    lessonと必要なlocatorをdeliveryする。
+  </p>
+  <hr />
+  <h2 id="section-13-rank-fusion">13. Rank Fusion</h2>
+  <p>初期fusionはReciprocal Rank Fusionを使う。</p>
+  <pre><code class="language-text">rrf(candidate) =
+  sum over lanes l:
+    lane_weight(l) / (k + rank_l(candidate))
+</code></pre>
+  <p>初期kは60を候補とするが、固定決定ではない。</p>
+  <p>RRFを選ぶ理由:</p>
+  <ul>
+    <li>FTS、Vector、Facetのraw score scaleを揃える必要がない。</li>
+    <li>実装と説明が簡単である。</li>
+    <li>Lane追加または削除時にdegradeしやすい。</li>
+    <li>Learned ranker用の十分な独立labelがなくても開始できる。</li>
+  </ul>
+  <p>Lane weightの初期優先度:</p>
+  <ol>
+    <li>exact repository-specific match</li>
+    <li>lexical FTS</li>
+    <li>facet/applicability</li>
+    <li>vector</li>
+    <li>behavioral/graph expansion</li>
+  </ol>
+  <p>
+    最終weightはoffline replayとhard query setで調整する。Composer-generated used
+    labelだけでweightを最適化しない。
+  </p>
+  <hr />
+  <h2 id="section-14-utility-graph">14. Utility Graph</h2>
+  <h3 id="section-141-definition">14.1 Definition</h3>
+  <p>
+    Utility Graphは、Knowledgeがworldにおいてどう関係するかではなく、ContextStillのtask
+    contextとしてどう共同利用されるかを表す。
+  </p>
+  <p>Nodeの主対象:</p>
+  <ul>
+    <li>Knowledge Rule</li>
+    <li>Knowledge Procedure</li>
+    <li>Negative Guardrail</li>
+    <li>Episode</li>
+    <li>Source Fragment</li>
+    <li>optional Context Capsule</li>
+  </ul>
+  <p>
+    初期online
+    expansionはKnowledgeからKnowledgeへのedgeに限定する。EpisodeとSourceはretrievalまたはprovenance参照として扱い、Graph
+    scopeを広げすぎない。
+  </p>
+  <h3 id="section-142-relation-types">14.2 Relation types</h3>
+  <table>
+    <caption>
+      Table: 14.2 Relation types
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Relation</th>
+        <th scope="col">Meaning</th>
+        <th scope="col">Online use</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>requires</td>
+        <td>Aを適用する前にBが必要</td>
+        <td>Bをprerequisite候補へ追加</td>
+      </tr>
+      <tr>
+        <td>supports</td>
+        <td>BがAを補足または根拠付ける</td>
+        <td>coverage不足時に追加</td>
+      </tr>
+      <tr>
+        <td>contradicts</td>
+        <td>AとBが同じ条件下で両立しない</td>
+        <td>conflict/guardrailとして提示</td>
+      </tr>
+      <tr>
+        <td>supersedes</td>
+        <td>AがBの新しい置換</td>
+        <td>Bを通常候補から抑制</td>
+      </tr>
+      <tr>
+        <td>co_useful</td>
+        <td>過去の有用runで共同利用された</td>
+        <td>弱い補助候補</td>
+      </tr>
+      <tr>
+        <td>same_concept</td>
+        <td>同じ概念の重複または近縁</td>
+        <td>expansionせずredundancy penalty</td>
+      </tr>
+      <tr>
+        <td>derived_from</td>
+        <td>KnowledgeがSource/Episodeから導かれた</td>
+        <td>provenanceのみ</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="section-143-edge-provenance">14.3 Edge provenance</h3>
+  <p>全edgeは最低限次を持つ。</p>
+  <ul>
+    <li>from ID</li>
+    <li>to ID</li>
+    <li>relation</li>
+    <li>direction</li>
+    <li>weight</li>
+    <li>confidence</li>
+    <li>
+      source kind
+      <ul>
+        <li>human</li>
+        <li>deterministic</li>
+        <li>distillation</li>
+        <li>behavioral</li>
+      </ul>
+    </li>
+    <li>support count</li>
+    <li>supporting run/source IDs</li>
+    <li>scope partition</li>
+    <li>valid from</li>
+    <li>valid to</li>
+    <li>updated at</li>
+    <li>extractor/version</li>
+  </ul>
+  <p>
+    LLM抽出relationは、confidenceが高くてもhuman factと同等に扱わない。Source
+    referenceまたは独立human / task
+    outcomeによる検証がないrelationはshadow-onlyとする。Propensity-awareでないbehavioral
+    supportが複数あっても、単独ではuser-visibleへpromoteしない。
+  </p>
+  <h3 id="section-144-co-useful-edge">14.4 Co-useful edge</h3>
+  <p>単純なco-selection countはpopular Knowledgeをさらに強くするため使用しない。</p>
+  <p>Candidate formulaの例:</p>
+  <pre><code class="language-text">support(A, B) =
+  number of runs where:
+    A and B were both marked used
+    and run outcome was useful or partial
+
+lift(A, B) =
+  P(B used | A used) / P(B used)
+
+confidence =
+  support / (support + smoothing)
+
+edge_weight =
+  normalized(log(1 + support) * log(1 + lift) * confidence)
+</code></pre>
+  <p>最低条件の初期案:</p>
+  <ul>
+    <li>support &gt;= 3</li>
+    <li>positive lift</li>
+    <li>recent off_topic / wrong = 0</li>
+    <li>same repository scopeまたはglobal-safe</li>
+    <li>source dataが時刻正規化済み</li>
+  </ul>
+  <p>この最低条件はshadow materializationの足切りであり、user-visible promotion gateではない。</p>
+  <p>
+    Composerとcompile_evalが同じAgentから生成される場合は、independent evidenceではないことをedge
+    metadataに残す。
+  </p>
+  <p>
+    Deterministic exposureから計算したsupportとliftはdescriptive
+    evidenceであり、因果的な共同効用を表さない。Behavioral co_useful edgeをuser-visible
+    rankingへ使う場合は、propensity-aware exposureまたは独立human / task outcomeで別途検証する。
+  </p>
+  <h3 id="section-145-online-expansion-contract">14.5 Online expansion contract</h3>
+  <p>初期値:</p>
+  <ul>
+    <li>seed count: 4</li>
+    <li>max hops: 1</li>
+    <li>max neighbors per seed: 2</li>
+    <li>max graph candidates: 6</li>
+    <li>allowed relations: requires、supports、contradicts、co_useful</li>
+    <li>same_concept: suppression only</li>
+    <li>supersedes: exclusion only</li>
+  </ul>
+  <p>Graph candidate scoreの初期形:</p>
+  <pre><code class="language-text">graph_score =
+  seed_fused_score
+  * edge_weight
+  * relation_multiplier
+  * freshness_factor
+</code></pre>
+  <p>
+    Graph candidateはdirect candidateより高い順位へ自動昇格しない。Missing
+    coverageを満たす場合、または複数seedからsupportされた場合に優先する。
+  </p>
+  <p>
+    Supersedesによるhard exclusionは、human correction、deterministic migration、またはcurrent
+    Sourceで検証済みのedgeに限定する。LLM抽出またはbehavioral
+    edgeだけが示すsupersedesはshadowまたはbounded penaltyに留める。
+  </p>
+  <h3 id="section-146-no-unrestricted-traversal">14.6 No unrestricted traversal</h3>
+  <p>次は禁止する。</p>
+  <ul>
+    <li>QueryごとにLLMが任意relationを選ぶ。</li>
+    <li>Resultが増えなくなるまでmulti-hopする。</li>
+    <li>Community centralityだけで候補を追加する。</li>
+    <li>Semantic similarity edgeをrequires/supportsとして扱う。</li>
+    <li>Graph path自体をEvidenceとみなす。</li>
+  </ul>
+  <hr />
+  <h2 id="section-15-retrieval-projection">15. Retrieval Projection</h2>
+  <p>
+    Knowledge Itemはdurable source of truthとして維持する。検索高度化のため、versioned derived
+    projectionを追加する。
+  </p>
+  <p>Logical fields:</p>
+  <table>
+    <caption>
+      Table: 15. Retrieval Projection
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Field</th>
+        <th scope="col">Purpose</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>knowledge_id</td>
+        <td>canonical Knowledgeへの参照</td>
+      </tr>
+      <tr>
+        <td>projection_version</td>
+        <td>builder contract version</td>
+      </tr>
+      <tr>
+        <td>content_hash</td>
+        <td>stale projection検出</td>
+      </tr>
+      <tr>
+        <td>scope_partition</td>
+        <td>globalまたはresolved repository identity</td>
+      </tr>
+      <tr>
+        <td>search_text</td>
+        <td>retrieval向け正規化text</td>
+      </tr>
+      <tr>
+        <td>exact_terms</td>
+        <td>symbol、path、error、command</td>
+      </tr>
+      <tr>
+        <td>retrieval_aliases</td>
+        <td>paraphrase、synonym、abbreviation</td>
+      </tr>
+      <tr>
+        <td>delivery_text</td>
+        <td>Context Pack向けcompact text</td>
+      </tr>
+      <tr>
+        <td>coverage_keys</td>
+        <td>workflow、prerequisite、verification、failure、avoid</td>
+      </tr>
+      <tr>
+        <td>token_cost</td>
+        <td>delivery textのmodel-aware推定</td>
+      </tr>
+      <tr>
+        <td>provenance_strength</td>
+        <td>source/origin support summary</td>
+      </tr>
+      <tr>
+        <td>duplicate_fingerprint</td>
+        <td>same-concept検出</td>
+      </tr>
+      <tr>
+        <td>embedding_ref</td>
+        <td>vector projection version</td>
+      </tr>
+      <tr>
+        <td>updated_at</td>
+        <td>rebuild判定</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Projection生成に失敗したKnowledgeは削除しない。Current bodyを使うlegacy
+    projectionへfallbackする。
+  </p>
+  <p>
+    Projectionのcontent hashがKnowledgeのcurrent hashと一致しない場合、vectorとdelivery
+    textをstaleとして除外し、lexical current bodyだけを使用する。
+  </p>
+  <hr />
+  <h2 id="section-16-retrieval-text-and-delivery-text">16. Retrieval Text and Delivery Text</h2>
+  <h3 id="section-161-retrieval-text">16.1 Retrieval text</h3>
+  <p>Retrieval textはrecall向上用であり、user-visible outputではない。</p>
+  <p>含められるもの:</p>
+  <ul>
+    <li>title</li>
+    <li>canonical body</li>
+    <li>normalized facets</li>
+    <li>intent tags</li>
+    <li>API/symbol/path/error</li>
+    <li>source heading</li>
+    <li>safe aliases</li>
+    <li>Japanese/English paraphrase</li>
+    <li>abbreviation expansion</li>
+  </ul>
+  <p>
+    AliasはSourceまたはKnowledgeから説明できるものを優先する。LLMが生成した可能性だけの高いaliasはlow-confidenceとして分離する。
+  </p>
+  <h3 id="section-162-delivery-text">16.2 Delivery text</h3>
+  <p>Delivery textは、Knowledgeの意味を次の構造で保持する。</p>
+  <ul>
+    <li>Use when / Preconditions</li>
+    <li>Action / Rule</li>
+    <li>Rationale</li>
+    <li>Verification</li>
+    <li>Avoid / Exception</li>
+    <li>Source references</li>
+  </ul>
+  <p>すべてのKnowledgeが全fieldを持つ必要はない。存在しない情報をLLMで補完しない。</p>
+  <p>
+    Delivery textはcanonical bodyを置き換えない。Agentまたはreviewerはfull
+    KnowledgeとSourceへ辿れる。
+  </p>
+  <h3 id="section-163-compression-safety">16.3 Compression safety</h3>
+  <p>Delivery text生成時に次を欠落させない。</p>
+  <ul>
+    <li>must / must not</li>
+    <li>conditional applicability</li>
+    <li>exception</li>
+    <li>ordering</li>
+    <li>verification command or success condition</li>
+    <li>destructive action boundary</li>
+    <li>repository-specific constraint</li>
+    <li>source uncertainty</li>
+  </ul>
+  <p>
+    Semantic equivalenceを自動証明できないため、初期rolloutではdelivery
+    textをshadowで比較する。User-visibleへpromoteするには、must / must
+    not、condition、exception、verification、source locatorのretention hard setを全件通過し、blind
+    human reviewでcanonical bodyに対して非劣化であることを必要とする。
+  </p>
+  <hr />
+  <h2 id="section-17-explainable-feature-ranker">17. Explainable Feature Ranker</h2>
+  <p>RRF後のcandidateを、同じfeature spaceでrerankする。</p>
+  <p>初期feature:</p>
+  <ul>
+    <li>RRF score</li>
+    <li>lexical rank</li>
+    <li>exact match type</li>
+    <li>vector rank</li>
+    <li>facet overlap</li>
+    <li>repository specificity</li>
+    <li>polarity and query role</li>
+    <li>importance</li>
+    <li>confidence</li>
+    <li>dynamic utility</li>
+    <li>source/origin support</li>
+    <li>freshness / decay</li>
+    <li>requires/support edge count</li>
+    <li>superseded status</li>
+    <li>recent used / not_used / off_topic / wrong</li>
+    <li>token cost</li>
+    <li>duplicate similarity</li>
+    <li>coverage keys</li>
+  </ul>
+  <p>
+    初期rankerは明示weightを持つlinear modelまたはrule-based scoreとする。Candidate traceにfeature
+    breakdownを保存する。
+  </p>
+  <p>
+    Dynamic utilityをraw lexical
+    scoreへ直接加算しない。共通尺度へcalibrateして上限を設けるか、同等relevance内のtie-breakerとして扱う。Query
+    evidenceだけでは到達できないscore lockoutをfixtureで禁止する。
+  </p>
+  <p>
+    Sufficient independent labelsが蓄積した場合のみ、logistic regression、pairwise ranker、small
+    gradient boosted modelなどを検討する。Online neural rerankerまたはremote
+    cross-encoderを初期導入しない。
+  </p>
+  <p>Rankerはhard eligibilityを上書きできない。</p>
+  <ul>
+    <li>wrong repository</li>
+    <li>unresolved classification</li>
+    <li>inactive status</li>
+    <li>superseded</li>
+    <li>human correctionまたは再現可能なverificationで確認されたwrong</li>
+    <li>incompatible applicability</li>
+  </ul>
+  <p>はscoreではなくfilterまたはstrict penalty contractとして扱う。</p>
+  <p>
+    Composer、Agent、run-level compile_evalだけが示すwrong /
+    off_topicは、sourceとconfidenceを保持したbounded penaltyまたはreview
+    triggerに留める。Lower-trust signalだけでhard exclusionしない。
+  </p>
+  <hr />
+  <h2 id="section-18-density-selector">18. Density Selector</h2>
+  <h3 id="section-181-objective">18.1 Objective</h3>
+  <p>Density Selectorは、候補を独立にsortしてtop-Kを取らない。</p>
+  <p>選択済み集合Cに対して、新候補xのmarginal gainを評価する。</p>
+  <pre><code class="language-text">marginal_gain(x | C) =
+  query_relevance(x)
+  + new_coverage(x, C)
+  + provenance_value(x)
+  + historical_utility(x)
+  + relation_support(x, C)
+  - semantic_redundancy(x, C)
+  - stale_or_conflict_risk(x)
+
+density(x | C) =
+  marginal_gain(x | C) / max(token_cost(x), minimum_cost)
+</code></pre>
+  <p>
+    初期selectorは正のmarginal gainを持つ候補だけを追加し、budget内greedy集合とbest
+    singletonを比較して良い方を採用する。小規模fixtureでは全組み合わせの最適解と比較し、regretを記録する。この目的関数は必ずしも単調submodularではないため、一般の近似保証を主張しない。Stale、superseded、scope
+    violationなどのhard riskは、可能な限りselection前のeligibilityへ移す。
+  </p>
+  <h3 id="section-182-required-coverage">18.2 Required coverage</h3>
+  <p>Retrieval modeごとにcoverage templateを定義する。</p>
+  <p>例:</p>
+  <table>
+    <caption>
+      Table: 18.2 Required coverage
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Retrieval mode</th>
+        <th scope="col">Required or preferred coverage</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>review_context</td>
+        <td>invariant、risk、verification、avoid</td>
+      </tr>
+      <tr>
+        <td>debug_context</td>
+        <td>symptom、cause、procedure、verification</td>
+      </tr>
+      <tr>
+        <td>architecture_context</td>
+        <td>constraint、trade-off、boundary、verification</td>
+      </tr>
+      <tr>
+        <td>procedure_context</td>
+        <td>prerequisite、ordered workflow、success condition、rollback</td>
+      </tr>
+      <tr>
+        <td>learning_context</td>
+        <td>principle、example、failure lesson、applicability</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>すべてのslotを無理に埋めない。Evidenceのないslotはmissingとしてdiagnosticsへ残す。</p>
+  <h3 id="section-183-section-budgets">18.3 Section budgets</h3>
+  <p>
+    Positive Rule、Procedure、Guardrail、Episodeは別budgetを持つ。ただし固定ratioだけでなく、query
+    roleとmissing coverageで調整する。
+  </p>
+  <p>初期online cap:</p>
+  <ul>
+    <li>retrieved candidates: 最大32</li>
+    <li>fused direct candidates: 最大12</li>
+    <li>graph candidates: 最大6</li>
+    <li>ranker input: 最大18</li>
+    <li>final Knowledge: 6から8を目安</li>
+    <li>final Episode: 最大2</li>
+    <li>Composition input tokens: corrected baseline以下</li>
+  </ul>
+  <p>数値はbenchmarkで変更できるが、capのない動的拡張は禁止する。</p>
+  <h3 id="section-184-redundancy">18.4 Redundancy</h3>
+  <p>
+    同じtitle、same source、same-concept edge、high semantic similarity、overlapping coverage
+    keysをredundancy signalにする。
+  </p>
+  <p>
+    Contradictionはredundancyとして消さない。条件が重なる場合はconflictまたはguardrailとして明示する。
+  </p>
+  <hr />
+  <h2 id="section-19-context-capsule">19. Context Capsule</h2>
+  <p>Context CapsuleはPhase 4以降のoptional optimizationである。</p>
+  <p>
+    Capsuleは、繰り返し同時利用されるKnowledge集合へのretrieval shortcutであり、新しいcanonical
+    Knowledgeではない。
+  </p>
+  <p>Logical contents:</p>
+  <ul>
+    <li>capsule ID</li>
+    <li>retrieval mode / facet signature</li>
+    <li>member Knowledge IDs and versions</li>
+    <li>coverage summary</li>
+    <li>optional materialized composed view、初期導入では未使用</li>
+    <li>token cost</li>
+    <li>historical support</li>
+    <li>provenance map</li>
+    <li>stale condition</li>
+  </ul>
+  <p>
+    初期段階はmembership shortcutだけを対象とし、text
+    summaryを保存・選択しない。Capsuleが選ばれた場合も、current member delivery
+    textを再構成する。Materialized composed viewはFuture Experimentsの個別gateへ分離する。
+  </p>
+  <p>Memberのstatus、version、scope、supersedes relationが変わった場合、Capsuleをstaleにする。</p>
+  <p>
+    CapsuleはMicrosoft GraphRAGのcommunity reportに似た圧縮効果を狙うが、broad corpus
+    summaryではなく、task utilityとrepeated successful usageに限定する。
+  </p>
+  <hr />
+  <h2 id="section-20-feedback-and-learning-contract">20. Feedback and Learning Contract</h2>
+  <p>Feedbackを次の段階に分ける。</p>
+  <pre><code class="language-text">Exposure:
+  retrieverが候補として返した
+
+Selection:
+  ranker / density selectorがComposer入力に選んだ
+
+Use:
+  ComposerまたはAgentが出力・実装判断に明示利用した
+
+Outcome:
+  compile_eval、human feedback、task resultが得られた
+
+Correction:
+  not_used、off_topic、wrong、stale、supersededが判明した
+</code></pre>
+  <p>各eventには次を持たせる。</p>
+  <ul>
+    <li>run ID</li>
+    <li>item ID and version</li>
+    <li>stage</li>
+    <li>actor</li>
+    <li>source of signal</li>
+    <li>rank / score / feature explanation</li>
+    <li>query and scope snapshot</li>
+    <li>policy version、slot、exposure probability</li>
+    <li>timestamp</li>
+    <li>confidence</li>
+    <li>reason</li>
+  </ul>
+  <h3 id="section-201-label-trust">20.1 Label trust</h3>
+  <p>Trustの初期優先度:</p>
+  <ol>
+    <li>Human explicit wrong / off_topic / useful</li>
+    <li>Reproducible task outcomeまたはverification result</li>
+    <li>Agent explicit item-level feedback</li>
+    <li>Composer used reference</li>
+    <li>Run-level compile_eval</li>
+    <li>Selection count</li>
+  </ol>
+  <p>Lower-trust signalがhigher-trust correctionを上書きしない。</p>
+  <h3 id="section-202-feedback-loop-protection">20.2 Feedback-loop protection</h3>
+  <ul>
+    <li>Selection countだけでutilityを上げない。</li>
+    <li>Position biasを記録する。</li>
+    <li>
+      新laneはまずshadow trace-onlyで候補差分を観測する。未配信候補にはuse
+      labelが付かないため、この期間のlogを因果的なutility学習に使わない。
+    </li>
+    <li>
+      Frequently selectedだがnot_usedのKnowledgeは、signal sourceとposition biasを考慮したbounded
+      penaltyにする。Composer自己申告だけでhard exclusionしない。
+    </li>
+    <li>Rare Knowledgeをcoldという理由だけでpenalizeしない。</li>
+    <li>
+      Controlled explorationを行う場合は、safety gate通過後に限定slotへ確率的に露出し、policy
+      version、slot、exposure probabilityを保存する。
+    </li>
+    <li>
+      New itemへのminimum exploration opportunityは、hard eligibility、must-include
+      retention、repository isolationを満たす範囲に限定する。
+    </li>
+    <li>Ranker weight更新はoffline replay後にversioned releaseする。</li>
+  </ul>
+  <p>
+    Deterministic exposureから得たco-selection、lift、Composer self-labelはdescriptive
+    evidenceとしては使えるが、不偏な因果効果とはみなさない。Behavioral co_useful edgeやlearned
+    weightをpromotion判断へ使う場合は、propensity-aware logまたは独立したhuman / task outcome
+    labelを必要とする。
+  </p>
+  <hr />
+  <h2 id="section-21-runtime-and-concurrency-boundary">21. Runtime and Concurrency Boundary</h2>
+  <p>現行の最大の構造的性能riskは、retrieval complexityよりSQLite writer ownershipである。</p>
+  <p>Target flow:</p>
+  <pre><code class="language-text">Phase A: Prepare
+  query plan
+  no writer ownership
+
+Phase B: Parallel candidate preparation
+  read-only lexical / exact / facet / episode retrieval
+  optional query embedding with a soft deadline
+  no writer ownership
+
+Phase C: Complete retrieval
+  read-only scoped vector retrieval when embedding is available
+  graph expansion
+  ranking
+  density selection
+
+Phase D: External composition
+  deterministic formatter、1-call compose、または現行planner + Composer
+  no writer ownership
+
+Phase E: Persist
+  short writer transaction
+  compile run
+  candidate traces
+  context pack
+  usage feedback
+</code></pre>
+  <p>
+    Lexical retrievalとquery embeddingは並行実行できる。Embeddingのsoft
+    deadlineまでにlexical候補が得られている場合、embeddingを待つためだけにcritical
+    pathを延長しない。
+  </p>
+  <p>
+    Read snapshotとpersistの間にKnowledgeが変更される可能性があるため、selected item version/content
+    hashをsnapshotへ保存する。
+  </p>
+  <p>
+    Persist時にcurrent itemが変わっていても、過去runの再現性のためselection
+    snapshotを保存する。Current Knowledgeを古いsnapshotで上書きしない。
+  </p>
+  <p>
+    SQLiteはWAL/read-only connectionを使い、single writer原則を維持する。External provider
+    callをtransactionまたはwriter job内で実行しない。
+  </p>
+  <p>
+    Phase timingはproviderごとのplanner attemptとcompose attemptを分離し、logical call数、provider
+    attempt数、fallback-route failoverを保存する。現行Rust pathには同一provider内の明示retry
+    loopがないため、failoverをretryと混同しない。現行plannerがretrieval query
+    expansionへ接続されていない限り、候補検索の改善効果として計上しない。
+  </p>
+  <hr />
+  <h2 id="section-22-performance-budget">22. Performance Budget</h2>
+  <p>Phase 0で正確なbaselineを取り直した後、paired benchmarkで判定する。</p>
+  <p>この節のbaselineは、Phase 0で作成したversioned corrected baselineを指す。</p>
+  <p>
+    各promotion experimentは実行前に、baseline window、query cohort、sample size、primary
+    metric、guardrail metric、minimum detectable effect、non-inferiority margin、confidence
+    interval、停止条件をmanifestへ固定する。結果を見た後に閾値またはcohortを変更した場合は、新しいexperiment
+    versionとして取り直す。
+  </p>
+  <p>暫定promotion gate:</p>
+  <table>
+    <caption>
+      Table: 22. Performance Budget
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Area</th>
+        <th scope="col">Gate</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>End-to-end compile p50</td>
+        <td>manifestのnon-inferiority gateを満たす</td>
+      </tr>
+      <tr>
+        <td>End-to-end compile p95</td>
+        <td>baselineの1.02倍以下</td>
+      </tr>
+      <tr>
+        <td>Retrieval p95</td>
+        <td>100 ms以下、またはcorrected baseline + 5 ms以下の厳しい方</td>
+      </tr>
+      <tr>
+        <td>Writer queue wait p95</td>
+        <td>20 ms以下</td>
+      </tr>
+      <tr>
+        <td>Graph expansion p95</td>
+        <td>10 ms以下</td>
+      </tr>
+      <tr>
+        <td>Persistence p95</td>
+        <td>25 ms以下</td>
+      </tr>
+      <tr>
+        <td>Runtime logical LLM calls</td>
+        <td>corrected baselineから増加0。削減variantを必ず比較</td>
+      </tr>
+      <tr>
+        <td>Provider attempts</td>
+        <td>
+          planner / compose / provider別に記録し、failover率とfailure率が同一route
+          baselineを悪化させない
+        </td>
+      </tr>
+      <tr>
+        <td>Composition input tokens</td>
+        <td>corrected baseline以下</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Provider latencyの分散が大きいため、LLM
+    route同士のend-to-end比較は同一provider、同一routing、同一query cohortのpaired
+    testを使う。Deterministic routeとの比較では、retrievalまでを共通区間として分離し、composition
+    routeごとのend-to-end latencyとqualityを同じquery cohortで比較する。
+  </p>
+  <p>
+    Phase 0ではdeterministic formatter、single compose、現行planner +
+    composeを同じ候補集合で比較する。Human/task outcomeが非劣化であれば、少ないcall数を優先する。
+  </p>
+  <p>
+    Embedding soft deadlineの初期候補は、cache hitまたはlocal providerについて30から50
+    msとする。Remote network embeddingはこの値を前提にcritical pathへ追加せず、別budgetとpaired
+    benchmarkなしではpromoteしない。Deadline超過時はbackground completionを待たず、そのrunではvector
+    disabledとする。適切な値はprovider別の実測後に確定する。
+  </p>
+  <hr />
+  <h2 id="section-23-quality-and-density-metrics">23. Quality and Density Metrics</h2>
+  <h3 id="section-231-retrieval-metrics">23.1 Retrieval metrics</h3>
+  <ul>
+    <li>Recall@K</li>
+    <li>nDCG@K</li>
+    <li>Mean Reciprocal Rank</li>
+    <li>Exact identifier hit rate</li>
+    <li>Negative guardrail recall</li>
+    <li>Relation-only useful candidate rate</li>
+    <li>Wrong-repository candidate count</li>
+  </ul>
+  <h3 id="section-232-set-quality-metrics">23.2 Set quality metrics</h3>
+  <ul>
+    <li>Required coverage completion</li>
+    <li>Distinct coverage keys per 1,000 tokens</li>
+    <li>Pairwise redundancy</li>
+    <li>Contradiction surfacing rate</li>
+    <li>Provenance-supported selected ratio</li>
+    <li>Stale/superseded selected ratio</li>
+  </ul>
+  <h3 id="section-233-utility-metrics">23.3 Utility metrics</h3>
+  <p>次の指標はComposer / Agent由来を含み、単独でpromotionを決めない。</p>
+  <ul>
+    <li>Used item ratio</li>
+    <li>Not-used item ratio</li>
+    <li>Off-topic / wrong rate</li>
+    <li>Used token mass / delivered token mass</li>
+    <li>Useful outcome rate</li>
+    <li>Later-selected rate for shadow candidates</li>
+  </ul>
+  <h3 id="section-234-information-density-definition">23.4 Information density definition</h3>
+  <p>Diagnostic density metric:</p>
+  <pre><code class="language-text">useful_token_density =
+  token mass of selected items later marked used
+  / total delivered context token mass
+</code></pre>
+  <p>Independent set-quality metric:</p>
+  <pre><code class="language-text">coverage_density =
+  number of distinct supported coverage keys
+  / delivered tokens in thousands
+</code></pre>
+  <p>
+    Primary outcomeは、hard query setのmust include / must not include、blind human
+    preference、再現可能なverificationまたはtask resultとする。Token削減、used ratio、useful token
+    densityはdiagnosticであり、配信量を減らすだけで改善するため単独のpromotion gateにしない。
+  </p>
+  <hr />
+  <h2 id="section-24-evaluation-dataset">24. Evaluation Dataset</h2>
+  <p>単一のhistorical replayだけで評価しない。</p>
+  <h3 id="cohort-a-historical-retention">Cohort A: Historical retention</h3>
+  <ul>
+    <li>直近500から2,000 compile query</li>
+    <li>Existing used Knowledgeが新retrieverのcandidate setに残るか</li>
+    <li>Scope、facet、latency、candidate countを比較</li>
+  </ul>
+  <p>用途:</p>
+  <ul>
+    <li>Regression detection</li>
+    <li>Existing behavior retention</li>
+  </ul>
+  <p>制約:</p>
+  <ul>
+    <li>Existing retrieverが露出しなかったKnowledgeは正解labelに現れない。</li>
+    <li>Composer自己ラベルに偏る。</li>
+  </ul>
+  <h3 id="cohort-b-hard-query-set">Cohort B: Hard query set</h3>
+  <p>100から200 queryを人間または独立reviewで作る。</p>
+  <p>含めるもの:</p>
+  <ul>
+    <li>Japanese paraphrase</li>
+    <li>English/Japanese mixed query</li>
+    <li>exact symbol / error / file</li>
+    <li>broad architecture question</li>
+    <li>multi-facet query</li>
+    <li>negative guardrail</li>
+    <li>prerequisite relation</li>
+    <li>superseded Knowledge</li>
+    <li>two-hopを要求するように見えるが一-hop supportで解けるquery</li>
+    <li>no relevant Knowledge</li>
+    <li>wrong repository trap</li>
+  </ul>
+  <p>各queryに、must include、acceptable、must not include、coverage expectationを付ける。</p>
+  <h3 id="cohort-c-online-shadow">Cohort C: Online shadow</h3>
+  <ul>
+    <li>User-visible outputはcurrent pathのまま</li>
+    <li>New laneのcandidate ID、rank、reason、latencyだけ保存</li>
+    <li>BodyをComposerへ送らない</li>
+    <li>Manifestで事前定義した最小run数と観測期間の両方を満たすまで観測</li>
+  </ul>
+  <p>制約:</p>
+  <ul>
+    <li>Shadow候補にはuser-visibleなuse labelが付かない。</li>
+    <li>
+      Candidate差分、scope violation、latency、hard-set replayの観測には使えるが、causal
+      utilityの推定には使わない。
+    </li>
+  </ul>
+  <h3 id="cohort-d-human-review">Cohort D: Human review</h3>
+  <p>High-impact queryだけをsamplingし、blind pairwise reviewする。</p>
+  <p>Review axes:</p>
+  <ul>
+    <li>Which context is more actionable</li>
+    <li>Which is less redundant</li>
+    <li>Which has better verification</li>
+    <li>Which has safer guardrails</li>
+    <li>Which contains unsupported or off-topic content</li>
+  </ul>
+  <h3 id="cohort-e-controlled-exploration-optional">Cohort E: Controlled exploration, optional</h3>
+  <ul>
+    <li>Foundation、repository isolation、hard negative gate通過後だけ有効化する。</li>
+    <li>Bounded slotへ確率的に候補を露出する。</li>
+    <li>Policy version、slot、exposure probability、selection、use、outcomeを保存する。</li>
+    <li>Wrong / off_topicがmanifestで事前定義した停止閾値を超えたら即時停止する。</li>
+  </ul>
+  <p>
+    初期評価にinterleavingを必須としない。ContextStillは独立したclick / conversion
+    signalが疎で、Density Selectorはset-level
+    optimizationである。将来、候補rank単体を比較できるonline outcomeがmanifestのsample
+    sizeを満たした場合に限り、適用範囲を再検討する。
+  </p>
+  <hr />
+  <h2 id="section-25-promotion-gates">25. Promotion Gates</h2>
+  <p>
+    この節では、higher-is-better metricは <code>new - baseline</code>、lower-is-better metricは
+    <code>baseline - new</code> として、正の値が改善を表すoriented paired
+    differenceへ揃える。「改善」は、そのconfidence interval下限がmanifestで定義したminimum
+    effectを上回ることを指す。「非劣化」は、同じ下限が事前定義した許容劣化幅
+    <code>-Δ</code> 以上であることを指す。<code>0 violation</code
+    >は統計推定ではなく、対象cohort内の全件一致条件である。Manifestにsample
+    size、<code>Δ</code>、minimum effectがないexperimentはpromotionできない。
+  </p>
+  <h3 id="section-251-foundation-gate">25.1 Foundation gate</h3>
+  <ul>
+    <li>
+      New writeのtimestampがcanonical representationへ統一され、historical形式はaudited
+      backfillまたはnormalized query projectionで同じsort orderになる。
+    </li>
+    <li>
+      Eligible corpusがrepository / identity match basis / classification
+      status別に記録され、全active件数と区別される。
+    </li>
+    <li>
+      Planner、Composer、provider attempt、fallback-route failoverを含むruntime phase
+      timingとcall数が保存される。
+    </li>
+    <li>Active runtime pathがtraceに記録される。</li>
+    <li>Read、external call、writeが分離される。</li>
+    <li>Repository isolation negative testが0 violation。</li>
+    <li>
+      Raw text scoreとdynamic utilityの尺度混在が解消され、query evidenceで到達不能になるscore
+      lockout fixtureが0件。
+    </li>
+    <li>Unresolvedを安全性検証なしに一括classifiedへ変更しない。</li>
+  </ul>
+  <h3 id="section-252-ftsrrf-gate">25.2 FTS/RRF gate</h3>
+  <ul>
+    <li>
+      Existing used Knowledge retention &gt;= 99%。Composer由来のbiased regression
+      diagnosticとして扱う
+    </li>
+    <li>Hard set Recall@16がbaselineに対して非劣化</li>
+    <li>
+      nDCG@8がmanifestのminimum effect以上改善、またはnDCG@8が非劣化かつretrieval
+      latencyが改善。nDCG@8の初期minimum effect候補はabsolute +0.05
+    </li>
+    <li>Retrieval p95がbudget内</li>
+    <li>Exact identifier cohortのregressionなし</li>
+  </ul>
+  <h3 id="section-253-vector-gate">25.3 Vector gate</h3>
+  <ul>
+    <li>Repositoryごとのeligible corpusとsemantic hard setが、manifestのsample sizeを満たす</li>
+    <li>Semantic paraphrase cohortでrecallがmanifestのminimum effect以上改善</li>
+    <li>Exact cohortで非劣化</li>
+    <li>Scope prefilter violation 0</li>
+    <li>Embedding unavailable時のfallback成功100%</li>
+    <li>End-to-end p95で非劣化</li>
+  </ul>
+  <h3 id="section-254-utility-graph-gate">25.4 Utility Graph gate</h3>
+  <ul>
+    <li>
+      Behavioral co_usefulを使う場合、propensity-aware exposureまたは独立human / task outcome
+      labelがmanifestのsample sizeを満たす
+    </li>
+    <li>Co_useful edgeの上位node集中率がmanifestの上限以下</li>
+    <li>Shadow graph candidateがmanifestの最小件数以上存在する</li>
+    <li>Later-selectedまたはhuman-accepted rate &gt;= 25%</li>
+    <li>独立review済みpromotion cohortでwrong / off_topic = 0</li>
+    <li>Direct candidate retentionで非劣化</li>
+    <li>Graph p95 &lt;= 10 ms</li>
+    <li>1-hopを超える必要がある事例は別途記録し、初期gateを拡張しない</li>
+  </ul>
+  <h3 id="section-255-density-selector-gate">25.5 Density Selector gate</h3>
+  <ul>
+    <li>Hard query setのmust include retentionがbaseline以上</li>
+    <li>Hard query setのmust not include violationがbaseline以下</li>
+    <li>Blind pairwise human reviewで非劣化、またはmanifestのminimum effect以上改善</li>
+    <li>再現可能なverification / task outcomeで非劣化</li>
+    <li>上記を満たしたうえで、output tokenを15%以上削減</li>
+    <li>Used item ratio、not-used ratio、useful token densityはdiagnosticとして改善方向を確認</li>
+  </ul>
+  <p>数値はPhase 0でcorrected baselineを得た後に再承認する。</p>
+  <hr />
+  <h2 id="section-26-rollout-plan">26. Rollout Plan</h2>
+  <h3 id="phase-0-measurement-and-runtime-truth">Phase 0: Measurement and runtime truth</h3>
+  <p>目的:</p>
+  <ul>
+    <li>高度化前に正しい測定とconcurrency boundaryを作る。</li>
+  </ul>
+  <p>内容:</p>
+  <ul>
+    <li>Canonical timestamp writeとhistorical timestamp normalization</li>
+    <li>Runtime engine/version trace</li>
+    <li>Repository / identity basis別eligible corpus baseline</li>
+    <li>Planner / Composer / provider attempt / failover別のphase timingとcall count</li>
+    <li>Read-only retrieval connection</li>
+    <li>Composerをwriter job外へ移動</li>
+    <li>Short persistence transaction</li>
+    <li>Native counter/feedback update</li>
+    <li>TypeScript/Rust capability matrix</li>
+    <li>Deterministic formatter、single compose、現行planner + composeのpaired comparison</li>
+    <li>Experiment manifest templateとbaseline report format</li>
+  </ul>
+  <p>Exit:</p>
+  <ul>
+    <li>Reproducible baselineとrollback smokeがある。</li>
+    <li>
+      Baseline window、cohort、sample size、statistical margin、停止条件がversioned
+      manifestへ固定される。
+    </li>
+    <li>Unresolvedはfail-closedのまま扱え、全件解消をexit条件にしない。</li>
+  </ul>
+  <h3 id="phase-05-current-ranking-correction">Phase 0.5: Current ranking correction</h3>
+  <p>目的:</p>
+  <ul>
+    <li>新retrieval laneより前に、現行rankerのscore scale lockoutを解消する。</li>
+  </ul>
+  <p>内容:</p>
+  <ul>
+    <li>Raw text scoreとdynamic utilityを別featureにする。</li>
+    <li>Dynamic utilityをcalibrate / capするかtie-breakerへ降格する。</li>
+    <li>
+      Query-sensitive candidate retentionとhistorical
+      cohortを、classification一括更新の前後で分離評価する。
+    </li>
+    <li>Current top-8 fallbackのcontractとrollback flagを維持する。</li>
+  </ul>
+  <p>Exit:</p>
+  <ul>
+    <li>Foundation gateのscore lockout条件を満たす。</li>
+  </ul>
+  <h3 id="phase-1-native-fts-and-rank-fusion">Phase 1: Native FTS and rank fusion</h3>
+  <p>目的:</p>
+  <ul>
+    <li>最小変更でlexical qualityとscalabilityを改善する。</li>
+  </ul>
+  <p>内容:</p>
+  <ul>
+    <li>Rust native FTS5</li>
+    <li>normalized retrieval terms</li>
+    <li>1から2文字CJKのbounded LIKE fallback</li>
+    <li>FTS5 queryのsafe quoting / escaping</li>
+    <li>exact identifier lane</li>
+    <li>facet lane</li>
+    <li>RRF</li>
+    <li>candidate trace expansion</li>
+    <li>shadow/current comparison</li>
+  </ul>
+  <p>Exit:</p>
+  <ul>
+    <li>FTS/RRF gateを満たす。</li>
+  </ul>
+  <h3 id="phase-2-scoped-vector">Phase 2: Scoped Vector</h3>
+  <p>目的:</p>
+  <ul>
+    <li>Semantic paraphrase recallを追加する。</li>
+  </ul>
+  <p>内容:</p>
+  <ul>
+    <li>
+      Scope-filter済みRust brute-force cosineと、metadata-filtered / partitioned vec0を同じeligible
+      corpusでbenchmark
+    </li>
+    <li>Promotion gateを満たす最も単純なphysical strategyを選択</li>
+    <li>content hash/version</li>
+    <li>one embedding per query</li>
+    <li>cache and soft deadline</li>
+    <li>global/repository two-query merge</li>
+    <li>shadow lane</li>
+  </ul>
+  <p>Exit:</p>
+  <ul>
+    <li>
+      Eligible corpusとhard setがrecall差を測れる規模に達し、Vector
+      gateを満たす。満たさなければVectorはoptionalかshadowのまま。
+    </li>
+  </ul>
+  <h3 id="phase-3-utility-graph">Phase 3: Utility Graph</h3>
+  <p>目的:</p>
+  <ul>
+    <li>Direct similarityだけでは見つからないprerequisite、support、guardrailを追加する。</li>
+  </ul>
+  <p>内容:</p>
+  <ul>
+    <li>Edge schema</li>
+    <li>requires/supports/contradicts/supersedes</li>
+    <li>co-useful materializer</li>
+    <li>TypeScript utility traceのnative parity</li>
+    <li>one-hop expansion</li>
+    <li>trace-only rollout</li>
+  </ul>
+  <p>Exit:</p>
+  <ul>
+    <li>
+      Static human / deterministic edgeは個別に評価できる。Behavioral co_usefulをuser-visible
+      rankingへ使うには、propensity-aware exposureまたは独立labelがmanifestのsample
+      sizeを満たし、Utility Graph gateを通過する。
+    </li>
+  </ul>
+  <h3 id="phase-4-density-optimization">Phase 4: Density optimization</h3>
+  <p>目的:</p>
+  <ul>
+    <li>最終Contextを小さく、広いcoverageへする。</li>
+  </ul>
+  <p>内容:</p>
+  <ul>
+    <li>delivery text</li>
+    <li>coverage keys</li>
+    <li>token cost</li>
+    <li>set-level redundancy</li>
+    <li>marginal utility selector</li>
+    <li>optional membership-only Context Capsule。Materialized textはdeferred experiment</li>
+  </ul>
+  <p>Exit:</p>
+  <ul>
+    <li>Density Selector gateを満たす。</li>
+  </ul>
+  <h3 id="phase-5-learned-ranking-only-if-justified">
+    Phase 5: Learned ranking, only if justified
+  </h3>
+  <p>目的:</p>
+  <ul>
+    <li>Explainable heuristicで残るranking gapを改善する。</li>
+  </ul>
+  <p>前提:</p>
+  <ul>
+    <li>Independent labelsがPhase 5 manifestのsample sizeを満たす。</li>
+    <li>Feature driftとrollbackを管理できる。</li>
+    <li>Modelなしfallbackが同じcontractを満たす。</li>
+  </ul>
+  <p>初期構想のcompletionにPhase 5は不要である。</p>
+  <hr />
+  <h2 id="section-27-failure-and-degradation-model">27. Failure and Degradation Model</h2>
+  <table>
+    <caption>
+      Table: 27. Failure and Degradation Model
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Failure</th>
+        <th scope="col">Required behavior</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>FTS unavailable</td>
+        <td>Current deterministic lexical fallback</td>
+      </tr>
+      <tr>
+        <td>Embedding timeout</td>
+        <td>Vector laneをskipし、FTS/facetを使用</td>
+      </tr>
+      <tr>
+        <td>Vec index stale</td>
+        <td>Stale rowを除外し、lexicalを使用</td>
+      </tr>
+      <tr>
+        <td>Graph unavailable</td>
+        <td>Direct retrievalのみ</td>
+      </tr>
+      <tr>
+        <td>Graph materialization stale</td>
+        <td>Stale edgeを除外</td>
+      </tr>
+      <tr>
+        <td>Ranker failure</td>
+        <td>RRF orderへfallback</td>
+      </tr>
+      <tr>
+        <td>Delivery projection stale</td>
+        <td>Canonical bodyへfallback</td>
+      </tr>
+      <tr>
+        <td>Composer unavailable</td>
+        <td>Existing deterministic fallbackまたはNo Content contract</td>
+      </tr>
+      <tr>
+        <td>Persistence failure</td>
+        <td>User-visible resultと未保存状態を区別し、silent successにしない</td>
+      </tr>
+      <tr>
+        <td>Repository identity missing</td>
+        <td>Existing global-only fail-closed contract</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    複数laneが失敗しても、degraded reasonを個別に残す。一つのgeneric retrieval failedへ潰さない。
+  </p>
+  <hr />
+  <h2 id="section-28-trust-and-safety-boundary">28. Trust and Safety Boundary</h2>
+  <ul>
+    <li>Source content、repository text、agent logsはuntrusted inputである。</li>
+    <li>Retrieval textに含まれる命令をsystem instructionとして扱わない。</li>
+    <li>Only active and classified Knowledgeがnormal Context Packへ入る。</li>
+    <li>
+      LLM-generated alias、delivery text、relationはderived projectionとしてsourceを保持する。
+    </li>
+    <li>Graph relationはEvidenceではない。Relationが指すSourceまたはKnowledgeがEvidenceである。</li>
+    <li>Human correctionはbehavioral popularityより優先する。</li>
+    <li>
+      Destructive guidance、credential handling、external I/Oは既存policy boundaryを維持する。
+    </li>
+    <li>Repository identityはranking featureではなくeligibility contractである。</li>
+  </ul>
+  <hr />
+  <h2 id="section-29-data-migration-and-rollback">29. Data Migration and Rollback</h2>
+  <p>新indexとprojectionはadditiveに導入する。</p>
+  <p>推奨手順:</p>
+  <ol>
+    <li>Existing Knowledgeを変更せずprojection tableを追加する。</li>
+    <li>Read-only snapshotでrebuild dry-runする。</li>
+    <li>Count、content hash、scope distributionを検証する。</li>
+    <li>Shadow indexを構築する。</li>
+    <li>Current/new candidate diffを保存する。</li>
+    <li>Feature flagでread pathを切り替える。</li>
+    <li>問題時はflagを戻す。</li>
+    <li>
+      Manifestで定義した観測期間とrollback windowを完了し、rollback
+      triggerがなく、明示reviewを通した後にだけ旧projectionを削除候補とする。
+    </li>
+  </ol>
+  <p>
+    Vec0を採用してschema変更する場合は、existing tableをin-placeで破壊せず、versioned virtual
+    tableを作ってrebuild後に切り替える。Scope-filter済みbrute-force
+    cosineを採用する場合は、不要なvirtual tableを追加しない。
+  </p>
+  <p>
+    Knowledge merge、deprecation、Capsule作成はretrieval
+    rolloutと分離する。Retrieval改善のためにcanonical dataを一括変更しない。
+  </p>
+  <hr />
+  <h2 id="section-30-observability">30. Observability</h2>
+  <p>各compile runは次を追跡可能にする。</p>
+  <ul>
+    <li>runtime engine and build</li>
+    <li>query plan version</li>
+    <li>repository identity snapshot</li>
+    <li>lane status</li>
+    <li>lane candidate count</li>
+    <li>lane latency</li>
+    <li>embedding status/model/cache</li>
+    <li>RRF rank</li>
+    <li>graph edge/path</li>
+    <li>feature score explanation</li>
+    <li>density selection reason</li>
+    <li>suppression reason</li>
+    <li>token cost</li>
+    <li>selected coverage</li>
+    <li>missing coverage</li>
+    <li>Used IDs and feedback actor</li>
+    <li>final outcome feedback</li>
+    <li>persistence latency</li>
+  </ul>
+  <p>
+    Candidate
+    traceは選ばれたitemだけでなく、上限内でranked-out、duplicate、graph-only、stale、scope-filteredの理由を記録する。
+  </p>
+  <p>Body全文をtraceへ重複保存せず、ID、version、content hash、score explanationを保存する。</p>
+  <hr />
+  <h2 id="section-31-alternatives-considered">31. Alternatives Considered</h2>
+  <h3 id="a-full-semantica-adoption">A. Full Semantica adoption</h3>
+  <p>Decision: Reject as primary runtime.</p>
+  <p>Reason:</p>
+  <ul>
+    <li>
+      ContextStillのdurable Knowledge lifecycle、repository isolation、compile/eval
+      loopを置き換える範囲が大きい。
+    </li>
+    <li>
+      General ontology、reasoning engine、polyglot graph storeは現在のprimary use caseに過剰である。
+    </li>
+    <li>Migrationとdual source of truthが大きなriskになる。</li>
+  </ul>
+  <p>Adopted idea:</p>
+  <ul>
+    <li>Vector + graph hybrid</li>
+    <li>typed relation</li>
+    <li>provenance</li>
+    <li>bounded graph expansion</li>
+  </ul>
+  <h3 id="b-microsoft-style-full-graphrag">B. Microsoft-style full GraphRAG</h3>
+  <p>Decision: Reject for current task context retrieval.</p>
+  <p>Reason:</p>
+  <ul>
+    <li>
+      Corpus-wide entity extraction、community detection、community summaryはbroad document
+      QA向けである。
+    </li>
+    <li>ContextStillは少数のtask-specific Rule/Procedureを選ぶことが中心である。</li>
+    <li>Indexing cost、summary staleness、provenance lossが大きい。</li>
+  </ul>
+  <p>Adopted idea:</p>
+  <ul>
+    <li>Direct local searchをgraph relationとsource textで補う。</li>
+    <li>Capsuleはtask utilityに限定する。</li>
+  </ul>
+  <h3 id="c-pure-vector-search">C. Pure Vector Search</h3>
+  <p>Decision: Reject.</p>
+  <p>Reason:</p>
+  <ul>
+    <li>
+      Exact symbol、path、error、negative constraint、scopeをsemantic
+      similarityだけでは安全に扱えない。
+    </li>
+    <li>Embedding unavailable時のhard dependencyになる。</li>
+  </ul>
+  <h3 id="d-online-cross-encoder--llm-reranking">D. Online Cross-encoder / LLM reranking</h3>
+  <p>Decision: Defer.</p>
+  <p>Reason:</p>
+  <ul>
+    <li>現在の8件候補より前のcandidate generation問題を解決しない。</li>
+    <li>Explainable local rankerで先に価値を証明できる。</li>
+  </ul>
+  <p>
+    Current planner callをcandidate generation後のlistwise rerankへ再利用する案は、logical
+    call数を増やさずに比較できる。ただし現行plannerはretrieval hintへ接続されておらず、provider
+    latency、failover、independent evaluationが必要であるため、初期必須経路にはしない。
+  </p>
+  <h3 id="e-colbert-style-late-interaction">E. ColBERT-style late interaction</h3>
+  <p>Decision: Defer.</p>
+  <p>Reason:</p>
+  <ul>
+    <li>
+      Fine-grained semantic matchingの利点はあるが、multi-vector storageとruntime
+      complexityが増える。
+    </li>
+    <li>
+      現在のKnowledge規模では、FTS、scoped dense vector、RRF、utility graphを先に評価すべきである。
+    </li>
+  </ul>
+  <h3 id="f-keep-current-top-8-lexical-path">F. Keep current top-8 lexical path</h3>
+  <p>Decision: Preserve only as fallback.</p>
+  <p>Reason:</p>
+  <ul>
+    <li>Simpleでdegradeしやすい。</li>
+    <li>ただしparaphrase、relation coverage、set diversity、token utilityを最適化できない。</li>
+  </ul>
+  <hr />
+  <h2 id="section-32-open-decisions">32. Open Decisions</h2>
+  <p>次は実装計画前に確定またはexperimentで選ぶ。</p>
+  <ol>
+    <li>
+      Japanese lexical strategy
+      <ul>
+        <li>
+          normalized word index、trigram index、短いCJK termのLIKE fallbackをどう組み合わせるか。
+        </li>
+      </ul>
+    </li>
+    <li>
+      Embedding model
+      <ul>
+        <li>local model、dimension、Matryoshka対応、cache policy。</li>
+      </ul>
+    </li>
+    <li>
+      Scope partition key
+      <ul>
+        <li>canonical projectRef、repoKey、repoPathの優先順位をphysical keyへどう表現するか。</li>
+      </ul>
+    </li>
+    <li>
+      Delivery text ownership
+      <ul>
+        <li>distillation時生成か、projection worker生成か。</li>
+      </ul>
+    </li>
+    <li>
+      Provenance threshold
+      <ul>
+        <li>Source/Originのないactive Knowledgeをどのlaneまで許可するか。</li>
+      </ul>
+    </li>
+    <li>
+      Utility label trust
+      <ul>
+        <li>Agent feedback、Composer use、compile_eval、human feedbackのweight。</li>
+      </ul>
+    </li>
+    <li>
+      Context Capsule
+      <ul>
+        <li>membershipのみか、versioned compact textも保存するか。</li>
+      </ul>
+    </li>
+    <li>
+      PostgreSQL path
+      <ul>
+        <li>SQLite rollout後にparityを実装するか、advanced backend向け別計画にするか。</li>
+      </ul>
+    </li>
+    <li>
+      Evaluation ownership
+      <ul>
+        <li>Hard query setの作成・更新・review責任者。</li>
+      </ul>
+    </li>
+    <li>User-facing explanation</li>
+  </ol>
+  <ul>
+    <li>Graph-derived candidateとdirect candidateをUI/MCP diagnosticsでどこまで表示するか。</li>
+  </ul>
+  <ol>
+    <li>Current score calibration</li>
+  </ol>
+  <ul>
+    <li>Dynamic utilityをbounded feature、normalized feature、tie-breakerのどれにするか。</li>
+  </ul>
+  <ol>
+    <li>Composition route</li>
+  </ol>
+  <ul>
+    <li>Deterministic formatter、single compose、planner + composeのどれをdefaultにするか。</li>
+  </ul>
+  <ol>
+    <li>Vector physical strategy</li>
+  </ol>
+  <ul>
+    <li>
+      Scope-filter済みbrute-force cosineとmetadata-filtered / partitioned
+      vec0のどちらが実測上単純か。
+    </li>
+  </ul>
+  <ol>
+    <li>Controlled exploration</li>
+  </ol>
+  <ul>
+    <li>導入条件、slot、exposure probability、停止条件をどう定義するか。</li>
+  </ul>
+  <ol>
+    <li>Lane data-readiness threshold</li>
+  </ol>
+  <ul>
+    <li>Repositoryごとのeligible件数、hard query数、independent label数をいくつ必要とするか。</li>
+  </ul>
+  <hr />
+  <h2 id="section-33-recommended-first-implementation-slice">
+    33. Recommended First Implementation Slice
+  </h2>
+  <p>最初のsliceはGraphではない。</p>
+  <p>最初にPhase 0 / 0.5のfoundation releaseを実施する。</p>
+  <ol>
+    <li>Timestamp normalizationとcorrected recent-run query。</li>
+    <li>context_compileをread、external compose、short writeへ分離。</li>
+    <li>Repository / identity basis別eligible corpus baseline。</li>
+    <li>Planner / Composer / provider attempt / failover別のphase timingとcall count。</li>
+    <li>Raw text scoreとdynamic utilityの尺度分離。</li>
+    <li>Query-sensitive score lockout fixture。</li>
+    <li>Deterministic formatter、single compose、現行2-call構成のpaired comparison。</li>
+    <li>Expanded candidate traceとcurrent top-8 fallbackのrollback smoke。</li>
+  </ol>
+  <p>このsliceで、次を確認する。</p>
+  <ul>
+    <li>Writer contentionが減るか。</li>
+    <li>Query evidenceで候補集合が変わり、dynamic utilityだけで到達不能になる候補がないか。</li>
+    <li>LLM callを削減してもhard set、human review、task outcomeを維持できるか。</li>
+    <li>正しいeligible corpusとruntime baselineを後続laneが利用できるか。</li>
+  </ul>
+  <p>
+    このfoundationが成功してから、次のsliceとしてRust native FTS5、短いCJK fallback、exact / facet
+    lane、RRFを追加する。Scoped Vector、Utility Graph、Density
+    Selectorは、それぞれのdata-readinessとpromotion gateを満たす場合だけ順に追加する。
+  </p>
+  <hr />
+  <h2 id="section-34-acceptance-summary">34. Acceptance Summary</h2>
+  <h3 id="section-341-core-v1-acceptance">34.1 Core v1 acceptance</h3>
+  <p>Required foundationとCore v1 laneが成立したとみなす条件は次の通り。</p>
+  <ul>
+    <li>
+      Active Rust runtimeがFTS、exact identifier、Facet、Episodeを共通Query Planから利用できる。
+    </li>
+    <li>Repository isolationが全laneでlimit前に適用される。</li>
+    <li>Raw text scoreとdynamic utilityのscale lockoutが解消される。</li>
+    <li>Runtime logical LLM call数とcomposition input tokenがcorrected baseline以下である。</li>
+    <li>End-to-end p95がmanifestのnon-inferiority gateを満たす。</li>
+    <li>
+      Existing used Knowledge retentionが99%以上である。ただしComposer由来のbiased regression
+      diagnosticとして扱う。
+    </li>
+    <li>Hard query setのretrieval qualityが改善する。</li>
+    <li>
+      Hard-set must include / must not include、blind human preference、reproducible task
+      outcomeが非劣化または改善する。
+    </li>
+    <li>Wrong/off-topic、stale、cross-repository candidateがguardrailを悪化させない。</li>
+    <li>Full Knowledge、Source、projection、selection reasonを追跡できる。</li>
+  </ul>
+  <h3 id="section-342-conditional-lane-acceptance">34.2 Conditional lane acceptance</h3>
+  <ul>
+    <li>Vector、Utility Graph、Density Selectorは個別gateを満たしたlaneだけpromoteする。</li>
+    <li>Graphはpromoteする場合も1-hop bounded augmentationであり、primary retrieverにしない。</li>
+    <li>Conditional laneがshadowまたはdisabledでもCore v1 acceptanceを妨げない。</li>
+    <li>各laneは独立してshadow、promote、disable、rollbackできる。</li>
+    <li>Promoted Graph candidateはedge、path、provenance、suppression reasonを追跡できる。</li>
+    <li>
+      Used item ratioとuseful token densityはdiagnosticとして記録し、単独のacceptance条件にしない。
+    </li>
+  </ul>
+  <hr />
+  <h2 id="section-35-references">35. References</h2>
+  <ul>
+    <li>
+      Semantica Context Module:
+      <a href="https://docs.getsemantica.ai/reference/context/"
+        >https://docs.getsemantica.ai/reference/context/</a
+      >
+    </li>
+    <li>
+      Semantica Core Concepts:
+      <a href="https://docs.getsemantica.ai/concepts/">https://docs.getsemantica.ai/concepts/</a>
+    </li>
+    <li>
+      SQLite FTS5: <a href="https://www.sqlite.org/fts5.html">https://www.sqlite.org/fts5.html</a>
+    </li>
+    <li>
+      SQLite FTS5 trigram tokenizer constraints:
+      <a href="https://www.sqlite.org/fts5.html#the_trigram_tokenizer"
+        >https://www.sqlite.org/fts5.html#the_trigram_tokenizer</a
+      >
+    </li>
+    <li>
+      sqlite-vec metadata filtering and partition keys:
+      <a href="https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html"
+        >https://alexgarcia.xyz/blog/2024/sqlite-vec-metadata-release/index.html</a
+      >
+    </li>
+    <li>
+      sqlite-vec hybrid search:
+      <a href="https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/index.html"
+        >https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/index.html</a
+      >
+    </li>
+    <li>
+      Reciprocal Rank Fusion:
+      <a href="https://doi.org/10.1145/1571941.1572114">https://doi.org/10.1145/1571941.1572114</a>
+    </li>
+    <li>
+      Maximal Marginal Relevance:
+      <a href="https://aclanthology.org/X98-1025/">https://aclanthology.org/X98-1025/</a>
+    </li>
+    <li>
+      ColBERTv2: <a href="https://arxiv.org/abs/2112.01488">https://arxiv.org/abs/2112.01488</a>
+    </li>
+    <li>
+      Microsoft GraphRAG query overview:
+      <a href="https://microsoft.github.io/graphrag/query/overview/"
+        >https://microsoft.github.io/graphrag/query/overview/</a
+      >
+    </li>
+    <li>
+      HippoRAG 2: <a href="https://arxiv.org/abs/2502.14802">https://arxiv.org/abs/2502.14802</a>
+    </li>
+    <li>
+      UDCG, Utility and Distraction-aware Cumulative Gain:
+      <a href="https://aclanthology.org/2026.eacl-long.391/"
+        >https://aclanthology.org/2026.eacl-long.391/</a
+      >
+    </li>
+    <li>
+      Compute Allocation for Reasoning-Intensive Retrieval Agents, arXiv preprint:
+      <a href="https://arxiv.org/abs/2603.14635">https://arxiv.org/abs/2603.14635</a>
+    </li>
+    <li>
+      Lighting the Way for BRIGHT, SIGIR 2026:
+      <a href="https://doi.org/10.1145/3805712.3808570">https://doi.org/10.1145/3805712.3808570</a>
+    </li>
+  </ul>
+  <p>
+    初期導入へ採用しないが、将来のdata-readiness次第で再評価する案は、<a
+      href="./contextstill-utility-rag-future-experiments.html"
+      >ContextStill Utility-RAG Future Experiments</a
+    >へ分離して管理する。
+  </p>
+  <hr />
+  <h2 id="section-36-repository-evidence">36. Repository Evidence</h2>
+  <p>この構想の現状認識は、主に次の実装に基づく。</p>
+  <ul>
+    <li>
+      Rust native Context Compiler、planner / Composer、deterministic fallback:
+      <ul>
+        <li>crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs</li>
+      </ul>
+    </li>
+    <li>
+      Rust native lexical score:
+      <ul>
+        <li>crates/context-stilld/src/domains/mcp_lifecycle/native_common.rs</li>
+      </ul>
+    </li>
+    <li>
+      Rust native repository eligibility:
+      <ul>
+        <li>crates/context-stilld/src/domains/mcp_lifecycle/repository_scope.rs</li>
+      </ul>
+    </li>
+    <li>
+      SQLite FTS and vector schema:
+      <ul>
+        <li>src/db/sqlite/core-schema.ts</li>
+        <li>src/db/sqlite/client.ts</li>
+        <li>src/db/sqlite/core-repository.ts</li>
+      </ul>
+    </li>
+    <li>
+      SQLite Knowledge retrieval:
+      <ul>
+        <li>src/modules/knowledge/knowledge.repository.sqlite.ts</li>
+      </ul>
+    </li>
+    <li>
+      TypeScript retrieval orchestration:
+      <ul>
+        <li>src/modules/knowledge/knowledge.service.ts</li>
+        <li>src/modules/context-compiler/context-compiler.service.ts</li>
+      </ul>
+    </li>
+    <li>
+      Ranking and duplicate suppression:
+      <ul>
+        <li>src/modules/context-compiler/ranking.service.ts</li>
+        <li>src/modules/context-compiler/duplicate-suppression.service.ts</li>
+      </ul>
+    </li>
+    <li>
+      Existing utility trace:
+      <ul>
+        <li>src/modules/context-compiler/utility-retrieval.service.ts</li>
+      </ul>
+    </li>
+    <li>
+      Feedback and utility score:
+      <ul>
+        <li>src/modules/knowledge/knowledge-feedback.service.ts</li>
+        <li>src/modules/knowledge/knowledge-value.service.ts</li>
+      </ul>
+    </li>
+  </ul>
+  <hr />
+  <h2 id="section-37-final-review-questions">37. Final Review Questions</h2>
+  <ol>
+    <li>Utility-RAGの定義は、ContextStillのproduct価値を正しく表しているか。</li>
+    <li>Direct retrievalをprimary、Graphをbounded augmentationとする判断は妥当か。</li>
+    <li>Phase 0で修正すべきruntime/concurrency/evaluation問題に漏れはないか。</li>
+    <li>Raw text scoreとdynamic utilityのscale correctionは、candidate lockoutを防げるか。</li>
+    <li>FTS、exact、facet、vectorのlane境界は重複しすぎていないか。</li>
+    <li>Japanese retrievalで、Unicode FTS、trigram、短いCJK LIKEの境界は妥当か。</li>
+    <li>Scope-filter済みbrute-force cosineとvec0を選ぶbenchmarkは十分か。</li>
+    <li>RRFを初期fusionに使う判断は妥当か。</li>
+    <li>Utility edgeのrelation種別は多すぎるか、または不足しているか。</li>
+    <li>Co-useful edgeをpromoteできるだけの独立labelまたはpropensity-aware logがあるか。</li>
+    <li>One-hop、seed 4、neighbor 2、graph cap 6は安全な初期値か。</li>
+    <li>Delivery textが条件や例外を失わないために追加gateが必要か。</li>
+    <li>Marginal utility per tokenのfeatureに欠けているものはあるか。</li>
+    <li>Current Composer self-labelをどこまでdiagnosticに利用してよいか。</li>
+    <li>Hard query setはどのcohortを追加すべきか。</li>
+    <li>Planner / Composer / provider attempt / failover別のperformance gateは十分か。</li>
+    <li>Context CapsuleはPhase 4でも過剰か。</li>
+    <li>この構想より小さな変更で、同等の品質改善を達成できるか。</li>
+  </ol>
+  <hr />
+  <h2 id="appendix-a-copyable-ai-review-prompt">Appendix A. Copyable AI Review Prompt</h2>
+  <p>次のpromptは、この文書を別のAIへレビュー依頼するときにそのまま使用できる。</p>
+  <pre><code class="language-text">ContextStill Utility-RAG Conceptをarchitecture reviewしてください。
+
+目的は文章の要約や賛同ではなく、実装前に設計上の欠陥、誤った前提、
+過剰設計、測定不能な成功条件、性能回帰、repository isolation違反、
+feedback loopのbias、情報圧縮による欠落を見つけることです。
+
+特に次を確認してください。
+
+1. active Rust native runtimeについての現状認識は正しいか。
+2. Phase 0、0.5、1から5の依存順序とConditional laneの開始条件は妥当か。
+3. FTS5、exact、facet、vector、graphの責務境界は明確か。
+4. scope before limitが全laneで実現可能か。
+5. RRFとExplainable Rankerの二段構成は必要か。
+6. Utility Graphのrelation、one-hop制限、co-useful計算は安全か。
+7. marginal utility per tokenが重要な条件や例外を落とさないか。
+8. Composer由来feedbackを評価・学習に使う際の循環性を防げるか。
+9. latency budgetとpromotion gateは測定可能で十分に厳しいか。
+10. 同等の効果を得られる、より単純な代替案がないか。
+
+指摘は次の形式にしてください。
+
+- Priority: P0 / P1 / P2
+- Section:
+- Finding:
+- Failure scenario:
+- Evidence:
+- Smallest safe correction:
+- Promotion blocker: yes / no
+
+最後に、次のいずれかを選んでください。
+
+- Accept concept as implementation-planning baseline
+- Accept with required corrections
+- Reject and propose a simpler architecture
+
+Repositoryを参照できる場合、文書の主張を実装と照合してください。
+文書内の暫定数値や自己生成feedbackを独立したground truthとして扱わないでください。
+</code></pre>
+</article>

@@ -1,0 +1,133 @@
+<article lang="ja">
+  <h1 id="internal-design-documents">Internal Design Documents</h1>
+  <p>
+    この directory 直下には、現在進行中の internal implementation plan と、現行実装が参照する恒久
+    contract / shared concept だけを置く。
+  </p>
+  <p>
+    これらの文書では、unfinished work、implementation constraints、rejected alternatives、local
+    operational details を扱ってよい。public user/operator documentation は
+    <code>pub/</code> に置く。実装済み・置換済みの文書は通常探索対象へ戻さない。
+  </p>
+  <p>
+    内部設計書はSpec HTML fragmentで管理する。<code>bun run spec:view</code>で閲覧し、編集後は
+    <code>bun run spec:fix</code>と<code>bun run spec:check</code
+    >を実行する。実装済み・置換済みの文書はViewerのArchive操作で <code>.archived/</code>へ移す。
+  </p>
+  <table>
+    <caption>
+      Table: Internal Design Documents
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Document</th>
+        <th scope="col">目的</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <a href="repository-isolation-first-product-hardening-plan.html"
+            >Repository Isolation First Product Hardening Plan</a
+          >
+        </td>
+        <td>
+          repository isolationを最優先に、compile ownership、巨大module、SQLite-first
+          onboarding、release運用までの依存順序と完了gateを定める上位改善計画
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="context-compile-repository-isolation-improvement-plan.html"
+            >Context Compile Repository Isolation Closeout Plan</a
+          >
+        </td>
+        <td>
+          caller adoptionからactive Rust enforcementまでをP0-P5で完了し、wrong-project
+          retrievalをfail-closedで防ぐ進行中の実装計画
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="context-compile-repository-isolation-t0-evidence.html"
+            >Context Compile Repository Isolation T0 Evidence</a
+          >
+        </td>
+        <td>
+          cross-repository fixture、legacy再現、read-only inventory、baseline cohortの実行証拠
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="context-compile-repository-isolation-closeout-evidence.html"
+            >Context Compile Repository Isolation Closeout Evidence</a
+          >
+        </td>
+        <td>
+          P0-P5の実装、live migration、50-call canary、negative smoke、release
+          gateと24時間観測の証拠
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="rust-runtime-closeout-implementation-plan.html"
+            >Rust Runtime Closeout Implementation Plan</a
+          >
+        </td>
+        <td>
+          live database identity、doctor/backup、queue executor truth、vector
+          modeの測定判断、regression testを一貫させてRust runtimeを安全に完了判定する計画
+        </td>
+      </tr>
+      <tr>
+        <td><a href="llm-provider-busy-503-contract.html">LLM Provider busy 503 contract</a></td>
+        <td>
+          provider busyを恒久障害や完了として扱わず、<code>Retry-After</code>に従うretryable
+          queue状態へ戻す契約
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="security-intelligence-integration-concept.html"
+            >Security Intelligence Integration Concept</a
+          >
+        </td>
+        <td>
+          vulnWorkbench、NightWorkers、contextStillが共有するSecurity Learning Loop、責務境界、trust
+          boundary、段階導入、評価方法
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="contextstill-utility-rag-concept.html">ContextStill Utility-RAG Concept</a>
+        </td>
+        <td>
+          現行RAGを性能低下なしで高度化し、hybrid retrieval、bounded Utility
+          Graph、utility-per-token選択によって情報密度を高める設計構想
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="contextstill-utility-rag-foundation-implementation-plan.html"
+            >ContextStill Utility-RAG Foundation Implementation Plan</a
+          >
+        </td>
+        <td>
+          Utility-RAG Phase
+          0／0.5を、Terra向け実行契約、runtime依存関係、read/compose/write分離、計測、ranking補正、検証、rollout／rollbackまで判断不要なdelivery
+          unitへ分解した計画
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <a href="contextstill-utility-rag-future-experiments.html"
+            >ContextStill Utility-RAG Future Experiments</a
+          >
+        </td>
+        <td>
+          Utility-RAGの初期roadmapへ含めない実験候補を、開始条件、評価manifest、昇格・延期・棄却条件とともに管理するbacklog
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</article>

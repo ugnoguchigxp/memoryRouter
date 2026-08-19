@@ -1,0 +1,1333 @@
+<article lang="ja">
+  <h1 id="s11tnext-systemcontext-全面採用-実装計画">s11tnext SystemContext 全面採用 実装計画</h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>e465154</code>。</p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    ContextStill の LLM 経路では、SystemContext、output contract、tool usage rule、repair
+    instruction、runtime fact の組み立てが TypeScript のロジックと同じファイルに混在している。
+  </p>
+  <p>代表例:</p>
+  <ul>
+    <li>
+      <code>src/modules/context-compiler/context-response-composer.service.ts</code>
+      <ul>
+        <li>response style と見出し条件を分岐しながら SystemContext の自然言語を組み立てる。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/distillation/distillation-prompts.ts</code>
+      <ul>
+        <li>common rule、source kind、verification mode、procedure rule を配列操作で合成する。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/context-decision/context-decision.service.ts</code>
+      <ul>
+        <li>decision logic の途中に大きな英語 SystemContext が 2 系統埋め込まれている。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/episodeDistiller/worker.ts</code>
+      <ul>
+        <li>message builder が runtime data と SystemContext を同時に所有する。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/llm/providers/codex.provider.ts</code>
+      <ul>
+        <li>
+          caller が渡した messages に加えて provider adapter 自身が最終 instruction を追加する。
+        </li>
+      </ul>
+    </li>
+  </ul>
+  <p>
+    2026-07-24 時点の機械的な初期棚卸しでは、<code>role: &quot;system&quot;</code> は型定義を除いて
+    23 箇所、12 implementation files に存在する。これとは別に、直接 provider message になっていない
+    SystemContext builder、Codex provider envelope、user role / reminder に混在する author-authored
+    instruction がある。
+  </p>
+  <p>
+    s11tnext は、この自然言語 authoring を TOML に分離し、検証済み catalog、型付き key/value
+    contract、locale policy、trust boundary、content hash、manifest を application logic
+    へ提供する。
+  </p>
+  <p>
+    本計画は s11tnext を限定的な補助ライブラリとしてではなく、ContextStill の SystemContext
+    authoring/runtime の標準基盤として全面採用する。移行過程では s11tnext
+    の弱点を回避して隠すのではなく、再現可能な finding として記録し、s11tnext 側を改善・release して
+    ContextStill で再評価する。
+  </p>
+  <h2 id="目的">目的</h2>
+  <ul>
+    <li>ContextStill が provider へ送るすべての SystemContext を s11tnext catalog 由来にする。</li>
+    <li>
+      application code から repository-authored な自然言語指示、output contract、tool
+      contract、prompt overlay を除去する。
+    </li>
+    <li>
+      code 側には route selection、runtime value construction、provider selection、tool
+      execution、retry、authorization、parsing、persistence を残す。
+    </li>
+    <li>
+      context key と runtime variables を生成型で検証し、unknown key、missing value、extra
+      value、invalid value を fail-closed にする。
+    </li>
+    <li>
+      user/model/tool/retrieval 由来の値を trust profile で明示し、SystemContext 内へ入れる場合は
+      delimiter と non-raw encoding を強制する。
+    </li>
+    <li>provider へ送った最終 text と s11tnext manifest を同じ request trace に保持する。</li>
+    <li>
+      source locale、translation coverage、fallback policy を明示し、既存の日本語/英語 prompt
+      の言語を意図的に維持する。
+    </li>
+    <li>移行後に legacy prompt builder と inline system message を残さない。</li>
+    <li>
+      s11tnext の DX、API、authoring、runtime、diagnostics、compatibility、auditability
+      の弱点を実利用から発見し、改善 release を反復する。
+    </li>
+  </ul>
+  <h2 id="完了条件">完了条件</h2>
+  <p>全面採用は、次をすべて満たした時だけ完了とする。</p>
+  <ol>
+    <li>
+      型定義を除く <code>role: &quot;system&quot;</code> の content が、全経路で s11tnext invocation
+      の <code>content.text</code> から渡される。
+    </li>
+    <li>
+      Codex provider adapter を含め、送信直前に自然言語 instruction
+      を文字列結合で追加する経路がない。
+    </li>
+    <li>
+      <code>*SystemPrompt()</code>、<code>*SystemContext()</code>、system prompt 用文字列配列が
+      <code>src/modules/system-context/</code> 以外に残らない。
+    </li>
+    <li>
+      user role、repair reminder、tool result reminder にある repository-authored instruction
+      が棚卸しされ、catalog 移行または明示的な非対象理由を持つ。
+    </li>
+    <li>
+      すべての provider-bound render が <code>SystemContextInvocation</code> または
+      <code>RequestAudit</code> と関連付けられる。
+    </li>
+    <li>
+      audit payload に runtime values や rendered text を保存せず、manifest と request correlation
+      だけを保存する。
+    </li>
+    <li>
+      <code>.s11tnext/catalog.json</code> と
+      <code>.s11tnext/catalog.generated.ts</code> が同時に生成・commit され、CI の
+      <code>build --check</code> が通る。
+    </li>
+    <li>
+      全 context が <code>ja-JP</code> と <code>en-US</code> の required locale coverage を満たす。
+    </li>
+    <li>
+      現在日本語で送信している route は <code>ja-JP</code>、現在英語で送信している route は
+      <code>en-US</code> を request し、移行だけで使用言語を変えない。
+    </li>
+    <li>
+      prompt parity、trust-boundary、artifact integrity、provider adapter、multi-round tool
+      runtime、locale fallback、manifest correlation の test が通る。
+    </li>
+    <li>legacy path を削除し、通常 runtime に長期的な dual-render / fallback flag を残さない。</li>
+    <li>
+      s11tnext adoption finding が再現手順、影響、workaround、修正 version、ContextStill
+      再検証結果を持つ。
+    </li>
+  </ol>
+  <h2 id="非目的">非目的</h2>
+  <ul>
+    <li>
+      s11tnext に LLM provider 呼び出し、retry、authorization、tool execution、output parser、DB
+      persistence を移さない。
+    </li>
+    <li>
+      provider の structured-output / tool-call schema を TOML へ全面移動しない。JSON Schema や
+      TypeScript schema は引き続き code-owned contract とする。
+    </li>
+    <li>UI 文言、エラーメッセージ、ログ文言、監査画面の copy を s11tnext へ移さない。</li>
+    <li>
+      SystemContext 移行と同時に LLM route selection、model selection、queue scheduling、parser
+      semantics を再設計しない。
+    </li>
+    <li>一時的な互換 wrapper を恒久 API にしない。</li>
+    <li>s11tnext の弱点を ContextStill 固有の複雑な workaround で覆い隠さない。</li>
+  </ul>
+  <h2 id="採用方針">採用方針</h2>
+  <h3 id="version-contract">Version contract</h3>
+  <ul>
+    <li><code>s11tnext</code> と <code>s11tnext-cli</code> は同じ exact version に固定する。</li>
+    <li>
+      初期 version は <code>0.1.0</code>。2026-07-24 に Runtime / CLI を exact
+      <code>0.1.2</code> へ更新した。
+    </li>
+    <li>caret / tilde range は使用しない。</li>
+    <li>
+      s11tnext 側を修正した場合は、互換 fix は patch、breaking change は minor として両 package
+      を同時 release する。
+    </li>
+    <li>
+      upgrade 時は changelog 確認、exact version 同時更新、catalog 再生成、全 gate、canary
+      の順で進める。
+    </li>
+  </ul>
+  <h3 id="artifact-contract">Artifact contract</h3>
+  <ul>
+    <li>source: <code>contexts/**/*.context.toml</code></li>
+    <li>config: <code>s11tnext.config.toml</code></li>
+    <li>
+      generated output:
+      <ul>
+        <li><code>.s11tnext/catalog.json</code></li>
+        <li><code>.s11tnext/catalog.generated.ts</code></li>
+      </ul>
+    </li>
+    <li>生成 2 files は必ず同じ commit で更新する。</li>
+    <li>generated files は手編集しない。</li>
+    <li>
+      runtime は JSON を <code>unknown</code> として読み、生成された
+      <code>createAppCatalog()</code> に渡す。
+    </li>
+    <li>catalog は process 内で一度だけ load / validate / freeze する。</li>
+  </ul>
+  <h3 id="locale-contract">Locale contract</h3>
+  <ul>
+    <li>catalog の source locale は <code>ja-JP</code> とする。</li>
+    <li>
+      development profile は移行中も <code>ja-JP</code> / <code>en-US</code> の両方を required
+      にし、新規 context の translation debt を作らない。
+    </li>
+    <li>production profile も <code>ja-JP</code> / <code>en-US</code> を required にする。</li>
+    <li>
+      現在英語の SystemContext は、同じ英語本文を <code>en-US</code> translation に移し、対応する
+      <code>ja-JP</code> source を新規 authoring する。
+    </li>
+    <li>
+      現在日本語の SystemContext は <code>ja-JP</code> source を byte-level baseline とし、<code
+        >en-US</code
+      >
+      translation を追加する。
+    </li>
+    <li>
+      route ごとの initial instruction locale は registry で固定し、移行時に既存 provider behavior
+      を変えない。
+    </li>
+    <li>
+      locale の top-level user setting 化は別作業とし、本計画では route registry
+      の明示設定までに留める。
+    </li>
+  </ul>
+  <h3 id="trust-contract">Trust contract</h3>
+  <p>中央 profile は最低限次を持つ。</p>
+  <pre><code class="language-toml">[variable_profiles.&quot;trusted.inline&quot;]
+type = &quot;string&quot;
+trust = &quot;trusted&quot;
+placement = &quot;inline&quot;
+encoding = &quot;raw&quot;
+
+[variable_profiles.&quot;trusted.number&quot;]
+type = &quot;number&quot;
+trust = &quot;trusted&quot;
+placement = &quot;inline&quot;
+encoding = &quot;json-value&quot;
+
+[variable_profiles.&quot;trusted.boolean&quot;]
+type = &quot;boolean&quot;
+trust = &quot;trusted&quot;
+placement = &quot;inline&quot;
+encoding = &quot;json-value&quot;
+
+[variable_profiles.&quot;trusted.json&quot;]
+type = &quot;json&quot;
+trust = &quot;trusted&quot;
+placement = &quot;inline&quot;
+encoding = &quot;json-value&quot;
+
+[variable_profiles.&quot;untrusted.text&quot;]
+type = &quot;string&quot;
+trust = &quot;untrusted&quot;
+placement = &quot;delimited-context&quot;
+encoding = &quot;json-string&quot;
+
+[variable_profiles.&quot;untrusted.json&quot;]
+type = &quot;json&quot;
+trust = &quot;untrusted&quot;
+placement = &quot;delimited-context&quot;
+encoding = &quot;json-value&quot;
+</code></pre>
+  <p>Classification:</p>
+  <ul>
+    <li>reviewed repository-authored fragments: <code>trusted</code></li>
+    <li>config 由来の numeric/boolean limit: <code>trusted</code></li>
+    <li>user input: <code>untrusted</code></li>
+    <li>model output: <code>untrusted</code></li>
+    <li>tool result: <code>untrusted</code></li>
+    <li>fetched/retrieved document: <code>untrusted</code></li>
+    <li>
+      DB に保存された candidate/knowledge/episode body: origin に関係なく <code>untrusted</code>
+    </li>
+    <li>provider response: <code>untrusted</code></li>
+  </ul>
+  <p>
+    <code>trusted</code> への変更は lint 回避手段として使わない。値の origin が不明なら
+    <code>untrusted</code> に倒す。
+  </p>
+  <h3 id="section-contract">Section contract</h3>
+  <p>
+    各 <code>.context.toml</code> は可能な限り ordered <code>sections</code> を使い、manifest の
+    <code>sectionIds</code> を意味のある監査情報にする。
+  </p>
+  <p>Kinds:</p>
+  <ul>
+    <li><code>instruction</code>: role、判断原則、禁止事項。</li>
+    <li><code>runtime-fact</code>: threshold、route mode、tool names などの runtime values。</li>
+    <li><code>tool-contract</code>: tool を呼ぶ条件、最大回数、結果の扱い。</li>
+    <li><code>output-contract</code>: JSON shape、Markdown shape、language/output restriction。</li>
+    <li><code>overlay</code>: source kind、response style、provider-specific supplement。</li>
+  </ul>
+  <p>Severity:</p>
+  <ul>
+    <li><code>must</code>: parser/security/safety/output shape に必要。</li>
+    <li><code>should</code>: quality preference。</li>
+    <li><code>may</code>: optional guidance。</li>
+  </ul>
+  <p>Enforcement:</p>
+  <ul>
+    <li><code>prompt</code>: prompt 文面だけで要求する。</li>
+    <li><code>schema</code>: provider structured output / tool schema が直接強制する。</li>
+    <li><code>host</code>: parser、validator、authorization、runtime code が強制する。</li>
+  </ul>
+  <p>
+    実際に host/schema enforcement がない section を <code>schema</code> /
+    <code>host</code> と偽って分類しない。
+  </p>
+  <h2 id="target-architecture">Target architecture</h2>
+  <pre><code class="language-text">contexts/**/*.context.toml
+        │
+        ▼
+s11tnext-cli lint/build/check
+        │
+        ├── .s11tnext/catalog.json
+        └── .s11tnext/catalog.generated.ts
+                         │
+                         ▼
+src/modules/system-context/catalog.ts
+  - load once
+  - validate digest/integrity
+  - freeze catalog
+                         │
+                         ▼
+src/modules/system-context/system-context.service.ts
+  - route -&gt; key/locale
+  - bind / bindRequest
+  - invocation + request audit
+                         │
+                         ├── LlmChatRequest
+                         └── DistillationModelRequest
+                                  │
+                                  ▼
+                       provider / tool runtime
+                                  │
+                                  ▼
+                       audit manifest correlation
+</code></pre>
+  <h3 id="runtime-api">Runtime API</h3>
+  <p>候補 contract:</p>
+  <pre><code class="language-ts">export type SystemContextTrace = {
+  finalManifest: SystemContextInvocation[&quot;manifest&quot;];
+  renderTrace?: RequestAudit[&quot;renderTrace&quot;];
+};
+
+export type RenderedSystemContext = {
+  text: string;
+  trace: SystemContextTrace;
+};
+
+export function renderSystemContext&lt;K extends SystemContextKey&gt;(
+  key: K,
+  values: SystemContextValueMap[K],
+  options?: { locale?: &quot;ja-JP&quot; | &quot;en-US&quot; },
+): RenderedSystemContext;
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>provider-bound path は <code>bind()</code> または <code>bindRequest()</code> を使う。</li>
+    <li>
+      <code>bindText()</code> は manifest が不要と明示できる non-provider composition
+      にだけ許可する。
+    </li>
+    <li>
+      <code>createTextRenderer()</code> は top-level locale
+      を呼び出しごとに読み直す必要が発生した時だけ使う。全面採用のためだけに無理に使わない。
+    </li>
+    <li>context key を無型の <code>string</code> として外部から受け取らない。</li>
+    <li>provider へ送る直前に <code>trim()</code>、改行除去、文字列追加をしない。</li>
+    <li>
+      provider adapter が message framing を行う場合も、s11tnext の rendered text 自体は変更しない。
+    </li>
+    <li>
+      Codex adapter の final instruction は catalog key として render し、adapter 内の hard-coded
+      natural language を削除する。
+    </li>
+  </ul>
+  <h3 id="request-metadata">Request metadata</h3>
+  <p>
+    <code>LlmChatRequest</code> と <code>DistillationModelRequest</code> の application-owned
+    metadata に <code>systemContextTrace</code> を追加する。provider HTTP body / SDK input へ
+    metadata object 自体を送らない。
+  </p>
+  <p>
+    既存 provider adapter は known request fields だけを provider payload に変換し、trace を local
+    audit/usage 層へ渡す。
+  </p>
+  <p>Audit payload:</p>
+  <pre><code class="language-json">{
+  &quot;contextKey&quot;: &quot;coverEvidence.externalFinal&quot;,
+  &quot;catalogDigest&quot;: &quot;sha256:...&quot;,
+  &quot;releaseDigest&quot;: &quot;sha256:...&quot;,
+  &quot;definitionHash&quot;: &quot;sha256:...&quot;,
+  &quot;artifactHash&quot;: &quot;sha256:...&quot;,
+  &quot;renderedHash&quot;: &quot;sha256:...&quot;,
+  &quot;requestedLocale&quot;: &quot;ja-JP&quot;,
+  &quot;resolvedLocale&quot;: &quot;ja-JP&quot;,
+  &quot;fallbackUsed&quot;: false,
+  &quot;sectionIds&quot;: [&quot;role&quot;, &quot;web-evidence-boundary&quot;, &quot;output-contract&quot;],
+  &quot;compilerVersion&quot;: &quot;0.1.0&quot;,
+  &quot;releaseProfile&quot;: &quot;production&quot;,
+  &quot;policyDigest&quot;: &quot;sha256:...&quot;
+}
+</code></pre>
+  <p>保存禁止:</p>
+  <ul>
+    <li>rendered text</li>
+    <li>runtime variable values</li>
+    <li>user input</li>
+    <li>tool result</li>
+    <li>model output 全文</li>
+    <li>fetched content</li>
+  </ul>
+  <h2 id="context-inventory-と-key-plan">Context inventory と key plan</h2>
+  <p>
+    最終 key は source-relative path から生成する。移行中に命名を変え続けないため、Phase 0 で key
+    map を固定する。
+  </p>
+  <table>
+    <caption>
+      Table: Context inventory と key plan
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Domain</th>
+        <th scope="col">Context key</th>
+        <th scope="col">現在の主な source</th>
+        <th scope="col">特性</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Provider health</td>
+        <td><code>providerHealth.jsonOnly</code></td>
+        <td><code>llm/agentic-llm.service.ts</code></td>
+        <td>static、2 sites 共用</td>
+      </tr>
+      <tr>
+        <td>Provider adapter</td>
+        <td><code>provider.codex.finalResponse</code></td>
+        <td><code>llm/providers/codex.provider.ts</code></td>
+        <td>hidden provider envelope</td>
+      </tr>
+      <tr>
+        <td>Context compiler</td>
+        <td><code>contextCompiler.agenticRefine</code></td>
+        <td><code>context-compiler/agentic-refine.service.ts</code></td>
+        <td>untrusted goal、optional facet variants</td>
+      </tr>
+      <tr>
+        <td>Context compiler</td>
+        <td><code>contextCompiler.plan</code></td>
+        <td><code>context-response-composer.service.ts</code></td>
+        <td>static output contract</td>
+      </tr>
+      <tr>
+        <td>Context compiler</td>
+        <td><code>contextCompiler.composeSkill</code></td>
+        <td>同上</td>
+        <td>maxTokens、skill variant</td>
+      </tr>
+      <tr>
+        <td>Context compiler</td>
+        <td><code>contextCompiler.composeNarrativeWithAvoid</code></td>
+        <td>同上</td>
+        <td>headings、maxTokens</td>
+      </tr>
+      <tr>
+        <td>Context compiler</td>
+        <td><code>contextCompiler.composeNarrativeWithoutAvoid</code></td>
+        <td>同上</td>
+        <td>headings、maxTokens</td>
+      </tr>
+      <tr>
+        <td>Find candidate</td>
+        <td><code>findCandidate.wiki</code></td>
+        <td><code>findCandidate/domain.ts</code></td>
+        <td>source-kind variant</td>
+      </tr>
+      <tr>
+        <td>Find candidate</td>
+        <td><code>findCandidate.vibeMemory</code></td>
+        <td>同上</td>
+        <td>source-kind variant</td>
+      </tr>
+      <tr>
+        <td>Find candidate</td>
+        <td><code>findCandidate.codexEscalation</code></td>
+        <td><code>findCandidate/codex-escalation.service.ts</code></td>
+        <td>English route</td>
+      </tr>
+      <tr>
+        <td>Episode</td>
+        <td><code>episodeDistiller.nearDuplicateReview</code></td>
+        <td><code>episodeDistiller/worker.ts</code></td>
+        <td>static</td>
+      </tr>
+      <tr>
+        <td>Episode</td>
+        <td><code>episodeDistiller.cardGeneration</code></td>
+        <td>同上</td>
+        <td>static + output contract</td>
+      </tr>
+      <tr>
+        <td>Episode</td>
+        <td><code>episodeDistiller.semanticChunkPlanner</code></td>
+        <td>同上</td>
+        <td>static + output contract</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.negativeEvaluation</code></td>
+        <td><code>coverNegativeEvidence/*</code></td>
+        <td>current user prompt instruction を split</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.applicabilityRefinement</code></td>
+        <td><code>coverEvidence/prompts.ts</code></td>
+        <td>static</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.valueAssessment</code></td>
+        <td>同上</td>
+        <td>static</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.externalSearchQuery</code></td>
+        <td>同上</td>
+        <td>static</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.externalFetchSelection</code></td>
+        <td>同上</td>
+        <td>trusted number</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.externalFinal</code></td>
+        <td>同上</td>
+        <td>token budget、untrusted evidence boundary</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.mcpEvidence</code></td>
+        <td>同上</td>
+        <td>tool name set</td>
+      </tr>
+      <tr>
+        <td>Cover evidence</td>
+        <td><code>coverEvidence.procedureRepair</code></td>
+        <td><code>procedure-repair.service.ts</code></td>
+        <td>static</td>
+      </tr>
+      <tr>
+        <td>Source research</td>
+        <td><code>sourceResearch.web</code></td>
+        <td><code>sources/web/source-research.service.ts</code></td>
+        <td>tool contract</td>
+      </tr>
+      <tr>
+        <td>Context decision</td>
+        <td><code>contextDecision.judge</code></td>
+        <td><code>context-decision.service.ts</code></td>
+        <td>large English context</td>
+      </tr>
+      <tr>
+        <td>Context decision</td>
+        <td><code>contextDecision.repair</code></td>
+        <td>同上</td>
+        <td>static English repair</td>
+      </tr>
+      <tr>
+        <td>Context decision</td>
+        <td><code>contextDecision.answer</code></td>
+        <td>同上</td>
+        <td>large English context</td>
+      </tr>
+      <tr>
+        <td>Landscape</td>
+        <td><code>landscape.deadZoneMergeReview</code></td>
+        <td><code>landscape/deadzone-merge-review-llm.ts</code></td>
+        <td>static English context</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>追加棚卸し対象:</p>
+  <ul>
+    <li><code>src/modules/distillation/distillation-prompts.ts</code></li>
+    <li><code>src/modules/distillation/procedure-system-context.ts</code></li>
+    <li><code>src/modules/coverEvidence/helpers.ts</code></li>
+    <li><code>blankResponseReminder</code></li>
+    <li><code>requireToolCallReminder</code></li>
+    <li><code>toolResultReminder</code></li>
+    <li>user prompt 内の role/output/tool instruction</li>
+    <li>provider adapter が追加する instruction</li>
+  </ul>
+  <p>
+    未使用 builder は catalog へ機械的に移さず、call graph と test-only import
+    を確認して削除する。再利用される共通 section は <code>bindRequest()</code> で最終 invocation
+    に取り込む。
+  </p>
+  <h2 id="実装フェーズ">実装フェーズ</h2>
+  <h3 id="phase-0-baseline-と完全-inventory">Phase 0: Baseline と完全 inventory</h3>
+  <ol>
+    <li>
+      <code>role: &quot;system&quot;</code> 23 sites を route、provider
+      path、現在言語、builder、runtime values、test、audit path と紐付ける。
+    </li>
+    <li>provider adapter が追加する自然言語 instruction を列挙する。</li>
+    <li>system 以外の message / reminder に含まれる author-authored instruction を列挙する。</li>
+    <li>
+      <code>distillation-prompts.ts</code> など test-only / dead builder の call graph を確認する。
+    </li>
+    <li>各 active route について代表 input fixture と現在の rendered system text を保存する。</li>
+    <li>current prompt の hash、文字数、推定 token 数、末尾改行の有無を記録する。</li>
+    <li>
+      current behavior baseline を route ごとに記録する。
+      <ul>
+        <li>parser success / failure</li>
+        <li>JSON shape compliance</li>
+        <li>tool-call compliance</li>
+        <li>blank response</li>
+        <li>no-candidate</li>
+        <li>fallback provider</li>
+        <li>input truncation</li>
+      </ul>
+    </li>
+    <li>SystemContext inventory を machine-readable な fixture にし、移行状態を追跡する。</li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>active / dead / provider-generated / reminder の分類が完了している。</li>
+    <li>すべての active route が予定 context key を持つ。</li>
+    <li>全移行後に比較できる golden text と behavior baseline がある。</li>
+  </ul>
+  <p>Failure handling:</p>
+  <ul>
+    <li>active か判断できない builder は削除せず、test と runtime call graph を追加確認する。</li>
+    <li>
+      runtime data と instruction の境界が不明な prompt は次 phase へ進めず、origin/trust
+      を先に分類する。
+    </li>
+  </ul>
+  <h3 id="phase-1-packageconfigartifact-pipeline">Phase 1: Package、config、artifact pipeline</h3>
+  <ol>
+    <li><code>s11tnext@0.1.0</code> を exact dependency に追加する。</li>
+    <li><code>s11tnext-cli@0.1.0</code> を exact devDependency に追加する。</li>
+    <li><code>s11tnext.config.toml</code> を追加する。</li>
+    <li>keyspace owner と variable profiles を追加する。</li>
+    <li>
+      development / production release profile に <code>ja-JP</code> と <code>en-US</code> を
+      required 設定する。
+    </li>
+    <li>scripts を追加する。</li>
+  </ol>
+  <pre><code class="language-json">{
+  &quot;s11tnext:lint&quot;: &quot;s11tnext lint --release-profile development&quot;,
+  &quot;s11tnext:build&quot;: &quot;s11tnext build --release-profile development&quot;,
+  &quot;s11tnext:check&quot;: &quot;s11tnext build --check --release-profile development&quot;,
+  &quot;s11tnext:inspect:coverage&quot;: &quot;s11tnext inspect --coverage --locale en-US --fallback-locale ja-JP --release-profile development --format json&quot;
+}
+</code></pre>
+  <ol>
+    <li>
+      <code>.s11tnext/catalog.generated.ts</code> を <code>tsconfig.json</code> の include
+      に追加する。
+    </li>
+    <li>最初の bootstrap context と generated pair を commit 対象にする。</li>
+    <li>
+      <code>bun run verify</code> に <code>s11tnext:lint</code> と
+      <code>s11tnext:check</code> を追加する。
+    </li>
+    <li>package version 一致を CI で確認する。</li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>fresh checkout + install から同じ catalog digest を生成できる。</li>
+    <li><code>build --check</code> は file を変更しない。</li>
+    <li>TypeScript が生成 key/value types を認識する。</li>
+    <li>stale artifact、missing translation、unsafe variable profile が CI failure になる。</li>
+  </ul>
+  <h3 id="phase-2-catalog-loadertyped-facadeaudit-correlation">
+    Phase 2: Catalog loader、typed facade、audit correlation
+  </h3>
+  <ol>
+    <li><code>src/modules/system-context/catalog.ts</code> を追加する。</li>
+    <li>
+      generated <code>createAppCatalog()</code> で JSON を <code>unknown</code> から検証する。
+    </li>
+    <li>process singleton として catalog を一度だけ生成する。</li>
+    <li><code>system-context.service.ts</code> に typed render API を追加する。</li>
+    <li>route -&gt; key / locale の registry を追加する。</li>
+    <li><code>SystemContextTrace</code> を LLM application request metadata に追加する。</li>
+    <li><code>runDistillationCompletion()</code> が trace を multi-round request で保持する。</li>
+    <li>existing coverEvidence audit payload に manifest を追加する。</li>
+    <li>
+      existing domain audit がない provider call には <code>SYSTEM_CONTEXT_USED</code> event
+      を追加する。
+    </li>
+    <li>event は logical completion ごとに 1 件とし、tool round ごとの重複記録を避ける。</li>
+    <li>
+      manifest と実際の system message text の <code>verifyRenderedHash()</code> を provider
+      dispatch 直前に test/dev で検証する。
+    </li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>provider payload に trace metadata が混入しない。</li>
+    <li>audit に content/runtime value を保存しない。</li>
+    <li>
+      Bedrock/OpenAI/Azure/Local/Codex の各 adapter で rendered text と manifest の相関を失わない。
+    </li>
+    <li>input budget 処理は system message を変更しない。</li>
+    <li>Codex framing 後も、catalog text の hash と framing 追加部分の責務を区別できる。</li>
+  </ul>
+  <h3 id="phase-3-static-context-pilot">Phase 3: Static context pilot</h3>
+  <p>次を最初に移す。</p>
+  <ul>
+    <li><code>providerHealth.jsonOnly</code></li>
+    <li><code>sourceResearch.web</code></li>
+    <li><code>landscape.deadZoneMergeReview</code></li>
+    <li><code>coverEvidence.externalSearchQuery</code></li>
+    <li><code>coverEvidence.applicabilityRefinement</code></li>
+    <li><code>coverEvidence.valueAssessment</code></li>
+    <li><code>coverEvidence.procedureRepair</code></li>
+    <li><code>episodeDistiller.nearDuplicateReview</code></li>
+    <li><code>episodeDistiller.semanticChunkPlanner</code></li>
+  </ul>
+  <p>各 context で:</p>
+  <ol>
+    <li>source と translation を同時に authoring する。</li>
+    <li>section id/kind/severity/enforcement を付ける。</li>
+    <li>legacy builder と catalog render の golden diff を確認する。</li>
+    <li>s11tnext が付与する最終 newline は provider へそのまま送る。</li>
+    <li>route 切替後に legacy builder を削除する。</li>
+    <li>route 単位 test と full typecheck を通す。</li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>static prompt 本文が application code から消える。</li>
+    <li>requested locale で既存言語を維持する。</li>
+    <li>newline 以外の意図しない差分がない。</li>
+    <li>output/parser behavior が baseline を満たす。</li>
+  </ul>
+  <h3 id="phase-4-typed-runtime-variables-と-trust-boundary">
+    Phase 4: Typed runtime variables と trust boundary
+  </h3>
+  <p>対象:</p>
+  <ul>
+    <li><code>contextCompiler.agenticRefine</code></li>
+    <li><code>coverEvidence.externalFetchSelection</code></li>
+    <li><code>coverEvidence.externalFinal</code></li>
+    <li><code>coverEvidence.mcpEvidence</code></li>
+    <li><code>coverEvidence.negativeEvaluation</code></li>
+  </ul>
+  <ol>
+    <li>number/boolean/internal tool names は trusted typed values とする。</li>
+    <li>
+      goal、candidate、evidence、retrieved content を SystemContext に含める必要がある場合は
+      untrusted profile を使う。
+    </li>
+    <li>instruction と runtime evidence を同じ raw variable へまとめない。</li>
+    <li>optional values は空文字でごまかさず、variant key または section composition に分ける。</li>
+    <li>
+      candidate/evidence を user message に維持できる経路では、SystemContext には policy
+      だけを置き、runtime data は user message として分離する。
+    </li>
+    <li>
+      <code>coverNegativeEvidence</code> の巨大 user prompt は、policy/output contract を
+      SystemContext へ移し、candidate title/body は untrusted user data に分ける。
+    </li>
+    <li>
+      delimiter closing tag、HTML/XML boundary、Unicode separator、cyclic JSON、sparse
+      array、accessor object を attack fixture に含める。
+    </li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>missing/extra/type mismatch が s11tnext error になる。</li>
+    <li>untrusted value を <code>raw</code> へ変更できない。</li>
+    <li>delimiter breakout fixture が構造境界を閉じられない。</li>
+    <li>manifest に runtime values が含まれない。</li>
+    <li>parser success と tool behavior が baseline を下回らない。</li>
+  </ul>
+  <h3 id="phase-5-variant-selection-と-request-composition">
+    Phase 5: Variant selection と request composition
+  </h3>
+  <p>対象:</p>
+  <ul>
+    <li><code>contextCompiler.composeSkill</code></li>
+    <li><code>contextCompiler.composeNarrativeWithAvoid</code></li>
+    <li><code>contextCompiler.composeNarrativeWithoutAvoid</code></li>
+    <li><code>findCandidate.wiki</code></li>
+    <li><code>findCandidate.vibeMemory</code></li>
+    <li>distillation common/source/type-specific context</li>
+  </ul>
+  <p>Rules:</p>
+  <ul>
+    <li>branch condition は code に残す。</li>
+    <li>branch が選ぶ自然言語は context key variant にする。</li>
+    <li>
+      arbitrary <code>extraLines</code> API は廃止し、有限 variant、typed overlay、または別 context
+      composition に置き換える。
+    </li>
+    <li>
+      common context を再利用する場合は <code>bindRequest()</code> で共通 fragment を render
+      し、最後の <code>invoke()</code> が provider へ送る完全な text を返す。
+    </li>
+    <li><code>finalize()</code> は request 内の最新 invocation にだけ行う。</li>
+    <li>
+      render trace は「呼び出した fragment」であり、最終 prompt に byte-for-byte
+      含まれた証明ではないことを test/documentation に明記する。
+    </li>
+  </ul>
+  <p>Acceptance:</p>
+  <ul>
+    <li>
+      <code>sourceKind</code> / <code>responseStyle</code> の branch は readable な key selection
+      になる。
+    </li>
+    <li>prompt 文面の array splice / conditional text construction が消える。</li>
+    <li>common fragment と final invocation の manifest trace が残る。</li>
+    <li>arbitrary instruction injection point が残らない。</li>
+  </ul>
+  <h3 id="phase-6-complex-domain-migration">Phase 6: Complex domain migration</h3>
+  <p>対象:</p>
+  <ul>
+    <li><code>episodeDistiller.cardGeneration</code></li>
+    <li><code>findCandidate.codexEscalation</code></li>
+    <li><code>contextDecision.judge</code></li>
+    <li><code>contextDecision.repair</code></li>
+    <li><code>contextDecision.answer</code></li>
+    <li>remaining coverEvidence final/repair context</li>
+  </ul>
+  <ol>
+    <li>大きな prompt を意味 section に分割する。</li>
+    <li>output JSON shape は <code>output-contract</code> section に分離する。</li>
+    <li>
+      host parser/validator が強制する規則は <code>enforcement = &quot;host&quot;</code> とする。
+    </li>
+    <li>current English route は <code>en-US</code> を bind して本文を維持する。</li>
+    <li>日本語 source は翻訳として別途 authoring し、coverage を満たす。</li>
+    <li>
+      ContextDecision では deterministic decision logic と natural-language judgment policy
+      を混ぜない。
+    </li>
+    <li>
+      EpisodeDistiller では source segment / episode candidate data を user message または untrusted
+      runtime fact として扱う。
+    </li>
+    <li>provider-specific behavior 差を mock provider matrix で確認する。</li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>large SystemContext が service/worker ファイルから消える。</li>
+    <li>context key と route decision が 1 対 1 で追える。</li>
+    <li>English/Japanese の response quality baseline を満たす。</li>
+    <li>deterministic decision、parser、reliability gate の意味を変えない。</li>
+  </ul>
+  <h3 id="phase-7-codex-provider-envelope-と-secondary-instructions">
+    Phase 7: Codex provider envelope と secondary instructions
+  </h3>
+  <ol>
+    <li>
+      <code>codex.provider.ts</code> の <code>[Instructions]</code> 以下の自然言語 suffix を
+      <code>provider.codex.finalResponse</code> へ移す。
+    </li>
+    <li>
+      role labels と framing delimiter は provider protocol として code に残してよいが、自然言語
+      directive は残さない。
+    </li>
+    <li>
+      <code>blankResponseReminder</code>、<code>requireToolCallReminder</code>、<code
+        >toolResultReminder</code
+      >
+      を棚卸しする。
+    </li>
+    <li>output/behavior を指示する reminder は catalog key へ移す。</li>
+    <li>runtime result を構造化するだけの label は code-owned framing として理由を記録する。</li>
+    <li>user prompt 内に残る author-authored directive を移行または allowlist 化する。</li>
+    <li>allowlist には file、line-independent pattern、owner、理由、review date を必須にする。</li>
+    <li>
+      tool JSON schema description は本計画では code-owned とするが、SystemContext と重複する
+      narrative contract は削る。
+    </li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>provider adapter が caller の意図を hidden instruction で上書きしない。</li>
+    <li>repair/reminder の文面変更も catalog digest と manifest で追跡できる。</li>
+    <li>allowlist に「移行が面倒」という理由を許可しない。</li>
+  </ul>
+  <h3 id="phase-8-boundary-lint-と-legacy-removal">Phase 8: Boundary lint と legacy removal</h3>
+  <p><code>scripts/check-system-context-boundary.mjs</code> を追加する。</p>
+  <p>Check:</p>
+  <ul>
+    <li>
+      <code>src/modules/system-context/</code> 以外の inline
+      <code>role: &quot;system&quot;</code> content。
+    </li>
+    <li><code>SystemPrompt</code> / <code>SystemContext</code> builder。</li>
+    <li>provider adapter の instruction suffix。</li>
+    <li>known message/reminder properties の長い自然言語 literal。</li>
+    <li>catalog に存在しない inventory key。</li>
+    <li>inventory にない catalog context。</li>
+    <li>context route の locale 未指定。</li>
+    <li>provider-bound request の trace 未指定。</li>
+  </ul>
+  <p>
+    既存 test が直接 prompt builder を import している場合は、typed catalog facade を通す test
+    へ変更する。
+  </p>
+  <p>Acceptance:</p>
+  <ul>
+    <li>boundary check が legacy literal を 1 行追加しただけで失敗する。</li>
+    <li>active route count と catalog mapping count が一致する。</li>
+    <li>dead prompt builder が削除される。</li>
+    <li>long-term fallback/dual-render flag が削除される。</li>
+  </ul>
+  <h3 id="phase-9-full-localeartifactprovider-verification">
+    Phase 9: Full locale、artifact、provider verification
+  </h3>
+  <ol>
+    <li>
+      <code>inspect --coverage</code> で <code>ja-JP</code> / <code>en-US</code> の direct coverage
+      を確認する。
+    </li>
+    <li>fallback behavior test を追加する。</li>
+    <li>missing locale が暗黙 fallback しないことを確認する。</li>
+    <li>catalog JSON の field/hash tamper test を追加する。</li>
+    <li>generated TS と JSON の片側だけを更新した failure test を追加する。</li>
+    <li>OpenAI/Azure/Bedrock/Local/Codex adapter の contract test を通す。</li>
+    <li>tool multi-round で system text/manifest が変わらないことを確認する。</li>
+    <li>renderedHash が実送信 text と一致することを確認する。</li>
+    <li>production profile build と canary runtime を実行する。</li>
+  </ol>
+  <p>Acceptance:</p>
+  <ul>
+    <li>全 context が direct locale coverage を持つ。</li>
+    <li>fallback は明示された test だけで発生する。</li>
+    <li>artifact tamper/stale pair は fail-closed。</li>
+    <li>全 provider adapter で correlation が維持される。</li>
+  </ul>
+  <h3 id="phase-10-使用感評価と-s11tnext-改善-loop">Phase 10: 使用感評価と s11tnext 改善 loop</h3>
+  <p>ContextStill 側に adoption finding ledger を置く。</p>
+  <p>候補:</p>
+  <pre><code class="language-text">spec/docs/.archived/s11tnext-adoption-findings.html
+</code></pre>
+  <p>Finding fields:</p>
+  <ul>
+    <li>id</li>
+    <li>discoveredAt</li>
+    <li>s11tnext version</li>
+    <li>ContextStill route/context key</li>
+    <li>
+      category
+      <ul>
+        <li>authoring</li>
+        <li>CLI</li>
+        <li>generated types</li>
+        <li>runtime API</li>
+        <li>composition</li>
+        <li>locale</li>
+        <li>trust boundary</li>
+        <li>manifest/audit</li>
+        <li>diagnostics</li>
+        <li>Bun/Node compatibility</li>
+        <li>documentation</li>
+      </ul>
+    </li>
+    <li>
+      severity
+      <ul>
+        <li>blocking</li>
+        <li>correctness</li>
+        <li>security</li>
+        <li>DX</li>
+        <li>documentation</li>
+      </ul>
+    </li>
+    <li>reproduction</li>
+    <li>expected</li>
+    <li>actual</li>
+    <li>ContextStill impact</li>
+    <li>temporary workaround</li>
+    <li>upstream fix commit/version</li>
+    <li>ContextStill revalidation result</li>
+    <li>status</li>
+  </ul>
+  <p>Loop:</p>
+  <ol>
+    <li>ContextStill で reproduction を最小化する。</li>
+    <li>package defect か integration defect かを切り分ける。</li>
+    <li>package defect は s11tnext repository の failing test にする。</li>
+    <li>s11tnext を修正する。</li>
+    <li>version policy に従って release する。</li>
+    <li>ContextStill の両 package を exact 同時 upgrade する。</li>
+    <li>catalog を再生成する。</li>
+    <li>target route test、boundary test、full verify、canary を通す。</li>
+    <li>finding に結果を記録して close する。</li>
+  </ol>
+  <p>
+    Blocking finding は ContextStill 固有 workaround で先へ進まない。DX/documentation finding は
+    migration を継続してよいが、ledger から消さない。
+  </p>
+  <h2 id="積極的に検証する-s11tnext-の弱点仮説">積極的に検証する s11tnext の弱点仮説</h2>
+  <h3 id="authoring--cli">Authoring / CLI</h3>
+  <ul>
+    <li>context 数が増えた時に TOML の重複が大きくならないか。</li>
+    <li>common section reuse が不十分で copy/paste drift を起こさないか。</li>
+    <li>optional variable がないことで variant 爆発が起きないか。</li>
+    <li>
+      path-derived key rename が application code と audit continuity に与える影響が大きすぎないか。
+    </li>
+    <li>error code/message/file/path/line/column が修正に十分か。</li>
+    <li><code>inspect</code> が large catalog の日常 review に十分か。</li>
+    <li><code>build --check</code> の diff/原因表示が CI troubleshooting に十分か。</li>
+    <li>source/translation の placeholder mismatch diagnostic が理解しやすいか。</li>
+  </ul>
+  <h3 id="generated-types">Generated types</h3>
+  <ul>
+    <li>ContextStill の TypeScript 6 / bundler resolution / Bun で生成型が安定するか。</li>
+    <li>large key union / value map が typecheck performance を悪化させないか。</li>
+    <li>generated file の formatting が repository formatter と衝突しないか。</li>
+    <li>JSON と generated TS の pair 更新が merge conflict を増やさないか。</li>
+  </ul>
+  <h3 id="runtime">Runtime</h3>
+  <ul>
+    <li>catalog load/clone/freeze/integrity validation の startup cost。</li>
+    <li>large catalog の memory footprint。</li>
+    <li>final newline 強制が既存 prompt parity と token usageへ与える影響。</li>
+    <li>
+      <code>bindRequest()</code> composition が自然で、最終 prompt と render trace
+      の関係を誤解しないか。
+    </li>
+    <li><code>bindText()</code> で manifest を失う API footgun。</li>
+    <li>provider adapter が text を frame/transform した時の renderedHash の意味。</li>
+    <li>runtime error の path と context key が production diagnosis に十分か。</li>
+    <li>Bun と supported Node matrix の差。</li>
+  </ul>
+  <h3 id="trust-boundary">Trust boundary</h3>
+  <ul>
+    <li>
+      delimiter/encoding が actual prompt readability と model response qualityを悪化させないか。
+    </li>
+    <li>trusted/untrusted の authoring が developer に理解しやすいか。</li>
+    <li>DB 保存済み data の origin 判定が一貫するか。</li>
+    <li>nested JSON、large text、Unicode、boundary-like input の安全性。</li>
+    <li>
+      host authorization/tool enforcement と prompt-level trust boundary を混同しやすくないか。
+    </li>
+  </ul>
+  <h3 id="locale">Locale</h3>
+  <ul>
+    <li>catalog 単位の source locale が混在言語 prompt corpus に十分か。</li>
+    <li>route ごとの instruction locale を application 側で管理する負担。</li>
+    <li>translation review と source drift を検出する仕組みが十分か。</li>
+    <li>fallback manifest が operational debugging に十分か。</li>
+  </ul>
+  <h3 id="audit--operations">Audit / operations</h3>
+  <ul>
+    <li>manifest fields だけで prompt version を十分に特定できるか。</li>
+    <li>catalog digest と context release digest の使い分けが明確か。</li>
+    <li>context rename 後の historical audit を追えるか。</li>
+    <li>audit event の volume と retention。</li>
+    <li>secret/redaction layer と manifest payload の相性。</li>
+  </ul>
+  <h2 id="test-plan">Test plan</h2>
+  <h3 id="s11tnext-contract-tests">s11tnext contract tests</h3>
+  <ul>
+    <li>catalog load success</li>
+    <li>expected digest mismatch</li>
+    <li>definition/artifact/release/catalog hash mismatch</li>
+    <li>unknown artifact field</li>
+    <li>unknown context key</li>
+    <li>missing/extra runtime value</li>
+    <li>string/number/boolean/json type mismatch</li>
+    <li>invalid locale</li>
+    <li>explicit fallback success</li>
+    <li>implicit fallback failure</li>
+    <li>immutable invocation/manifest</li>
+    <li>rendered hash verification</li>
+    <li>request finalize ordering</li>
+    <li>request reuse after finalize failure</li>
+  </ul>
+  <h3 id="security-fixtures">Security fixtures</h3>
+  <ul>
+    <li><code>&lt;/S11TNEXT_DELIMITED_CONTEXT&gt;</code> を含む user text</li>
+    <li><code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, U+2028, U+2029</li>
+    <li>JSON object 内の boundary-like string</li>
+    <li>cyclic JSON</li>
+    <li>sparse array</li>
+    <li>accessor property</li>
+    <li>non-finite number</li>
+    <li>prototype/null-prototype object</li>
+    <li>huge untrusted evidence</li>
+  </ul>
+  <h3 id="prompt-parity">Prompt parity</h3>
+  <ul>
+    <li>current golden と catalog render の diff</li>
+    <li>required final newline の明示差分</li>
+    <li>Japanese route の本文維持</li>
+    <li>English route の本文維持</li>
+    <li>section order</li>
+    <li>output schema text</li>
+    <li>tool rule text</li>
+    <li>dynamic threshold</li>
+    <li>variant selection</li>
+  </ul>
+  <h3 id="provider-matrix">Provider matrix</h3>
+  <ul>
+    <li>OpenAI messages</li>
+    <li>Azure OpenAI messages</li>
+    <li>Bedrock system blocks</li>
+    <li>Local OpenAI-compatible endpoint</li>
+    <li>Codex flattened framing</li>
+    <li>provider fallback</li>
+    <li>multi-round tool calls</li>
+    <li>input budget truncation</li>
+    <li>cancellation / timeout</li>
+  </ul>
+  <h3 id="domain-regression">Domain regression</h3>
+  <ul>
+    <li><code>context_compile</code> agentic refine / plan / compose</li>
+    <li><code>findCandidate</code> wiki / vibe memory / Codex escalation</li>
+    <li><code>coverEvidence</code> applicability / value / web / MCP / negative / repair</li>
+    <li><code>episodeDistiller</code> chunk / card / duplicate review</li>
+    <li><code>context_decision</code> judge / repair / answer</li>
+    <li>dead-zone merge review</li>
+    <li>web source research</li>
+    <li>health checks</li>
+  </ul>
+  <h2 id="verification-commands">Verification commands</h2>
+  <p>移行中の focused gate:</p>
+  <pre><code class="language-bash">bun run s11tnext:lint
+bun run s11tnext:build
+bun run s11tnext:check
+bun run s11tnext:inspect:coverage
+bunx vitest run test/system-context*.test.ts
+bun run typecheck
+</code></pre>
+  <p>Domain gate:</p>
+  <pre><code class="language-bash">bunx vitest run test/agentic-refine.unit.test.ts
+bunx vitest run test/context-response-composer.service.test.ts
+bunx vitest run test/find-candidate.test.ts
+bunx vitest run test/cover-evidence.test.ts
+bunx vitest run test/cover-negative-evidence.test.ts
+bunx vitest run test/episode-distiller-system-context.test.ts
+bunx vitest run test/context-decision*.test.ts
+bunx vitest run test/distillation-runtime.test.ts
+bunx vitest run test/distillation-runtime.service.test.ts
+bunx vitest run test/codex-provider.test.ts
+bunx vitest run test/bedrock-provider.test.ts
+</code></pre>
+  <p>Final gate:</p>
+  <pre><code class="language-bash">bun run verify
+bun run verify:sqlite
+bun run verify:rust-daemon
+</code></pre>
+  <p>Rust code が SystemContext manifest を保存・転送する変更を含む場合:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld
+cargo clippy -p context-stilld --all-targets -- -D warnings
+</code></pre>
+  <h2 id="rollout">Rollout</h2>
+  <ol>
+    <li>route 単位で legacy render と catalog render を test/shadow 比較する。</li>
+    <li>parity と trust test が通った route だけ provider input を catalog へ切り替える。</li>
+    <li>route 切替後、legacy builder を同じ change set で削除する。</li>
+    <li>domain test と audit manifest を確認する。</li>
+    <li>canary run で parser/tool/output quality を baseline と比較する。</li>
+    <li>regression がなければ次 route group へ進む。</li>
+    <li>全 route 後に boundary lint allowlist をゼロまたは明示的非対象だけにする。</li>
+    <li>dual-render code を削除して production profile へ固定する。</li>
+  </ol>
+  <h2 id="リスクと対策">リスクと対策</h2>
+  <ul>
+    <li>
+      リスク: TOML へ移すだけで巨大 prompt の責務分離が改善しない。
+      <ul>
+        <li>
+          対策: ordered section と section metadata を必須にし、role/runtime/tool/output/overlay
+          を分ける。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: variant key が増えすぎる。
+      <ul>
+        <li>
+          対策: optional value を空文字化する前に s11tnext finding として評価し、必要なら package の
+          composition/optional contract を改善する。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: delimiter 導入で LLM output quality が変わる。
+      <ul>
+        <li>対策: attack safety と behavior quality を別々に測り、unsafe raw へ戻さない。</li>
+      </ul>
+    </li>
+    <li>
+      リスク: current English prompt を日本語 source 化する際に意味が変わる。
+      <ul>
+        <li>
+          対策: provider には既存 English translation を送り続け、source translation review
+          を独立して行う。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: final newline や provider framing で renderedHash が実送信 text とずれる。
+      <ul>
+        <li>
+          対策: provider dispatch boundary で exact text を検証し、catalog render 後の mutation
+          を禁止する。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: manifest audit が高 volume になる。
+      <ul>
+        <li>
+          対策: logical completion 単位で保存し、tool round ごとに重複させず、既存 retention
+          を使う。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: catalog/generated pair の conflict。
+      <ul>
+        <li>対策: source TOML を conflict resolution source とし、generated pair は再生成する。</li>
+      </ul>
+    </li>
+    <li>
+      リスク: ContextStill workaround が s11tnext defect を固定化する。
+      <ul>
+        <li>対策: blocking/correctness/security finding は package fix/release を先に行う。</li>
+      </ul>
+    </li>
+    <li>
+      リスク: prompt migration と domain behavior change が混在する。
+      <ul>
+        <li>
+          対策: route selection/parser/business logic を同時変更せず、intentional
+          trust-boundary差分を testで明示する。
+        </li>
+      </ul>
+    </li>
+  </ul>
+  <h2 id="停止条件">停止条件</h2>
+  <p>次の場合、対象 route の切替を止めて s11tnext または integration layer を修正する。</p>
+  <ul>
+    <li>untrusted runtime value を safe contract のまま表現できない。</li>
+    <li>provider へ送信した text と <code>renderedHash</code> の一致を証明できない。</li>
+    <li>artifact/generated pair の不整合を fail-closed にできない。</li>
+    <li>requested locale と実際の送信言語が一致しない。</li>
+    <li>parser success、tool-call compliance、decision consistency に重大回帰がある。</li>
+    <li>catalog load failure が silent fallback して legacy prompt を使う。</li>
+    <li>runtime values/rendered text が audit log に漏れる。</li>
+    <li>provider adapter が catalog render 後に自然言語 instruction を追加する。</li>
+    <li>boundary lint が active SystemContext の残存を検知する。</li>
+    <li>s11tnext package version mismatch がある。</li>
+  </ul>
+  <h2 id="主な変更対象">主な変更対象</h2>
+  <p>新規:</p>
+  <ul>
+    <li><code>s11tnext.config.toml</code></li>
+    <li><code>contexts/**/*.context.toml</code></li>
+    <li><code>.s11tnext/catalog.json</code></li>
+    <li><code>.s11tnext/catalog.generated.ts</code></li>
+    <li><code>src/modules/system-context/catalog.ts</code></li>
+    <li><code>src/modules/system-context/system-context.service.ts</code></li>
+    <li><code>src/modules/system-context/system-context-audit.ts</code></li>
+    <li><code>src/modules/system-context/system-context-registry.ts</code></li>
+    <li><code>scripts/check-system-context-boundary.mjs</code></li>
+    <li><code>test/system-context-catalog.test.ts</code></li>
+    <li><code>test/system-context-trust-boundary.test.ts</code></li>
+    <li><code>test/system-context-provider-contract.test.ts</code></li>
+    <li><code>test/episode-distiller-system-context.test.ts</code></li>
+    <li><code>test/fixtures/system-context-baseline/*</code></li>
+    <li><code>spec/docs/.archived/s11tnext-adoption-findings.html</code></li>
+  </ul>
+  <p>変更:</p>
+  <ul>
+    <li><code>package.json</code></li>
+    <li>lockfile</li>
+    <li><code>tsconfig.json</code></li>
+    <li><code>scripts/verify.mjs</code></li>
+    <li><code>src/modules/llm/llm-provider.ts</code></li>
+    <li><code>src/modules/llm/providers/*.provider.ts</code></li>
+    <li><code>src/modules/distillation/types.ts</code></li>
+    <li><code>src/modules/distillation/distillation-runtime.service.ts</code></li>
+    <li>inventory に列挙した各 domain service/worker/prompt file</li>
+    <li>関連 unit/integration tests</li>
+  </ul>
+  <p>削除候補:</p>
+  <ul>
+    <li>migrated <code>*SystemPrompt()</code> builder</li>
+    <li><code>procedure-system-context.ts</code></li>
+    <li>dead/test-only distillation prompt builder</li>
+    <li>provider adapter の hard-coded final instruction</li>
+    <li>route migration 用 temporary dual-render helper</li>
+  </ul>
+  <h2 id="最終-acceptance-checklist">最終 acceptance checklist</h2>
+  <ul>
+    <li><input checked="" disabled="" type="checkbox" /> active SystemContext inventory 100%</li>
+    <li><input checked="" disabled="" type="checkbox" /> catalog mapping 100%</li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> provider-bound manifest correlation 100%
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> <code>ja-JP</code> direct coverage 100%
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> <code>en-US</code> direct coverage 100%
+    </li>
+    <li><input checked="" disabled="" type="checkbox" /> boundary allowlist は空</li>
+    <li><input checked="" disabled="" type="checkbox" /> package versions exact match</li>
+    <li><input checked="" disabled="" type="checkbox" /> generated pair current</li>
+    <li><input checked="" disabled="" type="checkbox" /> prompt parity reviewed</li>
+    <li><input checked="" disabled="" type="checkbox" /> trust attack fixtures passed</li>
+    <li><input checked="" disabled="" type="checkbox" /> provider matrix passed</li>
+    <li><input checked="" disabled="" type="checkbox" /> domain regression passed</li>
+    <li><input checked="" disabled="" type="checkbox" /> full verify passed</li>
+    <li><input disabled="" type="checkbox" /> canary behavior baseline passed</li>
+    <li><input checked="" disabled="" type="checkbox" /> temporary fallback removed</li>
+    <li><input checked="" disabled="" type="checkbox" /> adoption findings triaged</li>
+    <li><input checked="" disabled="" type="checkbox" /> blocking findings closed</li>
+  </ul>
+</article>

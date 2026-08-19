@@ -1,0 +1,490 @@
+<article lang="ja">
+  <h1 id="rust-only-queue-executor-implementation-plan">
+    Rust-Only Queue Executor Implementation Plan
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>39c90e2</code>。</p>
+  </blockquote>
+  <h2 id="purpose">Purpose</h2>
+  <p><code>context-stilld run</code> が queue を実処理まで Rust で所有するための実装計画である。</p>
+  <p>
+    この文書は見積もりではない。今回の queue 停止事故を受けて、TypeScript queue supervisor
+    に戻さず、Rust resident が claim、provider lease、heartbeat、job
+    execution、完了/失敗確定まで担うための実装順序、完了条件、検証ゲート、停止条件を定義する。
+  </p>
+  <h2 id="incident-baseline">Incident Baseline</h2>
+  <p>確認された停止状態:</p>
+  <ul>
+    <li><code>context-stilld run</code> は稼働していた。</li>
+    <li>
+      <code>context-stilld status --json</code> は
+      <code>queueSupervisor=scheduled</code> を返していた。
+    </li>
+    <li>
+      しかし <code>queue inspect --json</code> は <code>workerPid=null</code>、active lease
+      なし、pending queue ありの状態だった。
+    </li>
+    <li>
+      Rust resident の continuous queue path は stale lease/job maintenance だけを実行しており、実
+      executor は起動していなかった。
+    </li>
+    <li>
+      既存の <code>src/cli/queue-supervisor.ts --continuous</code> は SIGTERM 後に停止していた。
+    </li>
+    <li>LocalLLM Qwen targets は認証付き chat completion が正常応答した。</li>
+    <li>
+      <code>local-llm HTTP 503 Loading model</code> は過去の failed row
+      に残っていたが、今回の全停止の直接原因ではなかった。
+    </li>
+  </ul>
+  <p>この計画で防ぐべき事故:</p>
+  <ul>
+    <li>pending job があるのに executor が存在しない。</li>
+    <li><code>scheduled</code> 表示が実処理中のように見える。</li>
+    <li>active lease / heartbeat がないのに queue が正常に見える。</li>
+    <li>unsupported executor が silent idle として扱われる。</li>
+  </ul>
+  <h2 id="definition-of-done">Definition Of Done</h2>
+  <p>Rust-only queue executor は次の状態を指す。</p>
+  <ul>
+    <li>resident queue runtime は <code>context-stilld run</code> 内で動く。</li>
+    <li>resident runtime は <code>src/cli/queue-supervisor.ts</code> を起動しない。</li>
+    <li>
+      Rust が provider pool scheduling、queue claim、provider lease、heartbeat、job execution、state
+      transition、queue event append を所有する。
+    </li>
+    <li>job が完了扱いになるのは downstream mutation が確認済みの場合だけである。</li>
+    <li>
+      一時的な provider failure は cooldown 付き retryable state
+      になり、即時再取得ループに入らない。
+    </li>
+    <li>
+      <code>status</code>、<code>queue inspect</code>、LaunchAgent/process tree、SQLite rows、smoke
+      output が同じ実態を示す。
+    </li>
+  </ul>
+  <h2 id="non-goals">Non-Goals</h2>
+  <ul>
+    <li>TypeScript queue supervisor を resident runtime に戻さない。</li>
+    <li>queue migration と同時に UI を作り替えない。</li>
+    <li>MCP tool migration や doctor 全面 Rust 化をこの計画に混ぜない。</li>
+    <li>LocalLLM model 運用ポリシーの大幅変更をこの計画に混ぜない。</li>
+    <li>live production DB を破壊的な smoke test の対象にしない。</li>
+    <li>queue completion semantics を fixture や contract なしに変更しない。</li>
+  </ul>
+  <h2 id="migration-rules">Migration Rules</h2>
+  <ol>
+    <li>
+      <p>Rust ownership must remain true.</p>
+      <ul>
+        <li>resident process tree に Bun queue worker が戻ったら停止する。</li>
+      </ul>
+    </li>
+    <li>
+      <p>Unsupported work must fail closed.</p>
+      <ul>
+        <li>未移植 queue は silent idle にしない。</li>
+        <li><code>unsupported_executor</code> など、operator が判断できる状態で返す。</li>
+      </ul>
+    </li>
+    <li>
+      <p>Status must describe runtime truth.</p>
+      <ul>
+        <li>executor がない状態を <code>scheduled</code> だけで表現しない。</li>
+        <li>pending があるのに claim できない状態を green にしない。</li>
+      </ul>
+    </li>
+    <li>
+      <p>Verified mutation only.</p>
+      <ul>
+        <li>
+          EpisodeCard、found_candidates、covering queue、finalize output などの downstream mutation
+          が確認できるまで completed にしない。
+        </li>
+      </ul>
+    </li>
+    <li>
+      <p>Provider failures must cool down.</p>
+      <ul>
+        <li>
+          <code>Loading model</code>、connection refused、timeout、unsupported model
+          は即時再取得ループにしない。
+        </li>
+      </ul>
+    </li>
+    <li>
+      <p>Every phase needs a rollback boundary.</p>
+      <ul>
+        <li>
+          ただし rollback は TypeScript resident worker 復帰ではなく、Rust executor feature flag
+          disable または fail-closed idle に限定する。
+        </li>
+      </ul>
+    </li>
+  </ol>
+  <h2 id="implementation-order">Implementation Order</h2>
+  <h3 id="q0-truthful-queue-status">Q0: Truthful Queue Status</h3>
+  <p>Goal: 現在の <code>scheduled</code> 表示を、実 executor の有無まで表す状態へ変える。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>queue inspect --json</code> に executor truth を追加する。
+      <ul>
+        <li>
+          <code>executorMode</code>: <code>rust_native</code> / <code>maintenance_only</code> /
+          <code>disabled</code> / <code>unsupported</code>
+        </li>
+        <li><code>executorRunning</code>: boolean</li>
+        <li><code>executorPid</code>: resident pid when in-process</li>
+        <li><code>lastExecutorTickAt</code></li>
+        <li><code>runnablePendingCount</code></li>
+        <li><code>blockedReason</code></li>
+      </ul>
+    </li>
+    <li>
+      <code>status --json</code> の
+      <code>queueSupervisor</code> を単一文字列だけに依存しない形へ拡張する。
+    </li>
+    <li>
+      pending job があるのに executor が maintenance-only の場合は <code>degraded</code> または
+      <code>executor_missing</code> として出す。
+    </li>
+    <li><code>verify:rust-daemon</code> に non-mutating guard を追加する。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>今回の停止状態が green にならない。</li>
+    <li><code>workerPid=null</code> かつ runnable pending &gt; 0 が検出される。</li>
+    <li>operator が maintenance-only と実 execution を区別できる。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+cargo run -q -p context-stilld -- queue inspect --json
+cargo run -q -p context-stilld -- status --json
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>status shape の変更で既存 UI/CLI が queue 状態を読めなくなる。</li>
+    <li>executor 不在なのに <code>scheduled</code> のみで正常扱いが残る。</li>
+  </ul>
+  <h3 id="q1-rust-resident-executor-loop-skeleton">Q1: Rust Resident Executor Loop Skeleton</h3>
+  <p>
+    Goal: Rust resident 内に queue executor loop を作り、claim から heartbeat までを TypeScript
+    なしで実行する。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>resident_runtime</code> に queue executor loop state を追加する。</li>
+    <li>loop は resident process 内 thread として動かす。</li>
+    <li>既存の Rust provider lease claim API を使って job と lease を取得する。</li>
+    <li>job 実行中は queue row と provider lease の heartbeat を更新する。</li>
+    <li>shutdown 時に active job を安全に release / pause / stale-recoverable state に戻す。</li>
+    <li>unsupported queue は <code>unsupported_executor</code> として明示的に記録する。</li>
+    <li>executor loop の tick / claim / heartbeat / release を structured log に出す。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li><code>context-stilld run</code> 単体で active provider lease を作れる。</li>
+    <li>heartbeat が Rust resident から更新される。</li>
+    <li>unsupported queue が silent idle にならない。</li>
+    <li>resident process tree に <code>queue-supervisor.ts</code> が存在しない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+cargo run -q -p context-stilld -- run --once --json
+cargo run -q -p context-stilld -- queue inspect --json
+ps aux | rg &#39;queue-supervisor|context-stilld run&#39;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>heartbeat なし active lease が残る。</li>
+    <li>shutdown で running job が復旧不能になる。</li>
+    <li>unsupported executor が completed / skipped 扱いになる。</li>
+  </ul>
+  <h3 id="q2-rust-localllm-provider-client">Q2: Rust LocalLLM Provider Client</h3>
+  <p>Goal: queue executor が LocalLLM を Rust から呼べるようにする。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>SQLite settings から provider pool、target、API key、model config を読む。</li>
+    <li>provider lease target id から LocalLLM endpoint/model を解決する。</li>
+    <li>OpenAI-compatible chat completions client を Rust に実装する。</li>
+    <li>timeout、abort、response body truncation、error classification を実装する。</li>
+    <li>
+      <code>503 Loading model</code>、connection refused、timeout、unsupported model を retryable
+      worker-unavailable に分類する。
+    </li>
+    <li>API key を logs/status に出さない。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Rust から Qwen target に authenticated chat completion を実行できる。</li>
+    <li>provider target id と実 endpoint/model が一致する。</li>
+    <li>provider failure が cooldown 付き retryable state へ変換される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld local_llm
+cargo test -p context-stilld queue
+cargo run -q -p context-stilld -- queue inspect --json
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>API key が log / JSON output に漏れる。</li>
+    <li>model mismatch が unsupported executor と混同される。</li>
+    <li>provider error が failed storm を作る。</li>
+  </ul>
+  <h3 id="q3-episodedistiller-rust-executor">Q3: EpisodeDistiller Rust Executor</h3>
+  <p>Goal: 最初の LLM-backed executor として <code>episodeDistiller</code> を Rust 化する。</p>
+  <p>
+    Reason: 現在の backlog の大半が <code>episodeDistiller</code> であり、source read、LLM
+    call、EpisodeCard persistence の境界が比較的閉じている。<code>findingCandidate</code> は
+    candidate extraction と covering enqueue へ広がるため後段に回す。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>episode_distiller_queue</code> row reader を Rust に実装する。</li>
+    <li><code>vibe_memories</code> / source metadata reader を Rust に実装する。</li>
+    <li>Episode prompt / schema parse / validation contract を fixture 化する。</li>
+    <li>
+      EpisodeCard writer を Rust に実装する。
+      <ul>
+        <li><code>episode_cards</code></li>
+        <li><code>episode_refs</code></li>
+        <li>FTS rows</li>
+        <li>queue metadata <code>episodeIds</code></li>
+      </ul>
+    </li>
+    <li>segment failure aggregation を実装する。</li>
+    <li>no episode、worker unavailable、schema parse failure、source missing を分離する。</li>
+    <li>successful downstream mutation を確認してから queue completed にする。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Rust resident が <code>episodeDistiller</code> を claim し、EpisodeCard を作成する。</li>
+    <li>completed queue row の metadata に実在する EpisodeCard id が入る。</li>
+    <li>failed/skipped/retried の意味が TypeScript 現行と一致する。</li>
+    <li>provider failure で immediate retry loop が発生しない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld episode
+cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/episode-card.repository.sqlite.test.ts
+bun run rust:queue:smoke
+bun run verify:rust-daemon
+</code></pre>
+  <p>Live verification, read before and after:</p>
+  <pre><code class="language-sql">select status, count(*) from episode_distiller_queue group by status;
+select count(*) from episode_cards;
+select queue_name, event_type, count(*) from distillation_queue_events group by queue_name, event_type;
+select status, queue_name, queue_job_id, heartbeat_at from llm_provider_leases where status = &#39;active&#39;;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>queue completed が EpisodeCard 作成より先に起きる。</li>
+    <li>generated EpisodeCard が source refs なしで保存される。</li>
+    <li>1つの provider failure が failed storm を作る。</li>
+  </ul>
+  <h3 id="q4-findingcandidate-rust-executor">Q4: FindingCandidate Rust Executor</h3>
+  <p>Goal: <code>findingCandidate</code> を Rust resident で処理する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>provided_candidate</code> path を先に Rust 化する。
+      <ul>
+        <li>payload parse</li>
+        <li><code>found_candidates</code> upsert</li>
+        <li><code>covering_evidence_queue</code> enqueue</li>
+        <li>completed event append</li>
+      </ul>
+    </li>
+    <li>
+      source target path を Rust 化する。
+      <ul>
+        <li>source reader</li>
+        <li>prompt construction</li>
+        <li>LocalLLM call</li>
+        <li>candidate schema parse</li>
+        <li>polarity / applicability metadata persistence</li>
+      </ul>
+    </li>
+    <li><code>source_missing</code> と <code>no_candidate</code> を分離する。</li>
+    <li>
+      candidate ありの場合は <code>found_candidates</code> と covering queue enqueue を transaction
+      boundary で扱う。
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Rust resident が <code>findingCandidate</code> pending を消化する。</li>
+    <li>no candidate は skipped + <code>no_candidate</code> になる。</li>
+    <li>source missing は skipped + <code>source_missing</code> になる。</li>
+    <li>candidate ありでは covering queue が作られる。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld finding_candidate
+cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/sqlite-runtime-support.bun.ts
+bun run rust:queue:smoke
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>source missing と no candidate が混ざる。</li>
+    <li>found candidate は作られるが covering queue が作られない。</li>
+    <li>LLM parse failure が retryable/provider failure と混同される。</li>
+  </ul>
+  <h3 id="q5-deterministic-persistence-executors">Q5: Deterministic Persistence Executors</h3>
+  <p>Goal: LLM 境界が小さい queue を Rust 化する。</p>
+  <p>Migration order:</p>
+  <ol>
+    <li><code>mergeActivationFinalize</code></li>
+    <li><code>finalizeDistille</code></li>
+    <li>deterministic parts of <code>coveringEvidence</code></li>
+    <li><code>deadZoneMergeReview</code></li>
+  </ol>
+  <p>Tasks:</p>
+  <ul>
+    <li>queue ごとに fixture を追加する。</li>
+    <li>state transition と event append を Rust API に統一する。</li>
+    <li>downstream mutation がある場合は確認後に completed にする。</li>
+    <li>unsupported LLM/tool path は fail-closed にする。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>migrated queue は Rust resident だけで処理できる。</li>
+    <li>non-migrated path は明示的に unsupported になる。</li>
+    <li>TypeScript executor fallback は manual command としてのみ残る。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/sqlite-runtime-support.bun.ts
+bun run verify:sqlite
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>deterministic persistence の結果が fixture と一致しない。</li>
+    <li>unsupported path が silent success になる。</li>
+  </ul>
+  <h3 id="q6-remove-resident-queue-fallback">Q6: Remove Resident Queue Fallback</h3>
+  <p>
+    Goal: resident runtime から TypeScript queue supervisor 依存を削除済みであることを固定する。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>sidecar registry で queue TS fallback を <code>manual-one-shot</code> に限定する。</li>
+    <li>resident startup から queue Bun child の起動経路を削除または禁止する。</li>
+    <li>LaunchAgent install/load path が Bun queue worker を起動できないことを検証する。</li>
+    <li><code>verify:rust-daemon</code> に process tree assertion を追加する。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      <code>context-stilld run</code> の resident runtime は Rust queue executor のみを所有する。
+    </li>
+    <li>TypeScript queue command は明示的な manual fallback だけである。</li>
+    <li>status / inspect / doctor が Rust executor truth を返す。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run verify:rust-daemon
+CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon
+ps aux | rg &#39;queue-supervisor|context-stilld run&#39;
+launchctl list | rg &#39;context-still|queue&#39;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>resident queue 実行に Bun が必要になる。</li>
+    <li>manual fallback が自動起動経路から到達可能なまま残る。</li>
+  </ul>
+  <h2 id="runtime-verification-matrix">Runtime Verification Matrix</h2>
+  <table>
+    <caption>
+      Table: Runtime Verification Matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Check</th>
+        <th scope="col">Expected</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>pending exists + executor running</td>
+        <td>active lease appears and heartbeat updates</td>
+      </tr>
+      <tr>
+        <td>pending exists + executor unsupported</td>
+        <td>status is degraded / unsupported, not scheduled-green</td>
+      </tr>
+      <tr>
+        <td>LocalLLM 503 Loading model</td>
+        <td>job cooldown retryable, no immediate retry storm</td>
+      </tr>
+      <tr>
+        <td>connection refused</td>
+        <td>job cooldown retryable, target visible in error metadata</td>
+      </tr>
+      <tr>
+        <td>daemon shutdown</td>
+        <td>active job becomes recoverable and lease is released or stale-recoverable</td>
+      </tr>
+      <tr>
+        <td>completed episode job</td>
+        <td>EpisodeCard exists and queue metadata references it</td>
+      </tr>
+      <tr>
+        <td>completed finding job</td>
+        <td>found_candidates / covering queue effects are present when candidate exists</td>
+      </tr>
+      <tr>
+        <td>process tree</td>
+        <td>no <code>queue-supervisor.ts</code> under resident runtime</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="live-operational-commands">Live Operational Commands</h2>
+  <p>Read-only baseline:</p>
+  <pre><code class="language-bash">cargo run -q -p context-stilld -- status --json
+cargo run -q -p context-stilld -- queue inspect --json
+sqlite3 data/context-still-core.sqlite &quot;select status, count(*) from episode_distiller_queue group by status&quot;
+sqlite3 data/context-still-core.sqlite &quot;select status, count(*) from finding_candidate_queue group by status&quot;
+sqlite3 data/context-still-core.sqlite &quot;select status, queue_name, queue_job_id, heartbeat_at from llm_provider_leases where status = &#39;active&#39;&quot;
+</code></pre>
+  <p>Ownership check:</p>
+  <pre><code class="language-bash">ps aux | rg &#39;context-stilld run|queue-supervisor&#39;
+launchctl list | rg &#39;context-still|queue&#39;
+lsof -nP -iTCP:39172 -sTCP:LISTEN
+</code></pre>
+  <p>Verification gate:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+bun run rust:queue:smoke
+bun run verify:rust-daemon
+</code></pre>
+  <p>Live ownership gate:</p>
+  <pre><code class="language-bash">CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon
+</code></pre>
+  <h2 id="relationship-to-existing-rust-daemon-plan">Relationship To Existing Rust Daemon Plan</h2>
+  <p>
+    This plan is a focused replacement for the broad R7 queue executor section in
+    <code>spec/docs/rust-daemon-replacement-readiness-plan.html</code>.
+  </p>
+  <p>
+    The broad daemon plan remains useful for overall Rust-only migration, but queue executor work
+    should be driven from this document until resident queue execution is Rust-native and stable.
+  </p>
+  <h2 id="final-completion-criteria">Final Completion Criteria</h2>
+  <ul>
+    <li><code>context-stilld run</code> owns queue execution in Rust.</li>
+    <li>
+      <code>queue inspect --json</code> shows executor truth, active lease state, heartbeat, and
+      blocked reason.
+    </li>
+    <li>pending runnable queue rows are claimed by Rust executor.</li>
+    <li>
+      <code>episodeDistiller</code> and <code>findingCandidate</code> execute without TypeScript
+      resident worker.
+    </li>
+    <li>provider failures cool down instead of creating retry storms.</li>
+    <li>completed queue rows have verified downstream mutations.</li>
+    <li>live ownership verification proves no resident Bun queue worker is running.</li>
+  </ul>
+</article>

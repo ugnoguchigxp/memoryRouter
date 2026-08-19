@@ -1,0 +1,22 @@
+<article lang="ja">
+  <h1 id="archived-internal-design-documents">Archived Internal Design Documents</h1>
+  <p>
+    この directory は、実装が repository に反映済み、または後続実装で置換済みの内部計画を保持する。
+  </p>
+  <ul>
+    <li>現在の要件や未完了作業の入口として扱わない。</li>
+    <li>
+      現行挙動は code、tests、<code>spec/docs/pub/</code>、および <code>spec/docs/</code> 直下の
+      active documents を優先する。
+    </li>
+    <li>各文書冒頭には、対応実装の commit または後続計画へ置換した理由を記録する。</li>
+    <li>
+      文書はactive documentと同じSpec HTML fragment形式を保ち、ViewerのArchived表示から参照する。
+    </li>
+    <li>
+      この hidden directory は、通常の <code>rg --files</code> や既定の LLM file discovery
+      から除外するための配置である。
+    </li>
+  </ul>
+  <p>Archived on 2026-08-15.</p>
+</article>

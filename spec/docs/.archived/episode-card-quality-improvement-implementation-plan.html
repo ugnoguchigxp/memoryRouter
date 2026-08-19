@@ -1,0 +1,601 @@
+<article lang="ja">
+  <h1 id="episodecard-品質改善-実装計画">EpisodeCard 品質改善 実装計画</h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>bf02698</code>。</p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    2026-06-22 時点の SQLite 実データでは、<code>episode_cards</code> は 84 件存在し、全件が
+    <code>vibe_memory</code> 由来で
+    <code>episode_refs</code>
+    を持っている。タイトル、状況、判断、教訓は多くのカードで再利用可能な粒度に達している一方、保存マッピング側の固定処理により、カード単体で読むと意味が崩れる箇所が残っている。
+  </p>
+  <p>確認済みの主な問題:</p>
+  <ul>
+    <li>
+      <code>outcome</code> が 84 件すべてで
+      <code>vibe memory segment ... から蒸留された Episode。</code>
+      になっており、実際の成果や結果を表していない。
+    </li>
+    <li>
+      <code>situation</code> に <code>Intent:</code> /
+      <code>意図:</code> が全件混入しており、状況欄と意図欄が分離されていない。
+    </li>
+    <li>
+      <code>action</code> が 6 件で空、66 件で実質
+      <code>source 時点の未解決事項</code> だけになっている。
+    </li>
+    <li>
+      <code>confidence</code> は 75 / 80 / 90 に偏り、<code>importance</code> は 85
+      が最多で、利用実績 <code>compile_use_count</code> / <code>decision_use_count</code> は全件 0
+      のため実績値ではなく生成時推定である。
+    </li>
+    <li>
+      <code>fetch_episode</code> の互換返却に、永続スキーマから削除済みの
+      <code>evidenceStatus: &quot;unverified&quot;</code> が残っている。
+    </li>
+  </ul>
+  <p>
+    この計画の主眼は SystemContext の文言調整ではなく、<code>episodeDistiller</code> の canonical
+    schema、保存マッピング、テスト期待値、既存データ補正を修正することに置く。
+  </p>
+  <h2 id="実装開始可否レビュー">実装開始可否レビュー</h2>
+  <table>
+    <caption>
+      Table: 実装開始可否レビュー
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">観点</th>
+        <th scope="col">判定</th>
+        <th scope="col">対応</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>原因の切り分け</td>
+        <td>OK</td>
+        <td>
+          <code>outcome</code> 固定文、<code>Intent:</code> 混入、<code>action</code> と open loop
+          の混在は <code>canonicalEpisodeToCardInput</code> の決定的マッピングで発生している。
+        </td>
+      </tr>
+      <tr>
+        <td>SystemContext 依存</td>
+        <td>OK</td>
+        <td>SystemContext は補助的に更新するが、P0 は schema / mapper / test の修正に置く。</td>
+      </tr>
+      <tr>
+        <td>既存データ補正</td>
+        <td>OK</td>
+        <td>生成済み 84 件に対する backfill / repair CLI を計画に含める。</td>
+      </tr>
+      <tr>
+        <td>受け入れ条件</td>
+        <td>OK</td>
+        <td>DB query と unit/runtime test で pass/fail 判定できる条件を定義する。</td>
+      </tr>
+      <tr>
+        <td>破壊的変更</td>
+        <td>注意</td>
+        <td>
+          <code>EpisodeDistillerCanonical</code> に <code>outcome</code> /
+          <code>actionTaken</code> を追加するため、test fixture と parser 期待値を同時に更新する。
+        </td>
+      </tr>
+      <tr>
+        <td>未解決 blocker</td>
+        <td>なし</td>
+        <td>
+          新規テーブルは不要。既存 <code>metadata.episodeDistillation.canonical</code> と
+          <code>episode_refs</code> を使って補正できる。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="目的">目的</h2>
+  <ul>
+    <li>
+      EpisodeCard の
+      <code>outcome</code>
+      を「由来」ではなく「作業結果・意思決定結果・失敗から得られた状態」として読めるようにする。
+    </li>
+    <li>
+      <code>situation</code>、<code>intent</code>、<code>action</code>、<code>openLoops</code>
+      の責務を保存時に分離する。
+    </li>
+    <li>
+      <code>importance</code> /
+      <code>confidence</code>
+      を、実利用ではなく生成時推定であることを前提に校正し、過大評価を抑える。
+    </li>
+    <li>
+      MCP / API / UI が削除済み概念 <code>evidenceStatus</code> を EpisodeCard
+      品質として見せないようにする。
+    </li>
+    <li>既存 84 件を、原典 ref と canonical metadata を使って再保存または補正する。</li>
+  </ul>
+  <h2 id="非目的">非目的</h2>
+  <ul>
+    <li>EpisodeCard の新規永続テーブルを追加しない。</li>
+    <li>Episode と Knowledge の検索レーンを統合しない。</li>
+    <li><code>findCandidate</code> に Episode 作成責務を戻さない。</li>
+    <li>
+      LLM で既存カードを全文再生成することを前提にしない。まず deterministic repair を優先する。
+    </li>
+    <li>
+      <code>compile_use_count</code> /
+      <code>decision_use_count</code>
+      の利用実績計測をこの計画の中核にはしない。必要なら別差分で扱う。
+    </li>
+  </ul>
+  <h2 id="変更対象ファイル">変更対象ファイル</h2>
+  <p>Primary files:</p>
+  <table>
+    <caption>
+      Table: 変更対象ファイル
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ファイル</th>
+        <th scope="col">変更内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>src/modules/episodeDistiller/schema.ts</code></td>
+        <td>
+          canonical schema に <code>outcome</code> と <code>actionTaken</code> を追加し、<code
+            >canonicalEpisodeToCardInput</code
+          >
+          の保存マッピングを修正する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/episodeDistiller/worker.ts</code></td>
+        <td>
+          System prompt と JSON shape を新 schema に合わせる。低価値 /
+          低根拠カードの採点指示を締める。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/mcp/tools/episode.tool.ts</code></td>
+        <td>
+          返却に削除済み
+          <code>evidenceStatus</code> 互換値が残っていないか確認し、必要なら削除する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/episodic-memory/episode-card.repository.ts</code></td>
+        <td>Postgres 側 map / search の互換表示を確認し、削除済み品質概念を返さない。</td>
+      </tr>
+      <tr>
+        <td><code>src/modules/episodic-memory/episode-card.repository.sqlite.ts</code></td>
+        <td>SQLite 側 map / search の互換表示を確認し、削除済み品質概念を返さない。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>New files:</p>
+  <table>
+    <caption>
+      Table: 変更対象ファイル
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ファイル</th>
+        <th scope="col">役割</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>src/cli/repair-episode-card-quality.ts</code></td>
+        <td>
+          既存 EpisodeCard の <code>outcome</code> / <code>situation</code> / <code>action</code> を
+          canonical metadata から deterministic に補正する CLI。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Test files:</p>
+  <table>
+    <caption>
+      Table: 変更対象ファイル
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ファイル</th>
+        <th scope="col">追加/更新する確認</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>test/sqlite-runtime-support.bun.ts</code></td>
+        <td>
+          <code>outcome</code> が由来マーカーでないこと、<code>situation</code> に
+          <code>Intent:</code> が混入しないこと、openLoops が
+          <code>action</code> を占有しないことを固定する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/mcp.tools.test.ts</code></td>
+        <td>
+          <code>fetch_episode</code> / <code>search_episodes</code> で削除済み
+          <code>evidenceStatus</code> を返さないことを確認する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/episode-card.repository.test.ts</code></td>
+        <td>Postgres repository の返却 shape と score fields の互換を確認する。</td>
+      </tr>
+      <tr>
+        <td><code>test/episode-card-quality-repair.test.ts</code></td>
+        <td>
+          repair CLI の dry-run / write、idempotency、対象件数、補正後の pass/fail を確認する。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="p0-保存マッピングを正す">P0: 保存マッピングを正す</h2>
+  <h3 id="変更">変更</h3>
+  <p><code>EpisodeDistillerCanonical</code> に次のフィールドを追加する。</p>
+  <pre><code class="language-ts">outcome: string;
+actionTaken: string;
+</code></pre>
+  <p>責務:</p>
+  <ul>
+    <li><code>context</code>: 状況、背景、発生した問題。</li>
+    <li>
+      <code>intent</code>: 作業者またはユーザーが達成しようとした目的。永続本文ではなく metadata
+      と必要な UI 表示に残す。
+    </li>
+    <li><code>keyDecisions</code>: 重要な判断、設計選択、制約。</li>
+    <li><code>actionTaken</code>: 実際に行った修正、実行、検証、または明示的に避けたこと。</li>
+    <li>
+      <code>outcome</code>:
+      最終的にどうなったか。テストが通った、キューが再試行可能になった、設計方針が確定した、未完了のまま残った、など。
+    </li>
+    <li>
+      <code>openLoops</code>: source 時点の未解決事項。本文の <code>action</code> には混ぜず
+      metadata / antiApplicability に残す。
+    </li>
+  </ul>
+  <p><code>canonicalEpisodeToCardInput</code> の保存マッピング:</p>
+  <pre><code class="language-ts">return {
+  title: canonical.title,
+  situation: canonical.context,
+  observations: joinList(canonical.keyDecisions, &quot;主要な判断は特定されませんでした。&quot;),
+  action: canonical.actionTaken || canonical.failedApproach,
+  outcome: canonical.outcome,
+  lesson: canonical.reusableLesson,
+  antiApplicability: {
+    requiresRawEvidenceCheck: true,
+    stalenessRisk: canonical.scores.staleness_risk,
+    openLoops: canonical.openLoops,
+  },
+  metadata: {
+    episodeDistillation: {
+      canonical,
+      sourceFragmentKey,
+      ...
+    },
+    triggers: canonical.usefulFutureTriggers,
+  },
+};
+</code></pre>
+  <h3 id="受け入れ条件">受け入れ条件</h3>
+  <ul>
+    <li>
+      <code
+        >select count(*) from episode_cards where outcome like &#39;vibe memory segment%&#39;;</code
+      >
+      が新規生成カードで 0。
+    </li>
+    <li>
+      新規生成カードの <code>situation</code> に <code>Intent:</code> /
+      <code>意図:</code> が含まれない。
+    </li>
+    <li>
+      新規生成カードの <code>action</code> は空ではなく、実施内容または避けた approach を含む。
+    </li>
+    <li>
+      <code>openLoops</code> は <code>metadata.episodeDistillation.canonical.openLoops</code> と
+      <code>antiApplicability.openLoops</code> に残る。
+    </li>
+    <li>
+      <code>refs</code> と
+      <code>metadata.episodeDistillation.sourceFragmentKey</code> は現状どおり残る。
+    </li>
+  </ul>
+  <h2 id="p1-systemcontext--prompt-を新-schema-に合わせる">
+    P1: SystemContext / prompt を新 schema に合わせる
+  </h2>
+  <h3 id="変更-1">変更</h3>
+  <p><code>buildMessages</code> の system prompt と user JSON shape を更新する。</p>
+  <p>追加する指示:</p>
+  <ul>
+    <li><code>outcome</code> は source locator や蒸留由来ではなく、作業の結果を書く。</li>
+    <li>
+      <code>actionTaken</code> は実行した変更、検証、運用操作、明示的に避けた approach を書く。
+    </li>
+    <li>
+      <code>openLoops</code> は現在も未解決と断定せず、<code>source 時点</code>
+      のものとして配列にだけ残す。
+    </li>
+    <li><code>context</code> に intent を混ぜない。</li>
+    <li>
+      <code>outcomeKind=success</code> でも openLoops が残る場合は、<code>outcome</code>
+      に「完了範囲」と「残った確認」を短く含める。
+    </li>
+    <li>
+      単一の小さなテスト fixture 変更、分類だけの作業、UI微調整は <code>importance</code> を 60
+      前後に抑える。
+    </li>
+    <li>
+      <code>compile_use_count</code> / <code>decision_use_count</code> が 0 の段階では、<code
+        >importance</code
+      >
+      は実利用実績ではなく推定である。
+    </li>
+  </ul>
+  <h3 id="受け入れ条件-1">受け入れ条件</h3>
+  <ul>
+    <li>
+      LLM 出力 schema validation が <code>outcome</code> /
+      <code>actionTaken</code> 欠落時に失敗する。
+    </li>
+    <li>blank response reminder も新 shape を要求する。</li>
+    <li>既存 test hook の canonical fixture が新 shape を満たす。</li>
+    <li>自然文は日本語、enum / path / command / API name は原文保持される。</li>
+  </ul>
+  <h2 id="p2-スコア校正を実装する">P2: スコア校正を実装する</h2>
+  <h3 id="変更-2">変更</h3>
+  <p>
+    <code>episodeDistillerScoreSchema</code> の正規化は維持しつつ、保存前に score calibration helper
+    を通す。
+  </p>
+  <p>候補:</p>
+  <pre><code class="language-ts">function calibrateEpisodeScores(canonical: EpisodeDistillerCanonical) {
+  const scores = canonical.scores;
+  const lowActionSignal = !canonical.actionTaken.trim() &amp;&amp; !canonical.failedApproach.trim();
+  const hasOpenLoops = canonical.openLoops.length &gt; 0;
+  const singleSourceCap = scores.confidence &gt; 80 ? 80 : scores.confidence;
+  const valueScore = computeValueReviewScore(scores);
+
+  return {
+    ...scores,
+    confidence: singleSourceCap,
+    importance: Math.min(scores.importance, valueScore + 10, lowActionSignal ? 65 : 100),
+  };
+}
+</code></pre>
+  <p>設計方針:</p>
+  <ul>
+    <li>
+      <code>confidence</code> は source segment 単独なら 80 cap
+      を守る。複数独立根拠が明示される場合だけ 90 以上を許す。
+    </li>
+    <li>
+      <code>importance</code> は
+      <code>reusability</code
+      >、<code>decision_density</code>、<code>failure_value</code>、<code>evidence_quality</code>、<code
+        >compression_quality</code
+      >
+      からの value score と大きく乖離させない。
+    </li>
+    <li>
+      <code>failure_episode</code> は <code>failure_value</code> が高ければ importance
+      を高く保てる。
+    </li>
+    <li>
+      <code>actionTaken</code> が空、または単なる分類・fixture 変更だけのカードは importance
+      を抑える。
+    </li>
+  </ul>
+  <h3 id="受け入れ条件-2">受け入れ条件</h3>
+  <ul>
+    <li>小さな分類・fixture 変更の Episode が importance 85 以上にならない。</li>
+    <li>
+      <code>failure_episode</code> で causal clarity / failure value が高いものは importance 85
+      以上を維持できる。
+    </li>
+    <li>
+      <code>confidence</code> 90 以上は、metadata に複数独立根拠または明示的な justification
+      がある場合だけ。
+    </li>
+    <li>
+      score calibration の unit test が 0-1 float 入力、100 超過、負値、文字列数値をカバーする。
+    </li>
+  </ul>
+  <h2 id="p3-mcp--api--ui-の削除済み品質概念を掃除する">
+    P3: MCP / API / UI の削除済み品質概念を掃除する
+  </h2>
+  <h3 id="変更-3">変更</h3>
+  <p>
+    <code>fetch_episode</code> / <code>search_episodes</code> の返却、API detail、UI detail
+    から、EpisodeCard 永続スキーマに存在しない
+    <code>evidenceStatus</code> を品質指標として見せない。
+  </p>
+  <p>扱い:</p>
+  <ul>
+    <li><code>vibe_memories.evidence_status</code> は原典履歴の概念として残す。</li>
+    <li>
+      EpisodeCard の信頼度は <code>confidence</code>、再利用価値は
+      <code>importance</code>、原典有無は <code>refs</code> で表す。
+    </li>
+    <li>
+      raw evidence 未確認の注意は <code>antiApplicability.requiresRawEvidenceCheck</code> で表す。
+    </li>
+  </ul>
+  <h3 id="受け入れ条件-3">受け入れ条件</h3>
+  <ul>
+    <li>
+      <code>fetch_episode</code> の返却 JSON に top-level <code>evidenceStatus</code> がない。
+    </li>
+    <li>
+      <code>search_episodes</code> の返却 JSON に top-level <code>evidenceStatus</code> がない。
+    </li>
+    <li>
+      UI detail は <code>importance</code> / <code>confidence</code> / <code>refs</code> /
+      <code>requiresRawEvidenceCheck</code> を表示し、<code>evidenceStatus</code> を表示しない。
+    </li>
+    <li><code>vibe_memories.evidence_status</code> を参照する既存機能は壊さない。</li>
+  </ul>
+  <h2 id="p4-既存データ補正-cli">P4: 既存データ補正 CLI</h2>
+  <h3 id="方針">方針</h3>
+  <p>
+    既存 84 件は、可能な限り <code>metadata.episodeDistillation.canonical</code> から deterministic
+    に補正する。新たな LLM 再生成はデフォルトでは行わない。
+  </p>
+  <p>補正ルール:</p>
+  <ul>
+    <li><code>situation</code>: <code>canonical.context</code> に置換する。</li>
+    <li>
+      <code>outcome</code>: <code>canonical.outcome</code> があればそれを使う。ない場合は
+      <code>outcomeKind</code>、<code>openLoops</code>、<code>keyDecisions</code> から短い
+      deterministic 文を作る。
+    </li>
+    <li>
+      <code>action</code>: <code>canonical.actionTaken</code> があれば使う。なければ
+      <code>failedApproach</code> を使う。どちらもなければ空のままにせず、<code
+        >主要な実施内容は source metadata からは特定できません。</code
+      >
+      とするか、補正対象として report する。
+    </li>
+    <li><code>antiApplicability.openLoops</code>: <code>canonical.openLoops</code> を移す。</li>
+    <li>
+      <code>metadata.episodeDistillation.repair</code>: repair version、実行時刻、旧値 hash、dry-run
+      summary を残す。
+    </li>
+  </ul>
+  <p>CLI:</p>
+  <pre><code class="language-bash">CONTEXT_STILL_DB_BACKEND=sqlite bun run src/cli/repair-episode-card-quality.ts --dry-run
+CONTEXT_STILL_DB_BACKEND=sqlite bun run src/cli/repair-episode-card-quality.ts --write --backup
+</code></pre>
+  <h3 id="受け入れ条件-4">受け入れ条件</h3>
+  <ul>
+    <li>dry-run は対象件数、補正理由、変更予定フィールド別件数を表示する。</li>
+    <li>write 前に SQLite backup を作れる。</li>
+    <li>write は idempotent。2 回目の dry-run で変更予定が 0 件になる。</li>
+    <li>補正後、次の query が pass する。</li>
+  </ul>
+  <pre><code class="language-sql">select count(*) from episode_cards where outcome like &#39;vibe memory segment%&#39;;
+select count(*) from episode_cards where situation like &#39;%Intent:%&#39; or situation like &#39;%意図:%&#39;;
+select count(*) from episode_cards where length(trim(action)) = 0;
+</code></pre>
+  <p>期待値:</p>
+  <ul>
+    <li><code>outcome</code> 由来マーカー: 0</li>
+    <li><code>situation</code> intent 混入: 0</li>
+    <li><code>action</code> 空欄: 原則 0。source から特定できない場合だけ report に残す。</li>
+  </ul>
+  <h2 id="p5-ui-表示の微修正">P5: UI 表示の微修正</h2>
+  <h3 id="変更-4">変更</h3>
+  <p>Admin Episode detail では、本文欄を次の順で見せる。</p>
+  <ol>
+    <li>Situation</li>
+    <li>Observations</li>
+    <li>Action</li>
+    <li>Outcome</li>
+    <li>Lesson</li>
+    <li>Open loops at source time</li>
+    <li>Source refs</li>
+  </ol>
+  <p>
+    <code>Open loops at source time</code> は
+    <code>metadata.episodeDistillation.canonical.openLoops</code> または
+    <code>antiApplicability.openLoops</code> から読む。通常本文の <code>action</code> に混ぜない。
+  </p>
+  <h3 id="受け入れ条件-5">受け入れ条件</h3>
+  <ul>
+    <li>Detail view で source ref と open loops が別欄に見える。</li>
+    <li>
+      List view の Quality は <code>I:</code> / <code>C:</code> を維持してよいが、<code
+        >evidenceStatus</code
+      >
+      は表示しない。
+    </li>
+    <li>
+      空欄の <code>action</code> / <code>outcome</code> がある場合、UI
+      は空文字ではなく「未記録」と表示する。
+    </li>
+  </ul>
+  <h2 id="実装順序">実装順序</h2>
+  <ol>
+    <li>P0 schema / mapper を変更し、test fixture を新 canonical shape に更新する。</li>
+    <li>P1 prompt を新 schema と保存責務に合わせる。</li>
+    <li>P2 score calibration helper と unit test を追加する。</li>
+    <li>P3 MCP / API / UI の <code>evidenceStatus</code> 互換表示を掃除する。</li>
+    <li>P4 repair CLI を dry-run で作成し、ローカル DB で対象件数を確認する。</li>
+    <li>P4 write を backup 付きで実行し、補正後 query を確認する。</li>
+    <li>P5 UI detail の open loops 表示を整える。</li>
+    <li>repo-native verify を実行する。</li>
+  </ol>
+  <h2 id="検証手順">検証手順</h2>
+  <p>Representative tests:</p>
+  <pre><code class="language-bash">bunx vitest run test/mcp.tools.test.ts test/episode-card.repository.test.ts
+bun test ./test/sqlite-runtime-support.bun.ts
+CONTEXT_STILL_DB_BACKEND=sqlite bun run src/cli/repair-episode-card-quality.ts --dry-run
+</code></pre>
+  <p>Full gate:</p>
+  <pre><code class="language-bash">bun run verify
+</code></pre>
+  <p>Data checks:</p>
+  <pre><code class="language-bash">sqlite3 data/context-still-core.sqlite &quot;
+select count(*) as source_marker_outcomes
+from episode_cards
+where outcome like &#39;vibe memory segment%&#39;;
+
+select count(*) as intent_mixed_situations
+from episode_cards
+where situation like &#39;%Intent:%&#39; or situation like &#39;%意図:%&#39;;
+
+select count(*) as empty_actions
+from episode_cards
+where length(trim(action)) = 0;
+
+select confidence, count(*)
+from episode_cards
+group by confidence
+order by confidence;
+
+select importance, count(*)
+from episode_cards
+group by importance
+order by importance;
+&quot;
+</code></pre>
+  <h2 id="stop-conditions">Stop Conditions</h2>
+  <ul>
+    <li>
+      新 schema にした結果、既存 <code>episode_distiller_queue</code> の parse failure
+      が増える場合は、prompt と blank response reminder を先に修正し、repair CLI の write は止める。
+    </li>
+    <li>
+      deterministic repair で <code>outcome</code> を合理的に作れないカードが 10%
+      を超える場合は、write を止めて対象一覧をレビューする。
+    </li>
+    <li>
+      <code>fetch_episode</code> から <code>evidenceStatus</code> を消す変更で外部 contract test
+      が壊れる場合は、互換 field を <code>metadata.legacyEvidenceStatus</code> のような明示的 legacy
+      名に隔離する。
+    </li>
+    <li>
+      <code>importance</code> calibration により高価値 failure episode が 70
+      未満へ落ちる場合は、failure episode の補正式を見直す。
+    </li>
+  </ul>
+  <h2 id="完了条件">完了条件</h2>
+  <ul>
+    <li>新規生成 EpisodeCard の <code>outcome</code> が由来マーカーではない。</li>
+    <li>新規生成 EpisodeCard の <code>situation</code> に intent label が混入しない。</li>
+    <li>
+      <code>action</code> は実施内容または避けた approach を表し、open loops は別の場所に残る。
+    </li>
+    <li>
+      <code>fetch_episode</code> / <code>search_episodes</code> は EpisodeCard の top-level
+      <code>evidenceStatus</code> を返さない。
+    </li>
+    <li>既存 DB の補正 dry-run / write が idempotent に通る。</li>
+    <li><code>bun run verify</code> が通る。</li>
+  </ul>
+</article>

@@ -1,0 +1,1215 @@
+<article lang="ja">
+  <h1 id="security-intelligence-integration-concept">Security Intelligence Integration Concept</h1>
+  <h2 id="status">Status</h2>
+  <ul>
+    <li>Status: Discussion Draft / Shared Concept</li>
+    <li>Concept ID: <code>security-intelligence-integration-v1</code></li>
+    <li>Version: <code>0.1</code></li>
+    <li>Last updated: 2026-08-15</li>
+    <li>
+      Applies to: <code>vulnWorkbench</code>, <code>NightWorkers</code>, <code>contextStill</code>
+    </li>
+  </ul>
+  <p>
+    この文書は、AIを含むソフトウェア開発において、実装前の制約提示、実装後の検証、証拠の保存、再利用可能な知識への蒸留を一つの循環として扱うための共通コンセプトを定義する。
+  </p>
+  <p>
+    同じ内容を3つのrepositoryへ配置し、各projectが独自解釈で責務を拡張しないための共有境界とする。変更する場合は、3つのcopyを同じConcept
+    IDとversionへ揃える。
+  </p>
+  <p>
+    この文書は実装計画ではない。database schema、API、MCP tool、Ontology schema、LLM
+    prompt、scanner追加、default activationを確定しない。ただし、後続の実装計画が守るべき責務、trust
+    boundary、段階導入、評価方法を定義する。
+  </p>
+  <p>
+    既存文書と責務境界が衝突する場合、Security Intelligence
+    Integrationに関する限り、この文書の境界を優先する。各project固有のruntime、module、database、release
+    policyは、それぞれのproject文書を引き続き正本とする。
+  </p>
+  <hr />
+  <h2 id="section-1-背景">1. 背景</h2>
+  <p>
+    AIによるコード生成能力が向上すると、人間が短時間で把握できる量を超える変更が生成される。問題はAI生成コードだけに限定されない。人間、automation、dependency
+    update、migration、configuration
+    changeを含め、すべての変更は検証されるまで未信頼として扱う必要がある。
+  </p>
+  <p>変更には次のようなSecurity Riskがある。</p>
+  <ul>
+    <li>Authentication / Authorization Boundaryの欠落</li>
+    <li>Tenant Isolationの破壊</li>
+    <li>Sensitive Data Flowの変化</li>
+    <li>Injection、secret leakage、unsafe external I/O</li>
+    <li>Dependency / Supply Chain Riskの追加</li>
+    <li>Business Logic上の不正な状態遷移</li>
+    <li>Idempotency、Replay Protection、Privilege Separationの破壊</li>
+    <li>Security Invariantの意図しない変更</li>
+    <li>LLMによる誤解、confabulation、過剰な確信</li>
+    <li>生成量の増加によるreview coverageの低下</li>
+  </ul>
+  <p>必要なのは、AIを信用するための仕組みではない。</p>
+  <blockquote>
+    <p>
+      変更主体を信用しなくても、検証範囲、証拠、未確認事項、残余Riskを説明できるVerification
+      Infrastructureを構築する。
+    </p>
+  </blockquote>
+  <p>
+    これは「脆弱性を一件も見逃さない」「現在のsystemが安全である」と証明する構想ではない。宣言されたscope、revision、threat
+    model、tool
+    capability、coverageの範囲で、何を確認でき、何を確認できなかったかを明示する構想である。
+  </p>
+  <hr />
+  <h2 id="section-2-目標">2. 目標</h2>
+  <p>中心目標は、次のSecurity Learning Loopを形成することである。</p>
+  <pre><code class="language-text">Project declarations + Durable knowledge
+                 ↓
+Task-scoped security context
+                 ↓
+Implementation planning and execution
+                 ↓
+Revision-bound observation and verification
+                 ↓
+Evidence + limitations + residual risk
+                 ↓
+Reusable knowledge candidates + feedback
+                 ↓
+Validated durable knowledge
+</code></pre>
+  <p>このloopによって目指す状態は次の通り。</p>
+  <ul>
+    <li>実装前に壊してはいけないSecurity BoundaryとInvariantを提示できる。</li>
+    <li>変更内容に応じて必要なverificationを選びつつ、最低限のbaselineを維持できる。</li>
+    <li>LLMの説明ではなく、再確認可能なEvidenceを中心にVerdictを構成できる。</li>
+    <li>過去のFindingと修正結果から再利用可能なLessonを作れる。</li>
+    <li>Knowledgeが実際に役立ったか、害を与えたかを追跡できる。</li>
+    <li>systemが不明なことを、成功や安全として表現しない。</li>
+  </ul>
+  <p>
+    「コード生成量が増えてもSecurity Riskを比例増加させない」はNorth Starであり、そのままacceptance
+    criterionにはしない。実際の採否は、coverage、見逃し、誤警告、time-to-evidence、再発率、verification
+    costなど観測可能な指標で判断する。
+  </p>
+  <hr />
+  <h2 id="section-3-基本原則">3. 基本原則</h2>
+  <h3 id="section-31-safetyではなくassuranceを返す">3.1 SafetyではなくAssuranceを返す</h3>
+  <p>systemは<code>safe</code>を返さない。最低限、次を返す。</p>
+  <ul>
+    <li>対象projectとrevision</li>
+    <li>declared scopeとthreat model</li>
+    <li>実行したverification</li>
+    <li>得られたEvidence</li>
+    <li>coverageとcoverage gap</li>
+    <li>assumptionsとunknowns</li>
+    <li>residual risk</li>
+    <li>verdictの根拠と有効期限</li>
+  </ul>
+  <p>Zero Findingは<code>no_findings_observed</code>であり、安全の証明ではない。</p>
+  <h3 id="section-32-evidenceをsource-of-truthにする">3.2 EvidenceをSource of Truthにする</h3>
+  <p>
+    LLMはHypothesis、Planning、Semantic
+    Interpretation、Explanationを担当できるが、Observationを作ったことにはしない。
+  </p>
+  <p>一次Evidenceの例:</p>
+  <ul>
+    <li>scanner artifact</li>
+    <li>source location</li>
+    <li>deterministic structure fact</li>
+    <li>call / data-flow trace</li>
+    <li>runtime response</li>
+    <li>reproduction result</li>
+    <li>property violation</li>
+    <li>test result</li>
+    <li>formal proof / counterexample</li>
+    <li>tool、rule、input、revisionのprovenance</li>
+  </ul>
+  <p>
+    LLM review、semantic similarity、risk forecast、historical
+    lessonは補助情報であり、単独ではconfirmed findingを作らない。
+  </p>
+  <h3 id="section-33-observationdeclarationinferenceknowledgeを分離する">
+    3.3 Observation、Declaration、Inference、Knowledgeを分離する
+  </h3>
+  <pre><code class="language-text">Observed:
+  revision RでEndpoint EからAdminGuardが見つからない。
+
+Declared:
+  Endpoint Eはadmin authorizationを必須とする。
+
+Inferred:
+  Authorization Boundaryが削除された可能性が高い。
+
+Knowledge:
+  mutating admin endpointではauthorization boundaryを保持する。
+</code></pre>
+  <p>
+    ObservedをDeclaredへ自動昇格しない。InferredをFactとして表示しない。Knowledgeを現在revisionのEvidenceとして扱わない。
+  </p>
+  <h3 id="section-34-full-graphではなくpurpose-bound-projectionを使う">
+    3.4 Full GraphではなくPurpose-bound Projectionを使う
+  </h3>
+  <p>
+    AST、Call Graph、Control Flow、Data
+    Flowの全量を永続的な共通Knowledgeへしない。Security判断に必要な部分を、対象revisionと目的に結び付けたbounded
+    projectionとして扱う。
+  </p>
+  <h3 id="section-35-各systemは独立してdegradeできる">3.5 各systemは独立してdegradeできる</h3>
+  <p>
+    3つのproductは相互のSQLiteやprivate
+    schemaを直接読まない。一つが停止しても、他の通常機能までsilent
+    failureさせない。利用できない情報はlimitationとして明示する。
+  </p>
+  <h3 id="section-36-policy-boundaryをllmへ委譲しない">3.6 Policy BoundaryをLLMへ委譲しない</h3>
+  <p>次はserver / host側の構造的契約として強制する。</p>
+  <ul>
+    <li>authorization</li>
+    <li>credential access</li>
+    <li>target scope</li>
+    <li>active scan permission</li>
+    <li>network / egress policy</li>
+    <li>filesystem boundary</li>
+    <li>timeout、CPU、memory、request、token budget</li>
+    <li>revision、idempotency、ownership</li>
+    <li>approvalとRules of Engagement</li>
+  </ul>
+  <h3 id="section-37-段階導入とvalue-proofを必須にする">3.7 段階導入とValue Proofを必須にする</h3>
+  <p>
+    大きなOntology、万能Planner、完全なData Flow、Formal Verificationから開始しない。小さなuse
+    caseでbaselineと比較し、価値と安全性が確認できた段階だけ次へ進む。
+  </p>
+  <hr />
+  <h2 id="section-4-system-model">4. System Model</h2>
+  <p>本構想は、3つのproductとproject側のdeclaration sourceを分離する。</p>
+  <pre><code class="language-text">Target Repository / future Ontology Core
+  declared semantics, owners, invariants, policies
+                         │
+contextStill             │             vulnWorkbench
+  reusable knowledge ────┼───────────&gt; current observations
+  rules / procedures     │             security projection
+  lessons / heuristics   │             verification / evidence
+             │           │                       │
+             └──────────&gt; NightWorkers &lt;─────────┘
+                          task / run authority
+                          planning / implementation
+                          admission / orchestration
+                          outcome feedback
+</code></pre>
+  <p>
+    Ontology Coreは将来必要条件を満たした場合の独立componentである。それまでは、repository-owned
+    manifest、policy、test、documentationなどがProject Declarationの正本となる。
+  </p>
+  <hr />
+  <h2 id="section-5-responsibility-boundary">5. Responsibility Boundary</h2>
+  <table>
+    <caption>
+      Table: 5. Responsibility Boundary
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Actor</th>
+        <th scope="col">Owns</th>
+        <th scope="col">Must not own</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Target Repository / Ontology Core</td>
+        <td>project固有のdomain意味、owner、security invariant、policy、declaration revision</td>
+        <td>scanner observationの改変、task/run execution</td>
+      </tr>
+      <tr>
+        <td>vulnWorkbench</td>
+        <td>
+          source/security observation、revision-bound Security Projection、scanner
+          execution、evidence、coverage、finding、security assessment
+        </td>
+        <td>canonical project meaning、task queue、patch適用、Knowledgeのactive化</td>
+      </tr>
+      <tr>
+        <td>NightWorkers</td>
+        <td>
+          goal interpretation、Task/Run、plan、queue admission、implementation、tool
+          orchestration、completionとfeedback
+        </td>
+        <td>scanner factの捏造、canonical Knowledge lifecycle、vulnWorkbench DBの直接参照</td>
+      </tr>
+      <tr>
+        <td>contextStill</td>
+        <td>
+          reusable rule/procedure/pattern/lesson/heuristic、candidate
+          review、dedupe、retrieval、compile/decision feedback
+        </td>
+        <td>
+          current program state、scanner execution、task admission、project declarationの正本化
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="section-51-vulnworkbench">5.1 vulnWorkbench</h3>
+  <p>vulnWorkbenchはSecurity Investigation / Verification Engineである。</p>
+  <p>担当すること:</p>
+  <ul>
+    <li>repository、diff、runtime、dependency、configurationの観測</li>
+    <li>scannerのbounded executionとresult normalization</li>
+    <li>Diagnostic Evidence Graph</li>
+    <li>revision-bound Operational Security Projection</li>
+    <li>Security Semantic Diff</li>
+    <li>Risk Forecast candidate</li>
+    <li>policy envelope内のSecurity Assessment Plan</li>
+    <li>Evidence-backed finding、coverage、limitation、residual risk</li>
+    <li>reusable Knowledge Candidateの材料生成</li>
+  </ul>
+  <p>担当しないこと:</p>
+  <ul>
+    <li>Project Ontologyのcanonical lifecycle</li>
+    <li>repository固有Invariantの正本管理</li>
+    <li>NightWorkersのTask/Run/Queue管理</li>
+    <li>source patchの自動適用</li>
+    <li>contextStill Knowledgeのactive / rejected判断</li>
+    <li>LLM判断だけによるfinding確定</li>
+  </ul>
+  <h3 id="section-52-nightworkers">5.2 NightWorkers</h3>
+  <p>NightWorkersはExecution Orchestratorである。</p>
+  <p>担当すること:</p>
+  <ul>
+    <li>user goalとTaskの解釈</li>
+    <li>plan、Todo、Run、worktree、queue、execution authority</li>
+    <li>project declaration、contextStill context、vulnWorkbench assessmentのtask-scoped合成</li>
+    <li>implementation前後のsecurity requirement保持</li>
+    <li>approved interfaceを通じたscan / verification依頼</li>
+    <li>
+      採用済みFeature Planまたは明示project policyが要求する場合のsecurity
+      resultを含むcompletion、needs-human、blocked判断
+    </li>
+    <li>実際に使ったKnowledge、実行したverification、結果のfeedback</li>
+  </ul>
+  <p>担当しないこと:</p>
+  <ul>
+    <li>scanner artifactを独自にconfirmed findingへ変換すること</li>
+    <li>vulnWorkbenchのprivate databaseを読むこと</li>
+    <li>contextStillのcandidateを直接active化すること</li>
+    <li>observed relationをcanonical declarationへ昇格すること</li>
+    <li>policyで許可されていないtool権限をAgentへ与えること</li>
+  </ul>
+  <p>
+    Security evidence、verification、artifactが存在すること自体を、すべてのRunに対する固定completion
+    gateにはしない。Userが採用したTask / Feature Planまたは明示的なproject policyにSecurity
+    Contractが含まれる場合に限り、そのcontractをRunの完了条件へ反映する。
+  </p>
+  <h3 id="section-53-contextstill">5.3 contextStill</h3>
+  <p>contextStillはDurable Knowledge Control Planeである。</p>
+  <p>担当すること:</p>
+  <ul>
+    <li>Rule、Procedure、Pattern、Invariant Lesson、Verification Heuristicの蒸留</li>
+    <li>source / evidence referenceとapplicabilityの保持</li>
+    <li>candidate lifecycle、dedupe、merge、deprecation</li>
+    <li>taskに必要な最小Contextのcompile</li>
+    <li>positive / negative guardrail、past Episodeの区別</li>
+    <li>exposure、selection、use、outcome、feedbackの記録</li>
+    <li>Knowledge usefulnessとharmの評価</li>
+  </ul>
+  <p>担当しないこと:</p>
+  <ul>
+    <li>AST、Full Graph、scanner raw outputの恒久保存</li>
+    <li>current revisionのSecurity Verdict</li>
+    <li>repository固有declarationのcanonical owner</li>
+    <li>scannerやverification commandの実行</li>
+    <li>NightWorkersのTask/Run/Queue判断</li>
+  </ul>
+  <p>
+    Project-scoped knowledgeを保持する場合も、canonical declarationとして扱わない。<code
+      >PaymentService requires ManagerGuard</code
+    >のようなproject固有の必須条件はrepositoryまたはOntology
+    Coreを正本とし、contextStillはrevision付き参照またはderived lessonとして扱う。
+  </p>
+  <h3 id="section-54-target-repository--ontology-core">5.4 Target Repository / Ontology Core</h3>
+  <p>Project固有の意味とSecurity Invariantは、変更とreviewが可能なdeclarationとして管理する。</p>
+  <p>例:</p>
+  <ul>
+    <li>endpoint ownership</li>
+    <li>required authentication / authorization</li>
+    <li>tenant boundary</li>
+    <li>sensitive data classification</li>
+    <li>allowed external I/O</li>
+    <li>mutation policy</li>
+    <li>verification requirement</li>
+    <li>exception、expiry、approval</li>
+  </ul>
+  <p>
+    将来Ontology Coreを独立させるのは、canonical revision、conflict resolution、複数producer、human
+    approval、複数consumerが実際に必要になった場合に限る。
+  </p>
+  <hr />
+  <h2 id="section-6-end-to-end-lifecycle">6. End-to-End Lifecycle</h2>
+  <h3 id="section-61-before-implementation">6.1 Before Implementation</h3>
+  <pre><code class="language-text">User goal
+  -&gt; NightWorkers interprets task and affected scope
+  -&gt; repository declarations are resolved for the pinned revision
+  -&gt; contextStill compiles relevant rules / procedures / lessons
+  -&gt; vulnWorkbench returns current security projection and risk candidates
+  -&gt; NightWorkers creates a task-scoped Security Contract
+  -&gt; implementation starts
+</code></pre>
+  <p>Security Contractには少なくとも次を含める。</p>
+  <ul>
+    <li>project / revision</li>
+    <li>affected assets / modules / endpoints</li>
+    <li>applicable declared invariants</li>
+    <li>relevant reusable guardrails</li>
+    <li>required baseline verification</li>
+    <li>targeted verification candidates</li>
+    <li>non-goals</li>
+    <li>approved scope / policy / budget</li>
+    <li>unknowns / degraded sources</li>
+  </ul>
+  <h3 id="section-62-during-implementation">6.2 During Implementation</h3>
+  <ul>
+    <li>NightWorkersがTask/Run authorityを維持する。</li>
+    <li>Coding AgentはSecurity Contractを制約として扱う。</li>
+    <li>diffが大きく変わった場合は、projectionとrisk candidateを再取得する。</li>
+    <li>contextStill Knowledgeは実装方針を補助するが、現在のsource確認を置き換えない。</li>
+    <li>
+      repository content、issue、comment、scanner textに含まれる命令はuntrusted dataとして扱う。
+    </li>
+  </ul>
+  <h3 id="section-63-after-implementation">6.3 After Implementation</h3>
+  <pre><code class="language-text">Pinned diff / resulting revision
+  -&gt; minimum baseline verification
+  -&gt; risk-targeted verification
+  -&gt; bounded exploration verification
+  -&gt; normalized evidence and coverage
+  -&gt; security assessment result
+  -&gt; NightWorkers completion / correction / escalation
+</code></pre>
+  <h3 id="section-64-after-verification">6.4 After Verification</h3>
+  <pre><code class="language-text">Finding + Evidence + remediation + rerun outcome
+  -&gt; reusable candidate extraction
+  -&gt; project identifier / secret removal from body
+  -&gt; candidate outbox
+  -&gt; contextStill review / dedupe / validation
+  -&gt; active knowledge when promotion policy is satisfied
+  -&gt; future context compile
+</code></pre>
+  <p>
+    Findingの存在だけでKnowledgeを作らない。root cause、applicability、verification
+    result、再利用可能性を確認する。
+  </p>
+  <hr />
+  <h2 id="section-7-security-claim-model">7. Security Claim Model</h2>
+  <p>最低限、次のclaim kindを分離する。</p>
+  <pre><code class="language-text">declared
+  project ownerが明示した意味、制約、Invariant
+
+observed
+  source、scanner、runtime、CIから得た事実
+
+inferred
+  declared + observed + ruleから導出した候補
+
+task_projection
+  一つのTask/Runのために選択した一時的context
+</code></pre>
+  <p>各claimは、可能な限り次を持つ。</p>
+  <pre><code class="language-text">claimId
+subject / predicate / object
+claimKind
+projectRef
+sourceRevision
+provenance
+evidenceRefs
+confidence
+coverage
+observedAt / validFrom / validTo
+status
+producerVersion
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>wrong project / wrong revisionはfail closedにする。</li>
+    <li>inferred claimにはinput claim refsとinference ruleを付ける。</li>
+    <li>graph edgeが存在することを脆弱性の証明にしない。</li>
+    <li>stale claimをcurrent factとしてsilent reuseしない。</li>
+    <li>conflictとambiguityを上書きで消さない。</li>
+    <li>LLM outputからdeclared / observed claimを直接作らない。</li>
+  </ul>
+  <hr />
+  <h2 id="section-8-operational-security-projection">8. Operational Security Projection</h2>
+  <p>
+    vulnWorkbenchが持つのは、canonical Project Ontologyではなく、current revisionに対するOperational
+    Security Projectionである。
+  </p>
+  <h3 id="section-81-candidate-nodes">8.1 Candidate Nodes</h3>
+  <ul>
+    <li>File / Symbol / Function / Module</li>
+    <li>Endpoint / Handler / Worker</li>
+    <li>Principal / Identity / Role</li>
+    <li>Data Asset / Sensitive Data / Secret</li>
+    <li>Database / Table / Queue / External Service</li>
+    <li>Dependency / Build / Deployment / Configuration</li>
+    <li>Authentication / Authorization / Tenant / Trust Boundary</li>
+    <li>Security Control / Sanitizer / Validator</li>
+    <li>Security Property / Finding / Evidence / Coverage Gap</li>
+  </ul>
+  <h3 id="section-82-candidate-relations">8.2 Candidate Relations</h3>
+  <ul>
+    <li>CALLS / REFERENCES / IMPORTS</li>
+    <li>READS / WRITES / MUTATES</li>
+    <li>EXPOSES / FLOWS_TO</li>
+    <li>GUARDED_BY / AUTHORIZED_BY</li>
+    <li>SANITIZED_BY / VALIDATED_BY</li>
+    <li>DEPENDS_ON / DEPLOYED_AS</li>
+    <li>CROSSES_BOUNDARY</li>
+    <li>AFFECTED_BY / EVIDENCED_BY / VERIFIED_BY</li>
+  </ul>
+  <h3 id="section-83-projection-rules">8.3 Projection Rules</h3>
+  <ul>
+    <li>Security-relevantなsubgraphだけを保持する。</li>
+    <li>node / edgeにsource revision、provenance、confidence、coverageを持たせる。</li>
+    <li>raw source bodyやsecretをagent-facing payloadへ含めない。</li>
+    <li>full graphの構築完了をscan開始条件にしない。</li>
+    <li>analyzer不足は<code>unavailable</code>や<code>degraded</code>として表現する。</li>
+    <li>source revision変更時は再計算またはstale化する。</li>
+  </ul>
+  <hr />
+  <h2 id="section-9-security-semantic-diff">9. Security Semantic Diff</h2>
+  <p>Line Diffに加え、Security上の意味の変化を候補として抽出する。</p>
+  <p>例:</p>
+  <pre><code class="language-text">Before: Endpoint E GUARDED_BY AdminGuard
+After:  Endpoint E has no observed guard
+
+Candidate:
+  authorization_boundary_removed
+</code></pre>
+  <p>分類候補:</p>
+  <ul>
+    <li>introduced</li>
+    <li>worsened</li>
+    <li>unchanged</li>
+    <li>resolved</li>
+    <li>coverage_lost</li>
+    <li>unknown</li>
+  </ul>
+  <p>
+    <code>guardが観測されない</code>ことと<code>guardが存在しない</code>ことを区別する。analyzer
+    coverageが低下した場合は<code>resolved</code>ではなく<code>coverage_lost</code>または<code>unknown</code>とする。
+  </p>
+  <p>初期use caseは狭くする。</p>
+  <ol>
+    <li>Authorization guardの追加・削除・適用範囲変更</li>
+    <li>Dependency追加・version変更とSCA requirement</li>
+  </ol>
+  <p>
+    Tenant Isolation、business logic、full interprocedural data
+    flowは、上記の価値とcorrectnessが確認された後の候補とする。
+  </p>
+  <hr />
+  <h2 id="section-10-security-risk-forecast">10. Security Risk Forecast</h2>
+  <p>Risk Forecastは脆弱性判定ではなく、verification優先度を決めるためのtriage signalである。</p>
+  <p>入力候補:</p>
+  <ul>
+    <li>Task objectiveとplanned change surface</li>
+    <li>touched boundary / sensitive asset</li>
+    <li>fan-out / entrypoint / dependency delta</li>
+    <li>declared invariants</li>
+    <li>historical finding / recurrence</li>
+    <li>analyzer coverage</li>
+    <li>previous verification yield</li>
+  </ul>
+  <p>出力候補:</p>
+  <ul>
+    <li>risk factors</li>
+    <li>affected assets</li>
+    <li>required baseline</li>
+    <li>targeted verification candidates</li>
+    <li>confidence / calibration band</li>
+    <li>missing information</li>
+    <li>forecast provenance</li>
+  </ul>
+  <p>高risk forecastだけを詳しく検証し、低risk forecastを無検証にする設計にはしない。</p>
+  <hr />
+  <h2 id="section-11-security-assessment-planner">11. Security Assessment Planner</h2>
+  <p>LLMはScannerの代替ではなく、policy-constrained Investigation Plannerとして利用できる。</p>
+  <p>担当できること:</p>
+  <ul>
+    <li>Security Contextの要約</li>
+    <li>Hypothesis生成</li>
+    <li>Threat candidate生成</li>
+    <li>verification候補の選択と順序付け</li>
+    <li>Evidence不足の指摘</li>
+    <li>limitationとresidual riskの説明</li>
+    <li>re-plan candidateの作成</li>
+  </ul>
+  <p>担当できないこと:</p>
+  <ul>
+    <li>target scopeの拡張</li>
+    <li>credentialの選択・復号・表示</li>
+    <li>active scanの許可</li>
+    <li>server policyの緩和</li>
+    <li>scanner outputの改変</li>
+    <li>verification未実行を成功扱いすること</li>
+    <li>LLM仮説だけでfindingをconfirmedにすること</li>
+  </ul>
+  <p>
+    NightWorkersはTask/Run全体を統括する。vulnWorkbenchのSecurity Assessment
+    Plannerは、承認済みscopeとpolicy envelope内でsecurity verification
+    planを作成・実行する。両者が独立したqueue authorityを持たないようにする。
+  </p>
+  <hr />
+  <h2 id="section-12-verification-strategy">12. Verification Strategy</h2>
+  <p>
+    全verificationを毎回実行する方式と、Plannerが選んだverificationだけを実行する方式のどちらにも寄せ切らない。
+  </p>
+  <pre><code class="language-text">Always-on minimum baseline
+  + Risk-targeted verification
+  + Bounded exploration budget
+</code></pre>
+  <h3 id="section-121-minimum-baseline">12.1 Minimum Baseline</h3>
+  <p>project / technologyごとに、変更内容に関係なく維持する最小確認を定義する。</p>
+  <p>例:</p>
+  <ul>
+    <li>secret detection</li>
+    <li>dependency / lockfile check</li>
+    <li>owned SAST baseline</li>
+    <li>required unit / integration security tests</li>
+    <li>configuration / policy validation</li>
+    <li>coverage integrity check</li>
+  </ul>
+  <h3 id="section-122-targeted-verification">12.2 Targeted Verification</h3>
+  <p>例:</p>
+  <pre><code class="language-text">Auth change
+  -&gt; authorization matrix
+  -&gt; related SAST
+  -&gt; targeted DAST / replay test
+
+Dependency change
+  -&gt; SCA
+  -&gt; provenance / license / supply-chain policy
+
+Parser change
+  -&gt; property-based test / fuzzing
+
+IaC change
+  -&gt; IaC scan / policy check
+</code></pre>
+  <h3 id="section-123-exploration-budget">12.3 Exploration Budget</h3>
+  <p>
+    Risk modelが知らないclassの問題を検出するため、少量の固定またはrandomized
+    explorationを残す。targeted pathとbaselineとの差分をshadow evaluationできるようにする。
+  </p>
+  <h3 id="section-124-budget-selection">12.4 Budget Selection</h3>
+  <p>Plannerは次のresource limit内で動く。</p>
+  <ul>
+    <li>wall-clock time</li>
+    <li>CPU / memory</li>
+    <li>network requests</li>
+    <li>tool runs</li>
+    <li>artifact size</li>
+    <li>LLM tokens / cost</li>
+  </ul>
+  <p>
+    <code>Security Information Gain</code>を直接観測できる前提にしない。初期は次のproxyで比較する。
+  </p>
+  <ul>
+    <li>new coverage</li>
+    <li>previously unverified invariantの確認数</li>
+    <li>evidence strengthの改善</li>
+    <li>historical yield</li>
+    <li>false-positive reduction</li>
+    <li>execution time / failure rate</li>
+    <li>rerun reproducibility</li>
+  </ul>
+  <hr />
+  <h2 id="section-13-security-invariant-and-contract">13. Security Invariant and Contract</h2>
+  <p>Invariantのsourceを区別する。</p>
+  <h3 id="project-specific-declared-invariant">Project-specific Declared Invariant</h3>
+  <p>repositoryまたはOntology Coreが正本を持つ。</p>
+  <pre><code class="language-text">Different tenant
+  -&gt; resource access must be denied
+</code></pre>
+  <pre><code class="language-text">Non-admin principal
+  -&gt; cannot execute admin mutation
+</code></pre>
+  <h3 id="reusable-knowledge">Reusable Knowledge</h3>
+  <p>contextStillが一般化されたrule / procedureとして保持する。</p>
+  <pre><code class="language-text">Request-provided tenant identifiers must be compared with authenticated identity.
+</code></pre>
+  <h3 id="observed-property-candidate">Observed Property Candidate</h3>
+  <p>vulnWorkbenchがcurrent code / runtimeから候補を生成する。</p>
+  <pre><code class="language-text">Endpoint E appears to reject cross-tenant object access in test run T.
+</code></pre>
+  <p>
+    NightWorkersはこれらをTask-scoped Security Contractへcompileする。Contractはcanonical
+    invariantを複製せず、source refとrevisionを保持する。
+  </p>
+  <hr />
+  <h2 id="section-14-knowledge-distillation">14. Knowledge Distillation</h2>
+  <h3 id="section-141-candidate-types">14.1 Candidate Types</h3>
+  <ul>
+    <li>Security Rule</li>
+    <li>Verification Procedure</li>
+    <li>Vulnerability Pattern</li>
+    <li>Generalized Invariant Lesson</li>
+    <li>Historical Lesson</li>
+    <li>Verification Heuristic</li>
+    <li>False-positive Lesson</li>
+    <li>Negative Guardrail</li>
+  </ul>
+  <h3 id="section-142-candidate-requirements">14.2 Candidate Requirements</h3>
+  <ul>
+    <li>LLM推測だけではないEvidence Reference</li>
+    <li>applicable domain / technology / change type</li>
+    <li>project固有identifierを除いたbody</li>
+    <li>source projectとrevisionのprovenance metadata</li>
+    <li>confidenceとknown limitation</li>
+    <li>deterministic fingerprint</li>
+    <li>secret / credential / private pathの除去</li>
+    <li>downstream registration outcomeの追跡</li>
+  </ul>
+  <h3 id="section-143-lifecycle">14.3 Lifecycle</h3>
+  <pre><code class="language-text">candidate
+  -&gt; quarantined / draft
+  -&gt; validated
+  -&gt; active
+  -&gt; deprecated / superseded / rejected
+</code></pre>
+  <p>
+    LLMが生成したcandidateを自動的にactiveにしない。高影響のnegative
+    guardrail、verification省略heuristic、cross-project ruleは、Evidenceとpromotion
+    policyを満たすまでdraftに留める。
+  </p>
+  <h3 id="section-144-feedback-and-poisoning-control">14.4 Feedback and Poisoning Control</h3>
+  <p>次を別々に記録する。</p>
+  <ul>
+    <li>retrieved / exposed</li>
+    <li>selected</li>
+    <li>actually used</li>
+    <li>verification outcome</li>
+    <li>prevented recurrence candidate</li>
+    <li>false warning / harmful guidance</li>
+    <li>user override</li>
+    <li>regression after use</li>
+  </ul>
+  <p>
+    system自身のLLM verdictをground truthとして再学習しない。scanner、test、reproduction、human
+    correction、external
+    benchmarkなど独立したsignalを使う。Knowledgeの利用頻度だけで正しさを決めない。
+  </p>
+  <hr />
+  <h2 id="section-15-information-lifecycle">15. Information Lifecycle</h2>
+  <h3 id="long-lived">Long-lived</h3>
+  <ul>
+    <li>validated Rule / Procedure / Pattern</li>
+    <li>generalized Lesson / Heuristic</li>
+    <li>promotion / deprecation history</li>
+  </ul>
+  <p>主にcontextStill。</p>
+  <h3 id="revision-bound--medium-lived">Revision-bound / Medium-lived</h3>
+  <ul>
+    <li>Operational Security Projection</li>
+    <li>Finding / Reproduction / Assessment</li>
+    <li>Security Graph Delta</li>
+    <li>verification Evidence / coverage</li>
+    <li>Task-scoped Security Contract</li>
+  </ul>
+  <p>主にvulnWorkbenchとNightWorkers。</p>
+  <h3 id="short-lived--cache">Short-lived / Cache</h3>
+  <ul>
+    <li>raw LSP response</li>
+    <li>temporary call / data-flow trace</li>
+    <li>fuzzing intermediate data</li>
+    <li>temporary hypothesis</li>
+    <li>planner scratch state</li>
+  </ul>
+  <p>主にvulnWorkbench。必要なprovenanceとbounded artifactを除き、無期限保存しない。</p>
+  <h3 id="recomputable">Recomputable</h3>
+  <ul>
+    <li>risk score</li>
+    <li>blast radius candidate</li>
+    <li>reachability classification</li>
+    <li>semantic ranking</li>
+    <li>cost / information-gain proxy</li>
+  </ul>
+  <p>input revisionとproducer versionを保持し、必要時に再計算する。</p>
+  <p>保存しないもの:</p>
+  <ul>
+    <li>LLM chain-of-thought</li>
+    <li>raw secret / credential</li>
+    <li>無制限のsource全文</li>
+    <li>project間共有のためだけのraw scanner output複製</li>
+    <li>provenanceのないKnowledge</li>
+  </ul>
+  <hr />
+  <h2 id="section-16-integration-contracts">16. Integration Contracts</h2>
+  <p>
+    ここではAPI名やtransportを固定せず、意味上のcontractだけを定義する。CLI / JSONをprimary
+    automation pathとし、MCPはbounded discovery / retrieval adapterとして利用できる。
+  </p>
+  <h3 id="section-161-security-context-request">16.1 Security Context Request</h3>
+  <p>NightWorkersからcontextStillへの入力候補:</p>
+  <ul>
+    <li>goal</li>
+    <li>change types</li>
+    <li>domains / technologies</li>
+    <li>project reference</li>
+    <li>task / run correlation reference</li>
+    <li>bounded security topics</li>
+  </ul>
+  <p>出力候補:</p>
+  <ul>
+    <li>rules / procedures / negative guardrails</li>
+    <li>applicability</li>
+    <li>source refs</li>
+    <li>limitations</li>
+    <li>compile run ID</li>
+  </ul>
+  <h3 id="section-162-security-assessment-request">16.2 Security Assessment Request</h3>
+  <p>NightWorkersからvulnWorkbenchへの入力候補:</p>
+  <ul>
+    <li>canonical project path or project ref</li>
+    <li>pinned revision / diff ref</li>
+    <li>approved profile / policy ref</li>
+    <li>task-scoped Security Contract refs</li>
+    <li>budget</li>
+    <li>correlation / idempotency key</li>
+  </ul>
+  <p>出力候補:</p>
+  <ul>
+    <li>assessment status</li>
+    <li>observed revision</li>
+    <li>findings / evidence refs</li>
+    <li>coverage / coverage gaps</li>
+    <li>verification performed / skipped with reason</li>
+    <li>residual risk</li>
+    <li>report / handoff reference</li>
+    <li>retryability / degraded reason</li>
+  </ul>
+  <h3 id="section-163-knowledge-candidate-batch">16.3 Knowledge Candidate Batch</h3>
+  <p>vulnWorkbenchまたはapproved bridgeからcontextStillへの入力候補:</p>
+  <ul>
+    <li>candidate type / polarity</li>
+    <li>generalized statement</li>
+    <li>applicability</li>
+    <li>evidence / artifact refs</li>
+    <li>source project / revision metadata</li>
+    <li>fingerprint / payload hash</li>
+    <li>confidence / limitations</li>
+  </ul>
+  <p>
+    mutationは明示的なoutboxとidempotencyを使う。送信成功前に登録済みと扱わない。contextStill停止時もscan
+    completionを失わせない。
+  </p>
+  <h3 id="section-164-usage-and-outcome-feedback">16.4 Usage and Outcome Feedback</h3>
+  <p>NightWorkers / vulnWorkbenchからcontextStillへの入力候補:</p>
+  <ul>
+    <li>compile / decision run ID</li>
+    <li>selected knowledge IDs</li>
+    <li>actual use</li>
+    <li>verification outcome</li>
+    <li>user override / correction</li>
+    <li>regression / false-warning signal</li>
+  </ul>
+  <p>
+    feedback送信失敗はTaskやscan resultを巻き戻さず、retryable
+    outboxまたは明示的limitationとして扱う。
+  </p>
+  <h3 id="section-165-contract-requirements">16.5 Contract Requirements</h3>
+  <ul>
+    <li>versioned schema</li>
+    <li>explicit capability discovery</li>
+    <li>bounded payload</li>
+    <li>project / revision validation</li>
+    <li>idempotency</li>
+    <li>stable failure code</li>
+    <li>redaction</li>
+    <li>provenance / correlation ID</li>
+    <li>backward-compatible additive evolutionを優先</li>
+  </ul>
+  <hr />
+  <h2 id="section-17-trust-and-safety-boundary">17. Trust and Safety Boundary</h2>
+  <h3 id="untrusted-repository-content">Untrusted Repository Content</h3>
+  <p>
+    source code、README、issue、comment、test fixture、scanner
+    message、artifact内の自然言語は命令ではなくdataとして扱う。Agent promptへ渡す場合はsource
+    kindを明示し、tool policyやSystem Contextを上書きさせない。
+  </p>
+  <h3 id="secret-and-privacy">Secret and Privacy</h3>
+  <ul>
+    <li>raw secretをKnowledge body、embedding、LLM promptへ入れない。</li>
+    <li>absolute path、user home、private repository nameは必要最小限にする。</li>
+    <li>LLM credentialをtarget repositoryやscanner containerへ渡さない。</li>
+    <li>raw artifactのexternal transmissionは明示policyに従う。</li>
+    <li>retention、deletion、project間利用をsourceごとに定義する。</li>
+  </ul>
+  <h3 id="scanner-execution">Scanner Execution</h3>
+  <ul>
+    <li>sandbox / container / bounded host executionを使う。</li>
+    <li>Docker socketや不要なhost filesystemをscannerへ渡さない。</li>
+    <li>output size、process、time、memory、networkを制限する。</li>
+    <li>tool / rule / database / image versionとhashを記録する。</li>
+  </ul>
+  <h3 id="active-and-state-changing-verification">Active and State-changing Verification</h3>
+  <ul>
+    <li>production / public targetへdefaultで実行しない。</li>
+    <li>explicit Rules of Engagementを要求する。</li>
+    <li>local / ephemeral / approved stagingなど許可targetを限定する。</li>
+    <li>method / path / request / rate budgetを持つ。</li>
+    <li>credential injection、seed、reset、cleanupをserver側で管理する。</li>
+    <li>LLMが許可条件を緩和できないようにする。</li>
+  </ul>
+  <hr />
+  <h2 id="section-18-failure-and-degraded-semantics">18. Failure and Degraded Semantics</h2>
+  <table>
+    <caption>
+      Table: 18. Failure and Degraded Semantics
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Failure</th>
+        <th scope="col">Required behavior</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>contextStill unavailable</td>
+        <td>
+          cached/currently pinned contextが安全に使える場合だけ利用し、それ以外はknowledge
+          limitation付きで実行継続またはpolicyに従いblock
+        </td>
+      </tr>
+      <tr>
+        <td>vulnWorkbench unavailable</td>
+        <td>
+          採用済みTask / Feature Planまたは明示policyがassessmentを要求する場合はneeds-human /
+          blocked、optional assessmentならunverified limitationを残す
+        </td>
+      </tr>
+      <tr>
+        <td>NightWorkers unavailable</td>
+        <td>
+          vulnWorkbenchとcontextStillのstandalone機能は維持し、Task/Run
+          completionを外部から推測しない
+        </td>
+      </tr>
+      <tr>
+        <td>Project declaration unavailable</td>
+        <td>
+          wrong revisionのlast-known-goodをsilent利用せず、declared invariant unavailableとする
+        </td>
+      </tr>
+      <tr>
+        <td>Analyzer degraded</td>
+        <td>missing edgeをabsence proofにせず、coverage gapとして返す</td>
+      </tr>
+      <tr>
+        <td>LLM unavailable / invalid</td>
+        <td>deterministic evidence / reportを保持し、LLM stageだけdegradedにする</td>
+      </tr>
+      <tr>
+        <td>Candidate registration failed</td>
+        <td>outboxをpending / failedにし、active knowledge扱いしない</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <code>unknown</code
+    >、<code>unsupported</code>、<code>not_applicable</code>、<code>blocked</code>、<code>failed</code>を区別する。
+  </p>
+  <hr />
+  <h2 id="section-19-parallel-development-model">19. Parallel Development Model</h2>
+  <p>3projectを同時開発する場合も、最初にcontractとfixtureを固定する。</p>
+  <h3 id="shared-lane-contract-first">Shared Lane: Contract First</h3>
+  <ul>
+    <li>concept version</li>
+    <li>responsibility matrix</li>
+    <li>project / revision identity</li>
+    <li>request / result schema</li>
+    <li>error / degraded codes</li>
+    <li>redaction policy</li>
+    <li>correlation / idempotency</li>
+    <li>cross-repository golden fixtures</li>
+  </ul>
+  <h3 id="vulnworkbench-lane">vulnWorkbench Lane</h3>
+  <ul>
+    <li>revision-bound Security Projection</li>
+    <li>authorization / dependency delta use case</li>
+    <li>assessment request / result</li>
+    <li>evidence / coverage / limitation</li>
+    <li>Knowledge Candidate material</li>
+  </ul>
+  <h3 id="nightworkers-lane">NightWorkers Lane</h3>
+  <ul>
+    <li>task-scoped Security Contract composition</li>
+    <li>context and assessment request adapters</li>
+    <li>queue / run / approval boundary</li>
+    <li>result projection and completion semantics</li>
+    <li>usage / outcome feedback</li>
+  </ul>
+  <h3 id="contextstill-lane">contextStill Lane</h3>
+  <ul>
+    <li>Security Knowledge Candidate validation</li>
+    <li>candidate lifecycle / dedupe / promotion</li>
+    <li>security-aware context compilation</li>
+    <li>source / applicability / provenance</li>
+    <li>usefulness and harm feedback</li>
+  </ul>
+  <h3 id="integration-lane">Integration Lane</h3>
+  <ul>
+    <li>same fixtureを3consumerで検証</li>
+    <li>wrong project / revision negative tests</li>
+    <li>service unavailable / timeout tests</li>
+    <li>secret / path redaction tests</li>
+    <li>end-to-end paired pilot</li>
+  </ul>
+  <p>
+    各laneはprivate database schemaを共有しない。shared
+    contractが不安定な間は、各project内部実装を先行して外部契約へ固定しない。
+  </p>
+  <hr />
+  <h2 id="section-20-staged-rollout">20. Staged Rollout</h2>
+  <h3 id="stage-0-contract-and-baseline">Stage 0: Contract and Baseline</h3>
+  <p>追加するもの:</p>
+  <ul>
+    <li>common concept</li>
+    <li>versioned semantic contract</li>
+    <li>current behavior / cost / coverage baseline</li>
+    <li>pilot datasetとfailure taxonomy</li>
+  </ul>
+  <p>まだ追加しないもの:</p>
+  <ul>
+    <li>default activation</li>
+    <li>full ontology</li>
+    <li>autonomous planner</li>
+    <li>automatic candidate activation</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>3projectが同じidentity、revision、failure semanticsを解釈する。</li>
+    <li>wrong project / revision / secret leakage testが通る。</li>
+    <li>変更前baselineが保存される。</li>
+  </ul>
+  <h3 id="stage-1-two-narrow-use-cases">Stage 1: Two Narrow Use Cases</h3>
+  <p>対象:</p>
+  <ol>
+    <li>Authorization guard change</li>
+    <li>Dependency addition / version change</li>
+  </ol>
+  <p>追加するもの:</p>
+  <ul>
+    <li>bounded observation</li>
+    <li>semantic delta candidate</li>
+    <li>baseline + targeted verification</li>
+    <li>evidence-backed assessment result</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>known positive / negative fixturesで説明可能な結果を出す。</li>
+    <li>analyzer degradationをsafe resultへ変換しない。</li>
+    <li>existing scan / task completionを非劣化に保つ。</li>
+  </ul>
+  <h3 id="stage-2-project-loop">Stage 2: Project Loop</h3>
+  <p>追加するもの:</p>
+  <ul>
+    <li>NightWorkers Security Contract</li>
+    <li>pre / post assessment correlation</li>
+    <li>rerun outcome</li>
+    <li>project declaration参照</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>implementation前のconstraintが変更後verificationまでtraceできる。</li>
+    <li>evidence refs、coverage、unknownがRunから追える。</li>
+    <li>security integration不使用時の通常Runを壊さない。</li>
+  </ul>
+  <h3 id="stage-3-knowledge-shadow-loop">Stage 3: Knowledge Shadow Loop</h3>
+  <p>追加するもの:</p>
+  <ul>
+    <li>candidate outbox</li>
+    <li>contextStill draft / quarantine</li>
+    <li>retrieval shadow mode</li>
+    <li>use / outcome / harm feedback</li>
+  </ul>
+  <p>まだ追加しないもの:</p>
+  <ul>
+    <li>automatic active promotion</li>
+    <li>verificationの自動省略</li>
+    <li>knowledgeによるpolicy緩和</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>candidate provenanceとdedupeが安定する。</li>
+    <li>harmful / irrelevant retrievalを測定できる。</li>
+    <li>Knowledge利用有無を比較できる。</li>
+  </ul>
+  <h3 id="stage-4-prevention-and-recommendation">Stage 4: Prevention and Recommendation</h3>
+  <p>追加するもの:</p>
+  <ul>
+    <li>pre-change risk forecast</li>
+    <li>targeted verification recommendation</li>
+    <li>user / policy-controlled adoption</li>
+    <li>calibrated confidence</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>baselineよりtime-to-evidenceまたはcoverageを改善する。</li>
+    <li>required verification omissionを増やさない。</li>
+    <li>low confidenceで安全にfallbackする。</li>
+  </ul>
+  <h3 id="stage-5-advanced-verification">Stage 5: Advanced Verification</h3>
+  <p>候補:</p>
+  <ul>
+    <li>incremental graph update</li>
+    <li>broader data flow</li>
+    <li>business logic invariant engine</li>
+    <li>fuzzing / property-based verification</li>
+    <li>budget optimization</li>
+    <li>formal verification</li>
+  </ul>
+  <p>Stage 4までのvalue evidenceがない場合は着手しない。</p>
+  <p>
+    既存のProject Intelligence paired
+    pilotが<code>INSUFFICIENT_EVIDENCE</code>である限り、この文書だけを理由にdefault
+    ONや大規模Ontology投資へ進まない。
+  </p>
+  <hr />
+  <h2 id="section-21-evaluation-metrics">21. Evaluation Metrics</h2>
+  <h3 id="correctness-and-coverage">Correctness and Coverage</h3>
+  <ul>
+    <li>known fixture recall / precision</li>
+    <li>false-positive / unknown rate</li>
+    <li>coverage loss detection rate</li>
+    <li>wrong project / revision incident</li>
+    <li>evidence provenance completeness</li>
+    <li>reproduction / rerun consistency</li>
+  </ul>
+  <h3 id="planner-and-forecast">Planner and Forecast</h3>
+  <ul>
+    <li>risk band calibration</li>
+    <li>required verification selection recall</li>
+    <li>baselineに対するadditional coverage</li>
+    <li>time / cost / tool-run budget error</li>
+    <li>low-confidence fallback success</li>
+    <li>planner recommendationの採用 / 却下 / override</li>
+  </ul>
+  <h3 id="knowledge">Knowledge</h3>
+  <ul>
+    <li>candidate acceptance / rejection / duplicate rate</li>
+    <li>retrieval precision / not-relevant rate</li>
+    <li>selected / actually-used rate</li>
+    <li>harmful guidance / false-warning rate</li>
+    <li>recurrence reduction candidate</li>
+    <li>stale / superseded knowledge rate</li>
+    <li>evidence ref integrity</li>
+  </ul>
+  <h3 id="product-value">Product Value</h3>
+  <ul>
+    <li>time-to-first-evidence</li>
+    <li>time-to-actionable-handoff</li>
+    <li>correction cycle</li>
+    <li>escaped known-class regression</li>
+    <li>same-class recurrence</li>
+    <li>verification cost per actionable result</li>
+    <li>integrationを利用したRunのcompletion / failure差</li>
+  </ul>
+  <p>
+    benchmark score、real-repository value、user adoptionを一つのscoreへ混ぜない。sample
+    size、selection bias、unsupported scope、unknownをreportから省略しない。
+  </p>
+  <hr />
+  <h2 id="section-22-stop-and-rollback-conditions">22. Stop and Rollback Conditions</h2>
+  <p>次を観測した場合、default activationまたは次Stageへの移行を停止する。</p>
+  <ul>
+    <li>wrong repository / wrong revisionのcontextまたはEvidence混入</li>
+    <li>inferred claimのdeclared / observedへのsilent promotion</li>
+    <li>zero findingの安全判定化</li>
+    <li>active scan scope / credential / network policy違反</li>
+    <li>secret、private source、absolute pathの不適切な外部送信</li>
+    <li>baseline verificationのsilent omission</li>
+    <li>analyzer failureをresolved findingとして扱う挙動</li>
+    <li>candidate登録失敗のactive扱い</li>
+    <li>Knowledge利用による有意な誤警告・誤修正増加</li>
+    <li>cost増加に対するcoverage / actionability改善がない状態</li>
+    <li>source artifactとnormalized resultの説明不能な不一致</li>
+  </ul>
+  <p>
+    rollbackはfeature flag、independent adapter、versioned
+    contractによってproject単位で可能にする。既存Evidenceとhistorical
+    outcomeを破壊的に書き換えない。
+  </p>
+  <hr />
+  <h2 id="section-23-non-goals">23. Non-Goals</h2>
+  <ul>
+    <li>system全体が安全だと証明すること</li>
+    <li>professional penetration testを無条件に置き換えること</li>
+    <li>LLMに自由探索させ、推測だけで脆弱性を作ること</li>
+    <li>Full AST / Program GraphをDurable Knowledgeとして保存すること</li>
+    <li>
+      vulnWorkbench、NightWorkers、contextStillのいずれかをcanonical Project Ontologyにすること
+    </li>
+    <li>contextStillをscanやTask実行の必須依存にすること</li>
+    <li>project間でprivate databaseを直接参照すること</li>
+    <li>MCPをarbitrary filesystem / command / mutation surfaceにすること</li>
+    <li>source patchをSecurity Learning Loopから自動適用すること</li>
+    <li>low-risk forecastをverification不要の根拠にすること</li>
+    <li>Knowledge popularityをtruthとみなすこと</li>
+    <li>Formal Verificationを初期導入の前提にすること</li>
+    <li>全scanner、全言語、全threatを一度に扱うこと</li>
+  </ul>
+  <hr />
+  <h2 id="section-24-open-decisions">24. Open Decisions</h2>
+  <p>後続の実装計画で、Evidenceを採取して決める。</p>
+  <ol>
+    <li>Stage 1の最小Security Projection schema。</li>
+    <li>Project Declarationの初期formatとrepository ownership。</li>
+    <li>Security Contractのversioned schema。</li>
+    <li>vulnWorkbench plannerとNightWorkers orchestrationの具体的handoff。</li>
+    <li>required / optional security gateのproject policy。</li>
+    <li>candidate promotionに必要なEvidenceとhuman review範囲。</li>
+    <li>project-scoped lessonのretention / revision expiry。</li>
+    <li>baseline、targeted、exploration budgetの割合。</li>
+    <li>paired pilotのsample、holdout、success threshold。</li>
+    <li>Ontology Coreを独立させるmandatory triggerの到達時期。</li>
+  </ol>
+  <hr />
+  <h2 id="section-25-concept-completion-definition">25. Concept Completion Definition</h2>
+  <p>このconceptを前提に作られる実装計画は、少なくとも次を満たす。</p>
+  <ul>
+    <li>Safety claimではなくscope / coverage / evidence / unknownを返す。</li>
+    <li>4 actorの責務が重複しない。</li>
+    <li>declared / observed / inferred / task projectionを区別する。</li>
+    <li>vulnWorkbench graphをrevision-bound projectionとして扱う。</li>
+    <li>NightWorkersがTask/Run authorityを維持する。</li>
+    <li>contextStill Knowledgeをcurrent Evidenceの代替にしない。</li>
+    <li>baseline + targeted + explorationを維持する。</li>
+    <li>LLMにpolicy boundaryを委譲しない。</li>
+    <li>candidate poisoningとself-reinforcing feedbackへのcontrolを持つ。</li>
+    <li>service unavailable時のdegraded behaviorを定義する。</li>
+    <li>baseline、evaluation、stop / rollback conditionを本文に含める。</li>
+    <li>3projectがversioned contractとfixtureで独立に検証できる。</li>
+  </ul>
+  <hr />
+  <h2 id="section-26-center-statement">26. Center Statement</h2>
+  <p>本構想の中心は、Scannerを増やすことでも、巨大なOntologyを作ることでもない。</p>
+  <blockquote>
+    <p>
+      Project固有の宣言と再利用可能な知識を使って変更前の制約を作り、current
+      revisionを観測し、必要なverificationを安全なpolicy内で実行し、Evidenceと未確認事項を返し、検証済みの教訓だけを次の実装へ戻す。
+    </p>
+  </blockquote>
+  <p>役割を短く表すと次の通り。</p>
+  <pre><code class="language-text">Target Repository / Ontology Core
+  = Declare and govern project meaning
+
+vulnWorkbench
+  = Observe, investigate, verify, produce evidence
+
+NightWorkers
+  = Plan, execute, orchestrate, correlate outcomes
+
+contextStill
+  = Distill, validate, remember, compile knowledge
+</code></pre>
+  <p>
+    この境界を維持し、狭いuse caseから価値を実証できた場合に限り、Security Learning
+    Loopを段階的に広げる。
+  </p>
+</article>

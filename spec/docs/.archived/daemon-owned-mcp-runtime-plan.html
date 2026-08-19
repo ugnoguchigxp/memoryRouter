@@ -1,0 +1,315 @@
+<article lang="ja">
+  <h1 id="daemon-owned-mcp-runtime-plan">Daemon-Owned MCP Runtime Plan</h1>
+  <blockquote>
+    <p>
+      アーカイブ日: 2026-08-15。実装コミット: <code>64cdcf2</code>、legacy path 削除:
+      <code>5f1bdb3</code>。
+    </p>
+  </blockquote>
+  <h2 id="purpose">Purpose</h2>
+  <p>MCP の所有権を stdio child process から常駐 <code>context-stilld</code> daemon へ戻す。</p>
+  <p>
+    過去の direct stdio MCP は、MCP client の再起動・切断・親プロセス不整合時に
+    <code>bun run src/index.ts</code> が残留しやすい。stdio 側の graceful shutdown
+    は防御策にはなるが、ゾンビプロセスを完全には防げない。MCP は常駐 daemon が接続、tool
+    execution、worker、状態、cleanup を一元管理するべき runtime boundary である。
+  </p>
+  <p>この計画では stdio MCP server を削除対象にし、互換 shim を復元しない。</p>
+  <h2 id="decisions">Decisions</h2>
+  <ul>
+    <li>MCP server runtime は <code>context-stilld</code> が所有する。</li>
+    <li>
+      MCP client registration は command/stdin/stdout 型ではなく、daemon の local MCP endpoint
+      を指す。
+    </li>
+    <li><code>bun run src/index.ts</code> direct stdio MCP は削除し、復元しない。</li>
+    <li>
+      <code>StdioServerTransport</code> / <code>StdioClientTransport</code> を本番 runtime path
+      から外す。
+    </li>
+    <li>
+      TypeScript tool logic は短期的には残せるが、stdio process としてではなく daemon-managed worker
+      / local RPC として扱う。
+    </li>
+    <li>
+      cleanup コマンドで残骸を掃除する運用は mainline にしない。接続破棄、idle timeout、worker stop
+      は daemon の責務にする。
+    </li>
+  </ul>
+  <h2 id="target-architecture">Target Architecture</h2>
+  <pre><code class="language-text">MCP client
+  -&gt; local HTTP / streamable MCP endpoint
+  -&gt; context-stilld resident daemon
+  -&gt; MCP session manager
+  -&gt; tool execution bridge
+  -&gt; TypeScript tool worker or Rust-native tool handler
+  -&gt; SQLite / source files / logs
+</code></pre>
+  <p>The important boundary is ownership:</p>
+  <ul>
+    <li>Client connection lifecycle: daemon owned.</li>
+    <li>Active session registry: daemon owned.</li>
+    <li>Tool worker process: daemon owned.</li>
+    <li>SQLite writer safety and shutdown: daemon owned.</li>
+    <li>UI/Hono lifecycle: not required for MCP availability.</li>
+    <li>stdio compatibility: legacy only, scheduled for deletion.</li>
+  </ul>
+  <h2 id="current-legacy-surfaces">Current Legacy Surfaces</h2>
+  <p>These surfaces must be treated as migration targets, not long-term architecture:</p>
+  <table>
+    <caption>
+      Table: Current Legacy Surfaces
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Surface</th>
+        <th scope="col">Current role</th>
+        <th scope="col">Target</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>src/index.ts</code></td>
+        <td>deleted stdio MCP server entrypoint</td>
+        <td>Do not restore</td>
+      </tr>
+      <tr>
+        <td><code>src/mcp/server.ts</code> transport binding</td>
+        <td>transport-neutral tool/resource registry</td>
+        <td>Keep transport-neutral</td>
+      </tr>
+      <tr>
+        <td><code>bun run start:mcp:stdio</code></td>
+        <td>deleted direct stdio server start</td>
+        <td>Do not restore</td>
+      </tr>
+      <tr>
+        <td><code>src/cli/setup-mcp-config.ts</code></td>
+        <td>writes command-based MCP config</td>
+        <td>write daemon URL-based MCP config</td>
+      </tr>
+      <tr>
+        <td><code>src/cli/onboarding/mcp-config.ts</code></td>
+        <td>prints command-based MCP config</td>
+        <td>print daemon URL-based MCP config</td>
+      </tr>
+      <tr>
+        <td><code>src/cli/mcp-smoke.ts</code></td>
+        <td>deleted stdio client smoke</td>
+        <td>Use daemon endpoint smoke</td>
+      </tr>
+      <tr>
+        <td><code>context-stilld mcp start</code></td>
+        <td>starts managed endpoint worker</td>
+        <td>keep only as legacy lifecycle helper; clients must not use command registration</td>
+      </tr>
+      <tr>
+        <td><code>context-stilld mcp serve</code> plan</td>
+        <td>foreground stdio proxy</td>
+        <td>reject; superseded by daemon-owned endpoint</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="command-model">Command Model</h2>
+  <h3 id="keep">Keep</h3>
+  <pre><code class="language-bash">context-stilld daemon start|stop|status
+context-stilld mcp status --json
+context-stilld mcp sessions --json
+context-stilld mcp disconnect &lt;session-id&gt;
+context-stilld doctor summary --json
+</code></pre>
+  <h3 id="add">Add</h3>
+  <pre><code class="language-bash">context-stilld mcp endpoint --json
+context-stilld mcp smoke --json
+</code></pre>
+  <p>
+    <code>mcp endpoint</code> returns the local endpoint URL, readiness state, auth/token state if
+    any, and active session counts.
+  </p>
+  <h3 id="deleted--forbidden">Deleted / Forbidden</h3>
+  <pre><code class="language-bash">bun run start:mcp:stdio
+context-stilld mcp serve
+</code></pre>
+  <p>
+    <code>context-stilld mcp start|stop</code> may manage only the daemon endpoint worker. They must
+    not spawn a stdio MCP child.
+  </p>
+  <h2 id="daemon-endpoint">Daemon Endpoint</h2>
+  <p>Default endpoint:</p>
+  <pre><code class="language-text">http://127.0.0.1:&lt;daemon-port&gt;/mcp
+</code></pre>
+  <p>Requirements:</p>
+  <ul>
+    <li>Bind only to loopback by default.</li>
+    <li>Use a daemon-owned random or configured port.</li>
+    <li>Store endpoint metadata under app data, not repo-local paths.</li>
+    <li>Never write MCP protocol messages to logs.</li>
+    <li>Keep logs separate from protocol response streams.</li>
+    <li>Expose readiness only after the MCP endpoint can list tools.</li>
+  </ul>
+  <p>
+    If the MCP client supports streamable HTTP MCP, generated config should use URL registration,
+    not command registration.
+  </p>
+  <p>Example target Codex config:</p>
+  <pre><code class="language-toml">[mcp_servers.context-still]
+url = &quot;http://127.0.0.1:45678/mcp&quot;
+enabled = true
+</code></pre>
+  <h2 id="tool-execution-bridge">Tool Execution Bridge</h2>
+  <p>
+    Short-term implementation can keep TypeScript tool logic, but it must not keep stdio as the
+    process model.
+  </p>
+  <p>Allowed bridge options:</p>
+  <ol>
+    <li>Long-lived daemon-managed Bun worker exposing local RPC over Unix domain socket.</li>
+    <li>
+      One-shot Bun worker for specific heavy tasks, with daemon-owned timeout and exit metadata.
+    </li>
+    <li>Gradual Rust-native implementation for stable deterministic tools.</li>
+  </ol>
+  <p>Rejected bridge options:</p>
+  <ul>
+    <li>daemon spawning <code>bun run src/index.ts</code> as a background stdio MCP server.</li>
+    <li>daemon foreground stdio proxy as the default MCP client path.</li>
+    <li>cleanup-only process management that lets orphaned stdio servers happen first.</li>
+  </ul>
+  <h2 id="session-lifecycle">Session Lifecycle</h2>
+  <p>The daemon must own MCP session cleanup.</p>
+  <p>Session state should include:</p>
+  <ul>
+    <li><code>sessionId</code></li>
+    <li>client name / version when available</li>
+    <li>remote address</li>
+    <li>created time</li>
+    <li>last activity time</li>
+    <li>in-flight request count</li>
+    <li>worker id / route</li>
+    <li>close reason</li>
+  </ul>
+  <p>Cleanup rules:</p>
+  <ul>
+    <li>idle sessions close after a configured timeout.</li>
+    <li>transport close immediately removes the session.</li>
+    <li>daemon shutdown closes all sessions before stopping workers.</li>
+    <li>worker crash marks affected sessions degraded and returns structured MCP errors.</li>
+    <li>
+      stale sessions are visible in <code>context-stilld mcp sessions --json</code> until reconciled
+      or archived.
+    </li>
+  </ul>
+  <h2 id="migration-phases">Migration Phases</h2>
+  <h3 id="phase-1-document-and-guard-legacy-stdio">Phase 1: Document and Guard Legacy stdio</h3>
+  <ul>
+    <li>Add this plan.</li>
+    <li>
+      Update <code>rust-daemon-replacement-readiness-plan.html</code> to supersede MCP stdio proxy.
+    </li>
+    <li>Remove direct stdio MCP from public docs.</li>
+    <li>Add diagnostics that warn when MCP config still uses command-based registration.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">rg -n &quot;src/index\\.ts|start:mcp:stdio|StdioServerTransport|mcp-smoke&quot; README.md spec docs src crates package.json
+</code></pre>
+  <p>Expected result: no production context-still MCP runtime references.</p>
+  <h3 id="phase-2-add-daemon-mcp-endpoint-skeleton">Phase 2: Add Daemon MCP Endpoint Skeleton</h3>
+  <ul>
+    <li>Add daemon HTTP/streamable MCP endpoint.</li>
+    <li>
+      Implement <code>mcp endpoint</code>, <code>mcp status</code>, and <code>mcp sessions</code>.
+    </li>
+    <li>Serve a minimal list-tools response from the daemon endpoint.</li>
+    <li>Do not yet remove TypeScript MCP tools.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test --workspace
+bun run verify:rust-daemon
+context-stilld mcp endpoint --json
+context-stilld mcp smoke --json
+</code></pre>
+  <h3 id="phase-3-move-tool-execution-behind-daemon-bridge">
+    Phase 3: Move Tool Execution Behind Daemon Bridge
+  </h3>
+  <ul>
+    <li>Split MCP tool definitions/handlers from stdio transport.</li>
+    <li>Add daemon-managed TypeScript worker RPC or Rust-native handlers.</li>
+    <li>Ensure daemon tracks worker pid, health, request timeout, and exit reason.</li>
+    <li>Ensure no tool request creates a detached Bun process.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">context-stilld mcp smoke --json
+context-stilld mcp sessions --json
+pgrep -af &quot;bun run src/index.ts&quot; # must return no daemon-owned MCP process
+</code></pre>
+  <h3 id="phase-4-switch-client-registration">Phase 4: Switch Client Registration</h3>
+  <ul>
+    <li>Change <code>setup-mcp-config</code> to write URL-based daemon config.</li>
+    <li>Change onboarding snippets to URL-based daemon config.</li>
+    <li>
+      Update <code>README.md</code>, <code>spec/docs/pub/getting-started.md</code>, and
+      <code>spec/docs/pub/mcp-tools.md</code>.
+    </li>
+    <li>Add migration warning for command-based configs.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run setup:mcp-config -- --dry-run
+rg -n &#39;&quot;args&quot;: \\[&quot;run&quot;, &quot;start:mcp&quot;\\]|args = \\[ &quot;run&quot;, &quot;src/index.ts&quot; \\]&#39; ~/.codex ~/.gemini
+</code></pre>
+  <h3 id="phase-5-delete-stdio-mcp-runtime">Phase 5: Delete stdio MCP Runtime</h3>
+  <p>Delete or repurpose:</p>
+  <ul>
+    <li><code>src/index.ts</code></li>
+    <li>stdio-specific code in <code>src/mcp/server.ts</code></li>
+    <li><code>start:mcp:stdio</code></li>
+    <li>stdio MCP smoke path</li>
+    <li><code>context-stilld mcp serve</code></li>
+    <li><code>context-stilld mcp start|stop</code> if they only manage stdio child processes</li>
+  </ul>
+  <p>Keep only transport-neutral tool modules and daemon-owned endpoint tests.</p>
+  <p>Verification:</p>
+  <pre><code class="language-bash">rg -n &quot;StdioServerTransport|start:mcp:stdio|src/index\\.ts|mcp serve|mcp-smoke&quot;
+bun run verify
+bun run verify:rust-daemon
+context-stilld mcp smoke --json
+</code></pre>
+  <p>The <code>rg</code> command should return no production runtime references.</p>
+  <h2 id="acceptance-criteria">Acceptance Criteria</h2>
+  <ul>
+    <li>MCP client registration no longer spawns <code>bun</code>.</li>
+    <li>
+      <code>pgrep -af &quot;bun run src/index.ts&quot;</code> remains empty during normal MCP use.
+    </li>
+    <li>
+      Killing or restarting the MCP client does not leave daemon worker or session state stale.
+    </li>
+    <li>
+      <code>context-stilld mcp sessions --json</code> shows active sessions and close reasons.
+    </li>
+    <li>Stopping <code>context-stilld</code> closes MCP sessions and tool workers.</li>
+    <li>
+      Restarting <code>context-stilld</code> restores endpoint availability without user editing MCP
+      config.
+    </li>
+    <li>All command-based context-still MCP docs are removed.</li>
+    <li>
+      <code>StdioServerTransport</code> is absent from production context-still MCP runtime code.
+    </li>
+  </ul>
+  <h2 id="rollback">Rollback</h2>
+  <p>Rollback must not reintroduce unbounded stdio process spawning.</p>
+  <p>Allowed rollback:</p>
+  <ul>
+    <li>
+      Keep daemon endpoint enabled but route tool execution to a simpler daemon-managed worker.
+    </li>
+    <li>Disable selected MCP tools while keeping session ownership in daemon.</li>
+    <li>Restore a single daemon-owned worker from a known-good version.</li>
+  </ul>
+  <p>Disallowed rollback:</p>
+  <ul>
+    <li>Re-register MCP clients to run <code>bun run src/index.ts</code> directly.</li>
+    <li>Reintroduce foreground stdio proxy as the default path.</li>
+    <li>Rely on cleanup scripts as the main orphan prevention strategy.</li>
+  </ul>
+</article>

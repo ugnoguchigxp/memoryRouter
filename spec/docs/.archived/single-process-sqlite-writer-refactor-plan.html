@@ -1,0 +1,1473 @@
+<article lang="ja">
+  <h1 id="single-process-sqlite-writer-refactoring-implementation-plan">
+    Single-Process SQLite Writer Refactoring Implementation Plan
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>aaa4ddf</code>。</p>
+  </blockquote>
+  <h2 id="section-1-目的">1. 目的</h2>
+  <p>
+    SQLite core database のオンライン書込みを、常駐 <code>context-stilld run</code> プロセス内の単一
+    Writer に集約する。
+  </p>
+  <h3 id="section-11-実装結果2026-07-18">1.1 実装結果（2026-07-18）</h3>
+  <p>
+    Writer限定スコープの実装は完了した。online
+    mutationの所有者は、常駐<code>context-stilld</code>内の専用<code
+      >context-still-sqlite-writer</code
+    >
+    threadと、そのthreadだけが保持する1本のread-write connectionである。
+  </p>
+  <ul>
+    <li>
+      Rust MCP、queue
+      maintenance/executor、agent-log-syncは<code>SqliteWriterHandle</code>へ送信し、production
+      domain codeからread-write connectionを直接openしない。
+    </li>
+    <li>
+      Hono/TypeScript CLIはBun SQLiteを<code>readonly: true</code>でopenし、mutationだけをloopback
+      Writer endpointへ送る。resident不在時はdirect-writeへfallbackせず失敗する。
+    </li>
+    <li>
+      Writer endpointはowner-only token fileとBearer認証を使い、bounded queue、client transaction
+      ownership、30秒の孤立transaction rollbackを持つ。
+    </li>
+    <li>
+      schema bootstrap/migration、<code>user_version</code>、sqlite-vec table作成はRust
+      Writerが所有する。新しすぎるschema versionは起動時に拒否する。
+    </li>
+    <li>
+      offline backupはRust command <code>context-stilld backup create</code>がWriterと同じOS
+      lockを保持して実行し、resident稼働中は拒否する。
+    </li>
+    <li>
+      <code>bun run verify:sqlite-writer-ownership</code>が、Rustの新規direct read-write
+      openとTypeScriptの新規direct SQLite openをCIで拒否する。
+    </li>
+  </ul>
+  <p>
+    Writer限定スコープのため、TypeScript repositoryにあるdomain SQL自体のRust
+    typed-command化は別作業とした。ただし、そのSQLをSQLiteへ実行できるOS processはRust
+    residentだけであり、TypeScript processはread-onlyである。
+  </p>
+  <p>運用確認コマンド:</p>
+  <pre><code class="language-bash">bun run verify:sqlite-writer-ownership
+cargo test -p context-stilld
+cargo run -q -p context-stilld -- backup preflight --json
+cargo run -q -p context-stilld -- backup create --json
+</code></pre>
+  <p>
+    現在のコードベースでは「Rust 化」と「単一 Writer 化」は同義ではない。Rust-native MCP、queue
+    executor、queue maintenance、agent-log-sync は Rust に実装されているが、それぞれが独立した
+    SQLite connection を開く。さらに Hono admin API と TypeScript CLI も別プロセスから同じ database
+    を更新する。TypeScript の共通 SQLite open 処理は schema 作成・migration も実行するため、read
+    path に見える起動経路も潜在的 Writer になる。
+  </p>
+  <p>この計画では、次の状態を最終形とする。</p>
+  <ul>
+    <li>
+      online runtime で SQLite を更新できる OS process は、常駐
+      <code>context-stilld run</code> のみ。
+    </li>
+    <li>
+      常駐 process 内では、専用 <code>SqliteWriter</code> thread が保持する 1 本の read-write
+      connection だけが更新を実行する。
+    </li>
+    <li>
+      Rust の MCP、queue、agent-log-sync も database を直接開かず、同じ
+      <code>SqliteWriterHandle</code> を使う。
+    </li>
+    <li>
+      Hono と online TypeScript CLI は、型付きの daemon write client を呼ぶ。SQLite mutation SQL
+      を持たない。
+    </li>
+    <li>
+      TypeScript に残す direct SQLite access は、schema を変更しない read-only connection
+      に限定する。
+    </li>
+    <li>
+      migration、restore、vector rebuild、bulk repair などの offline operation は Rust
+      実装とし、daemon 停止または maintenance mode と OS-level exclusive lock を必須にする。
+    </li>
+    <li>
+      WAL と <code>busy_timeout</code> は移行中の安全網として維持するが、Writer ownership
+      の代替にはしない。
+    </li>
+  </ul>
+  <h2 id="section-2-調査範囲と調査方法">2. 調査範囲と調査方法</h2>
+  <p>
+    調査対象は production code の SQLite open、mutation SQL、repository mutation、process
+    lifecycle、thread spawn、transaction、backup/migration CLI、既存 daemon 移行計画である。test
+    内だけの connection open は Writer inventory から除外した。
+  </p>
+  <p>主に次を確認した。</p>
+  <ul>
+    <li>
+      <code>crates/context-stilld/src/domains/</code> の
+      <code>Connection::open*</code>、transaction、resident reconciliation、MCP dispatch。
+    </li>
+    <li>
+      <code>src/db/sqlite/</code> の connection 初期化、schema bootstrap、manual migration、vector
+      table 作成。
+    </li>
+    <li><code>api/modules/</code> の mutation route と repository。</li>
+    <li>
+      <code>src/modules/</code>、<code>src/cli/</code> の SQLite mutation、queue
+      state、maintenance、repair/backfill/backup。
+    </li>
+    <li><code>package.json</code> の運用可能な write CLI。</li>
+    <li>
+      <code>spec/docs/rust-daemon-replacement-readiness-plan.html</code
+      >、<code>spec/docs/daemon-ts-eradication-implementation-plan.html</code>、<code
+        >spec/docs/rust-sqlite-vec-first-implementation-plan.html</code
+      >
+      の ownership 前提。
+    </li>
+  </ul>
+  <p>
+    mutation の静的検索には false positive が含まれ得るため、単なる <code>INSERT</code> /
+    <code>UPDATE</code> の件数ではなく、実際の database open と呼出し process
+    を追って分類した。Stage W0 では、この調査を機械可読な inventory と CI guard に変える。
+  </p>
+  <h2 id="section-3-現状調査結果">3. 現状調査結果</h2>
+  <h3 id="section-31-結論">3.1 結論</h3>
+  <p>現状は単一 Writer process ではない。</p>
+  <p>
+    SQLite 自身は同時に 1 transaction だけを書き込むよう直列化するが、application ownership
+    は分散している。WAL、<code>busy_timeout = 5000</code>、短い transaction
+    が競合を緩和していても、次は保証されない。
+  </p>
+  <ul>
+    <li>どの process が更新したか。</li>
+    <li>複数 table の domain operation が同じ transaction で commit されるか。</li>
+    <li>backup/restore 中に未知の Writer が存在しないか。</li>
+    <li>daemon shutdown 時に write request が drain されたか。</li>
+    <li>retry により同じ mutation が二重適用されないか。</li>
+  </ul>
+  <h3 id="section-32-writer-topology">3.2 Writer topology</h3>
+  <table>
+    <caption>
+      Table: 3.2 Writer topology
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">surface</th>
+        <th scope="col">実行 process / thread</th>
+        <th scope="col">現在の connection ownership</th>
+        <th scope="col">主な更新</th>
+        <th scope="col">判定</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Rust-native MCP</td>
+        <td>resident daemon 内の TCP connection ごとの thread</td>
+        <td>handler が <code>open_database()</code> で都度 connection を開く</td>
+        <td>compile run/eval、decision、feedback、knowledge candidate、usage/trace</td>
+        <td>同一 process だが複数 connection・複数 writer thread</td>
+      </tr>
+      <tr>
+        <td>Rust queue maintenance</td>
+        <td>
+          resident reconciliation または <code>context-stilld queue start</code> を実行した process
+        </td>
+        <td>tick ごとに read-write connection</td>
+        <td>stale job/lease recovery、queue status</td>
+        <td>CLI から別 process Writer になり得る</td>
+      </tr>
+      <tr>
+        <td>Rust queue executor</td>
+        <td>resident daemon</td>
+        <td>executor tick ごとに read-write connection</td>
+        <td>claim、lease、job/card/FTS、state/event</td>
+        <td>MCP/maintenance/sync と別 connection</td>
+      </tr>
+      <tr>
+        <td>Rust agent-log-sync</td>
+        <td>resident daemon または直接 CLI process</td>
+        <td>sync 実行ごとに connection、schema ensure</td>
+        <td>vibe memory、FTS、sync state、queue/event</td>
+        <td>直接 CLI では別 process Writer</td>
+      </tr>
+      <tr>
+        <td>Hono admin API</td>
+        <td><code>bun run api/index.ts</code> の別 process</td>
+        <td>process-local singleton Bun SQLite connection</td>
+        <td>settings、knowledge、source、queue、graph/landscape、vibe memory 等</td>
+        <td>常時並行し得る別 process Writer</td>
+      </tr>
+      <tr>
+        <td>TypeScript manual CLI / worker</td>
+        <td>command ごとの Bun process</td>
+        <td>command ごとに Bun SQLite connection</td>
+        <td>queue、migration、backfill、repair、seed、backup 等</td>
+        <td>任意時点で増える Writer</td>
+      </tr>
+      <tr>
+        <td>TypeScript SQLite open</td>
+        <td>Hono、CLI、test など呼出し元 process</td>
+        <td><code>openSqliteCoreDatabase()</code></td>
+        <td>schema create、manual migration、index/vec table create</td>
+        <td>read purpose の open も Writer 化する</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="section-33-rust-resident-内にも単一-writer-はない">
+    3.3 Rust resident 内にも単一 Writer はない
+  </h3>
+  <p>
+    <code>resident_runtime::run()</code> は MCP、queue、agent-log-sync を同じ resident lifecycle
+    にまとめている。しかし state が保持するのは MCP endpoint と timer/ownership 情報であり、共通
+    SQLite Writer handle ではない。
+  </p>
+  <ul>
+    <li>
+      <code>resident_runtime/service.rs</code> は MCP endpoint を in-process で開始し、同じ loop
+      から queue と agent-log-sync を reconcile する。
+    </li>
+    <li>
+      <code>mcp_lifecycle/endpoint_server.rs</code> は accept した TCP stream ごとに OS thread を
+      spawn する。
+    </li>
+    <li>
+      <code>mcp_lifecycle/native_common.rs</code> の <code>open_database()</code> は tool handler
+      ごとに <code>Connection::open()</code> する。
+    </li>
+    <li>
+      <code>queue_lifecycle/executor.rs</code> は tick ごとに
+      <code>READ_WRITE | NO_MUTEX</code> connection を開く。
+    </li>
+    <li>
+      <code>queue_lifecycle/maintenance.rs</code> は executor と別に read-write connection を開く。
+    </li>
+    <li>
+      <code>agent_log_sync/store.rs</code> は独自に database を開き、必要 schema も ensure する。
+    </li>
+  </ul>
+  <p>
+    このため、Rust コードだけを残しても単一 Writer connection にはならない。MCP request が並行すると
+    handler thread 数だけ connection が増え、同時に queue maintenance/executor と sync
+    も更新を試行できる。
+  </p>
+  <h3 id="section-34-rust-command-は-resident-process-外からも更新できる">
+    3.4 Rust command は resident process 外からも更新できる
+  </h3>
+  <p>Rust-native であることも、resident-owned であることを保証しない。</p>
+  <ul>
+    <li>
+      <code>context-stilld queue start</code> は呼び出した process 内で
+      <code>run_maintenance_once_report()</code> を実行する。
+    </li>
+    <li>
+      <code>context-stilld agent-log-sync run</code> / backfill は routing から service
+      を直接実行する。
+    </li>
+    <li>
+      standalone MCP start と resident MCP の lifecycle state は managed process 単位の PID
+      確認であり、database 全体の exclusive Writer lock ではない。
+    </li>
+    <li>
+      resident <code>run --once</code> も独立 process から reconciliation/write
+      を開始できる設計である。
+    </li>
+  </ul>
+  <p>
+    最終形では、online CLI は resident control API へ command を転送し、resident
+    が不在なら失敗させる。自動 direct-write fallback は設けない。
+  </p>
+  <h3 id="section-35-hono-は明確な別-process-writer">3.5 Hono は明確な別 process Writer</h3>
+  <p>
+    <code>admin_api_lifecycle/service.rs</code> は admin API を
+    <code>bun run api/index.ts</code> として起動する。したがって daemon と Hono は別 process
+    である。
+  </p>
+  <p>Hono route から到達する代表的な SQLite mutation は次のとおり。</p>
+  <table>
+    <caption>
+      Table: 3.5 Hono は明確な別 process Writer
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">domain</th>
+        <th scope="col">代表的な mutation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>context compiler</td>
+        <td>compile の永続化、knowledge/episode feedback、episode deprecate</td>
+      </tr>
+      <tr>
+        <td>context decision</td>
+        <td>decision run、human/system feedback、discarded PR feedback</td>
+      </tr>
+      <tr>
+        <td>episode</td>
+        <td>create、status/usage 更新</td>
+      </tr>
+      <tr>
+        <td>knowledge</td>
+        <td>create/update/delete、bulk status、feedback、tag/source link、FTS/vector</td>
+      </tr>
+      <tr>
+        <td>queue</td>
+        <td>pause/resume/retry、job enqueue、state/event/lease</td>
+      </tr>
+      <tr>
+        <td>graph/landscape</td>
+        <td>merge/deadzone review job、candidate link/status、snapshot/cache、community label</td>
+      </tr>
+      <tr>
+        <td>source</td>
+        <td>source metadata/fragment/reindex/delete</td>
+      </tr>
+      <tr>
+        <td>vibe memory</td>
+        <td>record/delete、diff、FTS</td>
+      </tr>
+      <tr>
+        <td>settings</td>
+        <td>settings document upsert</td>
+      </tr>
+      <tr>
+        <td>diagnostics</td>
+        <td>LLM usage、audit log、compile trace/eval</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    source folder/page の file operation まで Rust へ移す必要はない。SQLite mutation だけを writer
+    command に分離し、filesystem work は Hono に残してよい。
+  </p>
+  <h3 id="section-36-typescript-database-open-自体が-mutation-を行う">
+    3.6 TypeScript database open 自体が mutation を行う
+  </h3>
+  <p>
+    <code>src/db/sqlite/client.ts</code> の <code>openSqliteCoreDatabase()</code> は次を実行する。
+  </p>
+  <ol>
+    <li>parent directory を作る。</li>
+    <li><code>{ create: true }</code> で database を開く。</li>
+    <li>
+      <code>foreign_keys</code>、<code>busy_timeout</code>、<code>journal_mode = WAL</code>、<code
+        >synchronous = NORMAL</code
+      >
+      を設定する。
+    </li>
+    <li>full schema SQL を実行する。</li>
+    <li>
+      <code>migrateSqliteCoreSchema()</code> で <code>UPDATE</code>、<code>ALTER TABLE</code>、<code
+        >DROP INDEX</code
+      >、<code>CREATE INDEX</code> を実行する。
+    </li>
+    <li>利用可能なら vec virtual table を作る。</li>
+  </ol>
+  <p>
+    <code>src/db/sqlite/runtime.ts</code> の singleton は TypeScript process 内で 1
+    個でしかなく、process 間 singleton ではない。さらに open 時 migration のため、read-only
+    repository だけを利用する process でも潜在的 Writer になる。
+  </p>
+  <p>
+    Rust bootstrap は現在 directory 作成と path existence check が中心で、schema 作成・versioned
+    migration を所有していない。preflight の <code>migration_state</code> は実 migration
+    の照合ではなく固定の <code>ok</code> である。従って、TypeScript を read-only にする前に schema
+    ownership を Rust へ移す必要がある。
+  </p>
+  <h3 id="section-37-transaction-boundary-も-domain-operation-と一致していない">
+    3.7 transaction boundary も domain operation と一致していない
+  </h3>
+  <p>一部の処理は transaction を使っている。</p>
+  <ul>
+    <li>agent-log-sync は memory、diff、FTS、sync state の保存を transaction にまとめる。</li>
+    <li>episode executor の card/FTS/reference 保存には <code>BEGIN IMMEDIATE</code> がある。</li>
+    <li>knowledge candidate 登録や vector rebuild にも局所 transaction がある。</li>
+  </ul>
+  <p>
+    一方、複数 repository call を service が順番に呼ぶだけの経路もある。例えば compile は
+    run、snapshot、pack item、candidate trace、usage/retrieval feedback を段階的に保存し、queue
+    route では state 更新と event 追加が別呼出しになり得る。単一 Writer queue に移すだけで自動的に
+    atomic にはならない。
+  </p>
+  <p>移行時は connection 単位ではなく domain command 単位で transaction を定義する必要がある。</p>
+  <h3 id="section-38-backup-guard-は完全な-writer-gate-ではない">
+    3.8 backup guard は完全な Writer gate ではない
+  </h3>
+  <p>
+    現在の Rust backup preflight は managed surface として
+    queue-supervisor、agent-log-sync、admin-api を確認し、backup 本体は TypeScript CLI に delegate
+    する。しかし次の Writer を database lock として包括的には捕捉しない。
+  </p>
+  <ul>
+    <li>in-process MCP handler。</li>
+    <li>任意の TypeScript manual CLI。</li>
+    <li>standalone Rust command。</li>
+    <li>process state file に登録されていない外部 connection。</li>
+  </ul>
+  <p>
+    PID/state file の確認は観測情報として有用だが、check-then-act race を防ぐ OS-level lock
+    ではない。backup/restore/migration は Writer actor の maintenance protocol と exclusive lock
+    に統合する。
+  </p>
+  <h3 id="section-39-既存計画との関係">3.9 既存計画との関係</h3>
+  <p>
+    既存の Rust daemon 移行計画は resident daemon から TypeScript sidecar
+    を除くことを主目的とし、Hono と manual TypeScript CLI の存在を許容している。<code
+      >Rust sqlite-vec First Implementation Plan</code
+    >
+    も通常の Hono/Drizzle read/write を当面維持する前提である。
+  </p>
+  <p>
+    本計画はそれらを否定せず、次の段階として SQLite write ownership の境界を process
+    全体へ拡張する。優先順位が衝突する場合は、本計画の「online SQLite mutation は resident Writer
+    のみ」を最終 ownership rule とする。
+  </p>
+  <h2 id="section-4-目標アーキテクチャ">4. 目標アーキテクチャ</h2>
+  <pre><code class="language-text">MCP handler threads ─────────────┐
+queue/sync Rust services ────────┤ in-process typed command
+                                 ▼
+Hono API ── local control API ─&gt; SqliteWriterHandle
+online CLI ─ local control API ─&gt; bounded command queue
+                                          │
+                                          ▼
+                                  SqliteWriter thread
+                                  1 RW connection
+                                  short transactions
+                                          │
+                                          ▼
+                                      SQLite/WAL
+
+Hono/CLI/Rust inspect ───────────────&gt; read-only connections
+
+offline migration/restore/rebuild ──&gt; maintenance + exclusive lock
+                                      daemon writer quiesced/stopped
+</code></pre>
+  <h3 id="section-41-ownership-rule">4.1 ownership rule</h3>
+  <p>
+    <code>context-stilld run</code> を online Writer process とする。その process の起動時に
+    <code>SqliteWriter</code> を最初に開始し、schema migration 完了後に
+    MCP、queue、agent-log-sync、admin API readiness を有効にする。
+  </p>
+  <p>
+    resident process 内でも任意の thread が
+    <code>Connection</code> を共有して直接更新してはならない。<code>rusqlite::Connection</code> は
+    Writer thread だけが所有し、他 thread は cloneable な <code>SqliteWriterHandle</code> から
+    command を送る。
+  </p>
+  <h3 id="section-42-writer-actor">4.2 Writer actor</h3>
+  <p>
+    現在の daemon は synchronous/thread-based で、async runtime を必須としていない。第一実装は
+    bounded <code>std::sync::mpsc::sync_channel</code> と per-request response channel
+    で十分である。必要性が計測で確認されるまで Tokio 導入を前提にしない。
+  </p>
+  <p>Writer job は最低限次を持つ。</p>
+  <ul>
+    <li><code>request_id</code>: trace と retry dedupe 用。</li>
+    <li>
+      <code>operation</code>: <code>queue.retry</code>、<code>knowledge.update</code> 等の安定名。
+    </li>
+    <li><code>deadline</code> / enqueue timestamp。</li>
+    <li>typed input または Writer 内 closure。</li>
+    <li>commit 後に返す typed result / structured error。</li>
+  </ul>
+  <p>
+    closure を使う場合も、public remote API は任意 SQL や任意 closure を受け付けない。domain command
+    だけを公開する。
+  </p>
+  <h3 id="section-43-connection-policy">4.3 connection policy</h3>
+  <p>Writer が起動時に 1 本の read-write connection を開き、次を一度設定する。</p>
+  <ul>
+    <li><code>PRAGMA foreign_keys = ON</code></li>
+    <li><code>PRAGMA busy_timeout = 5000</code>（移行中・offline tooling との競合検出用）</li>
+    <li><code>PRAGMA journal_mode = WAL</code></li>
+    <li><code>PRAGMA synchronous = NORMAL</code></li>
+    <li>sqlite-vec registration と schema/version verification</li>
+  </ul>
+  <p>
+    通常 operation は短い transaction とし、network、LLM call、filesystem scan、embedding
+    計算、large JSON parse は Writer thread の外で行う。Writer には commit に必要な確定 input
+    だけを渡す。
+  </p>
+  <h3 id="section-44-local-control-api">4.4 local control API</h3>
+  <p>
+    Hono と online CLI 用に、resident daemon が loopback-only の control HTTP endpoint
+    を所有する。既存 MCP transport の session protocol と混ぜず、versioned internal API とする。
+  </p>
+  <p>推奨 default:</p>
+  <ul>
+    <li>
+      bind: <code>127.0.0.1</code> の専用 port。既存 default port と衝突しない値を設定から解決する。
+    </li>
+    <li>
+      auth: app data 配下に daemon が生成する bearer token。owner-only permission を検証する。
+    </li>
+    <li>API: <code>/control/v1/health</code> と domain command endpoint。</li>
+    <li>request/response: versioned JSON schema。任意 SQL endpoint は作らない。</li>
+    <li>success: transaction commit 後だけ 2xx。</li>
+    <li>unavailable: direct SQLite fallback をせず 503。</li>
+    <li>timeout: 504、validation: 400、not found: 404、version conflict: 409。</li>
+  </ul>
+  <p>
+    Unix domain socket は local-only 性が明確だが、desktop platform 差と Bun client
+    実装差を増やす。初期実装は loopback HTTP + token を選び、transport abstraction
+    を保って将来変更可能にする。
+  </p>
+  <h3 id="section-45-typescript-write-client">4.5 TypeScript write client</h3>
+  <p>
+    <code>src/daemon/</code> または同等の boundary に 1 個の daemon client を置き、Hono
+    repository/service は domain-specific method を呼ぶ。
+  </p>
+  <p>例:</p>
+  <ul>
+    <li><code>updateSettings(input, requestId)</code></li>
+    <li><code>recordCompileResult(input, requestId)</code></li>
+    <li><code>applyKnowledgeFeedback(input, requestId)</code></li>
+    <li><code>transitionQueueJob(input, requestId, expectedVersion)</code></li>
+  </ul>
+  <p>
+    TypeScript 側は SQLite table、FTS shadow table、queue event の整合性を知らない。複数 table
+    の更新は Rust command の 1 transaction に閉じ込める。
+  </p>
+  <h3 id="section-46-read-only-policy">4.6 read-only policy</h3>
+  <p>TypeScript には <code>openSqliteCoreReadOnlyDatabase()</code> を新設する。次を禁止する。</p>
+  <ul>
+    <li><code>{ create: true }</code></li>
+    <li>schema SQL / migration の実行</li>
+    <li><code>journal_mode</code> の変更</li>
+    <li>vec virtual table 作成</li>
+    <li>parent directory/database file の作成</li>
+    <li>read path からの opportunistic repair</li>
+  </ul>
+  <p>
+    read-only open は database missing、schema version mismatch、required extension unavailable
+    を明示的に失敗させる。Rust 側の inspect/read path も <code>SQLITE_OPEN_READ_ONLY</code> を標準
+    helper にする。
+  </p>
+  <h3 id="section-47-online-と-offline-の境界">4.7 online と offline の境界</h3>
+  <table>
+    <caption>
+      Table: 4.7 online と offline の境界
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">class</th>
+        <th scope="col">例</th>
+        <th scope="col">実行規則</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>online short write</td>
+        <td>API mutation、MCP feedback、queue claim/state/event、sync incremental save</td>
+        <td>resident Writer queue のみ</td>
+      </tr>
+      <tr>
+        <td>online read</td>
+        <td>UI list/search、inspect、doctor</td>
+        <td>read-only connection 可</td>
+      </tr>
+      <tr>
+        <td>online snapshot</td>
+        <td>backup</td>
+        <td>
+          原則 daemon command として Writer を barrier 後に snapshot。少なくとも Writer truth を使う
+        </td>
+      </tr>
+      <tr>
+        <td>offline exclusive write</td>
+        <td>
+          schema migration、restore、VACUUM、full vector rebuild、PostgreSQL import、bulk
+          repair/backfill
+        </td>
+        <td>Rust command、maintenance mode、queue drain、exclusive lock 必須</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    offline tool も TypeScript direct writer として残さない。ただし全件処理を通常 Writer queue
+    に流して interactive write を長時間止めることもしない。
+  </p>
+  <h2 id="section-5-完了条件">5. 完了条件</h2>
+  <p>次をすべて満たした時だけ single-process Writer 化完了とする。</p>
+  <ul>
+    <li>
+      live daemon + Hono + MCP + scheduled queue/sync + supported online CLI を同時実行しても、write
+      audit の PID が resident daemon の 1 PID だけである。
+    </li>
+    <li>resident daemon 内の production mutation は 1 本の Writer connection から実行される。</li>
+    <li>
+      production Rust domain code に、Writer module と明示的 read-only/offline module 以外の
+      <code>Connection::open*</code> mutation path がない。
+    </li>
+    <li>
+      <code>src/</code> / <code>api/</code> に online SQLite mutation SQL、Drizzle
+      insert/update/delete、write-capable runtime open がない。
+    </li>
+    <li>
+      TypeScript read-only process の起動で database、WAL、schema、index、vec table の metadata
+      が変化しない。
+    </li>
+    <li>Hono/CLI は daemon unavailable 時に fail closed し、direct-write fallback をしない。</li>
+    <li>
+      compile、decision、queue state+event、knowledge+FTS/vector 等の定義済み aggregate が
+      transaction atomic である。
+    </li>
+    <li>
+      schema migration は Rust-owned、versioned、idempotent で、preflight が実 version を報告する。
+    </li>
+    <li>backup/restore/migration が Writer maintenance state と OS-level lock を検証する。</li>
+    <li>
+      graceful shutdown は新規 command を停止し、期限内に queue を drain して connection を close
+      する。
+    </li>
+    <li>CI static guard と multi-client integration test が ownership regression を検出する。</li>
+  </ul>
+  <h2 id="section-6-実装原則">6. 実装原則</h2>
+  <ol>
+    <li>
+      <p>
+        <strong>移植単位は repository file ではなく domain command にする。</strong>
+        FTS、audit、event、usage count を含む整合性単位を 1 transaction にする。
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>dual-write をしない。</strong> migration 中の route flag は request ごとに legacy
+        または Writer の一方だけを選ぶ。両方へ書かない。
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>自動 fallback をしない。</strong> control API failure 時に TypeScript direct write
+        へ戻すと ownership が再び不明になる。
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>long work を Writer thread に入れない。</strong> network/LLM/embedding/file scan
+        は外で行い、commit payload だけを enqueue する。
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>read-only 化より先に Rust migration parity を作る。</strong> 現在は TypeScript open
+        が schema lifecycle を担っているため、順序を逆にできない。
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>process state file と exclusive lock を区別する。</strong> state file は観測用、OS
+        lock は排他制御用とする。
+      </p>
+    </li>
+    <li>
+      <p>
+        <strong>PostgreSQL backend を壊さない。</strong> SQLite adapter の境界を差し替え、PostgreSQL
+        repository contract は別経路として維持する。
+      </p>
+    </li>
+  </ol>
+  <h2 id="section-7-実装ステージ">7. 実装ステージ</h2>
+  <h3 id="w0-writer-inventory-と-regression-guard-の固定">
+    W0: Writer inventory と regression guard の固定
+  </h3>
+  <h4 id="目的">目的</h4>
+  <p>
+    現在の全 write surface を機械可読にし、移行中の取りこぼしと新規 direct writer 増加を止める。
+  </p>
+  <h4 id="実装">実装</h4>
+  <ul>
+    <li><code>scripts/</code> に SQLite writer audit を追加する。</li>
+    <li>
+      production file を次の class に分類した manifest を置く。
+      <ul>
+        <li><code>resident_writer_target</code></li>
+        <li><code>online_remote_client_target</code></li>
+        <li><code>read_only_allowed</code></li>
+        <li><code>offline_exclusive_target</code></li>
+        <li><code>test_only</code></li>
+      </ul>
+    </li>
+    <li>
+      <code>Connection::open*</code>、Bun
+      <code>new Database</code>、<code>openSqliteCoreDatabase</code>、Drizzle mutation、mutation SQL
+      を検出する。
+    </li>
+    <li>false positive は path + rationale 付き allowlist に限定し、無条件除外を作らない。</li>
+    <li>
+      domain operation inventory に、caller process、tables、side effects、現 transaction
+      boundary、retry semantics を記録する。
+    </li>
+    <li>temporary DB で現行 behavior の characterization test を追加する。</li>
+  </ul>
+  <h4 id="完了条件">完了条件</h4>
+  <ul>
+    <li>本文 3.2 と 3.5 の surface が inventory にすべて現れる。</li>
+    <li>production に direct writer を追加すると CI が失敗する。</li>
+    <li>test fixture 内の SQL と production writer を区別できる。</li>
+  </ul>
+  <h4 id="検証">検証</h4>
+  <pre><code class="language-bash">bun run audit:sqlite-writers
+rg -n &quot;Connection::open|openSqliteCoreDatabase|new Database&quot; crates/context-stilld/src src api
+</code></pre>
+  <h4 id="停止条件">停止条件</h4>
+  <ul>
+    <li>dynamic table name や wrapper により mutation caller を分類できない。</li>
+    <li>SQLite/PostgreSQL branch が静的に区別できず、allowlist が広すぎる。</li>
+  </ul>
+  <h3 id="w1-rust-owned-schema-lifecycle-と-writer-foundation">
+    W1: Rust-owned schema lifecycle と Writer foundation
+  </h3>
+  <h4 id="目的-1">目的</h4>
+  <p>
+    TypeScript open に依存せず database を作成・upgrade できるようにし、単一 Writer actor
+    の土台を導入する。
+  </p>
+  <h4 id="実装-1">実装</h4>
+  <ul>
+    <li>
+      <code>sqlite_runtime</code> domain を追加し、次を分離する。
+      <ul>
+        <li>versioned schema migrations</li>
+        <li>Writer connection setup</li>
+        <li>read-only connection setup</li>
+        <li>offline exclusive connection setup</li>
+      </ul>
+    </li>
+    <li>
+      現在の <code>createSqliteCoreSchemaSql()</code> と <code>migrateSqliteCoreSchema()</code> を
+      ordered Rust migration に移植する。
+    </li>
+    <li>
+      <code>schema_migrations</code> table または <code>PRAGMA user_version</code> の一方を正式
+      contract として採用する。
+    </li>
+    <li>
+      schema/column/index/FTS/trigger/vec table parity test を、TypeScript 生成 DB と Rust 生成 DB
+      の比較で固定する。
+    </li>
+    <li>sqlite-vec registration と vector dimension mismatch の失敗 contract を固定する。</li>
+    <li>
+      <code>SqliteWriter</code> thread、bounded queue、<code>SqliteWriterHandle</code>、typed
+      error、deadline、shutdown/drain を実装する。
+    </li>
+    <li>
+      writer PID、thread state、queue depth/capacity、active operation、last commit/failure、schema
+      version を status/doctor に出す。
+    </li>
+    <li>
+      resident 起動の最初に OS-level single-instance/exclusive Writer lock を取得する。PID file の
+      check-then-write だけに依存しない。
+    </li>
+    <li>
+      <code>observe | resident_writer | enforced</code> の migration mode を追加する。automatic
+      fallback と dual-write は禁止する。
+    </li>
+  </ul>
+  <h4 id="完了条件-1">完了条件</h4>
+  <ul>
+    <li>空の temporary path から Rust だけで current schema を作成できる。</li>
+    <li>current production-compatible fixture を Rust migration で最新化できる。</li>
+    <li>N thread から enqueue しても Writer thread だけが transaction を実行する。</li>
+    <li>panic/error/timeout で transaction が rollback され、次の command を処理できる。</li>
+    <li>2 個目の resident Writer process は lock acquisition で起動に失敗する。</li>
+  </ul>
+  <h4 id="検証-1">検証</h4>
+  <pre><code class="language-bash">cargo test -p context-stilld sqlite_runtime
+cargo test -p context-stilld sqlite_writer
+cargo run -q -p context-stilld -- bootstrap preflight --json
+</code></pre>
+  <h4 id="停止条件-1">停止条件</h4>
+  <ul>
+    <li>TypeScript schema と Rust migration の parity を temporary DB で証明できない。</li>
+    <li>sqlite-vec / FTS table の再作成で既存データ損失の可能性がある。</li>
+    <li>
+      Writer job が <code>Send + &#39;static</code> boundary に収まらず、domain API
+      の再設計が必要になる。
+    </li>
+  </ul>
+  <h3 id="w2-resident-内-rust-writer-の集約">W2: resident 内 Rust writer の集約</h3>
+  <h4 id="目的-2">目的</h4>
+  <p>MCP、queue、agent-log-sync の Rust mutation を共通 WriterHandle に通す。</p>
+  <h4 id="実装順">実装順</h4>
+  <ol>
+    <li>queue maintenance の stale recovery。</li>
+    <li>queue claim/lease/state/event。</li>
+    <li>agent-log-sync incremental store。</li>
+    <li>MCP <code>compile_eval</code> と feedback/candidate の小さい mutation。</li>
+    <li>MCP compile/decision の aggregate persistence。</li>
+    <li>episode executor の card/FTS/reference と job completion。</li>
+  </ol>
+  <h4 id="transaction-再定義">transaction 再定義</h4>
+  <ul>
+    <li>queue state transition + event append + lease release を 1 command にする。</li>
+    <li>
+      compile run + snapshot + selected items + trace + usage/retrieval feedback を、成功/失敗
+      contract に沿う transaction にする。
+    </li>
+    <li>decision run + evidence + coverage + effect/feedback を transaction にする。</li>
+    <li>
+      knowledge main row + FTS + tag/source links + vector metadata + audit を operation ごとに
+      transaction 化する。
+    </li>
+    <li>
+      agent-log-sync は既存 transaction semantics を維持しつつ、connection ownership だけを Writer
+      へ移す。
+    </li>
+  </ul>
+  <p>
+    LLM 実行中に Writer connection を保持しない。claim commit 後に LLM/network work を行い、結果
+    commit を別 command として戻す。claim command と result command は job version/lease token で
+    stale write を拒否する。
+  </p>
+  <h4 id="cli-の扱い">CLI の扱い</h4>
+  <ul>
+    <li>
+      resident が動作中の <code>queue start</code>、<code>agent-log-sync run</code> は control
+      command に転送する。
+    </li>
+    <li>resident が不在なら online action は明示的に失敗する。</li>
+    <li>backfill は W6 まで dry-run のみ許可するか、exclusive offline mode に限定する。</li>
+    <li>standalone MCP writer mode は default から外し、最終的に削除する。</li>
+  </ul>
+  <h4 id="完了条件-2">完了条件</h4>
+  <ul>
+    <li>
+      production Rust domain module から direct read-write <code>Connection::open*</code> が消える。
+    </li>
+    <li>Rust read path は read-only helper、test は temporary connection として明示分類される。</li>
+    <li>
+      MCP concurrent request と queue/sync tick が同時でも commit は Writer event sequence
+      上で直列になる。
+    </li>
+  </ul>
+  <h4 id="検証-2">検証</h4>
+  <pre><code class="language-bash">cargo test -p context-stilld
+bun run verify:rust-daemon
+bun run mcp:smoke:sqlite
+bun run audit:sqlite-writers
+</code></pre>
+  <h4 id="停止条件-2">停止条件</h4>
+  <ul>
+    <li>Writer command 内に LLM/network/file scan が残る。</li>
+    <li>
+      既存の partial persistence を transactional に変えることで retry/recovery contract
+      が不明になる。
+    </li>
+    <li>queue lease token なしに長時間 job の stale result を安全に拒否できない。</li>
+  </ul>
+  <h3 id="w3-authenticated-control-api-と-typescript-client">
+    W3: authenticated control API と TypeScript client
+  </h3>
+  <h4 id="目的-3">目的</h4>
+  <p>
+    別 process から SQLite を触らず、resident Writer へ typed command を送れる boundary を作る。
+  </p>
+  <h4 id="実装-2">実装</h4>
+  <ul>
+    <li>loopback-only control server と token lifecycle を実装する。</li>
+    <li>token file/endpoint file の owner permission、rotation、stale file cleanup を実装する。</li>
+    <li>
+      <code>/control/v1/health</code> に daemon PID、writer ready、schema version、queue
+      saturation、maintenance state を返す。
+    </li>
+    <li>
+      command envelope に <code>requestId</code>、<code>operationVersion</code>、deadline、optional
+      idempotency key を含める。
+    </li>
+    <li>
+      retry 可能な create/enqueue operation は idempotency key の uniqueness を Rust transaction
+      内で保証する。
+    </li>
+    <li>
+      update/transition は <code>expectedVersion</code> または lease token を受け、lost update を
+      409 にする。
+    </li>
+    <li>payload size、rate/queue capacity、request timeout を制限する。</li>
+    <li>TypeScript daemon client と Hono error mapping を追加する。</li>
+    <li>contract test で Rust response と TypeScript decoding を固定する。</li>
+  </ul>
+  <h4 id="完了条件-3">完了条件</h4>
+  <ul>
+    <li>
+      Hono test process から temporary resident daemon へ authenticated mutation を送り、commit 後の
+      response を受け取れる。
+    </li>
+    <li>token 不正、daemon unavailable、queue full、deadline exceeded、conflict が区別される。</li>
+    <li>generic SQL execution endpoint が存在しない。</li>
+    <li>client に direct SQLite fallback がない。</li>
+  </ul>
+  <h4 id="検証-3">検証</h4>
+  <pre><code class="language-bash">cargo test -p context-stilld control_api
+bun test test/daemon-write-client.test.ts
+bun run typecheck
+</code></pre>
+  <h4 id="停止条件-3">停止条件</h4>
+  <ul>
+    <li>control endpoint が loopback 外へ bind される。</li>
+    <li>token file permission を対象 platform で保証できない。</li>
+    <li>request timeout 後に commit 成否を照会できず、非 idempotent retry が必要になる。</li>
+  </ul>
+  <h3 id="w4-低リスク-hono-mutation-の移行">W4: 低リスク Hono mutation の移行</h3>
+  <h4 id="目的-4">目的</h4>
+  <p>contract が小さく Rust parity を作りやすい route から control API へ切り替える。</p>
+  <h4 id="対象">対象</h4>
+  <ul>
+    <li>settings upsert。</li>
+    <li>compile eval と既存 feedback。</li>
+    <li>vibe memory record/delete。</li>
+    <li>episode create/status/usage。</li>
+    <li>queue pause/resume/retry と event。</li>
+    <li>
+      LLM usage/audit は単独 command にせず、可能なら原因となる domain transaction に組み込む。
+    </li>
+  </ul>
+  <h4 id="実装-3">実装</h4>
+  <ul>
+    <li>
+      repository interface は維持し、SQLite adapter 実装を daemon client adapter に差し替える。
+    </li>
+    <li>PostgreSQL adapter は変更しない。</li>
+    <li>
+      route ごとに <code>legacy_direct | resident_writer</code> を選ぶ feature gate
+      を一時導入する。ただし 1 request で両方は呼ばない。
+    </li>
+    <li>
+      response status/body、validation、not-found、conflict semantics の parity test を追加する。
+    </li>
+    <li>resident unavailable 時の 503 と UI/operator message を固定する。</li>
+  </ul>
+  <h4 id="完了条件-4">完了条件</h4>
+  <ul>
+    <li>対象 route 実行中、Hono process の SQLite connection は read-only だけである。</li>
+    <li>FTS/event/audit を含む副作用が Rust transaction で一致する。</li>
+    <li>migrated route に legacy direct-write fallback がない。</li>
+  </ul>
+  <h4 id="検証-4">検証</h4>
+  <pre><code class="language-bash">bun test test/api test/sqlite-runtime-support.bun.ts
+bun run typecheck
+bun run audit:sqlite-writers
+</code></pre>
+  <h4 id="停止条件-4">停止条件</h4>
+  <ul>
+    <li>Hono behavior と Rust command の validation/error semantics が一致しない。</li>
+    <li>1 route の処理が複数 control command に分かれ、partial commit が生じる。</li>
+  </ul>
+  <h3 id="w5-core-domain-と-graphlandscapequeue-mutation-の移行">
+    W5: core domain と graph/landscape/queue mutation の移行
+  </h3>
+  <h4 id="目的-5">目的</h4>
+  <p>table 間依存が大きい TypeScript writer を domain aggregate として Rust へ移す。</p>
+  <h4 id="実装順-1">実装順</h4>
+  <ol>
+    <li>knowledge row、feedback、tags、source/origin links、FTS。</li>
+    <li>
+      source metadata/fragment/reindex/delete。filesystem scan/fetch は TypeScript に残し、commit
+      payload を送る。
+    </li>
+    <li>context compile/decision の Hono route を、W2 と同じ Rust domain command に統合する。</li>
+    <li>
+      queue enqueue/claim/state/event/lease の Hono/TS path を Rust queue command に統一する。
+    </li>
+    <li>graph/landscape review candidate、deadzone/merge job、snapshot/cache、community label。</li>
+    <li>vector insert/rebuild metadata。large rebuild 自体は W6 offline path へ分ける。</li>
+  </ol>
+  <h4 id="設計上の注意">設計上の注意</h4>
+  <ul>
+    <li>Hono の既存 service orchestration をそのまま細粒度 RPC に写さない。</li>
+    <li>
+      <code>update row</code> と <code>append event</code>、<code>knowledge</code> と FTS、<code
+        >card</code
+      >
+      と reference のような不変条件を 1 Rust command にする。
+    </li>
+    <li>
+      deterministic computation は client/Rust service のどちらでもよいが、commit 前 validation と
+      database-derived precondition は Writer transaction 内で再確認する。
+    </li>
+    <li>
+      large payload は上限を設け、fragment bulk upsert は chunked command + import session semantics
+      を使う。
+    </li>
+  </ul>
+  <h4 id="完了条件-5">完了条件</h4>
+  <ul>
+    <li>API の SQLite mutation route がすべて daemon client adapter を通る。</li>
+    <li><code>api/</code> に mutation SQL/Drizzle mutation が残らない。</li>
+    <li>nested service が旧 SQLite repository を直接 import していない。</li>
+    <li>
+      domain parity tests が row だけでなく FTS、event、audit、reference、version を確認する。
+    </li>
+  </ul>
+  <h4 id="検証-5">検証</h4>
+  <pre><code class="language-bash">bun run typecheck
+bun test
+cargo test -p context-stilld
+bun run verify:sqlite
+bun run audit:sqlite-writers
+</code></pre>
+  <h4 id="停止条件-5">停止条件</h4>
+  <ul>
+    <li>既存 route の副作用 inventory に未分類 table が現れる。</li>
+    <li>bulk command が interactive writer latency budget を継続的に超える。</li>
+    <li>vector engine ownership が既存 sqlite-vec plan と整合しない。</li>
+  </ul>
+  <h3 id="w6-typescript-cli-と保守-operation-の-rust-化排他化">
+    W6: TypeScript CLI と保守 operation の Rust 化・排他化
+  </h3>
+  <h4 id="目的-6">目的</h4>
+  <p>
+    任意に起動可能な別 process Writer を除去し、online command と offline exclusive operation
+    を分離する。
+  </p>
+  <h4 id="対象-1">対象</h4>
+  <ul>
+    <li>queue one-shot/enqueue/requeue/migration。</li>
+    <li>knowledge embedding/value/project/source/origin link backfill。</li>
+    <li>episode/card repair/reset/backfill。</li>
+    <li>PostgreSQL-to-SQLite import/migration。</li>
+    <li>seed/sample data。</li>
+    <li>SQLite backup/restore/vector rebuild/VACUUM。</li>
+  </ul>
+  <h4 id="実装-4">実装</h4>
+  <ul>
+    <li>online queue/enqueue/retry CLI は control API client にする。</li>
+    <li>dry-run/read/report CLI は read-only open にする。</li>
+    <li>bulk write は Rust offline command へ移植する。</li>
+    <li>
+      offline command の開始手順を固定する。
+      <ol>
+        <li>control API で maintenance intent を登録。</li>
+        <li>新規 write request を拒否。</li>
+        <li>Writer queue と active operation を drain。</li>
+        <li>resident Writer connection を close、または daemon を停止。</li>
+        <li>OS-level exclusive database lock を取得。</li>
+        <li>backup + integrity/schema check。</li>
+        <li>operation 実行。</li>
+        <li>integrity/schema/version 検証。</li>
+        <li>lock release、Writer reopen、health check。</li>
+      </ol>
+    </li>
+    <li>
+      backup は可能なら resident command にし、barrier 後に SQLite backup API または整合 snapshot
+      を作る。restore は必ず stopped/exclusive とする。
+    </li>
+    <li>
+      legacy TypeScript write script は package script から削除し、移行案内を出す wrapper
+      も一定期間後に削除する。
+    </li>
+  </ul>
+  <h4 id="完了条件-6">完了条件</h4>
+  <ul>
+    <li><code>package.json</code> に TypeScript direct-write CLI がない。</li>
+    <li>
+      offline operation は active Writer を検知したら実行せず、maintenance handshake なしに bypass
+      できない。
+    </li>
+    <li>backup preflight は surface 名の推測ではなく、Writer lock/status を truth とする。</li>
+    <li>restore/rebuild failure から backup へ戻す手順が rehearsal 済みである。</li>
+  </ul>
+  <h4 id="検証-6">検証</h4>
+  <pre><code class="language-bash">bun run audit:sqlite-writers
+cargo test -p context-stilld offline_maintenance
+cargo run -q -p context-stilld -- backup preflight --json
+sqlite3 &quot;$CONTEXT_STILL_SQLITE_CORE_PATH&quot; &quot;PRAGMA integrity_check;&quot;
+</code></pre>
+  <p>
+    検証用 database は必ず temporary copy を使い、live
+    <code>data/context-still-core.sqlite</code> を破壊的 test に使わない。
+  </p>
+  <h4 id="停止条件-6">停止条件</h4>
+  <ul>
+    <li>maintenance mode 中にも MCP/Hono/CLI から write を受理する。</li>
+    <li>lock の対象が database path と一致しない symlink/relative path alias を許す。</li>
+    <li>backup なしに schema/bulk mutation を開始する。</li>
+  </ul>
+  <h3 id="w7-typescript-sqlite-の-read-only-強制と-legacy-path-削除">
+    W7: TypeScript SQLite の read-only 強制と legacy path 削除
+  </h3>
+  <h4 id="目的-7">目的</h4>
+  <p>TypeScript process が SQLite Writer に戻れない状態を code と runtime の両方で強制する。</p>
+  <h4 id="実装-5">実装</h4>
+  <ul>
+    <li><code>openSqliteCoreReadOnlyDatabase()</code> を default runtime open にする。</li>
+    <li>
+      <code>openSqliteCoreDatabase()</code>、TypeScript schema bootstrap/migration、Bun sqlite-vec
+      loading/virtual table creation を production path から削除する。
+    </li>
+    <li>
+      migrated SQLite repository を read-only query adapter と daemon command adapter に分割する。
+    </li>
+    <li>static audit を required CI check にする。</li>
+    <li>
+      TypeScript read process 起動前後で schema version、<code>sqlite_master</code>、row
+      count、database/WAL mtime が変わらない test を追加する。
+    </li>
+    <li>Rust production code も Writer/offline helper 外の read-write open を CI で禁止する。</li>
+    <li>final mode を <code>enforced</code> にし、legacy feature gate を削除する。</li>
+  </ul>
+  <h4 id="完了条件-7">完了条件</h4>
+  <ul>
+    <li>Hono と全 supported TypeScript CLI が read-only open または daemon client のみを使う。</li>
+    <li>TypeScript startup だけでは database file が作成されない。</li>
+    <li>
+      <code>rg</code> と audit script の allowlist は test、read-only、offline Rust module
+      だけになる。
+    </li>
+    <li>direct-write regression を意図的に追加した test fixture で CI failure を確認する。</li>
+  </ul>
+  <h4 id="検証-7">検証</h4>
+  <pre><code class="language-bash">bun run audit:sqlite-writers
+bun run typecheck
+bun test
+cargo test -p context-stilld
+bun run verify:sqlite
+</code></pre>
+  <h4 id="停止条件-7">停止条件</h4>
+  <ul>
+    <li>read-only open の内部で schema ensure/repair が残る。</li>
+    <li>compatibility の名目で automatic direct-write fallback が残る。</li>
+    <li>CI allowlist が directory 単位で mutation を許す。</li>
+  </ul>
+  <h3 id="w8-concurrency障害運用-gate-と-hard-cutover">
+    W8: concurrency、障害、運用 gate と hard cutover
+  </h3>
+  <h4 id="目的-8">目的</h4>
+  <p>
+    単一 Writer ownership が高負荷、shutdown、crash、backup を含めて運用可能であることを証明する。
+  </p>
+  <h4 id="test-matrix">test matrix</h4>
+  <table>
+    <caption>
+      Table: test matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">case</th>
+        <th scope="col">確認事項</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>MCP + Hono + queue + sync 同時 write</td>
+        <td>commit 順序、1 writer PID/thread、<code>SQLITE_BUSY</code> なし</td>
+      </tr>
+      <tr>
+        <td>queue saturation</td>
+        <td>bounded backpressure、429/503、memory 無制限増加なし</td>
+      </tr>
+      <tr>
+        <td>duplicate request</td>
+        <td>idempotency key で 1 commit</td>
+      </tr>
+      <tr>
+        <td>stale queue result</td>
+        <td>lease/version conflict で拒否、event 整合</td>
+      </tr>
+      <tr>
+        <td>transaction failure</td>
+        <td>aggregate 全 rollback、次 command 継続</td>
+      </tr>
+      <tr>
+        <td>client timeout</td>
+        <td>request status を照会可能、blind retry しない</td>
+      </tr>
+      <tr>
+        <td>SIGTERM</td>
+        <td>accept stop、drain、deadline 後 cancel/rollback、clean close</td>
+      </tr>
+      <tr>
+        <td>daemon crash</td>
+        <td>WAL recovery、lock reclaim、in-flight 状態の明示</td>
+      </tr>
+      <tr>
+        <td>backup/restore</td>
+        <td>maintenance handshake、integrity、schema version、再起動</td>
+      </tr>
+      <tr>
+        <td>read-only Hono</td>
+        <td>process 起動/queries で schema/mtime 不変</td>
+      </tr>
+    </tbody>
+  </table>
+  <h4 id="runtime-observability">runtime observability</h4>
+  <ul>
+    <li><code>writerPid</code></li>
+    <li><code>writerThreadState</code></li>
+    <li><code>schemaVersion</code></li>
+    <li><code>queueDepth</code> / <code>queueCapacity</code></li>
+    <li><code>activeOperation</code> / elapsed time</li>
+    <li><code>lastCommittedAt</code></li>
+    <li><code>lastFailure</code>（secret/input を含めない）</li>
+    <li>operation ごとの enqueue wait、transaction duration、commit/failure count</li>
+    <li>maintenance/lock owner</li>
+  </ul>
+  <h4 id="hard-cutover-gate">hard cutover gate</h4>
+  <ul>
+    <li>連続した実運用観測期間で unknown Writer と <code>SQLITE_BUSY</code> が 0。</li>
+    <li>p95 enqueue wait/transaction duration が設定した SLO 内。</li>
+    <li>backup/restore rehearsal が成功。</li>
+    <li>legacy direct mode と package script を削除済み。</li>
+    <li>operations/configuration/architecture docs を新 ownership に更新済み。</li>
+  </ul>
+  <h4 id="完了条件-8">完了条件</h4>
+  <ul>
+    <li>完了条件 5 の全項目に test/report evidence がある。</li>
+    <li>
+      <code>doctor</code>、<code>status</code>、backup preflight が同じ Writer PID/lock/schema state
+      を報告する。
+    </li>
+    <li>rollback rehearsal と crash recovery test が temporary DB で成功する。</li>
+  </ul>
+  <h2 id="section-8-推奨-module-境界">8. 推奨 module 境界</h2>
+  <p>
+    具体的な file 名は実装時の既存 domain 構造に合わせて調整してよいが、責務は次のように分ける。
+  </p>
+  <pre><code class="language-text">crates/context-stilld/src/domains/sqlite_runtime/
+  service.rs          # start/stop/status, migration mode
+  writer.rs           # writer thread, queue, handle, shutdown
+  connection.rs       # RW/RO/offline connection policy
+  migrations/         # ordered embedded migrations
+  lock.rs             # resident/offline exclusive lock
+  types.rs            # command envelope, error/status
+
+crates/context-stilld/src/domains/control_api/
+  server.rs           # loopback HTTP, auth, limits
+  routing.rs          # versioned typed domain commands
+  token.rs            # token lifecycle and permissions
+
+src/daemon/
+  write-client.ts     # transport/error/idempotency
+  command-types.ts    # TS contract types/decoders
+
+src/db/sqlite/
+  read-only-client.ts # query-only open
+</code></pre>
+  <p>
+    domain SQL は巨大な中央 <code>match</code> に集めず、knowledge、queue、compile、decision 等の
+    Rust domain module に置く。connection ownership と transaction execution だけを Writer
+    が中央管理する。
+  </p>
+  <h2 id="section-9-api-command-設計チェックリスト">9. API command 設計チェックリスト</h2>
+  <p>各 mutation を移行する前に、次を記入する。</p>
+  <ul>
+    <li>command name/version。</li>
+    <li>caller と authorization。</li>
+    <li>idempotency key の要否。</li>
+    <li>expected version / lease token。</li>
+    <li>読み取る table と更新する table。</li>
+    <li>FTS/vector/audit/event の副作用。</li>
+    <li>transaction の開始・commit boundary。</li>
+    <li>validation を client 前処理と transaction 内再検証のどちらで行うか。</li>
+    <li>maximum payload と chunking。</li>
+    <li>timeout 後の status lookup。</li>
+    <li>retry-safe / retry-unsafe の分類。</li>
+    <li>error mapping。</li>
+    <li>temporary DB parity test。</li>
+  </ul>
+  <h2 id="section-10-rollout-と-rollback">10. Rollout と rollback</h2>
+  <h3 id="rollout">rollout</h3>
+  <ol>
+    <li>W0/W1 は write routing を変えず foundation と観測を追加する。</li>
+    <li>W2 以降は domain/route 単位で <code>resident_writer</code> へ切り替える。</li>
+    <li>同じ request の dual-write は行わない。</li>
+    <li>
+      各 stage で temporary DB backup、schema checksum、row/FTS/vector/event parity を保存する。
+    </li>
+    <li>W7 で <code>enforced</code> にし、legacy path を削除する。</li>
+  </ol>
+  <h3 id="rollback">rollback</h3>
+  <ul>
+    <li>W1 の additive schema/actor だけなら routing flag を戻せる。</li>
+    <li>
+      W2-W6 の route rollback は、当該 domain の migration schema が backward-compatible
+      で、同一稼働期間に old/new Writer を混在させない場合だけ許可する。
+    </li>
+    <li>
+      control API failure を契機とした runtime automatic fallback は禁止する。rollback は operator
+      が process 全体を止め、mode を変更して再起動する。
+    </li>
+    <li>destructive schema migration 前には verified backup を作る。</li>
+    <li>
+      hard cutover 後は direct Writer code を復活させず、Rust command の forward fix を優先する。
+    </li>
+  </ul>
+  <h2 id="section-11-リスクと対策">11. リスクと対策</h2>
+  <table>
+    <caption>
+      Table: 11. リスクと対策
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">リスク</th>
+        <th scope="col">対策</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Writer queue が global bottleneck になる</td>
+        <td>short transaction、bounded queue、latency metric、bulk offline/chunking</td>
+      </tr>
+      <tr>
+        <td>LLM/network 中に connection を占有する</td>
+        <td>claim/result の 2 command 化、lease/version token</td>
+      </tr>
+      <tr>
+        <td>HTTP timeout 後に commit 済みか不明</td>
+        <td>request ID、idempotency record、status lookup</td>
+      </tr>
+      <tr>
+        <td>Hono contract drift</td>
+        <td>route-level contract/parity test、typed decoder</td>
+      </tr>
+      <tr>
+        <td>schema parity 不足で TS read-only 化に失敗</td>
+        <td>W1 を先行し、empty/current fixture の比較 gate</td>
+      </tr>
+      <tr>
+        <td>FTS/vector の副作用漏れ</td>
+        <td>domain command inventory と aggregate transaction test</td>
+      </tr>
+      <tr>
+        <td>offline CLI が lock を bypass</td>
+        <td>canonical path、OS lock、maintenance handshake、CI/package script 削除</td>
+      </tr>
+      <tr>
+        <td>PID file stale/race</td>
+        <td>PID は観測のみ、排他は OS lock</td>
+      </tr>
+      <tr>
+        <td>Writer panic で daemon 全体が不健全</td>
+        <td>health state、fail closed、supervised shutdown/restart、no silent respawn loop</td>
+      </tr>
+      <tr>
+        <td>migration 中に legacy/new Writer が混在</td>
+        <td>process-wide mode、route ownership inventory、短い cutover window、no fallback</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="section-12-初期実装の推奨-pr-分割">12. 初期実装の推奨 PR 分割</h2>
+  <table>
+    <caption>
+      Table: 12. 初期実装の推奨 PR 分割
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">PR</th>
+        <th scope="col">内容</th>
+        <th scope="col">依存</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>PR1</td>
+        <td>writer inventory、audit script、characterization tests</td>
+        <td>なし</td>
+      </tr>
+      <tr>
+        <td>PR2</td>
+        <td>Rust schema migrations/parity、read-only/RW connection policy</td>
+        <td>PR1</td>
+      </tr>
+      <tr>
+        <td>PR3</td>
+        <td>Writer actor、status/doctor、OS lock、shutdown tests</td>
+        <td>PR2</td>
+      </tr>
+      <tr>
+        <td>PR4</td>
+        <td>queue maintenance/claim/state/event を Writer 化</td>
+        <td>PR3</td>
+      </tr>
+      <tr>
+        <td>PR5</td>
+        <td>agent-log-sync と small MCP writes を Writer 化</td>
+        <td>PR3</td>
+      </tr>
+      <tr>
+        <td>PR6</td>
+        <td>compile/decision/episode aggregate transaction 化</td>
+        <td>PR4/PR5</td>
+      </tr>
+      <tr>
+        <td>PR7</td>
+        <td>control API、token、TypeScript client、contract tests</td>
+        <td>PR3</td>
+      </tr>
+      <tr>
+        <td>PR8</td>
+        <td>low-risk Hono routes</td>
+        <td>PR7 + relevant Rust command</td>
+      </tr>
+      <tr>
+        <td>PR9</td>
+        <td>knowledge/source/queue/graph/landscape routes</td>
+        <td>PR6-PR8</td>
+      </tr>
+      <tr>
+        <td>PR10</td>
+        <td>Rust offline maintenance/backup/migration、TS CLI 除去</td>
+        <td>PR9</td>
+      </tr>
+      <tr>
+        <td>PR11</td>
+        <td>TS read-only enforcement、legacy deletion、hard-cutover tests/docs</td>
+        <td>PR10</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    PR4 と PR5 は共通 Writer API が固定された後なら並行可能である。PR8/PR9 は domain command parity
+    が先で、TypeScript route の切替だけを先行させない。
+  </p>
+  <h2 id="section-13-実装開始時の最初の判断事項">13. 実装開始時の最初の判断事項</h2>
+  <p>実装前に ADR として次を確定する。</p>
+  <ol>
+    <li>
+      schema versioning に <code>schema_migrations</code> と
+      <code>user_version</code> のどちらを使うか。
+    </li>
+    <li>Writer queue capacity、default deadline、shutdown drain timeout。</li>
+    <li>control API の port resolution と token file path/permission。</li>
+    <li>idempotency record の保存期間と cleanup。</li>
+    <li>online backup を SQLite backup API と <code>VACUUM INTO</code> のどちらで実装するか。</li>
+    <li>offline exclusive lock の cross-platform library と canonical database identity。</li>
+    <li>compile/decision failure record を成功 aggregate と別 transaction にするか。</li>
+    <li>vector full rebuild の chunk/maintenance policy。</li>
+  </ol>
+  <p>
+    推奨は、schema migration table、bounded synchronous queue、loopback HTTP + token、domain command
+    の明示的 idempotency、online backup API、OS file lock の組合せである。
+  </p>
+  <h2 id="section-14-調査根拠となる主要-file">14. 調査根拠となる主要 file</h2>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/resident_runtime/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/endpoint_server.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_common.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_decision.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_knowledge.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/executor.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/maintenance.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/agent_log_sync/store.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/agent_log_sync/routing.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/admin_api_lifecycle/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/bootstrap/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/backup/service.rs</code></li>
+    <li><code>src/db/sqlite/client.ts</code></li>
+    <li><code>src/db/sqlite/runtime.ts</code></li>
+    <li><code>src/db/sqlite/core-repository.ts</code></li>
+    <li><code>api/modules/</code></li>
+    <li><code>src/modules/queue/core/</code></li>
+    <li><code>src/modules/context-compiler/</code></li>
+    <li><code>src/modules/context-decision/</code></li>
+    <li><code>src/modules/knowledge/</code></li>
+    <li><code>src/modules/landscape/</code></li>
+    <li><code>src/modules/settings/settings.repository.sqlite.ts</code></li>
+    <li><code>src/modules/sources/source.repository.sqlite.ts</code></li>
+    <li><code>src/modules/vibe-memory/</code></li>
+    <li><code>src/modules/sqlite-migration/postgres-to-sqlite.service.ts</code></li>
+    <li><code>src/cli/</code></li>
+    <li><code>package.json</code></li>
+  </ul>
+</article>

@@ -1,0 +1,214 @@
+<article lang="en">
+  <h1 id="context-compile-repository-isolation-t0-evidence">
+    Context Compile Repository Isolation T0 Evidence
+  </h1>
+  <h2 id="status">Status</h2>
+  <p>
+    Recorded at 2026-08-15 20:35 JST. T0 reproduction, shared fixture, read-only inventory, and
+    baseline collection are complete. This document records aggregate evidence only; it contains no
+    Knowledge/Source/Episode content and no absolute repository path.
+  </p>
+  <h2 id="shared-fixture-and-reproduction">Shared Fixture And Reproduction</h2>
+  <p>
+    The canonical fixture is
+    <code>test/fixtures/context-compile-repository-isolation-v1.json</code>. Rust, TypeScript,
+    SQLite, and PostgreSQL consume the same file or its candidate records. It covers:
+  </p>
+  <ul>
+    <li>
+      no identity, <code>projectRef</code>, <code>repoKey</code>, and
+      <code>repoPath</code> selection bases;
+    </li>
+    <li>
+      POSIX, Windows, and local <code>file://</code> paths plus invalid relative, remote-host,
+      query-bearing, and malformed-percent file URIs;
+    </li>
+    <li>authoritative multi-identifier agreement and conflict;</li>
+    <li>
+      global, repository, unresolved, malformed, conflict, inactive, general, facet-match, and
+      facet-mismatch candidates;
+    </li>
+    <li>exact prefix and path-case collision behavior;</li>
+    <li>
+      501 Knowledge wrong-project rows, 501 Knowledge facet-mismatch rows, and 121 Episode
+      wrong-project rows before a matching anchor;
+    </li>
+    <li>Knowledge, Source, and Episode candidates for Repo A, Repo B, and global scope.</li>
+  </ul>
+  <p>
+    The Rust legacy reproduction intentionally proves that the pre-enforcement compile path selects
+    both a Repo B Knowledge item and an unresolved Knowledge item for a Repo A request. The test
+    observes selected candidate-trace IDs and persisted pack IDs, not only final Markdown. The
+    agentic harness uses a local mock HTTP composer and observes candidate, external outbound, and
+    pack IDs. The existing disabled-agentic test covers the local fallback path.
+  </p>
+  <h2 id="live-read-only-inventory">Live Read-Only Inventory</h2>
+  <p>Command:</p>
+  <pre><code class="language-bash">bun run repository-isolation:report -- --preview-limit 0 --recent-run-limit 0
+</code></pre>
+  <p>
+    The command completed successfully in 1.3 seconds against the configured SQLite database. It
+    performed no migration or fixture write.
+  </p>
+  <table>
+    <caption>
+      Table: Live Read-Only Inventory
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Entity</th>
+        <th scope="col">Total</th>
+        <th scope="col">Reported unresolved</th>
+        <th scope="col">Canonical classification column</th>
+        <th scope="col">Existing legacy identity signal</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Knowledge</td>
+        <td>7,227</td>
+        <td>7,227</td>
+        <td>absent</td>
+        <td>none in canonical columns</td>
+      </tr>
+      <tr>
+        <td>Source</td>
+        <td>178</td>
+        <td>178</td>
+        <td>absent</td>
+        <td>none in canonical columns</td>
+      </tr>
+      <tr>
+        <td>EpisodeCard</td>
+        <td>6,602</td>
+        <td>6,602</td>
+        <td>absent</td>
+        <td><code>repo_key</code> on 5,761 rows; no identity on 841 rows</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Because the live database predates the additive canonical entity columns, the report
+    deliberately maps rows to unresolved instead of inferring <code>classified</code> or
+    <code>global</code>. In particular, a legacy EpisodeCard <code>repo_key</code> is an inventory
+    signal but does not override the missing <code>classification_status</code> contract.
+  </p>
+  <p>
+    The earlier plan snapshot of Knowledge 7,092 / Source 99 / EpisodeCard 841 was stale. The 841
+    value remains the count of EpisodeCards with no legacy repository identity; it is not the total
+    number that is safe to treat as canonically classified.
+  </p>
+  <h2 id="baseline-cohort">Baseline Cohort</h2>
+  <p>
+    The 14-day identity-present cohort had fewer than 500 samples, so the report extended to the
+    required maximum of 30 days.
+  </p>
+  <table>
+    <caption>
+      Table: Baseline Cohort
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Metric</th>
+        <th scope="col">Observed</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Compile runs in 30-day window</td>
+        <td>1,809</td>
+      </tr>
+      <tr>
+        <td>Identity-present compile runs</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>Identity presence rate</td>
+        <td>0%</td>
+      </tr>
+      <tr>
+        <td>Minimum requested identity-present samples</td>
+        <td>500</td>
+      </tr>
+      <tr>
+        <td>Cohort sufficient</td>
+        <td>no</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    No Content rate, selected-kind distribution, latency percentiles, and composer failure rate for
+    identity-present requests are therefore unavailable rather than silently replaced with synthetic
+    values. Fixture measurements remain separate from the live cohort.
+  </p>
+  <h2 id="verification-evidence">Verification Evidence</h2>
+  <table>
+    <caption>
+      Table: Verification Evidence
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Surface</th>
+        <th scope="col">Command</th>
+        <th scope="col">Executed</th>
+        <th scope="col">Skipped</th>
+        <th scope="col">Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>TypeScript fixture semantics</td>
+        <td>
+          <code>bunx vitest run test/context-compile-repository-isolation.fixture.test.ts</code>
+        </td>
+        <td>11</td>
+        <td>0</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>SQLite fixture/report</td>
+        <td><code>bun test ./test/sqlite-repository-isolation-report.bun.ts</code></td>
+        <td>1</td>
+        <td>0</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>Rust reproduction/composer harness</td>
+        <td><code>cargo test -p context-stilld native_compile -- --nocapture</code></td>
+        <td>9</td>
+        <td>0</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>PostgreSQL fixture/report</td>
+        <td>
+          <code
+            >CONTEXT_STILL_RUN_DB_TESTS=1 bunx vitest run
+            test/repository-isolation-report.integration.test.ts</code
+          >
+        </td>
+        <td>1</td>
+        <td>0</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>TypeScript types</td>
+        <td><code>bun run typecheck</code></td>
+        <td>1 command</td>
+        <td>0</td>
+        <td>pass</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The PostgreSQL suite used a dedicated <code>context_still_test</code> database. A skipped
+    integration suite is not counted as success; the recorded run executed the test.
+  </p>
+  <h2 id="t0-decision">T0 Decision</h2>
+  <p>
+    T0 is complete. Its evidence blocks immediate enforcement: live canonical identity adoption is
+    0%, canonical entity classification columns are absent in the current live SQLite file, and the
+    legacy Rust path has an automated wrong-project reproduction. T2 producer closure and T3
+    deterministic migration must precede shadow/enforced rollout.
+  </p>
+</article>

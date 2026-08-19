@@ -1,0 +1,1108 @@
+<article lang="ja">
+  <h1 id="internal-chunked-distillation-実装計画">Internal Chunked Distillation 実装計画</h1>
+  <blockquote>
+    <p>
+      アーカイブ日: 2026-08-15。実装コミット: <code>511965e</code>。findCandidate 部分は後に
+      <code>0e73ff9</code> で置換済み。
+    </p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    <code>findCandidate</code> と <code>episodeDistiller</code> は、長い vibe memory / agent log
+    を処理するときに LLM の一発読みまたは LLM の自律 reader
+    判断へ寄りすぎると、局所的な失敗、判断の揺れ、negative knowledge、後続 compile
+    に効く小さい観察を落としやすい。
+  </p>
+  <p>
+    一方で、chunk 化や merge のために独立 queue を増やすと、queue 完了条件、provider
+    lease、retry、UI 表示、運用診断が複雑になる。今回の目的は queue family
+    を増やすことではなく、既存 queue job の内部処理を扱いやすい単位へ分け、軽量 LLM
+    でも安定して蒸留できる形にすることである。
+  </p>
+  <p>
+    この計画は、<code>findingCandidate</code> と <code>episodeDistiller</code> の既存 queue
+    境界を維持したまま、job 内部に <code>global pass</code> / <code>semantic chunk pass</code> /
+    <code>chunk-local generation pass</code> / <code>bridge pass</code> /
+    <code>merge pass</code> を導入するための実装順序、完了条件、検証ゲート、停止条件を定義する。
+  </p>
+  <h2 id="目的">目的</h2>
+  <ul>
+    <li>
+      <code>findingCandidate</code> / <code>episodeDistiller</code> の queue 境界を増やさず、job
+      内部の段階処理として chunk / bridge / merge を実装する。
+    </li>
+    <li>
+      長大ログの局所 recall を上げ、<code>no_candidate</code> /
+      <code>no_episode</code> の誤判定を減らす。
+    </li>
+    <li>
+      semantic chunk 作成と chunk-local 生成を、安価な Local LLM
+      でも対応できる粒度に寄せ、全体の蒸留速度を上げる。
+    </li>
+    <li>bridge / merge だけを必要に応じてより強いモデルへ回し、品質と待ち時間のバランスを取る。</li>
+    <li>
+      <code>findCandidate</code> と
+      <code>episodeDistiller</code> の処理を混ぜず、それぞれの成果物と保存先を明確に分ける。
+    </li>
+    <li>
+      merge 後も <code>1 source = 1 EpisodeCard</code> にしない。再利用可能な episode 単位ごとに複数
+      EpisodeCard を作れる状態を維持する。
+    </li>
+  </ul>
+  <h2 id="非目的">非目的</h2>
+  <ul>
+    <li>chunk / bridge / merge 用の新しい queue を作らない。</li>
+    <li><code>findCandidate</code> に EpisodeCard 作成責務を戻さない。</li>
+    <li><code>episodeDistiller</code> から Knowledge candidate / found candidate を作らない。</li>
+    <li>
+      <code>episodelet</code> や <code>candidatelet</code> を validation / dedupe / bridge audit
+      なしに正式成果物として公開しない。
+    </li>
+    <li>
+      <code>episodeDistiller</code> の merge で 1 source 全体を 1 つの EpisodeCard に圧縮しない。
+    </li>
+    <li>provider pool / queue scheduler の優先順位設計をこの計画で広げない。</li>
+    <li>live DB 全体の破壊的 requeue / reset をこの計画に含めない。</li>
+  </ul>
+  <h2 id="基本方針">基本方針</h2>
+  <h3 id="initial-implementation-slice">Initial Implementation Slice</h3>
+  <p>最初の実装 PR は TypeScript manual fallback path に限定する。</p>
+  <p>含める:</p>
+  <ul>
+    <li>feature flag の追加。</li>
+    <li>bounded source window 作成。</li>
+    <li>semantic chunk schema / validation。</li>
+    <li><code>episodeDistiller</code> の semantic chunking と chunk-local generation。</li>
+    <li><code>findCandidate</code> の semantic chunking と chunk-local generation。</li>
+    <li>merge 前 validation / dedupe / metadata diagnostics。</li>
+    <li>既存 queue row 内の checkpoint 更新。</li>
+    <li>対象 unit / sqlite runtime tests。</li>
+  </ul>
+  <p>含めない:</p>
+  <ul>
+    <li>新 queue。</li>
+    <li>resident Rust executor parity。</li>
+    <li>UI 表示変更。</li>
+    <li>live DB requeue / reset。</li>
+    <li>provider pool scheduler の再設計。</li>
+  </ul>
+  <p>この slice が通った後で、Rust resident path と queue inspect / UI 表示を別 PR として扱う。</p>
+  <h3 id="queue-境界">Queue 境界</h3>
+  <p>既存 queue は維持する。</p>
+  <table>
+    <caption>
+      Table: Queue 境界
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Queue</th>
+        <th scope="col">内部で追加する処理</th>
+        <th scope="col">保存する正式成果物</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>findingCandidate</code></td>
+        <td>
+          <code>candidate_global</code> / <code>candidate_semantic_chunk</code> /
+          <code>candidate_generation</code> / <code>candidate_bridge</code> /
+          <code>candidate_merge</code>
+        </td>
+        <td><code>found_candidates</code> と downstream <code>covering_evidence_queue</code></td>
+      </tr>
+      <tr>
+        <td><code>episodeDistiller</code></td>
+        <td>
+          <code>episode_global</code> / <code>episode_semantic_chunk</code> /
+          <code>episode_generation</code> / <code>episode_bridge</code> / <code>episode_merge</code>
+        </td>
+        <td><code>episode_cards</code> と <code>episode_refs</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    chunk / bridge / merge は queue row の <code>metadata</code> に checkpoint と diagnostics
+    を残すだけで、独立した runnable row にはしない。
+  </p>
+  <h3 id="episode-と-findcandidate-を混ぜない">Episode と findCandidate を混ぜない</h3>
+  <p><code>episodeDistiller</code> は過去作業の文脈・判断・失敗・教訓を EpisodeCard として残す。</p>
+  <p>
+    <code>findCandidate</code> は再利用可能な rule / procedure の候補を探す。negative knowledge は
+    <code>polarity=negative</code> の rule 候補として扱い、EpisodeCard の
+    <code>failure_episode</code> とは別物として保存する。
+  </p>
+  <p>
+    同じ source document / chunking helper を共有してもよいが、prompt、intermediate schema、merge
+    logic、保存先は分ける。
+  </p>
+  <h3 id="merge-の意味">Merge の意味</h3>
+  <p>merge は「全部を 1 枚にする」処理ではない。</p>
+  <p>merge は次を行う。</p>
+  <ul>
+    <li>重複した episodelet / candidatelet をまとめる。</li>
+    <li>chunk をまたぐ因果関係を復元する。</li>
+    <li>局所的な観察に global context を足して誤読を減らす。</li>
+    <li>低価値・根拠不足・一回限りの断片を落とす。</li>
+    <li>
+      保存単位を <code>reusable episode</code> または
+      <code>reusable knowledge candidate</code> として整える。
+    </li>
+  </ul>
+  <p>
+    <code>episodeDistiller</code> の merge 後出力は複数 EpisodeCard になり得る。<code
+      >findCandidate</code
+    >
+    の merge 後出力も複数 found candidate になり得る。
+  </p>
+  <h2 id="intermediate-schema">Intermediate Schema</h2>
+  <h3 id="semanticchunk">SemanticChunk</h3>
+  <p>
+    安価な Local LLM は、source 全体を直接読むのではなく、runtime が作る bounded source window
+    を入力として semantic chunk を作る。
+  </p>
+  <pre><code class="language-ts">type SemanticChunk = {
+  chunkIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  eventIds: string[];
+  taskBoundaryKind:
+    | &quot;request_to_result&quot;
+    | &quot;investigation&quot;
+    | &quot;implementation&quot;
+    | &quot;verification&quot;
+    | &quot;failure_resolution&quot;
+    | &quot;decision_turn&quot;
+    | &quot;misc&quot;;
+  title: string;
+  boundaryReason: string;
+  expectedOutputs: Array&lt;&quot;episode&quot; | &quot;candidate&quot; | &quot;both&quot; | &quot;none&quot;&gt;;
+  openBoundary: boolean;
+};
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>semantic chunk 作成は安価な Local LLM の担当に含める。</li>
+    <li>runtime は Local LLM に無制限長を渡さないための bounded source window だけを作る。</li>
+    <li>
+      chunk boundary は「最初の依頼から一つの結果まで」を優先するが、長すぎる場合は investigation /
+      implementation / verification / failure_resolution などへ分ける。
+    </li>
+    <li>
+      <code>request_to_result</code> は最優先だが、source window をまたいだ場合は
+      <code>openBoundary=true</code> にして bridge へ渡す。
+    </li>
+    <li>
+      <code>openBoundary=true</code> は、次の window / chunk へ因果が続く可能性を示す。bridge pass
+      はこれを優先的に見る。
+    </li>
+    <li>
+      source span と event ids は必須。Local LLM が boundary を提案しても、保存前に runtime が byte
+      range を検証する。
+    </li>
+    <li>
+      semantic chunk は window 内 byte range を完全に覆う必要はない。低価値範囲は
+      <code>expectedOutputs=[&quot;none&quot;]</code> として残す。
+    </li>
+  </ul>
+  <h3 id="episodelet">Episodelet</h3>
+  <p>
+    <code>episodeDistiller</code> の chunk-local generation は、semantic chunk ごとに EpisodeCard
+    保存候補として <code>episodelet</code> を返す。
+  </p>
+  <pre><code class="language-ts">type Episodelet = {
+  chunkIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  eventIds: string[];
+  title: string;
+  situation: string;
+  localObservation: string;
+  decisionOrFailure: string;
+  actionTaken: string;
+  outcomeAtChunk: string;
+  possibleLesson: string;
+  openLoops: string[];
+  generationKind: &quot;task_episode&quot; | &quot;failure_episode&quot; | &quot;decision_episode&quot;;
+  outcomeKind: &quot;success&quot; | &quot;failure&quot; | &quot;mixed&quot; | &quot;unknown&quot;;
+  domains: string[];
+  technologies: string[];
+  changeTypes: string[];
+  tools: string[];
+  scores: {
+    importance: number;
+    confidence: number;
+    reusability: number;
+    failure_value: number;
+    causal_clarity: number;
+    evidence_quality: number;
+  };
+};
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li><code>episodelet</code> は chunk-local の EpisodeCard 保存候補である。</li>
+    <li>validation / dedupe / bridge audit を通るまでは永続化しない。</li>
+    <li>source span と event ids を必ず持つ。</li>
+    <li>chunk 内で完結しない因果は <code>openLoops</code> に残し、断定しない。</li>
+    <li>confidence は chunk 単独根拠なら低めに抑える。</li>
+  </ul>
+  <h3 id="candidatelet">Candidatelet</h3>
+  <p>
+    <code>findCandidate</code> の chunk-local generation は、semantic chunk ごとに found candidate
+    保存候補として <code>candidatelet</code> を返す。
+  </p>
+  <pre><code class="language-ts">type Candidatelet = {
+  chunkIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  type: &quot;rule&quot; | &quot;procedure&quot;;
+  polarity: &quot;positive&quot; | &quot;negative&quot;;
+  title: string;
+  contentDraft: string;
+  reusableSignal: string;
+  evidenceSummary: string;
+  appliesTo: {
+    technologies: string[];
+    domains: string[];
+    changeTypes: string[];
+  };
+  confidence: number;
+  mergeKeyHint: string;
+  rejectIfOnlyLocalProgress: boolean;
+};
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li><code>candidatelet</code> は chunk-local の found candidate 保存候補である。</li>
+    <li>
+      validation / dedupe / bridge audit を通るまでは <code>found_candidates</code> へ永続化しない。
+    </li>
+    <li>
+      negative は procedure にしない。merge 前から <code>polarity=negative</code> rule として扱う。
+    </li>
+    <li>
+      <code>procedure</code> は merge 後に <code>Use when:</code> / <code>Workflow:</code> /
+      <code>Verification:</code> / <code>Avoid:</code> を満たせるものだけ残す。
+    </li>
+    <li>parser reject と本当の <code>[]</code> を diagnostics で分ける。</li>
+  </ul>
+  <h2 id="pass-design">Pass Design</h2>
+  <h3 id="section-0-bounded-source-window">0. Bounded source window</h3>
+  <p>目的:</p>
+  <ul>
+    <li>Local LLM に渡す入力を、安価なモデルでも安定して扱える長さに制限する。</li>
+    <li>semantic chunk boundary は LLM に作らせるが、source span identity は runtime が守る。</li>
+  </ul>
+  <p>入力:</p>
+  <ul>
+    <li>normalized source document。</li>
+    <li>event ids / byte offsets / created_at / file_path。</li>
+  </ul>
+  <p>出力:</p>
+  <pre><code class="language-ts">type BoundedSourceWindow = {
+  windowIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  eventIds: string[];
+  text: string;
+  previousOpenBoundarySummary?: string;
+};
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>default は 8K から 16K tokens 相当。</li>
+    <li>max は 32K tokens 相当。</li>
+    <li>byte range と event ids は runtime が生成し、LLM output からは採用しない。</li>
+    <li>
+      semantic chunk が window 外を指した場合は reject し、同じ window を再分割または deterministic
+      fallback する。
+    </li>
+  </ul>
+  <h3 id="section-1-global-pass">1. Global pass</h3>
+  <p>目的:</p>
+  <ul>
+    <li>source 全体の粗い地図を作る。</li>
+    <li>main phases、最終状態、方針転換、明らかな失敗領域、重要な file/tool/domain を抽出する。</li>
+    <li>
+      semantic chunk pass と chunk-local generation pass の prompt に短い global hint として渡す。
+    </li>
+  </ul>
+  <p>入力:</p>
+  <ul>
+    <li>source metadata。</li>
+    <li>event headers。</li>
+    <li>bounded excerpt。</li>
+    <li>
+      global pass が生成した compressed summary。生成できなかった場合は空として扱い、semantic chunk
+      pass を止めない。
+    </li>
+  </ul>
+  <p>出力:</p>
+  <pre><code class="language-ts">type DistillationGlobalMap = {
+  sourceKind: &quot;vibe_memory&quot;;
+  sourceKey: string;
+  sessionId?: string;
+  project?: string;
+  cwd?: string;
+  phases: Array&lt;{
+    label: string;
+    eventStart?: string;
+    eventEnd?: string;
+    summary: string;
+  }&gt;;
+  likelyFailureZones: string[];
+  likelyDecisionZones: string[];
+  finalState: string;
+  routingHints: {
+    technologies: string[];
+    domains: string[];
+    changeTypes: string[];
+    tools: string[];
+  };
+};
+</code></pre>
+  <p>軽量 LLM 方針:</p>
+  <ul>
+    <li>global pass は安価なモデルでよいが、長すぎる source を全部渡さない。</li>
+    <li>event headers と short excerpts だけで粗く作る。</li>
+    <li>global pass が失敗しても semantic chunk pass は続行できる。</li>
+  </ul>
+  <h3 id="section-2-semantic-chunk-pass">2. Semantic chunk pass</h3>
+  <p>目的:</p>
+  <ul>
+    <li>
+      runtime が作る bounded source window から、安価な Local LLM が semantic chunk boundary
+      を提案する。
+    </li>
+    <li>
+      「依頼から一つの結果まで」を優先しつつ、長すぎる場合は investigation / implementation /
+      verification / failure_resolution などに分ける。
+    </li>
+    <li>安価な Local LLM が扱える粒度へ、source を task-aware に落とし込む。</li>
+  </ul>
+  <p>入力:</p>
+  <ul>
+    <li>global map。</li>
+    <li>bounded source window。</li>
+    <li>event headers。</li>
+    <li>previous window の open boundary summary。</li>
+  </ul>
+  <p>出力:</p>
+  <ul>
+    <li><code>SemanticChunk[]</code>。</li>
+  </ul>
+  <p>Rules:</p>
+  <ul>
+    <li>semantic chunk pass は安価な Local LLM の担当にする。</li>
+    <li>runtime の固定長 window は safety boundary であり、semantic chunk そのものではない。</li>
+    <li>
+      semantic chunk の byte range は runtime が検証し、window 外を指す output は reject する。
+    </li>
+    <li>1 semantic chunk が大きすぎる場合は、runtime が再分割依頼を出す。</li>
+    <li>
+      parse failure が 2 回続く場合、その window は deterministic fallback chunk 1
+      件として処理し、metadata に <code>semanticChunkFallback=true</code> を残す。
+    </li>
+  </ul>
+  <h3 id="section-3-chunk-local-generation-pass">3. Chunk-local generation pass</h3>
+  <p>目的:</p>
+  <ul>
+    <li>semantic chunk ごとに保存候補レベルの EpisodeCard / candidate を作る。</li>
+    <li>安価な Local LLM の主担当領域にする。</li>
+    <li>Episode と Candidate で別 schema / 別 prompt を使う。</li>
+  </ul>
+  <p>Episode chunk-local generation:</p>
+  <ul>
+    <li><code>episodelet[]</code> を返す。</li>
+    <li>原則 1 semantic chunk から 0 から 2 件。</li>
+    <li>低品質でも即捨てず、明確な reject reason を metadata に残す。</li>
+  </ul>
+  <p>Candidate chunk-local generation:</p>
+  <ul>
+    <li><code>candidatelet[]</code> を返す。</li>
+    <li>source に再利用 signal がない場合のみ <code>[]</code>。</li>
+    <li>progress chat でも、原因・修正・検証・継続 preference がある場合は候補化する。</li>
+  </ul>
+  <h3 id="section-4-bridge-pass">4. Bridge pass</h3>
+  <p>目的:</p>
+  <ul>
+    <li>chunk 間の因果関係を復元する。</li>
+    <li>前半の判断が後半で問題化したケースを拾う。</li>
+    <li>未解決から解決への流れ、方針転換、negative knowledge の条件を確定する。</li>
+  </ul>
+  <p>入力:</p>
+  <ul>
+    <li>global map。</li>
+    <li>隣接 chunk の episodelets / candidatelets。</li>
+    <li>mergeKeyHint が近い非隣接 let。</li>
+    <li>必要最小限の source snippets。</li>
+  </ul>
+  <p>出力:</p>
+  <pre><code class="language-ts">type BridgeFinding = {
+  kind: &quot;causal_link&quot; | &quot;decision_reversal&quot; | &quot;failure_resolution&quot; | &quot;negative_condition&quot; | &quot;duplicate_group&quot;;
+  relatedChunkIndexes: number[];
+  relatedLetIndexes: number[];
+  finding: string;
+  mergeInstruction: string;
+  confidence: number;
+};
+</code></pre>
+  <p>軽量 LLM 方針:</p>
+  <ul>
+    <li>初回 PR では deterministic bridge を基本にする。</li>
+    <li>LLM bridge は feature flag 下の follow-up とし、全件には使わない。</li>
+    <li>
+      trigger は <code>openLoops</code>、同じ mergeKeyHint、failure と later success
+      の組み合わせ、negative candidatelet の存在に限定する。
+    </li>
+  </ul>
+  <h3 id="section-5-merge-pass">5. Merge pass</h3>
+  <p>目的:</p>
+  <ul>
+    <li>正式保存前の最終整形と dedupe。</li>
+    <li>Episode は複数 EpisodeCard 単位へまとめる。</li>
+    <li>Candidate は複数 found candidate 単位へまとめる。</li>
+  </ul>
+  <p>Episode merge:</p>
+  <ul>
+    <li>
+      <code>episodelet + bridge finding</code> から
+      <code>EpisodeDistillerCanonical[]</code> を作る。
+    </li>
+    <li>1 source 全体を 1 枚にしない。</li>
+    <li>source span は union ではなく、代表 span + supporting spans を metadata に残す。</li>
+    <li><code>sourceFragmentKey</code> は final EpisodeCard 単位で deterministic に作る。</li>
+    <li>value review は merge 後 canonical に対して行う。</li>
+  </ul>
+  <p>Candidate merge:</p>
+  <ul>
+    <li><code>candidatelet + bridge finding</code> から <code>CandidateRecord[]</code> を作る。</li>
+    <li>duplicate rule を merge する。</li>
+    <li>negative procedure を rule に落とすか reject する。</li>
+    <li>procedure shape は merge 後に構造検証する。</li>
+    <li>
+      <code>no_candidate</code> は semantic chunk / chunk-local generation / merge pass
+      のすべてを通って候補がない場合だけにする。
+    </li>
+  </ul>
+  <h2 id="metadata-contract">Metadata Contract</h2>
+  <h3 id="episode_distiller_queuemetadataepisodedistiller">
+    <code>episode_distiller_queue.metadata.episodeDistiller</code>
+  </h3>
+  <p>追加する内部 checkpoint:</p>
+  <pre><code class="language-json">{
+  &quot;pipelineVersion&quot;: &quot;internal-chunked-v1&quot;,
+  &quot;global&quot;: {
+    &quot;status&quot;: &quot;completed&quot;,
+    &quot;phaseCount&quot;: 4,
+    &quot;failed&quot;: false
+  },
+  &quot;sourceWindows&quot;: {
+    &quot;windowCount&quot;: 6,
+    &quot;completedWindowIndexes&quot;: [0, 1, 2],
+    &quot;fallbackWindowIndexes&quot;: []
+  },
+  &quot;chunks&quot;: {
+    &quot;chunkCount&quot;: 12,
+    &quot;completedChunkIndexes&quot;: [0, 1, 2],
+    &quot;failedChunkIndexes&quot;: [],
+    &quot;episodeletCount&quot;: 8,
+    &quot;rejectedEpisodeletCount&quot;: 3
+  },
+  &quot;bridge&quot;: {
+    &quot;status&quot;: &quot;completed&quot;,
+    &quot;bridgeFindingCount&quot;: 4,
+    &quot;skippedReason&quot;: null
+  },
+  &quot;merge&quot;: {
+    &quot;status&quot;: &quot;completed&quot;,
+    &quot;acceptedEpisodeCount&quot;: 5,
+    &quot;valueSkipped&quot;: 2,
+    &quot;duplicateSkipped&quot;: 1
+  },
+  &quot;episodeIds&quot;: [&quot;episode-id&quot;],
+  &quot;diagnostics&quot;: {
+    &quot;semanticChunkModel&quot;: &quot;local-llm&quot;,
+    &quot;chunkGenerationModel&quot;: &quot;local-llm&quot;,
+    &quot;bridgeModel&quot;: &quot;local-llm&quot;,
+    &quot;fallbackUsed&quot;: false
+  }
+}
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>checkpoint は queue row metadata に残す。</li>
+    <li>raw source text や巨大 LLM output は保存しない。</li>
+    <li>parse failure は chunk index と短い error summary だけ保存する。</li>
+    <li>
+      completed 扱いは、保存対象 EpisodeCard が実在し <code>episodeIds</code> に入った後に限る。
+    </li>
+  </ul>
+  <h3 id="finding_candidate_queuemetadatafindcandidate">
+    <code>finding_candidate_queue.metadata.findCandidate</code>
+  </h3>
+  <p>追加する内部 checkpoint:</p>
+  <pre><code class="language-json">{
+  &quot;pipelineVersion&quot;: &quot;internal-chunked-v1&quot;,
+  &quot;global&quot;: {
+    &quot;status&quot;: &quot;completed&quot;,
+    &quot;failed&quot;: false
+  },
+  &quot;sourceWindows&quot;: {
+    &quot;windowCount&quot;: 6,
+    &quot;completedWindowIndexes&quot;: [0, 1, 2],
+    &quot;fallbackWindowIndexes&quot;: []
+  },
+  &quot;chunks&quot;: {
+    &quot;chunkCount&quot;: 12,
+    &quot;completedChunkIndexes&quot;: [0, 1, 2],
+    &quot;candidateletCount&quot;: 6,
+    &quot;rejectedCandidateletCount&quot;: 2
+  },
+  &quot;bridge&quot;: {
+    &quot;status&quot;: &quot;completed&quot;,
+    &quot;bridgeFindingCount&quot;: 2,
+    &quot;skippedReason&quot;: null
+  },
+  &quot;merge&quot;: {
+    &quot;status&quot;: &quot;completed&quot;,
+    &quot;acceptedCandidateCount&quot;: 3,
+    &quot;dedupedCandidateletCount&quot;: 3,
+    &quot;rejectedInvalidProcedureCount&quot;: 1
+  },
+  &quot;diagnostics&quot;: {
+    &quot;semanticChunkModel&quot;: &quot;local-llm&quot;,
+    &quot;chunkGenerationModel&quot;: &quot;local-llm&quot;,
+    &quot;bridgeModel&quot;: &quot;local-llm&quot;,
+    &quot;rawEmptyArrayChunkCount&quot;: 4,
+    &quot;parserRejectedChunkCount&quot;: 1
+  }
+}
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>found candidate / covering queue enqueue が完了するまで queue completed にしない。</li>
+    <li>
+      <code>no_candidate</code> は merge 後に <code>acceptedCandidateCount=0</code> の場合だけ使う。
+    </li>
+    <li>parser reject と true empty を分ける。</li>
+  </ul>
+  <h2 id="変更対象">変更対象</h2>
+  <p>Primary files:</p>
+  <table>
+    <caption>
+      Table: 変更対象
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">変更内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>src/config.ts</code></td>
+        <td>
+          <code>CONTEXT_STILL_INTERNAL_CHUNKED_DISTILLATION</code> を feature flag
+          として読む。default は off。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/distillation/source-window.ts</code></td>
+        <td>
+          安価な Local LLM に渡す bounded source window と event header を作る。semantic chunk
+          自体は LLM output として作る。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/episodeDistiller/worker.ts</code></td>
+        <td>
+          segment 直 canonical 生成を
+          <code>semantic chunk -&gt; episodelet -&gt; bridge -&gt; merge -&gt; canonical</code>
+          に分ける。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/episodeDistiller/schema.ts</code></td>
+        <td>
+          <code>SemanticChunk</code>、<code>Episodelet</code>、<code>BridgeFinding</code>、merge 後
+          canonical validation を追加する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/findCandidate/domain.ts</code></td>
+        <td>
+          feature flag 有効時の vibe memory / long source path に chunked candidatelet pipeline
+          を追加する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/findCandidate/parser.ts</code></td>
+        <td>chunk output diagnostics と final candidate validation を分ける。</td>
+      </tr>
+      <tr>
+        <td><code>src/modules/queue/core/worker.ts</code></td>
+        <td>
+          completion metadata と <code>no_candidate</code> / <code>no_episode</code> diagnostics
+          の受け渡しを最小限追加する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>crates/context-stilld/src/domains/queue_lifecycle/*</code></td>
+        <td>初回 PR では変更しない。TS path が通った後の parity PR で同じ contract を実装する。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Test files:</p>
+  <table>
+    <caption>
+      Table: 変更対象
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">確認内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>test/sqlite-runtime-support.bun.ts</code></td>
+        <td>
+          <code>episodeDistiller</code> の source window / semantic chunk / generation / bridge /
+          merge metadata、複数 EpisodeCard、低価値 skip、重複 skip を確認する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/queue-worker.test.ts</code></td>
+        <td>
+          <code>findingCandidate</code> の accepted candidate / no_candidate / parser reject
+          diagnostics と covering enqueue を確認する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/find-candidate.test.ts</code></td>
+        <td>
+          semantic chunking、candidatelet merge、negative rule、invalid procedure reject
+          を確認する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>crates/context-stilld/src/domains/queue_lifecycle/*_tests.rs</code></td>
+        <td>
+          初回 PR では対象外。Rust parity PR で同じ checkpoint / completion semantics を確認する。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="new-module-contracts">New Module Contracts</h2>
+  <p>初回 PR で追加する TypeScript exports:</p>
+  <pre><code class="language-ts">// src/modules/distillation/source-window.ts
+export type BoundedSourceWindow = {
+  windowIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  eventIds: string[];
+  text: string;
+  previousOpenBoundarySummary?: string;
+};
+export type SemanticChunk = {
+  chunkIndex: number;
+  sourceStartOffset: number;
+  sourceEndOffset: number;
+  eventIds: string[];
+  taskBoundaryKind:
+    | &quot;request_to_result&quot;
+    | &quot;investigation&quot;
+    | &quot;implementation&quot;
+    | &quot;verification&quot;
+    | &quot;failure_resolution&quot;
+    | &quot;decision_turn&quot;
+    | &quot;misc&quot;;
+  title: string;
+  boundaryReason: string;
+  expectedOutputs: Array&lt;&quot;episode&quot; | &quot;candidate&quot; | &quot;both&quot; | &quot;none&quot;&gt;;
+  openBoundary: boolean;
+};
+export function buildBoundedSourceWindows(input: {
+  content: string;
+  events: Array&lt;{ id: string; startOffset: number; endOffset: number; createdAt: string; filePath?: string | null }&gt;;
+  maxTokens?: number;
+}): BoundedSourceWindow[];
+export function validateSemanticChunks(input: {
+  windows: BoundedSourceWindow[];
+  chunks: unknown;
+}): SemanticChunk[];
+</code></pre>
+  <pre><code class="language-ts">// src/modules/episodeDistiller/schema.ts
+export const episodeSemanticChunkArraySchema: z.ZodType&lt;SemanticChunk[]&gt;;
+export const episodeletArraySchema: z.ZodType&lt;Episodelet[]&gt;;
+export function episodeletsToCanonicalCandidates(input: {
+  chunks: SemanticChunk[];
+  episodelets: Episodelet[];
+  bridgeFindings: BridgeFinding[];
+}): EpisodeDistillerCanonical[];
+</code></pre>
+  <pre><code class="language-ts">// src/modules/findCandidate/parser.ts or src/modules/findCandidate/chunk-schema.ts
+export const candidateletArraySchema: z.ZodType&lt;Candidatelet[]&gt;;
+export function candidateletsToCandidateRecords(input: {
+  chunks: SemanticChunk[];
+  candidatelets: Candidatelet[];
+  bridgeFindings: BridgeFinding[];
+}): CandidateRecord[];
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>
+      module contracts are allowed to evolve during implementation, but the first PR must expose
+      equivalent boundaries.
+    </li>
+    <li>
+      raw LLM output is parsed into these schemas before queue metadata or downstream mutation is
+      updated.
+    </li>
+    <li>schema parse errors are recorded as bounded diagnostics, not raw output blobs.</li>
+  </ul>
+  <h2 id="実装順序">実装順序</h2>
+  <h3 id="phase-0-baseline">Phase 0: Baseline</h3>
+  <p>実装前に現状を固定する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>現行 <code>episodeDistiller</code> の representative fixture を確認する。</li>
+    <li>
+      現行 <code>findCandidate</code> の long vibe memory fixture / no_candidate fixture
+      を確認する。
+    </li>
+    <li>
+      queue 境界が <code>findingCandidate</code> と
+      <code>episodeDistiller</code> のままであることを確認する。
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bunx vitest run test/sqlite-runtime-support.bun.ts test/queue-worker.test.ts
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>現状の失敗 / skip / completion metadata を説明できる。</li>
+    <li>新 queue が不要であることを確認済み。</li>
+  </ul>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>
+      resident Rust executor と TS fallback のどちらが実処理 owner か不明な場合は、実装前に runtime
+      truth を確認する。
+    </li>
+  </ul>
+  <h3 id="phase-1-source-windowing-and-semantic-chunking">
+    Phase 1: Source windowing and semantic chunking
+  </h3>
+  <p>
+    Episode と Candidate が同じ bounded source window を読めるようにする。ただし semantic chunk
+    作成は安価な Local LLM のタスクにし、成果物 schema は共有しない。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>EpisodeSourceDocument</code> 相当の document/event model を reusable helper へ切り出す。
+    </li>
+    <li>
+      runtime は bounded source window を作る。
+      <ul>
+        <li>default: 8K から 16K tokens 相当。</li>
+        <li>max: 32K tokens 相当。</li>
+      </ul>
+    </li>
+    <li>安価な Local LLM に semantic chunk plan を作らせる。</li>
+    <li>
+      semantic chunk は byte range、event ids、taskBoundaryKind、boundaryReason、openBoundary
+      を持つ。
+    </li>
+    <li>
+      semantic chunk id は source span + taskBoundaryKind + pipelineVersion から deterministic
+      に作る。
+    </li>
+    <li>window 外 byte range、空 range、過大 range は validation で reject する。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>runtime windowing は source span identity を壊さない。</li>
+    <li>安価な Local LLM が <code>SemanticChunk[]</code> を返せる。</li>
+    <li>
+      <code>episodeDistiller</code> と <code>findCandidate</code> は同じ semantic chunk plan
+      を使えるが、Episode / Candidate schema には依存しない。
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bunx vitest run test/sqlite-runtime-support.bun.ts
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>
+      source span identity が不安定になる場合は、semantic chunking を止め、Episode 側の既存 reader
+      contract を先に固定する。
+    </li>
+  </ul>
+  <h3 id="phase-2-episode-internal-pipeline">Phase 2: Episode internal pipeline</h3>
+  <p>
+    <code>episodeDistiller</code> を
+    <code>episodelet -&gt; bridge -&gt; merge -&gt; EpisodeCard</code> にする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>Episodelet</code> schema を追加する。</li>
+    <li>semantic chunk pass prompt を追加する。</li>
+    <li>chunk-local generation prompt を Episodelet 用に変更する。</li>
+    <li>
+      bridge pass を追加する。
+      <ul>
+        <li>
+          trigger: <code>openLoops</code>、failure later success、decision reversal、duplicate merge
+          hint。
+        </li>
+      </ul>
+    </li>
+    <li>merge pass で <code>EpisodeDistillerCanonical[]</code> を生成する。</li>
+    <li>value review は merge 後 canonical に対して実行する。</li>
+    <li><code>episode_cards</code> 保存は merge 後の accepted canonical に限定する。</li>
+    <li>metadata に global/chunk/bridge/merge checkpoint を残す。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>1 source から複数 EpisodeCard が作れる。</li>
+    <li>安価な Local LLM が semantic chunk と chunk-local EpisodeCard 保存候補を作る。</li>
+    <li>
+      chunk episodelet は validation / dedupe / bridge audit なしでは直接 EpisodeCard にならない。
+    </li>
+    <li>semantic chunk をまたぐ失敗から解決への流れが 1 つの EpisodeCard として保存される。</li>
+    <li>unrelated episode は別 EpisodeCard のまま保存される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bunx vitest run test/sqlite-runtime-support.bun.ts
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>merge が source 全体を 1 枚に潰す場合は停止する。</li>
+    <li>completed queue row に実在しない EpisodeCard id が入る場合は停止する。</li>
+  </ul>
+  <h3 id="phase-3-findcandidate-internal-pipeline">Phase 3: findCandidate internal pipeline</h3>
+  <p>
+    <code>findCandidate</code> の long source / vibe memory path を
+    <code>candidatelet -&gt; bridge -&gt; merge -&gt; CandidateRecord</code> にする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>Candidatelet</code> schema を追加する。</li>
+    <li>semantic chunk pass prompt を追加する。</li>
+    <li>chunk-local generation prompt を candidatelet 用に追加する。</li>
+    <li>
+      negative candidate は chunk-local generation から <code>polarity=negative</code> rule
+      として扱う。
+    </li>
+    <li>bridge pass で条件付き negative knowledge、方針転換、重複候補を復元する。</li>
+    <li>merge pass で <code>CandidateRecord[]</code> へ変換する。</li>
+    <li>procedure は merge 後に SKILL-like structure を検証する。</li>
+    <li><code>no_candidate</code> は final accepted candidate が 0 件のときだけ返す。</li>
+    <li>parser reject diagnostics を queue metadata / audit に残す。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      progress chat 由来でも原因・修正・検証・継続 preference がある場合は candidate として残る。
+    </li>
+    <li>parser reject と true empty が区別できる。</li>
+    <li>
+      candidate がある場合は <code>found_candidates</code> と
+      <code>covering_evidence_queue</code> の downstream mutation が確認されてから completed
+      になる。
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bunx vitest run test/queue-worker.test.ts
+bunx vitest run test/find-candidate.test.ts
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>EpisodeCard 由来の prompt/schema が findCandidate に混入する場合は停止する。</li>
+    <li>negative procedure が保存される場合は停止する。</li>
+  </ul>
+  <h3 id="phase-4-lightweight-llm-routing">Phase 4: Lightweight LLM routing</h3>
+  <p>
+    semantic chunking と chunk-local generation を軽量 LLM に寄せ、bridge / merge
+    は必要時だけ強いモデルへ逃がせるようにする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>taskRouting.findingCandidate</code> / <code>taskRouting.episodeDistiller</code> の中で
+      stage hint を扱う。
+    </li>
+    <li>
+      初期実装は queue route を増やさず、runtime request metadata に
+      <code>stage: semantic_chunk|chunk_generation|bridge|merge</code> を渡す。
+    </li>
+    <li>semantic chunking と chunk-local generation は安価な Local LLM target を優先する。</li>
+    <li>
+      bridge / merge は trigger がある場合だけ、設定された bridge/merge target を使う。未設定なら
+      chunk-local generation と同じ route を使う。
+    </li>
+    <li>
+      preferred target が busy の場合は既存 provider lease policy に従って待つ。意図しない fallback
+      へ流さない。
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      semantic chunking の request は stage diagnostics に
+      <code>semanticChunkModel</code> として残る。
+    </li>
+    <li>
+      chunk-local generation の request は stage diagnostics に
+      <code>chunkGenerationModel</code> として残る。
+    </li>
+    <li>
+      bridge / merge の request は stage diagnostics に <code>bridgeModel</code> /
+      <code>mergeModel</code> として残る。
+    </li>
+    <li>route fallback で意図しない model へ流れた場合に診断できる。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bunx vitest run test/queue-provider-pool-scheduler.test.ts test/queue-worker.test.ts
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>stage routing のために新 queue / 新 scheduler family が必要になる場合は停止する。</li>
+    <li>preferred target 待ちの既存仕様を壊す場合は停止する。</li>
+  </ul>
+  <h3 id="phase-5-rust-resident-parity">Phase 5: Rust resident parity</h3>
+  <p>
+    resident Rust executor が実処理 owner の場合、TS fallback と同じ internal pipeline semantics
+    にする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Rust <code>episodeDistiller</code> executor に Episodelet / bridge / merge contract
+      を実装する。
+    </li>
+    <li>
+      Rust <code>findingCandidate</code> executor に Candidatelet / bridge / merge contract
+      を実装する。
+    </li>
+    <li>TS manual fallback と metadata / completion semantics を一致させる。</li>
+    <li>Rust 側で未対応 stage がある場合は silent success にせず visible unsupported にする。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>resident path と manual fallback path の queue metadata shape が一致する。</li>
+    <li>completed row は downstream mutation を確認済み。</li>
+    <li>unsupported stage は <code>completed</code> ではなく診断可能な状態になる。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+bun run rust:queue:smoke
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Rust executor が TS fallback と異なる保存単位を作る場合は停止する。</li>
+    <li>unsupported stage を成功扱いする場合は停止する。</li>
+  </ul>
+  <h2 id="quality-gates">Quality Gates</h2>
+  <p>Functional:</p>
+  <ul>
+    <li><code>episodeDistiller</code> は 1 source から 0..N EpisodeCard を作る。</li>
+    <li><code>episodeDistiller</code> は raw episodelet を保存しない。</li>
+    <li><code>findCandidate</code> は 1 source から 0..N found candidate を作る。</li>
+    <li><code>findCandidate</code> は raw candidatelet を保存しない。</li>
+    <li>both queues は new queue row を作らず既存 row 内で完結する。</li>
+  </ul>
+  <p>Recall:</p>
+  <ul>
+    <li>synthetic long log で、前半の判断が後半で失敗し別案へ変わるケースを拾える。</li>
+    <li>localized failure / negative knowledge が global summary に潰されない。</li>
+    <li>progress chat でも再利用 signal がある場合は candidate 化される。</li>
+  </ul>
+  <p>Precision:</p>
+  <ul>
+    <li>一回限りの進捗や未検証仮説は落ちる。</li>
+    <li>duplicate episode / duplicate candidate が merge される。</li>
+    <li>invalid procedure は found candidate にならない。</li>
+  </ul>
+  <p>Operational:</p>
+  <ul>
+    <li>queue completed は downstream mutation 確認後だけ。</li>
+    <li>provider lease / heartbeat の既存契約を壊さない。</li>
+    <li>queue page / inspect で stage diagnostics を追える。</li>
+  </ul>
+  <h2 id="rollout">Rollout</h2>
+  <ol>
+    <li>
+      Feature flag を追加する。
+      <ul>
+        <li><code>CONTEXT_STILL_INTERNAL_CHUNKED_DISTILLATION=1</code></li>
+        <li>初期状態は off。</li>
+      </ul>
+    </li>
+    <li>Episode path だけで fixture tests を通す。</li>
+    <li>findCandidate path だけで fixture tests を通す。</li>
+    <li>Local LLM stage routing diagnostics を入れる。</li>
+    <li>小さい sample の manual one-shot で live 確認する。</li>
+    <li>resident Rust executor parity を確認してから default on を検討する。</li>
+  </ol>
+  <h2 id="manual-live-check">Manual Live Check</h2>
+  <p>Live DB を使う場合は sample を絞る。</p>
+  <pre><code class="language-bash">bun run queue:episode-distiller:once
+bun run queue:finding:once
+</code></pre>
+  <p>確認 SQL:</p>
+  <pre><code class="language-sql">select status, last_outcome_kind, json_extract(metadata, &#39;$.episodeDistiller.pipelineVersion&#39;)
+from episode_distiller_queue
+order by updated_at desc
+limit 5;
+
+select status, last_outcome_kind, json_extract(metadata, &#39;$.findCandidate.pipelineVersion&#39;)
+from finding_candidate_queue
+order by updated_at desc
+limit 5;
+
+select id, source_key, title, created_at
+from episode_cards
+order by created_at desc
+limit 10;
+
+select fc.id, fc.title, fc.type, fc.metadata
+from found_candidates fc
+join finding_candidate_queue fq on fq.id = fc.finding_job_id
+order by fq.updated_at desc
+limit 10;
+</code></pre>
+  <h2 id="stop-conditions">Stop Conditions</h2>
+  <ul>
+    <li>新 queue が必要になった場合。</li>
+    <li>Episode と Candidate の intermediate schema が混ざった場合。</li>
+    <li>merge が 1 source を 1 EpisodeCard に圧縮し始めた場合。</li>
+    <li>queue completed が downstream mutation より先に起きた場合。</li>
+    <li>lightweight LLM の parse failure が増え、bridge / merge で回復できない場合。</li>
+    <li>stage routing が preferred target 待ちを壊し、意図しない fallback target へ流れる場合。</li>
+  </ul>
+  <h2 id="completion-definition">Completion Definition</h2>
+  <ul>
+    <li>
+      <code>findingCandidate</code> と <code>episodeDistiller</code> の queue family
+      は増えていない。
+    </li>
+    <li>
+      semantic chunk / chunk-local generation / bridge / merge は queue row metadata
+      で診断可能だが、独立 runnable queue ではない。
+    </li>
+    <li>
+      <code>episodeDistiller</code> は merge 後の reusable episode 単位で複数 EpisodeCard を作れる。
+    </li>
+    <li>
+      <code>findCandidate</code> は merge 後の reusable knowledge 単位で複数 found candidate
+      を作れる。
+    </li>
+    <li>安価な Local LLM を semantic chunking と chunk-local generation に使える。</li>
+    <li>bridge / merge は必要時だけ強いモデルに逃がせる。</li>
+    <li>既存 verify と対象 queue tests が通る。</li>
+  </ul>
+</article>

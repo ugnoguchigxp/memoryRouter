@@ -1,0 +1,1296 @@
+<article lang="ja">
+  <h1 id="repository-isolation-first-product-hardening-plan">
+    Repository Isolation First Product Hardening Plan
+  </h1>
+  <h2 id="status">Status</h2>
+  <p>
+    Status: repository-isolation implementation, live migration, and enforced canary complete;
+    producer observation/final closeout and later architecture/product work pending.
+  </p>
+  <p>Created: 2026-08-15</p>
+  <p>
+    この文書は、repository isolation、実装所有権、巨大module、SQLite-first
+    onboarding、release運用を一つのprogramとして並べる上位計画である。個別のidentity
+    contractやmigration手順を重複定義せず、既存計画をどの順で完了させ、次の改善へ進むかを定める。
+  </p>
+  <p>
+    本書を作成するための調査では、source code、git diff、live resident process、live
+    SQLiteのschema/inventory、active MCP tool ownership、TypeScript/Rustのcompile
+    caller、producer、retrieval、replay/cache、onboarding、CI、release
+    filesを確認した。その後repository-isolation code、live migration、resident daemon更新、50-call
+    enforced cohortを実施した。実行結果は<a
+      href="context-compile-repository-isolation-closeout-evidence.html"
+      >Closeout Evidence</a
+    >を正本とする。
+  </p>
+  <h2 id="section-1-executive-decision">1. Executive Decision</h2>
+  <p>優先順位は次のとおりとする。</p>
+  <table>
+    <caption>
+      Table: 1. Executive Decision
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Priority</th>
+        <th scope="col">Outcome</th>
+        <th scope="col">Release block</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>P0</td>
+        <td>repository isolationをactive local profileでfail-closedにする</td>
+        <td>block</td>
+      </tr>
+      <tr>
+        <td>P1</td>
+        <td>compile semanticsのownerをRustへ一本化し、TypeScriptをclientへ縮小する</td>
+        <td>block for maintained product release</td>
+      </tr>
+      <tr>
+        <td>P2</td>
+        <td>safety-criticalな巨大moduleを責務単位に分割する</td>
+        <td>block only for touched critical modules</td>
+      </tr>
+      <tr>
+        <td>P3</td>
+        <td>onboardingをSQLite-firstへ統一し、release運用を成立させる</td>
+        <td>block for first supported release</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>判断は次の6点である。</p>
+  <ol>
+    <li>
+      repository isolationはDB fileの統合問題ではない。request
+      identity、write、migration、retrieval、traceを一つのlogical boundaryとして閉じる。
+    </li>
+    <li>
+      working tree上のT1 foundationとlive deploymentを区別する。最終確認時のsource schemaはrevision
+      5まで進んでいる一方、確認時のresident DBはrevision 1であり、live MCP schemaもidentity
+      fieldを公開していなかった。
+    </li>
+    <li>
+      producer observationは<code>PERSISTED</code>だけを数え、enabled producerと開始時刻をversioned
+      manifestへ固定する。manifest欠落、draft、開始時刻NULL、未観測を含む場合はcompletion gateをfail
+      closedにする。
+    </li>
+    <li>
+      isolationのenforcement完了前に、compile engineの大規模統合や巨大fileの全面分割を混ぜない。
+    </li>
+    <li>
+      MCPのactive ownerはRustだが、CLI、init-project、UI/APIはTypeScript compile
+      serviceを使用している。TypeScript全体をdormantとは扱わない。
+    </li>
+    <li>
+      TypeScriptのcwd既定、Rust daemonのApplication Support既定、LaunchAgentのrepository
+      data指定は意図した運用profileとして維持する。自動mergeや一つのpathへの統一は行わない。
+    </li>
+  </ol>
+  <h2 id="section-2-existing-plans-and-authority">2. Existing Plans And Authority</h2>
+  <p>個別の正本は次のとおりである。</p>
+  <table>
+    <caption>
+      Table: 2. Existing Plans And Authority
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Document</th>
+        <th scope="col">Authority</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <a href="context-compile-repository-isolation-improvement-plan.html"
+            >Context Compile Repository Isolation Closeout Plan</a
+          >
+        </td>
+        <td>identity operating profile、安全invariant、P0-P5、shadow/canary gate</td>
+      </tr>
+      <tr>
+        <td>
+          <a href="context-compile-repository-isolation-t0-evidence.html"
+            >Context Compile Repository Isolation T0 Evidence</a
+          >
+        </td>
+        <td>cross-repository reproduction、inventory、baseline evidence</td>
+      </tr>
+      <tr>
+        <td>
+          <a href="rust-runtime-closeout-implementation-plan.html"
+            >Rust Runtime Closeout Implementation Plan</a
+          >
+        </td>
+        <td>effective DB identity、doctor、backup、resident runtime、path truth</td>
+      </tr>
+      <tr>
+        <td>
+          <a href="security-intelligence-integration-concept.html"
+            >Security Intelligence Integration Concept</a
+          >
+        </td>
+        <td>trusted projectRef、Security adapter、T7相当の後続作業</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    本書が所有するのはprogram順序、workstream間のentry/exit
+    gate、実装所有権、保守性、onboarding、releaseである。
+  </p>
+  <p>
+    矛盾がある場合は、repository safety invariantにはisolation closeout plan、effective
+    databaseにはRust runtime closeout planを優先する。本書はそれらを緩和しない。
+  </p>
+  <h2 id="section-3-confirmed-evidence-snapshot">3. Confirmed Evidence Snapshot</h2>
+  <p>数値は2026-08-15のplanning snapshotであり、implementation開始前にread-onlyで再計測する。</p>
+  <h3 id="section-31-runtime-and-schema">3.1 Runtime And Schema</h3>
+  <table>
+    <caption>
+      Table: 3.1 Runtime And Schema
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Observation</th>
+        <th scope="col">Evidence</th>
+        <th scope="col">Consequence</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>resident MCP ownerはRust-native 12 tools、TS sidecar 0</td>
+        <td>native_tools.rsのtool owner inventory</td>
+        <td>MCP isolationはRustを最初に直す</td>
+      </tr>
+      <tr>
+        <td>running daemonはworking treeのbinaryより古い</td>
+        <td>live processとbinary timestamp、live tools/list</td>
+        <td>source test passだけでdeployment完了にしない</td>
+      </tr>
+      <tr>
+        <td>sourceのCURRENT_SCHEMA_REVISIONは最終確認時5</td>
+        <td>sqlite_writer/schema.rs</td>
+        <td>restart前にlive revision→対象build宣言revisionをtemp copyでrehearseする</td>
+      </tr>
+      <tr>
+        <td>live DBのschema_migrationsはrevision 1</td>
+        <td>read-only SQLite query</td>
+        <td>T1はsource foundation complete、operational deployment pending</td>
+      </tr>
+      <tr>
+        <td>live MCP context_compile schemaにidentity fieldがない</td>
+        <td>live tools/list</td>
+        <td>caller adoptionはまだ開始していない</td>
+      </tr>
+      <tr>
+        <td>live DBはcanonical identity columnsを欠く一方、一部additive tableは存在する</td>
+        <td>schema capability report</td>
+        <td>partially-shaped DBとして扱い、table存在だけでmigration済みにしない</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="section-32-isolation-baseline">3.2 Isolation Baseline</h3>
+  <table>
+    <caption>
+      Table: 3.2 Isolation Baseline
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Observation</th>
+        <th scope="col">Snapshot</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>canonical contract上unresolved Knowledge</td>
+        <td>7,227</td>
+      </tr>
+      <tr>
+        <td>canonical contract上unresolved Source</td>
+        <td>178</td>
+      </tr>
+      <tr>
+        <td>canonical contract上unresolved EpisodeCard</td>
+        <td>6,602</td>
+      </tr>
+      <tr>
+        <td>legacy repo identityを持つEpisodeCard</td>
+        <td>5,761</td>
+      </tr>
+      <tr>
+        <td>直近20 runのidentity-present</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>直近20 runのrequest/selection mismatch</td>
+        <td>20</td>
+      </tr>
+      <tr>
+        <td>直近30日のcompile run</td>
+        <td>1,823</td>
+      </tr>
+      <tr>
+        <td>identity-present run</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>producer identity-bearing accepted event</td>
+        <td>5</td>
+      </tr>
+      <tr>
+        <td>観測producer</td>
+        <td>agent-log-sync.typescriptのみ</td>
+      </tr>
+      <tr>
+        <td>観測期間</td>
+        <td>約0.007日</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    このbaselineは、identityを受理するschemaを追加しただけでは安全にならず、caller、producer、migration、retrievalの順序が必要であることを示す。
+  </p>
+  <h3 id="section-33-producer-observation-resolution-and-remaining-gate">
+    3.3 Producer Observation Resolution And Remaining Gate
+  </h3>
+  <p>
+    実装前draftではidentity
+    validation直後のACCEPTEDをcompletionへ数え、後続write失敗や単一producerへの偏りでfalse
+    completionになる可能性があった。
+  </p>
+  <p>
+    現在はVALIDATED、REJECTED、PERSISTEDを分離し、entity
+    write成功後または同一transaction内のPERSISTEDだけを7日・200件gateへ数える。failure
+    injectionではentityとPERSISTED auditがともにrollbackすることを検証した。
+  </p>
+  <p>P1の観測gateは次のとおりである。</p>
+  <ul>
+    <li>validation成功とdurable persistence成功を区別する。</li>
+    <li>
+      completion集計はcommit後、または同じtransaction内でcommitされるPERSISTED eventだけを数える。
+    </li>
+    <li>failed writeはPERSISTEDへ数えない。</li>
+    <li>
+      release
+      buildでenabledな全producerについて、観測済み、明示disabled、削除済みのいずれかを記録する。
+    </li>
+    <li>
+      7日、identity-bearing persisted 200件、new unresolved 0件に加え、enabled producer coverage
+      100%を要求する。
+    </li>
+    <li>global writeは別cohortとして扱い、identity-bearing件数を水増ししない。</li>
+  </ul>
+  <p>
+    reportはversioned resident-local manifestからruntime inventory、manifest
+    fingerprint、finalizedAt、observationStartedAtを読む。任意CLI
+    overrideは受け付けず、manifest欠落、draft、開始時刻NULL、未観測producerありのいずれもcompletion
+    falseとなり、7日経過を最古eventの時刻から推定しない。2026-08-15のlive
+    auditには旧ACCEPTEDが5件、PERSISTEDが0件だった。2026-08-16 01:07:10 JSTにPERSISTED-capable
+    resident buildをcontrolled restartし、同時刻から7日間のcompletion windowを開始した。
+  </p>
+  <h3 id="section-34-retrieval-resolution">3.4 Retrieval Resolution</h3>
+  <p>
+    実装前はactive Rust
+    context_compileがKnowledge最大500件、EpisodeCard最大200件のunscoped候補を先に取得し、public
+    searchと継続TypeScript pathにもpre-limit/fallback gapがあった。
+  </p>
+  <p>
+    現在はRust context_compile/public searchと継続TypeScript pathでcanonical
+    scope/classification/facet eligibilityをrankingとarbitrary limitより前へ移し、legacy/unscoped
+    fallbackを除去した。scope-aware prefilter不能なSQLite vector laneは安全に無効化する。
+  </p>
+  <p>修正対象としたTypeScript側の旧経路は次のとおりだった。</p>
+  <ul>
+    <li>
+      knowledge.service.tsはscoped resultが0件ならlegacy metadata、さらにunscoped
+      searchへfallbackする。
+    </li>
+    <li>
+      source-retrieval.service.tsはcompile identityをtext/vector
+      repositoryへ渡さず、scopedSearch=falseを返す。
+    </li>
+    <li>EpisodeCard repositoryは最新500件を取得した後でrepo/facetをfilterする。</li>
+    <li>replay comparisonはrunのfacetsを読むが、current CompileInputへidentityを戻さない。</li>
+    <li>
+      landscape cache keyはraw input由来で、identity contract/retrieval semantics
+      versionを持たない。
+    </li>
+  </ul>
+  <p>
+    これらはshared fixture、limit saturation、identity missing、replay/cache testsと50-call enforced
+    cohortで回帰検証した。
+  </p>
+  <h3 id="section-35-dual-implementation">3.5 Dual Implementation</h3>
+  <p>active surfaceは次のように分かれている。</p>
+  <table>
+    <caption>
+      Table: 3.5 Dual Implementation
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Surface</th>
+        <th scope="col">Current compile owner</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>resident MCP context_compile</td>
+        <td>Rust</td>
+      </tr>
+      <tr>
+        <td>public Rust search tools</td>
+        <td>Rust</td>
+      </tr>
+      <tr>
+        <td>CLI compile</td>
+        <td>TypeScript</td>
+      </tr>
+      <tr>
+        <td>init-project compile</td>
+        <td>TypeScript</td>
+      </tr>
+      <tr>
+        <td>UI/API compile</td>
+        <td>TypeScript</td>
+      </tr>
+      <tr>
+        <td>TypeScript MCP registry</td>
+        <td>sourceは存在するがresident ownerではない</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    さらにsecurityIntelligenceShadowはTypeScript compile schema/toolだけに追加され、Rust
+    context_compileのallowed args/schemaには存在しない。これをrepository-isolation
+    shadowの証拠に数えることはできない。
+  </p>
+  <h3 id="section-36-maintainability">3.6 Maintainability</h3>
+  <p>production codeの大きな単一fileには、行数だけでなく複数責務の同居がある。</p>
+  <table>
+    <caption>
+      Table: 3.6 Maintainability
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">Lines</th>
+        <th scope="col">Mixed responsibilities</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>web/src/modules/admin/components/settings.page.tsx</td>
+        <td>4,385</td>
+        <td>form model、route transform、secret、provider UI、tabs、page orchestration</td>
+      </tr>
+      <tr>
+        <td>crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs</td>
+        <td>3,687</td>
+        <td>queue execution、domain transition、persistence、provider interaction</td>
+      </tr>
+      <tr>
+        <td>crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs</td>
+        <td>3,016</td>
+        <td>input、retrieval、composer transport/parser、persistence、trace、tests</td>
+      </tr>
+      <tr>
+        <td>src/modules/queue/core/worker.ts</td>
+        <td>2,347</td>
+        <td>multiple queue workflowsとfailure handling</td>
+      </tr>
+      <tr>
+        <td>src/modules/context-compiler/context-compiler.service.ts</td>
+        <td>2,044</td>
+        <td>retrieval lanes、pack assembly、trace、usage、composer orchestration</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    context-compiler.service.tsは将来削除候補の二重実装である。先に美しく分割するのではなく、必要なsafety
+    fixだけを行い、Rust ownerへcallerを移した後に縮退・削除する方が総保守コストは低い。
+  </p>
+  <h3 id="section-37-product-entry-and-release">3.7 Product Entry And Release</h3>
+  <ul>
+    <li>READMEはSQLite-firstと明記し、PostgreSQLをlegacy compatibilityと位置付けている。</li>
+    <li>CONTRIBUTINGのdefault setupはDocker Compose、PostgreSQL migrationである。</li>
+    <li>
+      interactive startupのtypes/prompts/serviceはprovider=postgresを固定し、Docker、PostgreSQL
+      validation、db:migrateを実行する。
+    </li>
+    <li>
+      setup.service.tsにはSQLite branchが既にあるため、新しい三つ目のonboarding
+      implementationを作る必要はない。
+    </li>
+    <li>
+      verify:desktop-readiness scriptはあるが、verify workflowに独立した必須jobとして現れない。
+    </li>
+    <li>Tauri source/configはなく、READMEもpackaging未実装を認めている。</li>
+    <li>package.jsonとRust daemonは0.1.0だが、release workflowとGit tagがない。</li>
+    <li>CHANGELOGはGit historyへ委任しており、Unreleasedの少数項目しか持たない。</li>
+  </ul>
+  <p>GitHub star数はproduct maturityの参考値にはなるが、correctnessやrelease gateには使わない。</p>
+  <h2 id="section-4-safety-invariants-and-non-goals">4. Safety Invariants And Non-Goals</h2>
+  <h3 id="section-41-program-invariants">4.1 Program Invariants</h3>
+  <ol>
+    <li>
+      identityはrequestごとに一度resolveし、retrieval、pack、usage、traceで同じsnapshotを使う。
+    </li>
+    <li>
+      project requestはmatching repoと明示globalだけ、identityなしは明示globalだけをeligibleにする。
+    </li>
+    <li>unresolved、conflict、malformed dataをnormal retrievalへ入れない。</li>
+    <li>
+      lower-priority identity、legacy metadata、URI prefix、cwd、daemon root、unscoped
+      queryへfallbackしない。
+    </li>
+    <li>eligibilityをranking、ANN top-K、arbitrary limitより前に適用する。</li>
+    <li>shadow-only contentをcomposer、pack、usage、external providerへ渡さない。</li>
+    <li>safety rollbackでunscoped fallbackを復活させない。</li>
+    <li>
+      enabled backend/surfaceは同じsafety contractを満たす。満たさないsurfaceはnormal
+      profileで無効化する。
+    </li>
+  </ol>
+  <h3 id="section-42-non-goals">4.2 Non-Goals</h3>
+  <ul>
+    <li>
+      TypeScript cwd DB、Rust Application Support DB、LaunchAgent repository DBを一つへ統合しない。
+    </li>
+    <li>queue.sqlite、test DB、E2E DBをrepository isolation inventoryへ混ぜない。</li>
+    <li>repository DBとApplication Support DBを自動copy、merge、moveしない。</li>
+    <li>isolation変更のついでにRust compileへSource retrievalを新規追加しない。</li>
+    <li>historical unresolved itemを本文、basename、Git remote、類似度から自動分類しない。</li>
+    <li>projectRefをauthorization tokenとして扱わない。</li>
+    <li>Tauri packagingが存在するように文書やrelease名を先行させない。</li>
+    <li>isolation enforcementと大規模format/refactorを同じdelivery unitへ混ぜない。</li>
+  </ul>
+  <h2 id="section-5-target-architecture">5. Target Architecture</h2>
+  <p>安全なselection pathは次の一方向になる。</p>
+  <pre><code class="language-text">workspace caller
+  -&gt; canonical request identity
+  -&gt; scope/classification/facet eligibility
+  -&gt; text/vector ranking
+  -&gt; composer
+  -&gt; pack / usage / trace identity snapshot
+
+producer
+  -&gt; write identity validation
+  -&gt; durable entity write
+  -&gt; persisted producer observation
+
+deterministic migration
+  -&gt; canonical columns
+  -&gt; migration audit
+  -&gt; the same eligibility predicate
+</code></pre>
+  <p>
+    長期的にはRust daemonをcompile
+    semanticsの単一ownerにする。TypeScriptはUI/API/CLIのpresentationとtransport
+    adapterを担当し、独自retrieval/composer semanticsを持たない。
+  </p>
+  <h2 id="section-6-program-gates">6. Program Gates</h2>
+  <h3 id="g0-worktree-containment-and-operational-baseline">
+    G0: Worktree Containment And Operational Baseline
+  </h3>
+  <p>
+    Goal: 現在の大きな未コミット変更を、検証可能でrollback可能なdelivery unitへ分け、live
+    migrationを安全に開始できる状態にする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      current diffをrepository identity foundation/producer、backfill/report、Security ingress
+      concurrency、TypeScript-only Security shadow、その他へ分類する。
+    </li>
+    <li>
+      共有fileに複数topicがある場合は、commit/PR単位のownership
+      manifestを作る。既存変更をresetして分けない。
+    </li>
+    <li>
+      live schema revisionから対象buildが宣言するCURRENT_SCHEMA_REVISIONまでをlive
+      DBのcopyでrehearseする。計画書の固定値をmigration targetにしない。
+    </li>
+    <li>
+      migration前後のschema_migrations、table/column/index、row count、integrity_check、DB file
+      checksumを記録する。
+    </li>
+    <li>
+      current draftではrevision 2 identity、revision 3 Security ingress、revision 4 backfill
+      audit、revision 5 Security candidate provenanceが同時適用される影響を確認する。
+    </li>
+    <li>
+      effective live DBをdaemon status/doctor/backup/pathsが同じidentityとして報告できることをRust
+      runtime closeout planで先に保証する。
+    </li>
+    <li>
+      resident binaryのversionだけでなく、実行pathとbuild identityを確認できるdiagnosticを用意する。
+    </li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>topicごとのdelivery unitとrollback ownerが明示されている。</li>
+    <li>temp-copy migrationを2回行い、同じschema結果とrow countを得る。</li>
+    <li>backup/restore targetがeffective live DBと一致する。</li>
+    <li>live DBを変更せずにmigration runbookをreviewできる。</li>
+  </ul>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>effective DBが曖昧なままbackupまたはrestartする。</li>
+    <li>dirty worktree全体を一つのrepository isolation changeとしてmergeする。</li>
+    <li>tableが存在するだけでrevision完了と判断する。</li>
+  </ul>
+  <h3 id="g1-caller-adoption-and-durable-producer-closure">
+    G1: Caller Adoption And Durable Producer Closure
+  </h3>
+  <p>
+    Goal: active requestがidentityを送り、新規repo-scoped dataがcanonical
+    identity付きでdurably保存される状態にする。既存closeout planのP0/P1に対応する。
+  </p>
+  <p>Caller tasks:</p>
+  <ul>
+    <li>
+      new Rust daemonをcontrolled restartし、tools/listのcontext_compile/search toolsでidentity
+      fieldsを確認する。
+    </li>
+    <li>workspace MCP、CLI、init-project、UI/API callerをinventoryする。</li>
+    <li>
+      workspace rootをauthoritative repoPathとしてcaptureできるcallerだけがproject requestを送る。
+    </li>
+    <li>identityをcaptureできないcallerはglobal-onlyを明示し、cwdで補わない。</li>
+    <li>
+      request/run/task traceにcontract
+      version、basis、fingerprintが一致して保存されることを確認する。
+    </li>
+  </ul>
+  <p>Producer tasks:</p>
+  <ul>
+    <li>TS/Rustのwrite contract fixtureを一つのcanonical behavior setとして維持する。</li>
+    <li>
+      repository method以外のdirect writer、seed、migration CLI、queue worker、Security
+      ingress、portability importもproducer inventoryへ含める。
+    </li>
+    <li>producerごとにruntime active、maintenance-only、test-only、disabledを分類する。</li>
+    <li>agent logのprojectNameをrepoKeyへ昇格しない。</li>
+    <li>markdown contentRootをrepository rootと同一視しない。</li>
+    <li>compile-derived EpisodeCardはrequest/run snapshotだけを使う。</li>
+    <li>global writeはidentity columns NULL、repo writeはexact identity requiredにする。</li>
+  </ul>
+  <p>Observation redesign:</p>
+  <ul>
+    <li>VALIDATED、REJECTED、PERSISTEDを区別するか、既存ACCEPTEDをcommit後へ移す。</li>
+    <li>SQLiteではentity writeとPERSISTED auditを可能な限り同一transactionでcommitする。</li>
+    <li>複数database/remote backendではoperation IDでwrite resultとobservationをcorrelateする。</li>
+    <li>reportはPERSISTEDだけをcompletion countへ含める。</li>
+    <li>producer別、entity別、repo/global別、rejection code別のcoverageを出す。</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>live tools/listにidentity fieldsがある。</li>
+    <li>20連続active workspace callのidentity-present率100%、request/trace mismatch 0。</li>
+    <li>omitted identity smokeはglobal-onlyで、cwd/daemon rootを保存しない。</li>
+    <li>7日以上、identity-bearing PERSISTED 200件以上、new unresolved 0。</li>
+    <li>enabled producer coverage 100%。未観測producerはrelease buildでdisabledか削除済み。</li>
+    <li>validation後にwriteを故意に失敗させるtestでPERSISTEDが増えない。</li>
+  </ul>
+  <h3 id="g2-deterministic-migration">G2: Deterministic Migration</h3>
+  <p>
+    Goal: availabilityを維持する価値のあるitemとauthoritative
+    provenanceを持つitemだけをclassifiedにする。既存closeout planのP2に対応する。
+  </p>
+  <p>Current draft assessment:</p>
+  <ul>
+    <li>
+      repository-identity-backfill.tsはpure deterministic planner、fingerprint、reason
+      code、conflict/malformed処理を持つ。
+    </li>
+    <li>repository_identity_migration_audits schemaもdraftにある。</li>
+    <li>
+      一方、live inventory reader、dry-run artifact、transactional writer、restore command、top-50
+      review input、post-write zero-update verificationはまだ別途必要である。
+    </li>
+    <li>
+      legacy backfill:knowledge-project-contextはJSON metadata中心でcanonical migration
+      auditを満たさないため、本migration runnerとして再利用しない。
+    </li>
+  </ul>
+  <p>Tasks:</p>
+  <ul>
+    <li>read-only inventoryからstable-sorted migration planを生成する。</li>
+    <li>
+      dry-run artifactにentity ID、before/after fingerprint、reason、provenance source、migration
+      version、checksumを含める。本文は既定で出力しない。
+    </li>
+    <li>dry-runを同一snapshotへ2回実行し、checksumを一致させる。</li>
+    <li>
+      historical selection上位50 Knowledgeをlocal reviewし、明示global/repo/unresolved
+      decisionを残す。
+    </li>
+    <li>
+      exact canonical/legacy path、trusted capture、identity-bearing run、authoritative
+      alias、review decisionだけを根拠にする。
+    </li>
+    <li>Sourceは旧process.cwd由来metadataを自動確定せず、identity付きreimportを優先する。</li>
+    <li>writerは一transactionまたはentity batch単位でauditとrow updateをcommitする。</li>
+    <li>write後に同じmigrationを再実行し、updates 0を確認する。</li>
+    <li>temp-copy restore drillと直近500 runのoffline eligibility simulationを行う。</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>top-50 review完了。</li>
+    <li>dry-run repeat checksum一致。</li>
+    <li>write countとaudit count一致。</li>
+    <li>rerun update 0。</li>
+    <li>wrong-project eligible 0。</li>
+    <li>unresolved残数とavailability影響が記録されている。unresolved 0は要求しない。</li>
+  </ul>
+  <h3 id="g3-retrieval-enforcement-and-side-effect-free-shadow">
+    G3: Retrieval Enforcement And Side-Effect-Free Shadow
+  </h3>
+  <p>
+    Goal: active retrievalがcanonical scope
+    boundaryをquery時に適用し、user-visible切替前に安全性を比較できる状態にする。既存closeout
+    planのP3に対応する。
+  </p>
+  <p>Canonical eligibility:</p>
+  <pre><code class="language-text">classified
+AND (
+  scope = global
+  OR (
+    request has identity
+    AND scope = repo
+    AND selected identity basis equals exactly
+  )
+)
+AND facet eligibility
+</code></pre>
+  <p>Implementation order:</p>
+  <ol>
+    <li>Rust context_compile Knowledge.</li>
+    <li>Rust context_compile EpisodeCard.</li>
+    <li>Rust public search_knowledge.</li>
+    <li>Rust public search_episodes.</li>
+    <li>releaseで公開継続するTypeScript/SQLite/PostgreSQL path。</li>
+  </ol>
+  <p>Tasks:</p>
+  <ul>
+    <li>resolved identity objectをsearchへ渡す。</li>
+    <li>SQL eligibility predicateと必要indexを用意し、limit/ranking前に適用する。</li>
+    <li>missing identityはglobal-only queryを使う。</li>
+    <li>TS knowledgeのlegacy/unscoped fallbackを削除する。</li>
+    <li>
+      TS Sourceを公開継続する場合はidentityをrepositoryへ渡し、text/vector双方をscope-awareにする。
+    </li>
+    <li>EpisodeCardの500件pre-limit後filterをscope-aware SQLへ置換する。</li>
+    <li>
+      vector laneがpre-filterできない場合はeligible ID先行方式かsafe text/exact
+      fallbackへdegradeする。
+    </li>
+    <li>public search schemaとimplementationのrepo/facet fieldsを一致させる。</li>
+    <li>shadowはcandidate ID、count、exclusion reason、latencyだけを保存する。</li>
+    <li>
+      TypeScript-only securityIntelligenceShadowをisolation shadowの実績に数えず、Security
+      workstreamへ分離する。
+    </li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>
+      Repo A/B/global/unresolved/malformed shared fixtureがRustと公開継続pathで同じeligible
+      setになる。
+    </li>
+    <li>wrong-project shadow candidate 0。</li>
+    <li>missing identityのrepo candidate 0。</li>
+    <li>500/200を超えるwrong-repo saturation fixtureでもmatching itemを取得する。</li>
+    <li>shadow-only contentのoutbound、pack、usage 0。</li>
+    <li>identity-present shadow 50 call以上。</li>
+    <li>compile p95、selected count、No Content rateがcloseout planのgate内。</li>
+  </ul>
+  <h3 id="g4-replay-canary-default-enforcement">G4: Replay, Canary, Default Enforcement</h3>
+  <p>
+    Goal: identityを失わずにreplayでき、active local profileをenforcedへ切り替える。既存closeout
+    planのP4/P5に対応する。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>compileInputFromRunへnormalized identityとbasisを復元する。</li>
+    <li>legacy identityなしrunをlegacy_identity_unknown/not_comparableにする。</li>
+    <li>current rollout中はcacheをdisabledのまま維持し、old semantics payloadをstale化する。</li>
+    <li>Repo A/B/global-only replay smokeを行う。</li>
+    <li>dedicated local canaryを20 call以上実行する。</li>
+    <li>canaryを24時間以上維持し、通常操作とnegative smokeを含める。</li>
+    <li>live read-only auditとsafe rollback drillを実行する。</li>
+  </ul>
+  <p>Hard-zero gate:</p>
+  <ul>
+    <li>wrong-project candidate/outbound/pack/usage: 0。</li>
+    <li>unresolved/malformed/conflict selected item: 0。</li>
+    <li>request/trace identity mismatch: 0。</li>
+    <li>shadow-only content outbound: 0。</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>active normal local profileがenforced default。</li>
+    <li>availability/performance gate pass。</li>
+    <li>
+      rollbackがglobal-only safe modeまたは直前のsafe predicateへ戻り、unscoped
+      fallbackを復活させない。
+    </li>
+    <li>closeout evidenceを保存し、isolation planをarchiveできる。</li>
+  </ul>
+  <p>
+    G4完了をrepository isolationの完了点とする。Security adapter、全履歴分類、full cache
+    frameworkはblockerにしない。
+  </p>
+  <h3 id="g5-compile-semantic-ownership-convergence">G5: Compile Semantic Ownership Convergence</h3>
+  <p>Goal: Rust/TypeScript driftの構造的原因を除去する。</p>
+  <p>Recommended decision:</p>
+  <ul>
+    <li>Rust daemonをcompile、retrieval、composer、trace semanticsのsingle ownerとする。</li>
+    <li>TypeScript CLI/UI/APIはRust daemonへのtyped clientまたはthin adapterにする。</li>
+    <li>TS MCP server sourceはcompatibility requirementがなければ削除する。</li>
+    <li>
+      cross-languageの手書きschemaを増やさず、canonical JSON schemaとgolden fixtureからcontract
+      testを作る。
+    </li>
+  </ul>
+  <p>Decision gate:</p>
+  <ul>
+    <li>CLI/UI/APIをmaintained product surfaceに含めるか。</li>
+    <li>Rust compileがSource evidenceを将来扱うか、Knowledge sourceRefsだけを正本にするか。</li>
+    <li>PostgreSQLをsupported advanced backendにするか、legacy-disabledにするか。</li>
+  </ul>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      ADRでmaintained caller/backend、Source lane、transport、error contract、rollbackを確定する。
+    </li>
+    <li>
+      candidate IDs、selected IDs、outbound IDs、pack IDs、trace identityを比較するgolden parity
+      harnessを作る。
+    </li>
+    <li>Rust compileへ内部control/API boundaryを用意する。</li>
+    <li>CLI、init-project、UI/APIを一surfaceずつRust ownerへrouteする。</li>
+    <li>language固有feature flagを禁止し、unsupported fieldはschema公開しない。</li>
+    <li>caller migration後、TypeScript compile serviceと重複retrievalをdeprecatedにする。</li>
+    <li>production reference 0、rollback window終了、parity evidence保存後にだけ削除する。</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>maintained全surfaceのsemantic ownerがRust一つ。</li>
+    <li>TypeScriptに独自candidate selection/composer implementationが残らない。</li>
+    <li>schema、fixture、versionが一つのcontract releaseで更新される。</li>
+    <li>TypeScript-only securityIntelligenceShadow driftが解消または機能ごとdisabled。</li>
+  </ul>
+  <h3 id="g6-responsibility-based-module-decomposition">
+    G6: Responsibility-Based Module Decomposition
+  </h3>
+  <p>Goal: behaviorを変えずにreview surface、test isolation、ownershipを改善する。</p>
+  <p>Rules:</p>
+  <ul>
+    <li>line countだけを目的に分割しない。</li>
+    <li>isolation semanticsまたはowner migrationと同じPRで大規模移動をしない。</li>
+    <li>各抽出PRはbefore/after golden resultとfocused testを持つ。</li>
+    <li>module間に循環dependencyを作らない。</li>
+    <li>
+      context-compiler.service.tsはowner移行前に全面refactorせず、必要なadapter seamだけを抽出する。
+    </li>
+  </ul>
+  <p>Recommended split:</p>
+  <table>
+    <caption>
+      Table: G6: Responsibility-Based Module Decomposition
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Current file</th>
+        <th scope="col">Target boundaries</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>native_compile.rs</td>
+        <td>
+          input、retrieval、composer/settings、composer/transport、composer/parser、persistence/trace、tests
+        </td>
+      </tr>
+      <tr>
+        <td>settings.page.tsx</td>
+        <td>
+          pure settings model、provider route editor、secret/health components、tab components、page
+          shell
+        </td>
+      </tr>
+      <tr>
+        <td>episode_executor.rs</td>
+        <td>
+          input loading、state transition、provider execution、artifact persistence、retry/failure
+          mapping
+        </td>
+      </tr>
+      <tr>
+        <td>queue/core/worker.ts</td>
+        <td>queue-specific handlers、shared execution policy、failure/audit adapter</td>
+      </tr>
+      <tr>
+        <td>context-compiler.service.ts</td>
+        <td>thin Rust clientへ縮小後、legacy implementationを削除</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Initial review targets:</p>
+  <ul>
+    <li>orchestration fileは主要flowを一画面で追える規模にする。</li>
+    <li>pure transformはDOM/network/databaseから分離し、unit test可能にする。</li>
+    <li>provider transport/parserはretrieval/persistenceをimportしない。</li>
+    <li>settings tabは他tabのdraft stateを直接更新せず、typed actionを使う。</li>
+    <li>source file size budgetをCI warningにし、hard gateは新規/大幅増加だけへ段階導入する。</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>behavior/golden parity pass。</li>
+    <li>public APIとpersisted schemaに意図しないdiffがない。</li>
+    <li>production moduleの新規循環dependency 0。</li>
+    <li>touched critical fileに責務ownerとfocused testsがある。</li>
+  </ul>
+  <h3 id="g7-sqlite-first-product-entry">G7: SQLite-First Product Entry</h3>
+  <p>Goal: README、contributor setup、interactive setup、CIが同じdefault product pathを示す。</p>
+  <p>Recommended direction:</p>
+  <ul>
+    <li>bun run setupをcanonical onboarding serviceにする。</li>
+    <li>interactive startupはsetup serviceを呼ぶthin UIへ変更するかdeprecatedにする。</li>
+    <li>default backendはSQLite、Docker/PostgreSQLは明示advanced optionにする。</li>
+    <li>
+      packaged Tauri appがない間は「local web/admin + Rust resident
+      daemon」を開発baselineとして正直に記述する。
+    </li>
+  </ul>
+  <p>Tasks:</p>
+  <ul>
+    <li>onboarding database typeをsqlite/postgres unionへ変更し、sqliteをdefaultにする。</li>
+    <li>SQLite path未指定時は実行surfaceごとのdocumented defaultとpath originを表示する。</li>
+    <li>SQLite setupではDocker、Postgres connection、db:migrateを実行しない。</li>
+    <li>CONTRIBUTINGのquick startをSQLite-firstへ更新する。</li>
+    <li>READMEのstartup caveatを解消し、canonical commandを一つにする。</li>
+    <li>verify:desktop-readinessをCIの明示jobにする。</li>
+    <li>clean clone、temp workspace、temp DB、envなしのfirst-run smokeを追加する。</li>
+    <li>
+      Postgresを維持するならisolation parity testを必須にする。維持しないならnormal
+      profile/APIから明示disableする。
+    </li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>clean environmentでDocker/Postgresなしにsetup、doctor、daemon/MCP smokeがpass。</li>
+    <li>README、CONTRIBUTING、--help、interactive promptsが同じdefaultを示す。</li>
+    <li>
+      path outputがTS dev、Rust desktop default、LaunchAgent explicit pathのどれを使っているか示す。
+    </li>
+    <li>test/queue/E2E DBをeffective product DBとして報告しない。</li>
+  </ul>
+  <h3 id="g8-release-operations">G8: Release Operations</h3>
+  <p>Goal: 何を配布し、どう検証し、どう戻すかが再現可能なreleaseを作る。</p>
+  <p>Artifact decision:</p>
+  <ul>
+    <li>Tauriがない現状で「desktop app release」と呼ばない。</li>
+    <li>
+      最初にsource/developer release、daemon binary bundle、将来のpackaged
+      desktopのどれをsupportするかADRで確定する。
+    </li>
+    <li>
+      binaryを配布する場合だけplatform matrix、codesign/notarization、checksumをrelease
+      gateへ加える。
+    </li>
+  </ul>
+  <p>Tasks:</p>
+  <ul>
+    <li>package.jsonとCargo versionを一つのrelease checkで同期する。</li>
+    <li>CHANGELOGをGit history委任からUnreleased→versioned entryへ変更する。</li>
+    <li>tag-triggered release workflowを追加する。</li>
+    <li>artifact、checksum、build metadata、verification resultをreleaseへ紐付ける。</li>
+    <li>fresh install、upgrade、DB backup/migration、rollback runbookを作る。</li>
+    <li>
+      release candidateでverify:full、desktop readiness、isolation closeout evidenceを確認する。
+    </li>
+    <li>release後smokeとrollback decision ownerを決める。</li>
+  </ul>
+  <p>Exit gate:</p>
+  <ul>
+    <li>annotated tag、versioned changelog、reproducible verification recordがある。</li>
+    <li>advertised artifactがclean machineでinstall/start/doctor/MCP smokeを通る。</li>
+    <li>upgrade前backupとrollback drillがpass。</li>
+    <li>known limitationsにPostgres/Tauri/legacy TS surfaceの実態が一致する。</li>
+  </ul>
+  <h2 id="section-7-delivery-units">7. Delivery Units</h2>
+  <p>各unitは独立review、独立rollbackを原則とする。</p>
+  <table>
+    <caption>
+      Table: 7. Delivery Units
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Unit</th>
+        <th scope="col">Scope</th>
+        <th scope="col">Depends on</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>W0</td>
+        <td>worktree topic manifestとcurrent evidence freeze</td>
+        <td>none</td>
+      </tr>
+      <tr>
+        <td>O0</td>
+        <td>effective DB/build identityとmigration rehearsal</td>
+        <td>W0</td>
+      </tr>
+      <tr>
+        <td>I0</td>
+        <td>caller identity adoption</td>
+        <td>O0</td>
+      </tr>
+      <tr>
+        <td>I1</td>
+        <td>durable producer audit semantics</td>
+        <td>W0</td>
+      </tr>
+      <tr>
+        <td>I2</td>
+        <td>active producer closure</td>
+        <td>I1</td>
+      </tr>
+      <tr>
+        <td>I3</td>
+        <td>deterministic backfill runner/audit</td>
+        <td>O0</td>
+      </tr>
+      <tr>
+        <td>I4</td>
+        <td>Rust retrieval predicateとpublic search</td>
+        <td>I0、I2、I3</td>
+      </tr>
+      <tr>
+        <td>I5</td>
+        <td>replay compatibilityとside-effect-free shadow</td>
+        <td>I4</td>
+      </tr>
+      <tr>
+        <td>I6</td>
+        <td>canary、default enforcement、closeout</td>
+        <td>I5</td>
+      </tr>
+      <tr>
+        <td>A0</td>
+        <td>compile ownership ADRとgolden contract</td>
+        <td>I6</td>
+      </tr>
+      <tr>
+        <td>A1</td>
+        <td>Rust control boundaryとTS client migration</td>
+        <td>A0</td>
+      </tr>
+      <tr>
+        <td>A2</td>
+        <td>legacy TS compile removal</td>
+        <td>A1</td>
+      </tr>
+      <tr>
+        <td>M0</td>
+        <td>native_compile responsibility split</td>
+        <td>A1</td>
+      </tr>
+      <tr>
+        <td>M1</td>
+        <td>settings page model/components/tabs split</td>
+        <td>I6</td>
+      </tr>
+      <tr>
+        <td>M2</td>
+        <td>episode/queue executor split</td>
+        <td>I6</td>
+      </tr>
+      <tr>
+        <td>U0</td>
+        <td>canonical SQLite setup/startup convergence</td>
+        <td>I6</td>
+      </tr>
+      <tr>
+        <td>U1</td>
+        <td>contributor docsとdesktop-readiness CI</td>
+        <td>U0</td>
+      </tr>
+      <tr>
+        <td>R0</td>
+        <td>artifact/release ADR</td>
+        <td>U1、A1</td>
+      </tr>
+      <tr>
+        <td>R1</td>
+        <td>changelog/tag/artifact/rollback automation</td>
+        <td>R0</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    I0、I1、I3は別file ownershipを確保できれば並行開発できる。I4
+    enforcementはすべてを待つ。onboarding文書の調査は先行できるが、supported
+    releaseの宣言はI6後にする。
+  </p>
+  <h2 id="section-8-verification-matrix">8. Verification Matrix</h2>
+  <table>
+    <caption>
+      Table: 8. Verification Matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Layer</th>
+        <th scope="col">Required evidence</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>identity contract</td>
+        <td>TS/Rust shared fixture、malformed/conflict/precedence tests</td>
+      </tr>
+      <tr>
+        <td>producer</td>
+        <td>failure injection、commit/PERSISTED correlation、enabled producer coverage</td>
+      </tr>
+      <tr>
+        <td>migration</td>
+        <td>repeated checksum、audit count、rerun zero、restore drill</td>
+      </tr>
+      <tr>
+        <td>retrieval</td>
+        <td>Repo A/B/global、missing identity、limit saturation、vector safe-degrade</td>
+      </tr>
+      <tr>
+        <td>persistence</td>
+        <td>request/run/task/pack/usage identity snapshot一致</td>
+      </tr>
+      <tr>
+        <td>shadow</td>
+        <td>candidate ID diffのみ、shadow outbound/pack/usage zero</td>
+      </tr>
+      <tr>
+        <td>replay</td>
+        <td>identity-preserving current run、legacy not-comparable</td>
+      </tr>
+      <tr>
+        <td>operations</td>
+        <td>effective DB/build identity、tools/list、schema revision、24h canary</td>
+      </tr>
+      <tr>
+        <td>architecture</td>
+        <td>maintained caller golden parity、TS production references zero</td>
+      </tr>
+      <tr>
+        <td>onboarding</td>
+        <td>clean clone/temp DB/no Docker first-run</td>
+      </tr>
+      <tr>
+        <td>release</td>
+        <td>fresh install、upgrade、backup、rollback、artifact checksum</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Repository isolation closeoutでは少なくとも次を実行し、exit
+    code、実行test数、skip数、duration、artifact pathをevidenceへ残す。
+  </p>
+  <pre><code class="language-bash">bun run typecheck
+bun run lint
+bun run test:unit
+bun run test:repository-isolation:sqlite
+bun run verify:sqlite
+bun run verify:rust-daemon
+cargo clippy --workspace --all-targets -- -D warnings
+bun run rust:mcp:smoke
+bun run docs:check-links
+</code></pre>
+  <p>
+    PostgreSQLをsupported surfaceとして残す場合は専用test DBで同じisolation contract
+    testを追加する。testのskipをpassに数えず、live DBへfixtureを書かない。
+  </p>
+  <h2 id="section-9-rollback-strategy">9. Rollback Strategy</h2>
+  <table>
+    <caption>
+      Table: 9. Rollback Strategy
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Failure</th>
+        <th scope="col">Safe rollback</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>migration rehearsal mismatch</td>
+        <td>live restartを中止し、copyとmigration codeを修正</td>
+      </tr>
+      <tr>
+        <td>live schema/startup failure</td>
+        <td>verified backupからrestoreし、旧binaryへ戻す</td>
+      </tr>
+      <tr>
+        <td>wrong-project candidate 1件</td>
+        <td>enforcement拡大停止、global-only safe mode</td>
+      </tr>
+      <tr>
+        <td>availability regression</td>
+        <td>caller/producer/classificationを修正。unscoped fallbackは戻さない</td>
+      </tr>
+      <tr>
+        <td>vector correctness不明</td>
+        <td>scoped exact/text laneへdegrade</td>
+      </tr>
+      <tr>
+        <td>TS client migration regression</td>
+        <td>直前のclient adapterへ戻す。safe retrieval contractは維持</td>
+      </tr>
+      <tr>
+        <td>refactor parity mismatch</td>
+        <td>file move PRだけrevertし、behavior changeを持ち込まない</td>
+      </tr>
+      <tr>
+        <td>release smoke failure</td>
+        <td>artifact公開停止、既知のgood tag/buildへ戻す</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="section-10-risks-requiring-explicit-review">10. Risks Requiring Explicit Review</h2>
+  <table>
+    <caption>
+      Table: 10. Risks Requiring Explicit Review
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Risk</th>
+        <th scope="col">Why it matters</th>
+        <th scope="col">Mitigation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>stale resident daemon</td>
+        <td>sourceとlive schema/tool contractが異なる</td>
+        <td>build identityとtools/listをdeployment gateにする</td>
+      </tr>
+      <tr>
+        <td>partial schema shape</td>
+        <td>table存在がrevision完了を意味しない</td>
+        <td>schema_migrations + column/index capabilityを検証</td>
+      </tr>
+      <tr>
+        <td>accepted-before-write audit</td>
+        <td>false completion signal</td>
+        <td>PERSISTED semanticsとfailure injection</td>
+      </tr>
+      <tr>
+        <td>one-producer observation bias</td>
+        <td>低頻度writerが未検証のままになる</td>
+        <td>enabled producer coverage 100%</td>
+      </tr>
+      <tr>
+        <td>pre-limit filtering</td>
+        <td>matching itemが候補集合へ入らない</td>
+        <td>eligibilityをSQL/eligible-IDで先行</td>
+      </tr>
+      <tr>
+        <td>dual compile owner</td>
+        <td>feature flag、trace、rankingがdriftする</td>
+        <td>Rust single ownerとgolden contract</td>
+      </tr>
+      <tr>
+        <td>current large mixed diff</td>
+        <td>review不能、rollback単位が大きい</td>
+        <td>W0 topic manifestと小さいdelivery unit</td>
+      </tr>
+      <tr>
+        <td>path-default conflation</td>
+        <td>正しい複数profileを誤って統合する</td>
+        <td>effective path originの表示だけを統一</td>
+      </tr>
+      <tr>
+        <td>Postgres legacy escape path</td>
+        <td>normal safety boundaryを迂回し得る</td>
+        <td>parityを満たすかnormal profileでdisable</td>
+      </tr>
+      <tr>
+        <td>refactor before convergence</td>
+        <td>削除予定TS codeへ投資しregressionを増やす</td>
+        <td>TSはadapter化優先、Rustを分割</td>
+      </tr>
+      <tr>
+        <td>desktop naming without artifact</td>
+        <td>利用者期待と実態がずれる</td>
+        <td>artifact ADRまでlocal productと表現</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="section-11-definition-of-done">11. Definition Of Done</h2>
+  <h3 id="repository-isolation-done">Repository Isolation Done</h3>
+  <ul>
+    <li>G0-G4完了。</li>
+    <li>active local profileでwrong-project candidate/outbound/pack/usage hard zero。</li>
+    <li>missing identityはglobal-only。</li>
+    <li>new unresolved producer 0、enabled producer coverage 100%。</li>
+    <li>resident build/schema/tool contractをevidenceで確認。</li>
+    <li>rollback drill pass。</li>
+  </ul>
+  <h3 id="architecture-done">Architecture Done</h3>
+  <ul>
+    <li>maintained compile semantics ownerはRust一つ。</li>
+    <li>TypeScript CLI/UI/APIはthin client。</li>
+    <li>language-only schema/feature flagがない。</li>
+    <li>legacy TS compile production reference 0。</li>
+  </ul>
+  <h3 id="maintainability-done">Maintainability Done</h3>
+  <ul>
+    <li>touched safety-critical modulesが責務単位に分離される。</li>
+    <li>behavior/golden parityとfocused testsがある。</li>
+    <li>file splitによるschema/API driftがない。</li>
+  </ul>
+  <h3 id="product-entry-done">Product Entry Done</h3>
+  <ul>
+    <li>SQLite-firstの一つのcanonical setupがある。</li>
+    <li>README、CONTRIBUTING、CLI prompts、CIが一致する。</li>
+    <li>default pathの違いをorigin付きで説明し、自動統合しない。</li>
+  </ul>
+  <h3 id="release-operations-done">Release Operations Done</h3>
+  <ul>
+    <li>supported artifactを明示。</li>
+    <li>version/tag/changelog/artifact/verificationが追跡可能。</li>
+    <li>fresh install、upgrade、backup、rollbackを再現できる。</li>
+  </ul>
+  <h2 id="section-12-immediate-next-actions">12. Immediate Next Actions</h2>
+  <ol>
+    <li>
+      2026-08-16 01:07:10 JSTに開始したproducer observationで、7日・200 PERSISTED・enabled coverage
+      100%を確認する。
+    </li>
+    <li>
+      2026-08-17 01:07:10 JST以降にcurrent-build 24-hour enforced observationのread-only
+      auditを行う。
+    </li>
+    <li>
+      producer coverage、new unresolved、Safety/Availability/Performance Gateと<code
+        >bun run verify</code
+      >を再確認し、closeout evidenceを確定する。
+    </li>
+    <li>
+      archive gateをすべて満たしたらcloseout plan、T0 evidence、closeout
+      evidenceをarchiveし、READMEを更新する。
+    </li>
+    <li>G4 closeout後にcompile ownership ADRを確定し、Rust single-owner migrationを開始する。</li>
+    <li>
+      owner convergence後にnative_compile/settings/episode executorを責務単位に分割し、SQLite-first
+      onboardingとrelease automationを完成させる。
+    </li>
+  </ol>
+  <p>
+    この順序を変える場合は、変える作業がSafety Gate hard
+    zeroを弱めないこと、rollback単位を大きくしないこと、削除予定の二重実装へ新しいsemanticsを追加しないことをdecision
+    recordで示す。
+  </p>
+</article>

@@ -1,0 +1,734 @@
+<article lang="ja">
+  <h1 id="rust-runtime-closeout-implementation-plan">Rust Runtime Closeout Implementation Plan</h1>
+  <h2 id="status">Status</h2>
+  <p>Status: implementation-ready after repository and live-runtime review.</p>
+  <p>Created: 2026-08-15</p>
+  <p>
+    この文書は、過去の Rust daemon 全面移行、Rust sqlite-vec 先行移行、Rust test coverage
+    改善の各計画を置き換える。過去計画の未チェック項目は、そのまま現在の残タスクとはみなさない。
+  </p>
+  <p>
+    現行実装では、resident daemon、MCP、queue executor、agent-log-sync、SQLite
+    Writer、backup、sqlite-vec extension registration の主要 Rust 化は完了している。残作業は Rust
+    化そのものではなく、live runtime の database identity、readiness、backup、queue
+    execution、vector mode、検証結果を一貫させ、安全に完了判定できる状態へ閉じることである。
+  </p>
+  <h2 id="section-1-decision">1. Decision</h2>
+  <p>次の方針で closeout する。</p>
+  <ol>
+    <li>daemon をさらに広く Rust 化する計画にはしない。</li>
+    <li>
+      live database identity、doctor、backup、queue execution の不一致は correctness issue
+      として修正する。
+    </li>
+    <li>
+      sqlite-vec の全面移行は既定路線にせず、固定 corpus の benchmark と結果 parity で判断する。
+    </li>
+    <li>
+      coverage 数値だけを上げる test は追加しない。今回変更する behavior contract の regression test
+      を優先する。
+    </li>
+    <li>database file の copy、move、merge、queue bulk reset はこの計画の通常実装に含めない。</li>
+    <li>live mutation は backup と controlled rollout gate を満たした後だけ行う。</li>
+  </ol>
+  <h2 id="section-2-scope">2. Scope</h2>
+  <p>実装対象は次の 6 項目に限定する。</p>
+  <ol>
+    <li>Effective database identity</li>
+    <li>Readiness / doctor truth</li>
+    <li>Backup target safety</li>
+    <li>Resident queue execution truth and controlled recovery</li>
+    <li>Vector mode decision and contract</li>
+    <li>Regression tests, coverage closeout, and documentation</li>
+  </ol>
+  <h2 id="section-3-non-goals">3. Non-Goals</h2>
+  <ul>
+    <li>TypeScript の UI-time Hono、manual import/export/repair CLI を Rust へ移植しない。</li>
+    <li>PostgreSQL backend を削除または再設計しない。</li>
+    <li>SQLite schema 全体を再設計しない。</li>
+    <li>repository 内 DB と Application Support DB を自動統合しない。</li>
+    <li>live database を暗黙に別 path へ移動しない。</li>
+    <li>pending queue を一括 reset、skip、delete しない。</li>
+    <li>provider pool、LLM routing、distillation prompt を変更しない。</li>
+    <li>sqlite-vec 採用を coverage や文書整理だけを理由に強制しない。</li>
+    <li>全体 coverage 80% 超を branch protection の hard gate にしない。</li>
+    <li>unrelated Rust refactor、module rename、format-only rewrite を混ぜない。</li>
+  </ul>
+  <h2 id="section-4-confirmed-baseline">4. Confirmed Baseline</h2>
+  <h3 id="section-41-repository-verification">4.1 Repository verification</h3>
+  <p>2026-08-15 に次を確認した。</p>
+  <ul>
+    <li>
+      <code>bun run verify:rust-daemon</code>: pass
+      <ul>
+        <li>SQLite Writer ownership</li>
+        <li><code>cargo fmt --check</code></li>
+        <li>workspace clippy</li>
+        <li>workspace Rust tests</li>
+        <li>paths / status / bootstrap / doctor / backup / queue / vector / MCP commands</li>
+        <li>Rust-managed MCP / queue / admin API / agent-log-sync smokes</li>
+        <li>TypeScript unit tests</li>
+      </ul>
+    </li>
+    <li><code>cargo llvm-cov -p context-stilld --summary-only</code>: pass</li>
+    <li>Rust unit tests: 232 passed</li>
+    <li>total line coverage: 80.22%</li>
+    <li>queue lifecycle aggregate line coverage: 79.50%</li>
+    <li>MCP native module line coverage: 66.08% - 98.91%</li>
+  </ul>
+  <p>この結果から、旧 daemon migration と coverage plan の大部分は実装済みと判断する。</p>
+  <h3 id="section-42-live-database-identity-mismatch">4.2 Live database identity mismatch</h3>
+  <p>同日の live runtime では次の不一致がある。</p>
+  <table>
+    <caption>
+      Table: 4.2 Live database identity mismatch
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Surface</th>
+        <th scope="col">Observed database</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>LaunchAgent resident</td>
+        <td>repository <code>data/context-still-core.sqlite</code></td>
+      </tr>
+      <tr>
+        <td><code>status --json</code> runtime path</td>
+        <td>repository <code>data/context-still-core.sqlite</code></td>
+      </tr>
+      <tr>
+        <td><code>queue inspect --json</code></td>
+        <td>repository <code>data/context-still-core.sqlite</code></td>
+      </tr>
+      <tr>
+        <td><code>paths --json</code></td>
+        <td>Application Support <code>context-still-core.sqlite</code></td>
+      </tr>
+      <tr>
+        <td><code>doctor summary --json</code> bootstrap/vector</td>
+        <td>Application Support <code>context-still-core.sqlite</code></td>
+      </tr>
+      <tr>
+        <td><code>backup preflight --json</code></td>
+        <td>Application Support <code>context-still-core.sqlite</code></td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    LaunchAgent は <code>CONTEXT_STILL_SQLITE_CORE_PATH</code> で repository DB を明示しているが、別
+    process から実行した CLI は resident state を参照する command と参照しない command
+    に分かれている。
+  </p>
+  <p>
+    Application Support 側 DB は <code>user_version=0</code> で、bootstrap は migration target 2
+    に対し <code>outdated</code> と報告した。一方、backup preflight は同 DB を
+    <code>ready</code> と報告している。
+  </p>
+  <h3 id="section-43-live-readiness-mismatch">4.3 Live readiness mismatch</h3>
+  <ul>
+    <li>
+      doctor の nested bootstrap は <code>needs_init</code> /
+      <code>migration_state=outdated</code>。
+    </li>
+    <li>doctor top-level は <code>overallStatus=ok</code>。</li>
+    <li>vector health は extension registration 成功だけで <code>status=ok</code>。</li>
+    <li>同じ vector report では vector tables と metadata が存在しない。</li>
+  </ul>
+  <p>
+    <code>ok</code> は「その library を process に登録できる」ではなく、「選択された effective
+    database が意図した mode で利用可能」を表す必要がある。
+  </p>
+  <h3 id="section-44-live-queue-state">4.4 Live queue state</h3>
+  <p>確認時点の effective resident DB では次だった。</p>
+  <ul>
+    <li>runnable pending: 756</li>
+    <li>active lease: 0</li>
+    <li>executor mode: <code>maintenance_only</code></li>
+    <li>blocked reason: runnable jobs exist but no executor is active</li>
+    <li>resident process start: 2026-07-24</li>
+    <li>local binary build: 2026-08-15</li>
+  </ul>
+  <p>
+    古い resident process と current binary の差を解消する前に、queue implementation defect
+    と断定しない。ただし runnable backlog があるのに top-level status / doctor
+    が正常に見える状態は修正対象とする。
+  </p>
+  <h3 id="section-45-vector-data-baseline">4.5 Vector data baseline</h3>
+  <p>repository DB の確認値:</p>
+  <table>
+    <caption>
+      Table: 4.5 Vector data baseline
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Dataset</th>
+        <th scope="col">Rows</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>knowledge fallback embeddings</td>
+        <td>7,190</td>
+      </tr>
+      <tr>
+        <td>source fragment fallback embeddings</td>
+        <td>2,138</td>
+      </tr>
+      <tr>
+        <td>knowledge items</td>
+        <td>7,227</td>
+      </tr>
+      <tr>
+        <td>source fragments</td>
+        <td>2,260</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Rust は sqlite-vec extension registration、in-memory <code>MATCH</code> smoke、read-only health
+    を持つ。一方、production TypeScript read path は sqlite-vec を直接 load できず、Rust vector
+    search / rebuild service への完全移行も終わっていない。
+  </p>
+  <h2 id="section-5-target-invariants">5. Target Invariants</h2>
+  <h3 id="section-51-database-identity">5.1 Database identity</h3>
+  <p>1 command 内で、database identity は一度だけ解決する。</p>
+  <p>最低限次の情報を持つ。</p>
+  <pre><code class="language-rust">struct EffectiveDatabaseIdentity {
+    configured_path: PathBuf,
+    resident_path: Option&lt;PathBuf&gt;,
+    effective_path: PathBuf,
+    source: DatabaseIdentitySource,
+    resident_pid: Option&lt;u32&gt;,
+    resident_running: bool,
+    mismatch: bool,
+}
+
+enum DatabaseIdentitySource {
+    ExplicitEnvironment,
+    LiveResidentState,
+    AppDataDefault,
+}
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>
+      resident start は explicit environment または app-data default を使用し、その effective path
+      を process state に保存する。
+    </li>
+    <li>
+      resident が live で、CLI に explicit path がない場合、runtime-aware command は resident state
+      の path を使う。
+    </li>
+    <li>
+      explicit path と live resident path が異なる場合、両方を report し、mutation command は fail
+      closed する。
+    </li>
+    <li>stale state、dead PID、missing path は live resident identity として採用しない。</li>
+    <li>
+      path equality は lexical string だけでなく absolute normalized path で比較する。ただし
+      filesystem canonicalization failure を理由に既存 file を別 file と推測しない。
+    </li>
+  </ul>
+  <h3 id="section-52-readiness">5.2 Readiness</h3>
+  <ul>
+    <li>top-level status は nested critical state と矛盾しない。</li>
+    <li>schema outdated / missing required tables は <code>ok</code> にならない。</li>
+    <li>queue backlog と executor absence は少なくとも <code>degraded</code> になる。</li>
+    <li>
+      optional vector fallback は desktop blocker にしないが、mode と index readiness を明示する。
+    </li>
+    <li>active lease がないことだけで executor missing と判定しない。</li>
+    <li>
+      last executor tick、executor configured state、last outcome、blocked reason を分けて表示する。
+    </li>
+  </ul>
+  <h3 id="section-53-backup">5.3 Backup</h3>
+  <ul>
+    <li>backup preflight と create は同じ <code>EffectiveDatabaseIdentity</code> を使用する。</li>
+    <li>live resident が別 DB を使用中なら、非 resident DB の backup を暗黙に成功させない。</li>
+    <li>
+      report は source path、effective path、resident PID、writer lock、refusal reason を返す。
+    </li>
+    <li>actual backup target を output 前に確定し、途中で再解決しない。</li>
+    <li>path mismatch 時は database copy や migration を提案だけで実行しない。</li>
+  </ul>
+  <h3 id="section-54-queue-execution">5.4 Queue execution</h3>
+  <ul>
+    <li>executor existence と active job lease を別概念として report する。</li>
+    <li>resident は last executor tick state を永続化し、inspect / doctor が読めるようにする。</li>
+    <li>
+      runnable backlog がある場合、次のいずれかを必ず説明する。
+      <ul>
+        <li>executing</li>
+        <li>waiting for next tick</li>
+        <li>provider unavailable / cooldown</li>
+        <li>executor disabled</li>
+        <li>executor unconfigured</li>
+        <li>unsupported queue</li>
+        <li>stale resident binary / restart required</li>
+      </ul>
+    </li>
+    <li>
+      completed job は downstream mutation 確認後だけ completed にする既存 invariant を維持する。
+    </li>
+  </ul>
+  <h3 id="section-55-vector-mode">5.5 Vector mode</h3>
+  <p>vector health は少なくとも次を分離する。</p>
+  <pre><code class="language-text">engineAvailable
+databaseInitialized
+indexMode = sqlite_vec | json_fallback | unavailable
+indexReady
+knowledgeRows
+sourceRows
+metadataValid
+</code></pre>
+  <p>Extension registration 成功だけで <code>status=ok</code> にしない。</p>
+  <h2 id="section-6-implementation-plan">6. Implementation Plan</h2>
+  <h3 id="t0-freeze-fixtures-and-safe-baseline">T0: Freeze Fixtures And Safe Baseline</h3>
+  <p>変更前に deterministic fixture を追加する。</p>
+  <p>Required scenarios:</p>
+  <ol>
+    <li>no explicit path / no resident state</li>
+    <li>explicit path / no resident state</li>
+    <li>live resident path / no explicit path</li>
+    <li>explicit path equals live resident path</li>
+    <li>explicit path conflicts with live resident path</li>
+    <li>dead PID with stale resident state</li>
+    <li>live resident DB current, configured DB outdated</li>
+    <li>runnable queue with executor configured but between ticks</li>
+    <li>runnable queue with executor disabled</li>
+    <li>sqlite-vec engine available but DB uninitialized</li>
+    <li>JSON fallback initialized and ready</li>
+    <li>sqlite-vec tables and metadata initialized and ready</li>
+  </ol>
+  <p>Initial files:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/daemon/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/inspect.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/bootstrap/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/doctor/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/backup/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/vector_index/service.rs</code></li>
+    <li>focused test modules for each domain</li>
+  </ul>
+  <p>Completion:</p>
+  <ul>
+    <li>all 12 scenarios have failing characterization or explicit current-behavior assertions;</li>
+    <li>no live DB mutation is required;</li>
+    <li>fixture DBs use temporary directories;</li>
+    <li>
+      current live command outputs are saved as redacted text in the implementation report, not
+      committed as machine-specific fixtures.
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld daemon
+cargo test -p context-stilld queue_lifecycle
+cargo test -p context-stilld doctor
+cargo test -p context-stilld backup
+cargo test -p context-stilld vector_index
+</code></pre>
+  <p>Stop if fixture setup requires copying the live DB.</p>
+  <h3 id="t1-introduce-shared-effective-database-identity">
+    T1: Introduce Shared Effective Database Identity
+  </h3>
+  <p>
+    Create a small Rust-owned resolver shared by status, doctor, backup, queue, and vector domains.
+    Do not keep separate variants of <code>paths_with_resident_sqlite_path()</code> and queue-only
+    effective path logic.
+  </p>
+  <p>Suggested location:</p>
+  <pre><code class="language-text">crates/context-stilld/src/domains/runtime_identity/
+  mod.rs
+  service.rs
+  service_tests.rs
+</code></pre>
+  <p>Required behavior:</p>
+  <ul>
+    <li>resolve configured and resident paths once;</li>
+    <li>validate resident PID liveness;</li>
+    <li>return additive diagnostics fields;</li>
+    <li>preserve current <code>sqliteCorePath</code> field as the effective path;</li>
+    <li>
+      add <code>configuredSqliteCorePath</code>, <code>residentSqliteCorePath</code>,
+      <code>databaseIdentitySource</code>, and <code>databaseIdentityMismatch</code> where relevant;
+    </li>
+    <li>do not change MCP tool schema or database schema.</li>
+  </ul>
+  <p>Consumers:</p>
+  <ul>
+    <li><code>paths --json</code></li>
+    <li><code>status --json</code></li>
+    <li><code>doctor summary --json</code></li>
+    <li><code>backup preflight|create --json</code></li>
+    <li><code>queue status|inspect --json</code></li>
+    <li><code>vector health --json</code></li>
+  </ul>
+  <p>Completion:</p>
+  <ul>
+    <li>all consumers report the same effective path in one invocation context;</li>
+    <li>explicit conflict is visible and mutation commands reject it;</li>
+    <li>dead resident state does not override configured/default path;</li>
+    <li>existing JSON fields remain compatible.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld runtime_identity
+cargo test -p context-stilld daemon
+cargo test -p context-stilld queue_lifecycle
+cargo test -p context-stilld backup
+</code></pre>
+  <p>Stop if the change requires moving either existing DB.</p>
+  <h3 id="t2-make-doctor-backup-and-vector-health-truthful">
+    T2: Make Doctor, Backup, And Vector Health Truthful
+  </h3>
+  <h4 id="t21-doctor">T2.1 Doctor</h4>
+  <p>Derive top-level status from effective database state.</p>
+  <p>Recommended severity:</p>
+  <table>
+    <caption>
+      Table: T2.1 Doctor
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Condition</th>
+        <th scope="col">Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>effective DB missing</td>
+        <td><code>needs_setup</code></td>
+      </tr>
+      <tr>
+        <td>effective DB schema outdated</td>
+        <td><code>needs_setup</code></td>
+      </tr>
+      <tr>
+        <td>database identity conflict</td>
+        <td><code>degraded</code> and mutation refusal</td>
+      </tr>
+      <tr>
+        <td>runnable backlog + executor disabled/missing</td>
+        <td><code>degraded</code></td>
+      </tr>
+      <tr>
+        <td>vector JSON fallback explicitly ready</td>
+        <td><code>ok</code> or optional improvement</td>
+      </tr>
+      <tr>
+        <td>vector engine present but DB uninitialized</td>
+        <td><code>optional improvement</code> unless vector is required</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Do not treat PostgreSQL/pgvector absence as a SQLite desktop blocker.</p>
+  <h4 id="t22-backup">T2.2 Backup</h4>
+  <ul>
+    <li>preflight must target the effective DB;</li>
+    <li>mismatch must return non-ready with stable reason;</li>
+    <li>resident writer ownership and OS lock remain authoritative;</li>
+    <li>create must revalidate the same identity immediately before opening the DB;</li>
+    <li>output must name the actual source and destination.</li>
+  </ul>
+  <h4 id="t23-vector-health">T2.3 Vector health</h4>
+  <ul>
+    <li>split engine availability from DB/index readiness;</li>
+    <li>validate table presence, metadata dimension, row counts, and selected mode;</li>
+    <li>report <code>ready_fallback</code> when JSON fallback is intentionally healthy;</li>
+    <li>
+      report <code>uninitialized</code> when extension is available but no vector storage exists;
+    </li>
+    <li>use the effective DB from T1.</li>
+  </ul>
+  <p>Completion:</p>
+  <ul>
+    <li>
+      the observed <code>bootstrap=needs_init</code> / top-level <code>ok</code> contradiction is
+      impossible;
+    </li>
+    <li>backup cannot report an unrelated non-resident DB as ready while resident is active;</li>
+    <li>vector engine-only success is not index readiness.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld doctor
+cargo test -p context-stilld backup
+cargo test -p context-stilld vector_index
+bun run verify:rust-daemon
+</code></pre>
+  <h3 id="t3-persist-queue-executor-truth">T3: Persist Queue Executor Truth</h3>
+  <p>Extend resident/queue runtime state additively with:</p>
+  <ul>
+    <li><code>executorConfigured</code></li>
+    <li><code>executorEnabled</code></li>
+    <li><code>lastExecutorTickAt</code></li>
+    <li><code>lastExecutorTickStatus</code></li>
+    <li><code>lastExecutorOutcomeKind</code></li>
+    <li><code>lastExecutorTargetId</code></li>
+    <li><code>lastExecutorError</code> with bounded length</li>
+    <li>effective SQLite path</li>
+    <li>running binary/build identifier</li>
+  </ul>
+  <p>
+    <code>queue inspect</code> must not infer executor absence solely from zero active leases.
+    Active lease means a job is currently executing; it is not the executor liveness record.
+  </p>
+  <p>Required tests:</p>
+  <ul>
+    <li>
+      between-tick idle with runnable jobs is not <code>maintenance_only</code> when executor is
+      healthy;
+    </li>
+    <li>disabled executor is explicit;</li>
+    <li>unconfigured provider is explicit;</li>
+    <li>failed tick remains visible until a later successful tick;</li>
+    <li>stale state from dead PID is ignored;</li>
+    <li>backlog count comes from the same effective DB as executor state.</li>
+  </ul>
+  <p>Completion:</p>
+  <ul>
+    <li>runnable backlog has an actionable state;</li>
+    <li>status, doctor, queue inspect, and resident state agree;</li>
+    <li>no new resident TypeScript process is introduced.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld resident_runtime
+cargo test -p context-stilld queue_lifecycle
+bun run rust:queue:smoke
+bun run verify:rust-daemon
+</code></pre>
+  <h3 id="t4-controlled-live-runtime-revalidation">T4: Controlled Live Runtime Revalidation</h3>
+  <p>
+    This phase changes live process state and must not be executed as part of an ordinary unit-test
+    run.
+  </p>
+  <p>Order:</p>
+  <ol>
+    <li>
+      Record current resident PID, start time, binary path, effective DB, queue counts, and provider
+      lease state.
+    </li>
+    <li>Confirm T1-T3 focused and full daemon gates pass.</li>
+    <li>Resolve the canonical live DB choice. Do not migrate data during this phase.</li>
+    <li>Ensure backup preflight identifies that exact DB.</li>
+    <li>Stop the resident cleanly.</li>
+    <li>Take a recoverable backup of the exact live DB while the Writer lock is released.</li>
+    <li>Start the current binary with queue executor disabled or controlled one-tick mode.</li>
+    <li>
+      Confirm paths, status, doctor, backup preflight, vector health, and queue inspect agree.
+    </li>
+    <li>Enable one controlled executor tick.</li>
+    <li>
+      Confirm at most the intended job was claimed and its state/downstream mutation is valid.
+    </li>
+    <li>Only then restore continuous execution.</li>
+  </ol>
+  <p>Required evidence:</p>
+  <ul>
+    <li>new resident PID and binary/build identifier;</li>
+    <li>one effective SQLite path across all reports;</li>
+    <li>backup artifact path and integrity result;</li>
+    <li>before/after queue row and queue event for the controlled job;</li>
+    <li>no bulk reset/delete;</li>
+    <li>no orphan active lease after the tick.</li>
+  </ul>
+  <p>Stop and leave continuous execution disabled if:</p>
+  <ul>
+    <li>the backup target differs from queue inspect target;</li>
+    <li>schema migration would run against an unexpected DB;</li>
+    <li>more than the controlled job is claimed;</li>
+    <li>completed state lacks downstream mutation;</li>
+    <li>resident starts a Bun/Node child;</li>
+    <li>provider failure produces a tight retry loop.</li>
+  </ul>
+  <h3 id="t5-decide-vector-mode-from-measurement">T5: Decide Vector Mode From Measurement</h3>
+  <p>Do not implement Rust vector search before this gate.</p>
+  <p>Create a fixed, non-sensitive benchmark fixture and measure both available paths.</p>
+  <p>Benchmark:</p>
+  <ul>
+    <li>200 deterministic query embeddings;</li>
+    <li>top-k 20;</li>
+    <li>warm-up excluded;</li>
+    <li>p50 / p95 latency;</li>
+    <li>peak process RSS or bounded memory estimate;</li>
+    <li>top-k overlap and ordering against the current expected result;</li>
+    <li>knowledge and source fragment lanes separately.</li>
+  </ul>
+  <p>Decision rule:</p>
+  <p>Choose explicit JSON fallback when all are true:</p>
+  <ul>
+    <li>p95 is at most 100 ms at the current data scale;</li>
+    <li>peak additional memory is at most 128 MiB;</li>
+    <li>top-k set overlap with sqlite-vec is at least 0.90;</li>
+    <li>compile/search end-to-end latency shows no material regression;</li>
+    <li>fallback health and metadata are truthful.</li>
+  </ul>
+  <p>Choose Rust sqlite-vec completion when any of the following is true:</p>
+  <ul>
+    <li>JSON fallback exceeds the latency or memory limit;</li>
+    <li>result correctness differs materially;</li>
+    <li>expected near-term data growth invalidates fallback;</li>
+    <li>fallback full scans dominate compile/search latency.</li>
+  </ul>
+  <h4 id="branch-a-keep-json-fallback">Branch A: Keep JSON fallback</h4>
+  <ul>
+    <li>make <code>json_fallback</code> an explicit supported mode;</li>
+    <li>remove misleading extension-unavailable warnings for a healthy fallback;</li>
+    <li>keep Rust sqlite-vec smoke as capability diagnostics;</li>
+    <li>do not add Rust RPC/search surface;</li>
+    <li>document the benchmark date, data scale, and reconsideration threshold.</li>
+  </ul>
+  <h4 id="branch-b-complete-rust-sqlite-vec">Branch B: Complete Rust sqlite-vec</h4>
+  <ul>
+    <li>implement Rust-owned real-DB search for knowledge and source fragments;</li>
+    <li>implement rebuild/status through the resident Writer ownership boundary;</li>
+    <li>route production TypeScript callers through the Rust layer;</li>
+    <li>remove production Bun sqlite-vec loading attempts;</li>
+    <li>preserve JSON fallback and test parity during rollout;</li>
+    <li>do not expose a remote network listener beyond the existing loopback daemon boundary.</li>
+  </ul>
+  <p>Completion:</p>
+  <ul>
+    <li>one branch is selected with saved benchmark evidence;</li>
+    <li>health reports the selected mode accurately;</li>
+    <li>production callers use the selected mode;</li>
+    <li>
+      the unselected path is either explicit fallback or removed from production reachability.
+    </li>
+  </ul>
+  <h3 id="t6-coverage-and-verification-closeout">T6: Coverage And Verification Closeout</h3>
+  <p>The coverage target is a regression signal, not an implementation objective.</p>
+  <p>Baseline:</p>
+  <ul>
+    <li>total lines: 80.22%</li>
+    <li>queue lifecycle: 79.50%</li>
+    <li>native modules: 66.08% - 98.91%</li>
+  </ul>
+  <p>Required:</p>
+  <ul>
+    <li>add tests for T1-T5 behavior and failure paths;</li>
+    <li>total line coverage must not fall below 80.0%;</li>
+    <li>queue lifecycle must not fall below the 79.50% measured baseline;</li>
+    <li>modified modules must not lose meaningful contract coverage;</li>
+    <li>no test may require live LLM, network, LaunchAgent, or the user&#39;s live DB;</li>
+    <li>live rollout evidence remains a separate opt-in verification.</li>
+  </ul>
+  <p>Do not add branch-only or getter-only tests solely to reach 80.0% queue coverage.</p>
+  <p>Commands:</p>
+  <pre><code class="language-bash">cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo llvm-cov -p context-stilld --summary-only
+bun run verify:rust-daemon
+bun run verify
+bun run docs:check-links
+git diff --check
+</code></pre>
+  <h2 id="section-7-expected-change-surface">7. Expected Change Surface</h2>
+  <p>Likely Rust files:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mod.rs</code></li>
+    <li>new <code>crates/context-stilld/src/domains/runtime_identity/*</code></li>
+    <li><code>crates/context-stilld/src/domains/bootstrap/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/daemon/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/doctor/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/backup/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/inspect.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/types.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/resident_runtime/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/vector_index/service.rs</code></li>
+    <li>associated focused test modules</li>
+  </ul>
+  <p>Possible TypeScript/scripts:</p>
+  <ul>
+    <li>schema consumers for additive JSON fields</li>
+    <li><code>scripts/verify-rust-daemon.mjs</code></li>
+    <li>vector benchmark command/test if Branch A/B decision requires it</li>
+    <li>public operations documentation for effective path and backup refusal reasons</li>
+  </ul>
+  <p>
+    Do not modify unrelated domain prompts, queue policies, provider settings UI, or context
+    compilation ranking.
+  </p>
+  <h2 id="section-8-compatibility-contract">8. Compatibility Contract</h2>
+  <ul>
+    <li>Existing JSON fields remain present.</li>
+    <li><code>sqliteCorePath</code> becomes consistently defined as effective path.</li>
+    <li>New identity/readiness fields are additive.</li>
+    <li>Existing exit code 0 remains for healthy or explicitly supported fallback states.</li>
+    <li>
+      Identity conflict, unsafe backup target, or invalid mutation target returns a non-zero runtime
+      failure.
+    </li>
+    <li>MCP tool names and schemas do not change.</li>
+    <li>
+      SQLite schema changes are not expected for T0-T3. If persistent queue runtime state needs
+      schema storage rather than process-state JSON, stop and review the migration separately.
+    </li>
+  </ul>
+  <h2 id="section-9-rollback">9. Rollback</h2>
+  <p>Code rollback:</p>
+  <ul>
+    <li>
+      retain additive fields but restore the previous resolver only if it still fails closed on
+      identity conflict;
+    </li>
+    <li>never roll back to silently backing up a non-resident DB;</li>
+    <li>
+      queue executor status persistence may be disabled without reintroducing a TypeScript resident
+      worker;
+    </li>
+    <li>vector Branch B may roll back to explicit JSON fallback if parity is maintained.</li>
+  </ul>
+  <p>Live rollback:</p>
+  <ul>
+    <li>stop the current resident cleanly;</li>
+    <li>restore the previous binary/config while keeping the same verified DB path;</li>
+    <li>restore database backup only when corruption or invalid mutation is confirmed;</li>
+    <li>do not restore a backup merely because queue processing is slow;</li>
+    <li>do not re-enable continuous queue execution until inspect and doctor agree.</li>
+  </ul>
+  <h2 id="section-10-global-stop-conditions">10. Global Stop Conditions</h2>
+  <p>Stop and review when:</p>
+  <ul>
+    <li>canonical database choice requires merging two live DBs;</li>
+    <li>an existing DB would be overwritten or moved;</li>
+    <li>backup source cannot be proven identical to resident/queue source;</li>
+    <li>status and process state disagree about the live PID;</li>
+    <li>controlled queue tick cannot limit mutation scope;</li>
+    <li>queue completed state precedes downstream mutation;</li>
+    <li>vector benchmark fixture cannot compare equivalent data;</li>
+    <li>
+      JSON fallback and sqlite-vec return materially different results without an explained
+      contract;
+    </li>
+    <li>T1-T3 require a breaking JSON or MCP schema change;</li>
+    <li>full verification exposes a regression outside the defined scope.</li>
+  </ul>
+  <h2 id="section-11-final-completion-criteria">11. Final Completion Criteria</h2>
+  <p>The Rust runtime closeout is complete only when all are true.</p>
+  <ul>
+    <li>
+      one effective database identity is reported consistently by paths, status, doctor, backup,
+      queue, and vector commands;
+    </li>
+    <li>mutation commands fail closed on identity conflict;</li>
+    <li>doctor top-level status reflects schema/readiness/blocking queue state truthfully;</li>
+    <li>
+      backup preflight and create target the actual resident DB and produce verified evidence;
+    </li>
+    <li>current resident binary is running and identified;</li>
+    <li>runnable queue backlog is executing or has a precise actionable blocked reason;</li>
+    <li>one controlled live queue transition has verified downstream mutation;</li>
+    <li>vector mode is selected by recorded benchmark evidence;</li>
+    <li>vector health reports engine, index mode, and readiness separately;</li>
+    <li>regression tests pass without live infrastructure;</li>
+    <li>total coverage remains at least 80.0% and queue coverage does not regress below 79.50%;</li>
+    <li><code>verify:rust-daemon</code>, repo verification, docs links, and diff checks pass;</li>
+    <li>old Rust migration/coverage plans remain historical only;</li>
+    <li>
+      this plan is moved to the hidden archive after implementation evidence is recorded at the top.
+    </li>
+  </ul>
+</article>

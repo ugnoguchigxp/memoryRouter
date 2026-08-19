@@ -1,0 +1,838 @@
+<article lang="ja">
+  <h1 id="rust-only-daemon-completion-implementation-plan">
+    Rust-Only Daemon Completion Implementation Plan
+  </h1>
+  <blockquote>
+    <p>
+      アーカイブ日: 2026-08-15。現行の残作業は
+      <a href="rust-runtime-closeout-implementation-plan.html"
+        >Rust Runtime Closeout Implementation Plan</a
+      >
+      に再基準化した。
+    </p>
+  </blockquote>
+  <h2 id="purpose">Purpose</h2>
+  <p><code>context-stilld</code> の daemon 領域を Rust-only にするための残タスク実装計画である。</p>
+  <p>この文書は見積もりではない。残作業を、実装順序、完了条件、検証ゲート、停止条件で管理する。</p>
+  <h2 id="definition-of-done">Definition Of Done</h2>
+  <p>この計画でいう Rust-only daemon は次の状態を指す。</p>
+  <ul>
+    <li>
+      macOS LaunchAgent / packaged service が起動する常駐プロセスは
+      <code>context-stilld run</code> のみ。
+    </li>
+    <li>queue scheduling / provider lease / durable worker supervision が Rust 実装である。</li>
+    <li>MCP endpoint / session management / default tool dispatch が Rust 実装である。</li>
+    <li>agent-log-sync の scheduled discovery / parser / SQLite write が Rust 実装である。</li>
+    <li>
+      daemon safety surfaces, including status / doctor / backup guard / active writer visibility,
+      are Rust-native enough to run without Bun.
+    </li>
+    <li>
+      TypeScript / Bun can still exist for UI-time Hono, explicit manual migration/import/export
+      tasks, and temporary fallback commands, but not for durable daemon runtime.
+    </li>
+    <li>
+      <code>context-stilld status --json</code>, LaunchAgent state, process tree, SQLite writer
+      state, and smoke outputs agree.
+    </li>
+  </ul>
+  <h2 id="current-baseline">Current Baseline</h2>
+  <p>Completed:</p>
+  <ul>
+    <li><code>context-stilld run</code> is the resident owner.</li>
+    <li><code>com.context-still.daemon</code> starts <code>context-stilld run</code>.</li>
+    <li>
+      Legacy queue and agent-log-sync LaunchAgents are unloaded by
+      <code>automation:context-stilld -- load</code>.
+    </li>
+    <li>
+      MCP endpoint runs inside the resident <code>context-stilld run</code> process, and queue
+      scheduling / SQLite maintenance runs in Rust without a resident queue child process.
+    </li>
+    <li>agent-log-sync schedule is owned by the Rust resident daemon.</li>
+    <li>
+      <code>queue inspect --json</code> reads live SQLite queue counts, active provider leases,
+      active target ids, worker pid, and heartbeat from Rust.
+    </li>
+    <li><code>status --json</code> uses the resident daemon&#39;s effective SQLite path.</li>
+    <li>
+      <code>runtime sidecars --json</code> exposes the remaining TypeScript sidecars, fallback
+      classifications, runtime status, and removal task ids from Rust.
+    </li>
+    <li><code>verify:rust-daemon</code> includes <code>queue inspect</code>.</li>
+    <li><code>verify:rust-daemon</code> includes <code>runtime sidecars</code>.</li>
+    <li>
+      <code>verify:rust-daemon</code> has an opt-in live LaunchAgent ownership guard via
+      <code>CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1</code>.
+    </li>
+    <li>
+      Rust has internal SQLite queue claim and provider lease manager transactions with parity tests
+      for priority ordering, running-job blocking, stale recovery, route-target preference, active
+      target uniqueness, pool capacity, heartbeat, release, and <code>finalizeDistille</code>
+      <code>next_run_at</code> behavior.
+    </li>
+    <li>
+      Rust has internal SQLite queue state transition APIs for pause, worker-unavailable wait,
+      resume, retry, pause-running, and queue event append, with parity tests for lock clearing,
+      retry metadata, queue event row shape, and <code>finalizeDistille</code>
+      <code>next_run_at</code> behavior.
+    </li>
+    <li>
+      Rust daemon domain source is split by lifecycle responsibility so no
+      <code>crates/context-stilld/src</code> Rust file exceeds the maintainability guard of roughly
+      600 lines.
+    </li>
+    <li>
+      <code>CONTEXT_STILL_RESIDENT_REQUIRE_RUST_ONLY=1</code> is compatible with the default
+      resident runtime because MCP endpoint/session state, queue scheduling/maintenance, and
+      agent-log-sync all run in Rust.
+    </li>
+    <li>
+      <code>context-stilld run</code> owns resident queue scheduling and SQLite queue maintenance in
+      Rust; the TypeScript queue business executor is no longer resident-owned and remains manual
+      fallback until R7 completes.
+    </li>
+    <li>
+      MCP endpoint, session state, <code>tools/list</code>, and the exposed MCP tool handlers are
+      Rust-owned; the stale TypeScript one-shot dispatch path has been removed from daemon sidecar
+      registry.
+    </li>
+    <li>
+      MCP session lifecycle is Rust-managed: client <code>DELETE</code> closes sessions immediately,
+      closed sessions are pruned by default, and idle sessions are pruned by the resident endpoint
+      loop after the configured TTL.
+    </li>
+    <li>
+      agent-log-sync parser/write now runs in Rust against SQLite;
+      <code>context-stilld run</code> no longer executes <code>src/cli/sync-agent-logs.ts</code>.
+    </li>
+  </ul>
+  <p>Still not Rust-only:</p>
+  <ul>
+    <li>
+      Queue scheduler and stale-state maintenance are Rust-owned by default in resident runtime; the
+      TypeScript business executor is manual fallback until R7 completes.
+    </li>
+    <li>
+      Queue state transitions and executors are still TypeScript by default; Rust currently has
+      internal deterministic state-transition parity APIs, but the TypeScript executor has not been
+      switched to consume them.
+    </li>
+    <li>Some doctor checks still delegate to TypeScript.</li>
+    <li>
+      Fallback and legacy command paths are not yet classified tightly enough for final removal.
+    </li>
+  </ul>
+  <h2 id="non-goals">Non-Goals</h2>
+  <ul>
+    <li>Do not rewrite the UI.</li>
+    <li>Do not make the full Hono admin API a resident daemon dependency.</li>
+    <li>Do not rewrite every TypeScript CLI.</li>
+    <li>Do not change MCP tool names or schemas as part of the daemon migration.</li>
+    <li>Do not change queue completion semantics without an explicit parity contract update.</li>
+    <li>Do not run queue mutation smokes against the live non-test DB.</li>
+    <li>Do not remove TypeScript fallback before Rust parity gates pass.</li>
+  </ul>
+  <h2 id="migration-rules">Migration Rules</h2>
+  <ol>
+    <li>
+      <p>
+        Rust ownership must remain true after every task. If a change reintroduces a
+        LaunchAgent-owned Bun queue, MCP, or scheduled sync process, stop.
+      </p>
+    </li>
+    <li>
+      <p>
+        Replace behavior behind a stable contract. The public CLI/MCP/queue behavior should not
+        change unless the contract file and tests change in the same task.
+      </p>
+    </li>
+    <li>
+      <p>
+        Prefer read-only Rust visibility before Rust mutation. Every durable writer migration needs
+        a Rust status/inspect surface first.
+      </p>
+    </li>
+    <li>
+      <p>
+        Keep fallback explicit. A fallback may remain only if it is manual or
+        resident-owned-temporary, documented, and tracked to removal.
+      </p>
+    </li>
+    <li>
+      <p>
+        Default switch requires evidence. No Rust implementation becomes default without focused
+        Rust tests, existing TypeScript parity tests, smoke output, and rollback path.
+      </p>
+    </li>
+  </ol>
+  <h2 id="implementation-order">Implementation Order</h2>
+  <h3 id="r0-baseline-guard">R0: Baseline Guard</h3>
+  <p>
+    Goal: Keep the current verified ownership state from regressing while the remaining
+    implementation proceeds.
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Add a focused live ownership check script or extend <code>verify:rust-daemon</code> with a
+      non-mutating optional live check.
+    </li>
+    <li>
+      Assert:
+      <ul>
+        <li><code>com.context-still.daemon</code> is loaded when live checks are enabled.</li>
+        <li>legacy queue LaunchAgents are not loaded.</li>
+        <li>legacy agent-log-sync LaunchAgents are not loaded.</li>
+        <li>
+          <code>context-stilld status --json</code> reports resident / MCP / queue truth from Rust
+          state.
+        </li>
+      </ul>
+    </li>
+    <li>Keep live check opt-in so CI/test environments without LaunchAgent are not broken.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Ownership drift is detected by one command.</li>
+    <li>The command does not mutate live DB.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run verify:rust-daemon
+cargo run -q -p context-stilld -- status --json
+cargo run -q -p context-stilld -- queue inspect --json
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>The check cannot distinguish Rust-owned child processes from independent Bun processes.</li>
+    <li>The check needs live DB mutation.</li>
+  </ul>
+  <h3 id="r1-sidecar-registry-and-fallback-classification">
+    R1: Sidecar Registry And Fallback Classification
+  </h3>
+  <p>Goal: Make every remaining TypeScript use visible, classified, and removable.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Add a Rust-side sidecar registry for temporary TS work.</li>
+    <li>
+      Classify each sidecar:
+      <ul>
+        <li><code>ui-time</code>;</li>
+        <li><code>manual-one-shot</code>;</li>
+        <li><code>resident-owned-temporary</code>;</li>
+        <li><code>forbidden-resident</code>.</li>
+      </ul>
+    </li>
+    <li>Expose sidecar owners in a JSON command, for example:</li>
+  </ul>
+  <pre><code class="language-bash">context-stilld runtime sidecars --json
+</code></pre>
+  <ul>
+    <li>
+      Add current entries:
+      <ul>
+        <li>MCP endpoint Bun child;</li>
+        <li>MCP tool worker / TypeScript handler path;</li>
+        <li>queue worker Bun child;</li>
+        <li>Hono admin API child.</li>
+      </ul>
+    </li>
+    <li>Add removal task id for every <code>resident-owned-temporary</code> entry.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>No daemon-relevant Bun execution path is implicit.</li>
+    <li><code>resident-owned-temporary</code> entries map to later tasks in this plan.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld sidecar
+cargo run -q -p context-stilld -- runtime sidecars --json
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>A resident sidecar is discovered but cannot be classified.</li>
+    <li>
+      A fallback path can start independent of <code>context-stilld</code> and is not explicitly
+      deprecated.
+    </li>
+  </ul>
+  <h3 id="r2-rust-mcp-endpoint-and-session-manager">R2: Rust MCP Endpoint And Session Manager</h3>
+  <p>Goal: Remove the Bun MCP HTTP server from resident runtime.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Implement Rust streamable HTTP MCP endpoint inside the resident
+      <code>context-stilld run</code> process.
+    </li>
+    <li>Move endpoint metadata writing into Rust.</li>
+    <li>
+      Move session state into Rust:
+      <ul>
+        <li>session id;</li>
+        <li>client metadata;</li>
+        <li>created / last activity;</li>
+        <li>in-flight request count;</li>
+        <li>close reason.</li>
+      </ul>
+    </li>
+    <li>
+      Prune closed sessions immediately by default and idle sessions on a resident timer so MCP
+      client disconnects do not accumulate resident memory/state.
+    </li>
+    <li>Preserve existing endpoint URL contract.</li>
+    <li>Keep tool execution behind the Rust dispatch layer.</li>
+    <li>
+      Make <code>mcp endpoint</code>, <code>mcp sessions</code>, and <code>mcp smoke</code> read the
+      Rust endpoint state.
+    </li>
+    <li>
+      Remove <code>bun run src/mcp/http-server.ts</code> and
+      <code>context-stilld mcp serve</code> child ownership from resident startup.
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      No <code>src/mcp/http-server.ts</code> process exists under <code>context-stilld run</code>.
+    </li>
+    <li>
+      No <code>context-stilld mcp serve</code> child process exists under
+      <code>context-stilld run</code>.
+    </li>
+    <li>Port 39172 is owned directly by the <code>context-stilld run</code> pid.</li>
+    <li>MCP smoke reaches the Rust endpoint.</li>
+    <li>Session state is generated by Rust.</li>
+    <li>
+      <code>mcp sessions --json</code> returns zero active sessions after client shutdown or idle
+      prune.
+    </li>
+    <li>Tool owner inventory reports zero MCP TS sidecars.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld mcp
+cargo run -q -p context-stilld -- mcp endpoint --json
+cargo run -q -p context-stilld -- mcp sessions --json
+cargo run -q -p context-stilld -- mcp smoke --json
+bun run verify:mcp
+bun run verify:rust-daemon
+ps aux | rg &#39;src/mcp/http-server|mcp-dispatch-once|context-stilld run&#39;
+lsof -nP -iTCP:39172 -sTCP:LISTEN
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>MCP schemas drift.</li>
+    <li>The client cannot use streamable HTTP and would require restoring stdio as default.</li>
+    <li>Rust endpoint cannot expose enough session state for operator diagnosis.</li>
+  </ul>
+  <h3 id="r3-rust-mcp-tool-registry-and-read-only-tool-dispatch">
+    R3: Rust MCP Tool Registry And Read-Only Tool Dispatch
+  </h3>
+  <p>Goal: Move deterministic read-only MCP tools into Rust and make ownership visible per tool.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Split tool metadata/schema contracts from TypeScript handlers.</li>
+    <li>
+      Implement Rust-native handlers for:
+      <ul>
+        <li>initial instructions; <strong>implemented</strong></li>
+        <li>status / paths / doctor summary;</li>
+        <li>queue inspect;</li>
+        <li>MCP endpoint/session inspection;</li>
+        <li>read-only episode fetch/search if repository parity is available.</li>
+      </ul>
+    </li>
+    <li>
+      Add per-tool owner:
+      <ul>
+        <li><code>rust-native</code>;</li>
+        <li><code>ts-sidecar</code>;</li>
+        <li><code>disabled</code>.</li>
+      </ul>
+    </li>
+    <li>
+      Expose tool owner in <code>mcp smoke --json</code> or a debug command.
+      <strong>implemented for smoke health inventory</strong>
+    </li>
+    <li>Keep non-migrated tools behind explicit TS sidecar dispatch.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Rust serves tool list/schema for migrated tools.</li>
+    <li>
+      Migrated read-only tools do not invoke Bun. <code>initial_instructions</code> now resolves in
+      Rust.
+    </li>
+    <li>
+      Tool owner inventory shows no MCP TS sidecar. <code>mcp smoke --json</code> reports
+      <code>rustNative=12</code>, <code>tsSidecar=0</code>.
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld mcp
+cargo run -q -p context-stilld -- mcp smoke --json
+bun run verify:mcp
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Tool input/output schema changes without contract update.</li>
+    <li>Read-only Rust implementation cannot reproduce TypeScript output shape.</li>
+  </ul>
+  <h3 id="r4-rust-mcp-write-tool-dispatch">R4: Rust MCP Write Tool Dispatch</h3>
+  <p>Goal: Move stable SQLite-writing MCP tools into Rust.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Port write tools only after repository parity exists.</li>
+    <li>
+      Start with small transactional tools:
+      <ul>
+        <li><code>compile_eval</code>;</li>
+        <li>decision feedback;</li>
+        <li>simple feedback/write surfaces with clear schema.</li>
+      </ul>
+    </li>
+    <li>Defer LLM-backed tools until provider abstraction and timeout behavior are stable.</li>
+    <li>Add SQLite transaction tests for each migrated tool.</li>
+    <li>Preserve idempotency and error shape.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Migrated write tools are Rust-native and transactional.</li>
+    <li>Existing SQLite MCP smoke and Rust MCP smoke remain green.</li>
+    <li>TS sidecar owner list no longer includes migrated tools.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld mcp
+bun run verify:mcp
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>A migrated tool changes persistence semantics.</li>
+    <li>Error shape differs in a way clients observe.</li>
+    <li>LLM-backed behavior is needed before provider parity exists.</li>
+  </ul>
+  <h3 id="r5-rust-queue-scheduler-and-provider-lease-manager">
+    R5: Rust Queue Scheduler And Provider Lease Manager
+  </h3>
+  <p>Goal: Move queue claim, route scheduling, and provider leases from TypeScript to Rust.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Port SQLite queue polling to Rust.</li>
+    <li>Port queue pause controls.</li>
+    <li>Port provider pool capacity logic.</li>
+    <li>Port target-specific active lease uniqueness.</li>
+    <li>Port stale lease recovery.</li>
+    <li>Port heartbeat update.</li>
+    <li>
+      Preserve route-target granularity:
+      <ul>
+        <li>same route / same target waits;</li>
+        <li>different route / different free target can run concurrently.</li>
+      </ul>
+    </li>
+    <li>Add Rust claim API consumed by the current TS executor during transition.</li>
+    <li>Make <code>queue inspect --json</code> show Rust scheduler state and lease state.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Rust owns claim transaction and provider lease rows.</li>
+    <li>TypeScript worker no longer decides which provider target can run.</li>
+    <li>TS executor can only execute a job already claimed by Rust.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/sqlite-runtime-support.bun.ts
+bun run rust:queue:smoke
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Claim order diverges without accepted contract change.</li>
+    <li>Active target uniqueness fails.</li>
+    <li>Stale lease recovery differs from current behavior.</li>
+    <li>Queue mutation tests would require the live DB.</li>
+  </ul>
+  <h3 id="r6-rust-queue-state-machine-and-maintenance">
+    R6: Rust Queue State Machine And Maintenance
+  </h3>
+  <p>
+    Goal: Move deterministic queue state transitions and maintenance from TypeScript to Rust before
+    moving business executors.
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Port retry / fail / skip / complete state transitions.</li>
+    <li>Port stale running job recovery.</li>
+    <li>Port heartbeat ownership.</li>
+    <li>Port queue event writing.</li>
+    <li>Keep business execution behind TS sidecar until executor parity is available.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Rust owns durable queue state transitions.</li>
+    <li>TS sidecar cannot directly mutate queue state except through Rust API.</li>
+    <li>Queue events remain compatible.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/sqlite-runtime-support.bun.ts
+bun run rust:queue:smoke
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Event history or retry semantics drift.</li>
+    <li>TS executor still writes queue status directly.</li>
+  </ul>
+  <h3 id="r7-rust-queue-executors">R7: Rust Queue Executors</h3>
+  <p>Goal: Remove the resident TypeScript queue worker from daemon runtime.</p>
+  <p>Migration order:</p>
+  <ol>
+    <li>Deterministic maintenance executor.</li>
+    <li>Episode distiller source reading and EpisodeCard persistence.</li>
+    <li>cover/finalize deterministic persistence pieces.</li>
+    <li>findCandidate orchestration after LLM/provider/tool contracts are Rust-ready.</li>
+    <li>remaining LLM-backed execution paths.</li>
+  </ol>
+  <p>Tasks:</p>
+  <ul>
+    <li>Define per-queue contract fixtures.</li>
+    <li>Add golden input/output fixtures before each executor migration.</li>
+    <li>Add Rust provider abstraction for LLM calls.</li>
+    <li>Add timeout and retry parity.</li>
+    <li>Keep per-queue TS fallback only until its Rust executor passes parity.</li>
+    <li>
+      Make unsupported queue execution fail closed instead of silently using an untracked sidecar.
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      <code>context-stilld run</code> no longer spawns <code>src/cli/queue-supervisor.ts</code>.
+    </li>
+    <li>All resident queue execution is Rust-native.</li>
+    <li>Any remaining TypeScript queue command is manual fallback only.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/sqlite-runtime-support.bun.ts
+bun run verify:sqlite
+bun run verify:rust-daemon
+ps aux | rg &#39;queue-supervisor|context-stilld run&#39;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Queue output differs from fixture without accepted contract change.</li>
+    <li>LLM timeout / fallback behavior cannot be matched.</li>
+    <li>A TS queue worker remains in the resident process tree.</li>
+  </ul>
+  <h3 id="r8-rust-agent-log-sync">R8: Rust Agent Log Sync</h3>
+  <p>Goal: Remove the scheduled agent-log-sync TypeScript sidecar from daemon runtime.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Port agent root discovery to Rust.</li>
+    <li>Port sync state reading/writing.</li>
+    <li>
+      Port parsers incrementally:
+      <ul>
+        <li>Codex;</li>
+        <li>Claude;</li>
+        <li>Antigravity.</li>
+      </ul>
+    </li>
+    <li>Port SQLite writes and dedupe behavior.</li>
+    <li>Preserve fixture output for each parser.</li>
+    <li>Remove resident one-shot Bun sidecar after parser/write parity.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      <code>context-stilld run</code> no longer executes <code>src/cli/sync-agent-logs.ts</code>.
+    </li>
+    <li>Scheduled sync is Rust-native.</li>
+    <li>Existing parser fixture tests have Rust parity coverage.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld agent_log_sync
+bun test --timeout=30000 --max-concurrency=1 ./test/agent-log-sync.test.ts ./test/agent-log-sync-codex-parser.test.ts ./test/agent-log-sync-claude-parser.test.ts ./test/agent-log-sync-antigravity-parser.test.ts
+bun run rust:agent-log-sync:smoke
+bun run verify:rust-daemon
+ps aux | rg &#39;sync-agent-logs|agent-log-sync|context-stilld run&#39;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Parser output diverges.</li>
+    <li>Dedupe behavior diverges.</li>
+    <li>Rust sync cannot safely resume from existing sync state.</li>
+  </ul>
+  <h3 id="r9-rust-doctor-and-backup-guard-completion">
+    R9: Rust Doctor And Backup Guard Completion
+  </h3>
+  <p>
+    Goal: Make daemon safety checks independent of TypeScript for daemon readiness and backup
+    safety.
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Expand Rust SQLite checks.</li>
+    <li>Include active queue/MCP/sync writer details.</li>
+    <li>Include active lease details.</li>
+    <li>Include sidecar registry status.</li>
+    <li>Keep provider/LLM live checks optional and non-destructive.</li>
+    <li>Remove TypeScript dependency from backup preflight required for local daemon operation.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li><code>doctor summary --json</code> can diagnose daemon readiness without Bun.</li>
+    <li>
+      <code>backup preflight --require-idle --json</code> blocks on all Rust-owned active writers.
+    </li>
+    <li>Backup guard does not need Hono or TypeScript runtime.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld doctor backup
+cargo run -q -p context-stilld -- doctor summary --json
+cargo run -q -p context-stilld -- backup preflight --require-idle --json
+bun run verify:rust-daemon
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>A required backup safety check still needs TypeScript.</li>
+    <li>Active writer details are incomplete.</li>
+  </ul>
+  <h3 id="r10-default-switch-and-legacy-removal">R10: Default Switch And Legacy Removal</h3>
+  <p>Goal: Make Rust-only daemon the default and remove resident TypeScript daemon paths.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Remove resident TS sidecars from <code>context-stilld run</code>.</li>
+    <li>Remove or deprecate LaunchAgent install/load paths that start Bun resident workers.</li>
+    <li>Keep manual fallback commands separate from resident runtime.</li>
+    <li>
+      Update docs:
+      <ul>
+        <li>CLI;</li>
+        <li>operations;</li>
+        <li>configuration;</li>
+        <li>MCP registration;</li>
+        <li>rollback.</li>
+      </ul>
+    </li>
+    <li>Add final live ownership check.</li>
+    <li>Add a one-command rollback only for the last accepted fallback boundary.</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>LaunchAgent starts only <code>context-stilld run</code>.</li>
+    <li>Resident process tree has no Bun child for queue, MCP, or scheduled sync.</li>
+    <li>
+      <code>runtime sidecars --json</code> has no <code>resident-owned-temporary</code> entries.
+    </li>
+    <li><code>verify:rust-daemon</code> and focused smoke gates pass.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run verify:rust-daemon
+bun run verify
+cargo run -q -p context-stilld -- status --json
+cargo run -q -p context-stilld -- queue inspect --json
+cargo run -q -p context-stilld -- mcp smoke --json
+ps aux | rg &#39;context-stilld|bun|queue-supervisor|sync-agent-logs|mcp/http-server|mcp-dispatch-once&#39;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Any durable daemon surface still needs resident Bun.</li>
+    <li>Rollback would require manual multi-step surgery.</li>
+    <li>A hidden Bun process can still be started by default config.</li>
+  </ul>
+  <h2 id="tracking-table">Tracking Table</h2>
+  <table>
+    <caption>
+      Table: Tracking Table
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ID</th>
+        <th scope="col">Task</th>
+        <th scope="col">Depends on</th>
+        <th scope="col">Gate</th>
+        <th scope="col">Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>R0</td>
+        <td>Baseline ownership guard</td>
+        <td>current live state</td>
+        <td><code>verify:rust-daemon</code>, optional live check</td>
+        <td>implemented</td>
+      </tr>
+      <tr>
+        <td>R1</td>
+        <td>Sidecar registry and fallback classification</td>
+        <td>R0</td>
+        <td><code>runtime sidecars --json</code></td>
+        <td>implemented</td>
+      </tr>
+      <tr>
+        <td>R2</td>
+        <td>Rust MCP endpoint/session manager</td>
+        <td>R1</td>
+        <td>Rust/SQLite MCP smoke</td>
+        <td>implemented</td>
+      </tr>
+      <tr>
+        <td>R3</td>
+        <td>Rust read-only MCP tool dispatch</td>
+        <td>R2</td>
+        <td>Rust/SQLite MCP smoke + owner inventory</td>
+        <td>in progress</td>
+      </tr>
+      <tr>
+        <td>R4</td>
+        <td>Rust write MCP tool dispatch</td>
+        <td>R3</td>
+        <td>SQLite transaction tests + Rust/SQLite MCP smoke</td>
+        <td>pending</td>
+      </tr>
+      <tr>
+        <td>R5</td>
+        <td>Rust queue scheduler/provider leases</td>
+        <td>R1</td>
+        <td>Rust queue tests + TS SQLite parity</td>
+        <td>in progress</td>
+      </tr>
+      <tr>
+        <td>R6</td>
+        <td>Rust queue state machine/maintenance</td>
+        <td>R5</td>
+        <td>queue state/event parity</td>
+        <td>in progress</td>
+      </tr>
+      <tr>
+        <td>R7</td>
+        <td>Rust queue executors</td>
+        <td>R6</td>
+        <td>per-queue fixtures + smoke</td>
+        <td>pending</td>
+      </tr>
+      <tr>
+        <td>R8</td>
+        <td>Rust agent log sync parser/write</td>
+        <td>R1</td>
+        <td>parser parity + sync smoke</td>
+        <td>implemented</td>
+      </tr>
+      <tr>
+        <td>R9</td>
+        <td>Rust doctor/backup guard completion</td>
+        <td>R1, R5</td>
+        <td>doctor/backup JSON gates</td>
+        <td>pending</td>
+      </tr>
+      <tr>
+        <td>R10</td>
+        <td>Default switch and legacy removal</td>
+        <td>R2-R9</td>
+        <td>full verify + live process tree</td>
+        <td>pending</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="global-verification-matrix">Global Verification Matrix</h2>
+  <table>
+    <caption>
+      Table: Global Verification Matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Area</th>
+        <th scope="col">Command</th>
+        <th scope="col">Required before</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Rust tests</td>
+        <td><code>cargo test -p context-stilld</code></td>
+        <td>every task</td>
+      </tr>
+      <tr>
+        <td>Rust lint</td>
+        <td><code>cargo clippy --workspace --all-targets -- -D warnings</code></td>
+        <td>default switches</td>
+      </tr>
+      <tr>
+        <td>Daemon gate</td>
+        <td><code>bun run verify:rust-daemon</code></td>
+        <td>every default switch</td>
+      </tr>
+      <tr>
+        <td>Queue parity</td>
+        <td>
+          <code
+            >bun test --timeout=30000 --max-concurrency=1 ./test/sqlite-runtime-support.bun.ts</code
+          >
+        </td>
+        <td>R5-R7</td>
+      </tr>
+      <tr>
+        <td>Queue smoke</td>
+        <td><code>bun run rust:queue:smoke</code></td>
+        <td>R5-R7</td>
+      </tr>
+      <tr>
+        <td>MCP smoke</td>
+        <td><code>bun run verify:mcp</code></td>
+        <td>R2-R4</td>
+      </tr>
+      <tr>
+        <td>MCP smoke</td>
+        <td><code>cargo run -q -p context-stilld -- mcp smoke --json</code></td>
+        <td>R2-R4</td>
+      </tr>
+      <tr>
+        <td>Agent sync parity</td>
+        <td>parser fixture tests plus <code>bun run rust:agent-log-sync:smoke</code></td>
+        <td>R8</td>
+      </tr>
+      <tr>
+        <td>Backup guard</td>
+        <td>
+          <code>cargo run -q -p context-stilld -- backup preflight --require-idle --json</code>
+        </td>
+        <td>R9-R10</td>
+      </tr>
+      <tr>
+        <td>Live ownership</td>
+        <td>LaunchAgent/status/process tree check</td>
+        <td>R0, R10</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="global-stop-conditions">Global Stop Conditions</h2>
+  <p>Stop and ask for review if:</p>
+  <ul>
+    <li>
+      Both a legacy LaunchAgent and <code>context-stilld</code> can own the same durable surface.
+    </li>
+    <li><code>status --json</code> and process tree disagree.</li>
+    <li>A live non-test DB mutation is needed for a smoke.</li>
+    <li>MCP schemas or tool names would change.</li>
+    <li>Queue completion/retry semantics would change.</li>
+    <li>A TS fallback must be deleted before Rust parity exists.</li>
+    <li>A new resident Bun path is introduced.</li>
+    <li>A required Rust check cannot distinguish manual fallback from resident runtime.</li>
+  </ul>
+  <h2 id="next-task">Next Task</h2>
+  <p>Continue with R3 and R5.</p>
+  <p>
+    R0 now provides the optional live LaunchAgent ownership guard, R1 creates the map needed to
+    delete resident TypeScript intentionally, and R2 moves the MCP endpoint/session owner into Rust.
+    R3 has Rust-native <code>tools/list</code>, <code>initial_instructions</code>, and smoke-visible
+    owner inventory; the remaining read-only tool handlers still need to move before the one-shot
+    TypeScript tool dispatch can shrink materially. R5 has Rust claim / provider lease manager
+    parity APIs, and R6 has deterministic state-transition plus queue-event parity APIs, but TS
+    executor handoff is still pending.
+  </p>
+</article>

@@ -1,0 +1,303 @@
+<article lang="ja">
+  <h1 id="s11tnext-adoption-findings">s11tnext Adoption Findings</h1>
+  <blockquote>
+    <p>
+      アーカイブ日:
+      2026-08-15。全面採用完了後のfindingsは解消またはmitigatedであり、履歴資料として保持する。
+    </p>
+  </blockquote>
+  <p>
+    ContextStill で <code>s11tnext</code> と <code>s11tnext-cli</code> を production profile
+    で実利用した所見を記録する。初回評価は <code>0.1.0</code>、再評価は
+    <code>0.1.2</code> で実施した。回避策を恒久化せず、package
+    側へ還元できる粒度で再現条件と改善案を残す。
+  </p>
+  <h2 id="contextstill-implementation-result">ContextStill implementation result</h2>
+  <ul>
+    <li>production catalog: 25 contexts / 25 files</li>
+    <li>required locale coverage: <code>ja-JP</code> / <code>en-US</code> ともに 100%</li>
+    <li>application-owned direct <code>role: &quot;system&quot;</code> construction: 0</li>
+    <li>legacy boundary allowlist: 0</li>
+    <li>
+      package versions: <code>s11tnext@0.1.2</code> / <code>s11tnext-cli@0.1.2</code> の exact match
+    </li>
+    <li>artifact: version 2、compiler <code>0.1.2</code></li>
+    <li>
+      provider message: authored role、<code>messageRole</code>、<code>messageHash</code> を使用
+    </li>
+    <li>
+      generated catalog、typecheck、lint、format、unit tests、Web build を含む
+      <code>bun run verify</code>: pass
+    </li>
+  </ul>
+  <h2 id="summary">Summary</h2>
+  <table>
+    <caption>
+      Table: Summary
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ID</th>
+        <th scope="col">優先度</th>
+        <th scope="col">分類</th>
+        <th scope="col">状態</th>
+        <th scope="col">所見</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>S11N-001</td>
+        <td>P1</td>
+        <td>Runtime</td>
+        <td>Resolved in 0.1.2</td>
+        <td><code>trailingNewline</code> で provider framing に合わせられる</td>
+      </tr>
+      <tr>
+        <td>S11N-002</td>
+        <td>P1</td>
+        <td>Authoring</td>
+        <td>Resolved in 0.1.2</td>
+        <td>optional variable と <code>omit_if_empty</code> が追加された</td>
+      </tr>
+      <tr>
+        <td>S11N-003</td>
+        <td>P2</td>
+        <td>Locale</td>
+        <td>Resolved in 0.1.2</td>
+        <td>document / keyspace の source locale override が追加された</td>
+      </tr>
+      <tr>
+        <td>S11N-004</td>
+        <td>P2</td>
+        <td>TypeScript DX</td>
+        <td>Mitigated in 0.1.2</td>
+        <td>composite project の明示的な設定例が追加された</td>
+      </tr>
+      <tr>
+        <td>S11N-005</td>
+        <td>P2</td>
+        <td>Generated output</td>
+        <td>Resolved in 0.1.2</td>
+        <td><code>generation.typescript_indent</code> が追加された</td>
+      </tr>
+      <tr>
+        <td>S11N-006</td>
+        <td>P2</td>
+        <td>Audit API</td>
+        <td>Mitigated in 0.1.2</td>
+        <td>role-aware message hash と composition receipt が追加された</td>
+      </tr>
+      <tr>
+        <td>S11N-007</td>
+        <td>P2</td>
+        <td>Release docs</td>
+        <td>Resolved in 0.1.2</td>
+        <td>npm 公開状態の説明が修正された</td>
+      </tr>
+      <tr>
+        <td>S11N-008</td>
+        <td>P2</td>
+        <td>CI</td>
+        <td>Resolved in 0.1.2</td>
+        <td>0.1.2 release commitのCI / Release workflowが成功した</td>
+      </tr>
+      <tr>
+        <td>S11N-009</td>
+        <td>P3</td>
+        <td>Runtime compatibility</td>
+        <td>Observe</td>
+        <td>Bun 1.3.14 で動作したが package engines / support policy は Node のみ</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="findings">Findings</h2>
+  <h3 id="s11n-001-末尾改行と-exact-submission">S11N-001: 末尾改行と exact submission</h3>
+  <p>
+    <code>invocation.content.text</code> は常に改行で終わる。単独 system message
+    では扱いやすいが、Codex provider のように複合 prompt の suffix として使うと既存 prompt
+    に末尾改行が追加される。host が <code>trimEnd()</code> すると
+    <code>renderedHash</code> が実際の送信断片と一致しなくなるため、ContextStill
+    では改行を保持した。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>render option または context-level policy として final newline を選択可能にする。</li>
+    <li>あるいは <code>content.text</code> と別に composition-safe fragment API を提供する。</li>
+    <li>hash contract の対象が fragment か final provider payload かを guide で明確にする。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>
+      <code>CatalogBinding.trailingNewline = false</code> を全 provider-bound binding に設定した。
+    </li>
+    <li>rendered hash と role-aware message hash の両方を送信メッセージ生成時に検証した。</li>
+    <li>S11N-001 は解消。</li>
+  </ul>
+  <h3 id="s11n-002-optional-variable">S11N-002: optional variable</h3>
+  <p>
+    <code>contextCompiler.agenticRefine</code> の
+    <code>technologies</code>、<code>changeTypes</code>、<code>domains</code> は入力上 optional
+    だが、生成される value map では全変数が必須になる。現在は空文字を渡すため、値がない場合も
+    delimiter block が prompt に残る。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>
+      authoring contract に optional variable と section-level conditional rendering を追加する。
+    </li>
+    <li>空文字を意味のある値と区別し、missing 時に section 全体を省略できるようにする。</li>
+    <li>
+      generated type を <code>name?: T</code> にしつつ、translation 間で条件構造が一致することを
+      compiler が検証する。
+    </li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>
+      <code>contextCompiler.agenticRefine</code> の任意 facet を
+      <code>required = false</code> に変更した。
+    </li>
+    <li>
+      <code>omit_if_empty = true</code> により空の delimiter block が描画されないことをテストした。
+    </li>
+    <li>S11N-002 は解消。</li>
+  </ul>
+  <h3 id="s11n-003-catalog-global-source-locale">S11N-003: catalog-global source locale</h3>
+  <p>
+    ContextStill の既存 prompt は route ごとに日本語と英語が混在する。source locale が project
+    全体で <code>ja-JP</code> のため、英語を正本として維持したい context でも
+    <code>ja-JP</code> source と同一の <code>en-US</code> translation を重複記述した。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>document 単位の <code>source_locale</code> override を許可する。</li>
+    <li>keyspace 単位の source locale default を検討する。</li>
+    <li>同文 translation の重複を compiler が診断または参照可能にする。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>
+      英語正本の keyspace と document に <code>source_locale = &quot;en-US&quot;</code> を設定した。
+    </li>
+    <li>route の既存言語を変えず、manifest の source locale を正しい値にできた。</li>
+    <li>S11N-003 は解消。</li>
+  </ul>
+  <h3 id="s11n-004-composite-typescript-project">S11N-004: composite TypeScript project</h3>
+  <p>
+    生成された <code>.s11tnext/catalog.generated.ts</code> を source module から import
+    すると、<code>composite: true</code> の TypeScript 6 project は
+    <code>TS6307</code> を出した。<code>tsconfig.json</code> の
+    <code>include</code> へ生成物を追加すると解消した。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>getting started の TypeScript integration に composite project の設定例を追加する。</li>
+    <li>
+      <code>out_dir</code> を <code>src</code> 配下へ置く選択肢と repository root に置く選択肢の
+      trade-off を記載する。
+    </li>
+    <li>CLI が tsconfig を検出した場合に actionable hint を出す。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>composite project 向けの <code>include</code> 設定例が公式 guide に追加された。</li>
+    <li>host側の明示設定自体は必要なため、状態は Mitigated とする。</li>
+  </ul>
+  <h3 id="s11n-005-generated-formatting">S11N-005: generated formatting</h3>
+  <p>
+    生成 TS は tab indent で、ContextStill は Biome の space indent を使う。generated file を
+    formatter 対象にすると毎回差分が生じるため、<code>.s11tnext/**</code> を formatter/linter
+    対象外にした。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>generated output を formatter-neutral な最小形式にする。</li>
+    <li>
+      indent style option、または host formatter を通しても <code>build --check</code> が壊れない
+      contract を提供する。
+    </li>
+    <li>guide で generated directory の formatter ignore を案内する。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>
+      <code>generation.typescript_indent = 2</code>
+      を設定し、生成TSがContextStillのformatter規約と一致した。
+    </li>
+    <li>S11N-005 は解消。</li>
+  </ul>
+  <h3 id="s11n-006-request-trace-と送信証明">S11N-006: request trace と送信証明</h3>
+  <p>
+    <code>bindRequest().finalize()</code> の trace が包含証明ではない点は API documentation
+    に明記されており正しい。ただし production audit では provider 成功境界で manifest
+    を別途保存する必要がある。ContextStill は request metadata に manifest を載せ、provider routing
+    成功後に <code>SYSTEM_CONTEXT_SUBMITTED</code> を記録する実装を追加した。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>
+      provider adapter 向けに exact submitted text/hash を検証する helper を提供する。 -複数
+      fragment から final payload digest を作る composition receipt contract を検討する。
+    </li>
+    <li><code>bindText()</code> が manifest を失うことを型/API名でさらに目立たせる。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>
+      manifest に <code>messageRole</code> と
+      <code>messageHash</code> が追加され、host側でroleと本文の組を検証可能になった。
+    </li>
+    <li><code>bindRequest().finalize()</code> にbyte-range composition receiptが追加された。</li>
+    <li>外部providerへのdelivery証明は引き続きhost責務であるため、状態は Mitigated とする。</li>
+  </ul>
+  <h3 id="s11n-007-公開状態と-readme">S11N-007: 公開状態と README</h3>
+  <p>
+    npm から 0.1.0 を導入できる一方、両 package の同梱 README は「npm registry
+    では未公開」と記載している。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>publish 前 check で README の prerelease marker を検出する。</li>
+    <li>registry install command を現在形へ更新する。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>npm公開済みであることとregistry確認手順が公式documentへ反映された。</li>
+    <li>S11N-007 は解消。</li>
+  </ul>
+  <h3 id="s11n-008-coverage-ci">S11N-008: coverage CI</h3>
+  <p>
+    package 調査時点では通常 test、build、package matrix は成功したが coverage job
+    が失敗していた。全面採用では package release の green CI が更新判断に直結する。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>critical coverage failure を release blocking にするか、期待値を現状へ校正する。</li>
+    <li>badge または release checklist で package と CLI の検証状態を見えるようにする。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>
+      release commit <code>c9e9341</code> のCI workflowとRelease
+      workflowが成功していることを確認した。
+    </li>
+    <li>S11N-008 は解消。</li>
+  </ul>
+  <h3 id="s11n-009-bun-support">S11N-009: Bun support</h3>
+  <p>
+    ContextStill の Bun 1.3.14 では lint、build、check、runtime render が動作した。ただし package の
+    engines と README は Node 20.19/22/24 のみを support 対象としている。
+  </p>
+  <p>改善案:</p>
+  <ul>
+    <li>Bun を正式 support しない場合も「動作するが未保証」と明記する。</li>
+    <li>正式 support する場合は CI matrix と compatibility policy に Bun を追加する。</li>
+  </ul>
+  <p>0.1.2 再検証:</p>
+  <ul>
+    <li>Bunはdogfooding環境であり正式support対象外であることが明記された。</li>
+    <li>
+      ContextStillのBun 1.3.14では、lint、build、artifact v2 load、render、全verifyが成功した。
+    </li>
+  </ul>
+</article>

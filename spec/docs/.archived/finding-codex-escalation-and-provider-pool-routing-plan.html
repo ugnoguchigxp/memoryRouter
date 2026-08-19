@@ -1,0 +1,759 @@
+<article lang="ja">
+  <h1 id="finding-codex-escalation--provider-pool-routing-implementation-plan">
+    Finding Codex Escalation / Provider Pool Routing Implementation Plan
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>b860b8d</code>。</p>
+  </blockquote>
+  <h2 id="purpose">Purpose</h2>
+  <p>
+    <code>findingCandidate</code> の knowledge 発見率を戻すために、次の2案を同じ実装計画として扱う。
+  </p>
+  <ol>
+    <li>
+      Codex / 5.4 mini class の高性能モデルを <code>findingCandidate</code> の second-pass /
+      escalation に使う。
+    </li>
+    <li>
+      Local LLM の provider target を Pool として定義し、<code>taskRouting</code> が model ではなく
+      Pool を向ける運用レイヤーを作る。
+    </li>
+  </ol>
+  <p>
+    この2案は競合しない。Pool routing は通常経路の実行資源を安定させる基盤であり、Codex escalation
+    は通常経路が取り逃がした高価値ログだけを再判定する補助経路である。
+  </p>
+  <h2 id="current-findings">Current Findings</h2>
+  <p>直近調査で見えた事実:</p>
+  <ul>
+    <li>
+      <code>findingCandidate</code> は入口であり、ここで <code>no_candidate</code> になると
+      <code>coveringEvidence</code> 以降では復活できない。
+    </li>
+    <li>
+      <code>coveringEvidence</code> は候補が来れば
+      <code>knowledge_ready</code> を一定量出しているため、現状の主な歩留まり低下は finding
+      側に寄っている。
+    </li>
+    <li>
+      Ornith 1.0 9B は <code>episodeDistiller</code> では有用だが、<code>findingCandidate</code> /
+      <code>coveringEvidence</code> の主担当としては recall / abstraction が不安定になりやすい。
+    </li>
+    <li>
+      Qwen 3.6 27B を2機使える場合でも、同一 pool を複数 route が奪い合うと片方の route
+      だけが進むシナリオがある。
+    </li>
+    <li>
+      provider 側の busy 503 は安全弁として有用だが、queue scheduling
+      の主制御にすると「待てばよい」と「壊れている」が混ざる。
+    </li>
+    <li>
+      Codex を finding に使う場合、Codex の作業ログが再び Vibe memory
+      に戻る自己汚染を防ぐ必要がある。
+    </li>
+  </ul>
+  <h2 id="desired-end-state">Desired End State</h2>
+  <ul>
+    <li>Settings UI で Provider Target と Provider Pool を定義できる。</li>
+    <li><code>taskRouting</code> は <code>providerPoolId</code> を第一優先の向き先として扱う。</li>
+    <li>
+      <code>findingCandidate</code> / <code>coveringEvidence</code> /
+      <code>finalizeDistille</code> / <code>episodeDistiller</code> は、用途別 pool
+      に明示的に割り当てられる。
+    </li>
+    <li>同じ target が同時に複数 job へ lease されない。</li>
+    <li>pool full の場合は provider に投げず、queue 側で wait する。</li>
+    <li>
+      provider busy 503 は target cooldown / retry-later として扱い、route failure と区別する。
+    </li>
+    <li>
+      Codex escalation は一次経路ではなく、条件を満たした <code>no_candidate</code> / low-confidence
+      finding だけを second-pass する。
+    </li>
+    <li>Codex escalation の実行ログは Vibe memory / findingCandidate の再入力にならない。</li>
+    <li>
+      <code>queue inspect --json</code> と DB row から、どの queue がどの pool / target
+      を待っているか説明できる。
+    </li>
+  </ul>
+  <h2 id="non-goals">Non-Goals</h2>
+  <ul>
+    <li>Codex を <code>findingCandidate</code> の主経路にいきなり置かない。</li>
+    <li>Provider 側の 503 だけで route fairness を実現しようとしない。</li>
+    <li>
+      <code>coveringEvidence</code> / <code>finalizeDistille</code> の business logic
+      をこの計画で再設計しない。
+    </li>
+    <li><code>episodeDistiller</code> を Qwen 優先へ戻すことは目的にしない。</li>
+    <li>
+      既存の <code>providerPools</code> /
+      <code>providerPoolId</code> を破棄して新規概念へ置き換えない。
+    </li>
+    <li>live DB の広範な queue reset をしない。</li>
+    <li>
+      Codex 実行ログを Vibe memory として後から filter
+      すればよい、という前提にしない。生成時点で自己汚染を避ける。
+    </li>
+  </ul>
+  <h2 id="proposed-runtime-topology">Proposed Runtime Topology</h2>
+  <p>初期推奨構成:</p>
+  <table>
+    <caption>
+      Table: Proposed Runtime Topology
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Task</th>
+        <th scope="col">Pool</th>
+        <th scope="col">Target</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>findingCandidate</code></td>
+        <td><code>finding-qwen-pool</code></td>
+        <td>Qwen 3.6 27B #1</td>
+      </tr>
+      <tr>
+        <td><code>coveringEvidence</code></td>
+        <td><code>covering-qwen-or-gemma-pool</code></td>
+        <td>Qwen 3.6 27B #2 or Gemma4 12B</td>
+      </tr>
+      <tr>
+        <td><code>finalizeDistille</code></td>
+        <td><code>covering-qwen-or-gemma-pool</code></td>
+        <td>Qwen 3.6 27B #2 or Gemma4 12B</td>
+      </tr>
+      <tr>
+        <td><code>episodeDistiller</code></td>
+        <td><code>episode-ornith-pool</code></td>
+        <td>Ornith 1.0 9B</td>
+      </tr>
+      <tr>
+        <td>Codex escalation</td>
+        <td><code>codex-escalation</code> route</td>
+        <td>Codex / 5.4 mini class</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Pool separation rule:</p>
+  <ul>
+    <li>
+      <code>findingCandidate</code> と <code>coveringEvidence</code> は同じ Qwen pool を共有しない。
+    </li>
+    <li>
+      <code>coveringEvidence</code> と <code>finalizeDistille</code> は同じ pool を共有してよい。
+    </li>
+    <li><code>episodeDistiller</code> は Ornith pool へ逃がし、Qwen pool を消費しない。</li>
+    <li>
+      同じ physical target を複数 pool に入れる場合は global lease
+      で二重使用を禁止する。初期実装では、1 target は1 pool所属を推奨する。
+    </li>
+  </ul>
+  <h2 id="architecture">Architecture</h2>
+  <h3 id="provider-target">Provider Target</h3>
+  <p>Provider Target は実際の endpoint/model を表す。</p>
+  <pre><code class="language-ts">type ProviderTarget = {
+  id: string;
+  label: string;
+  provider: &quot;local-llm&quot; | &quot;azure-openai&quot; | &quot;openai&quot; | &quot;codex&quot; | &quot;bedrock&quot;;
+  enabled: boolean;
+  endpoint?: string;
+  apiPath?: string;
+  model: string;
+  secretRef?: string;
+  healthStatus?: &quot;unknown&quot; | &quot;healthy&quot; | &quot;busy&quot; | &quot;unhealthy&quot;;
+};
+</code></pre>
+  <p>
+    既存の <code>providers[&quot;local-llm&quot;].models[]</code> は Local LLM target
+    として扱える。最初の slice では物理 schema を大きく変えず、UI と routing で Target
+    として見せる。
+  </p>
+  <h3 id="provider-pool">Provider Pool</h3>
+  <p>Provider Pool は実行資源の割当単位である。</p>
+  <pre><code class="language-ts">type ProviderPool = {
+  id: string;
+  label: string;
+  enabled: boolean;
+  targets: ProviderPoolTarget[];
+  maxConcurrent: number;
+  staleLeaseSeconds: number;
+  lowPriorityAgingSeconds: number;
+  fairnessPolicy: &quot;priority_order&quot; | &quot;round_robin_by_queue&quot;;
+  busyPolicy: &quot;wait&quot; | &quot;fallback_pool&quot;;
+  fallbackPoolIds?: string[];
+};
+</code></pre>
+  <p>
+    初期実装は <code>priority_order</code> と <code>wait</code> のみでよい。<code
+      >round_robin_by_queue</code
+    >
+    は phase 2 以降に回す。
+  </p>
+  <h3 id="task-routing">Task Routing</h3>
+  <p>Task routing は provider/model 直指定を残しつつ、pool first にする。</p>
+  <pre><code class="language-ts">type RuntimeSettingsRoute = {
+  provider: RuntimeProviderSetting;
+  model: string;
+  providerPoolId?: string;
+  fallbackPoolIds?: string[];
+  fallback: RuntimeProviderSetting[];
+  waitPolicy?: &quot;wait_for_pool&quot; | &quot;fallback_on_pool_full&quot;;
+};
+</code></pre>
+  <p>優先順位:</p>
+  <ol>
+    <li>route の <code>providerPoolId</code></li>
+    <li>route の <code>fallbackPoolIds</code></li>
+    <li>route の provider/model direct target</li>
+    <li>provider default</li>
+  </ol>
+  <p>
+    Pool が指定されている場合、scheduler は pool の free target だけを見る。provider/model direct
+    matching は fallback としてのみ使う。
+  </p>
+  <h3 id="provider-busy-contract">Provider Busy Contract</h3>
+  <p>Provider endpoint 側の busy 503 は、主制御ではなく安全弁とする。</p>
+  <table>
+    <caption>
+      Table: Provider Busy Contract
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Condition</th>
+        <th scope="col">Runtime Handling</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>pool full</td>
+        <td>provider に投げない。queue は wait</td>
+      </tr>
+      <tr>
+        <td>target lease active</td>
+        <td>target を候補から除外</td>
+      </tr>
+      <tr>
+        <td>provider busy 503</td>
+        <td>target cooldown を記録し、job は retry-later</td>
+      </tr>
+      <tr>
+        <td>unsupported model 404</td>
+        <td>route/target 設定エラーとして failed または operator action</td>
+      </tr>
+      <tr>
+        <td>timeout / transport closed</td>
+        <td>target health degradation と retry/backoff</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="codex-escalation-design">Codex Escalation Design</h2>
+  <h3 id="role">Role</h3>
+  <p>Codex は primary finding ではなく second-pass reviewer とする。</p>
+  <p>Flow:</p>
+  <pre><code class="language-text">Vibe memory
+  -&gt; controlled eligibility filter
+  -&gt; primary findingCandidate using local LLM pool
+  -&gt; if no_candidate or low-confidence and high-signal:
+       Codex escalation
+  -&gt; accepted candidates
+  -&gt; coveringEvidence
+</code></pre>
+  <h3 id="escalation-trigger">Escalation Trigger</h3>
+  <p>初期条件:</p>
+  <ul>
+    <li>source kind is <code>vibe_memory</code></li>
+    <li>
+      primary result is <code>no_candidate</code> OR parser diagnostics shows candidate-like output
+      dropped
+    </li>
+    <li>eligibility score &gt;= threshold</li>
+    <li>
+      source content has at least one high-value signal:
+      <ul>
+        <li>verification / failure / root cause terms</li>
+        <li>runtime / queue / DB / provider terms</li>
+        <li>preference / avoid / must / should terms</li>
+        <li>code review / regression / test gate terms</li>
+      </ul>
+    </li>
+    <li>no existing finding job or candidate with same <code>dedupeKey</code></li>
+    <li>no previous Codex escalation for same <code>vibeMemoryId + distillationVersion</code></li>
+  </ul>
+  <p>Do not escalate:</p>
+  <ul>
+    <li>boilerplate-heavy content</li>
+    <li>progress-only content</li>
+    <li>existing <code>duplicate</code> / <code>near_duplicate</code></li>
+    <li>logs generated by Codex escalation itself</li>
+    <li>already terminal <code>knowledge_ready</code> source</li>
+  </ul>
+  <h3 id="storage">Storage</h3>
+  <p>
+    Add minimal persistent trace, either as a new table or as queue metadata. Prefer a new table
+    because escalation should be auditable without overloading queue rows.
+  </p>
+  <pre><code class="language-sql">create table if not exists finding_candidate_escalations (
+  id text primary key,
+  source_kind text not null,
+  source_key text not null,
+  source_dedupe_key text,
+  primary_job_id text,
+  escalation_provider text not null,
+  escalation_model text not null,
+  status text not null,
+  reason text not null,
+  output_summary text,
+  candidate_count integer not null default 0,
+  created_at text not null default current_timestamp,
+  updated_at text not null default current_timestamp
+);
+</code></pre>
+  <p>Unique constraint:</p>
+  <pre><code class="language-sql">create unique index if not exists finding_candidate_escalations_source_idx
+  on finding_candidate_escalations(source_kind, source_key, escalation_provider, escalation_model);
+</code></pre>
+  <h3 id="self-ingestion-guard">Self-Ingestion Guard</h3>
+  <p>Codex execution must not feed its own operational logs back into Vibe memory.</p>
+  <p>Preferred approach:</p>
+  <ul>
+    <li>
+      Use a direct API / SDK adapter for Codex escalation rather than launching an interactive Codex
+      session.
+    </li>
+    <li>
+      Store request/response summary in <code>finding_candidate_escalations</code>, not in
+      <code>.codex/sessions</code>.
+    </li>
+  </ul>
+  <p>If a Codex CLI/session is unavoidable:</p>
+  <ul>
+    <li>
+      Add a clear session marker:
+      <ul>
+        <li><code>metadata.generatedBy = &quot;contextStill.codexFindingEscalation&quot;</code></li>
+        <li><code>metadata.excludedFromVibeMemory = true</code></li>
+      </ul>
+    </li>
+    <li>Update agent-log-sync parsing to skip sessions with that marker.</li>
+    <li>
+      Add a second guard in <code>vibe-finding-enqueue</code> to reject source metadata with
+      <code>generatedBy=contextStill.codexFindingEscalation</code>.
+    </li>
+    <li>
+      Add a third guard in <code>findingCandidate</code> source loading to reject those memories if
+      they already exist.
+    </li>
+  </ul>
+  <p>
+    This is a hard gate. Codex escalation is not enabled until self-ingestion guards are verified.
+  </p>
+  <h2 id="implementation-order">Implementation Order</h2>
+  <h3 id="phase-0-baseline-and-safety-gates">Phase 0: Baseline And Safety Gates</h3>
+  <p>Goal: Current production drop and routing behavior can be compared after changes.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Capture daily counts for:
+      <ul>
+        <li><code>vibe_memories</code></li>
+        <li><code>finding_candidate_queue</code> by <code>last_outcome_kind</code></li>
+        <li><code>found_candidates</code></li>
+        <li><code>covering_evidence_queue</code> by <code>last_outcome_kind</code></li>
+        <li><code>finalize_distille_queue</code></li>
+        <li><code>knowledge_items</code></li>
+      </ul>
+    </li>
+    <li>Capture provider target / lease distribution from <code>llm_provider_leases</code>.</li>
+    <li>Capture current <code>settings.v1</code> providerPools and taskRouting.</li>
+    <li>Record current <code>queue inspect --json</code>.</li>
+    <li>Add a diagnostics note to the implementation PR or change summary.</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">sqlite3 data/context-still-core.sqlite \
+  &quot;select status, last_outcome_kind, count(*) from finding_candidate_queue group by status,last_outcome_kind;&quot;
+
+sqlite3 data/context-still-core.sqlite \
+  &quot;select target_id, queue_name, status, release_reason, count(*) from llm_provider_leases group by target_id, queue_name, status, release_reason;&quot;
+
+target/debug/context-stilld queue inspect --json
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Baseline includes route-to-pool mapping and actual target lease distribution.</li>
+    <li>No mutation is performed in this phase.</li>
+  </ul>
+  <h3 id="phase-1-pool-first-routing-core">Phase 1: Pool-First Routing Core</h3>
+  <p>
+    Goal: Runtime routing can reserve Qwen #1 for finding and Qwen #2/Gemma for covering/finalize.
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Normalize <code>RuntimeSettingsRoute.providerPoolId</code> as the primary route key.</li>
+    <li>
+      Ensure <code>providerPoolIdsForQueue</code> or equivalent scheduler helper resolves queues by
+      route pool, not by provider name alone.
+    </li>
+    <li>Add validation that all pool targets exist and are enabled.</li>
+    <li>
+      Add validation that one target does not appear in multiple enabled pools unless global lease
+      enforcement is active.
+    </li>
+    <li>
+      Add route fixtures:
+      <ul>
+        <li>finding -&gt; <code>finding-qwen-pool</code></li>
+        <li>covering/finalize -&gt; <code>covering-qwen-or-gemma-pool</code></li>
+        <li>episode -&gt; <code>episode-ornith-pool</code></li>
+      </ul>
+    </li>
+    <li>
+      Make pool full return a wait/null assignment rather than falling through to unrelated targets.
+    </li>
+  </ul>
+  <p>Tests:</p>
+  <pre><code class="language-bash">bunx vitest run test/queue-provider-pool-scheduler.test.ts test/queue-worker.test.ts
+bunx vitest run test/settings-runtime-cache.test.ts
+cargo test -p context-stilld queue_lifecycle
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>finding queue cannot lease covering-only target.</li>
+    <li>covering/finalize cannot lease finding-only target.</li>
+    <li>episode does not consume Qwen pool when Ornith pool is configured.</li>
+    <li>pool full does not call provider.</li>
+  </ul>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Existing queue workers can no longer claim jobs.</li>
+    <li>Direct provider/model routing breaks without a migration path.</li>
+    <li>Rust executor and TypeScript scheduler disagree on pool membership.</li>
+  </ul>
+  <h3 id="phase-2-settings-ui-for-targets-and-pools">Phase 2: Settings UI For Targets And Pools</h3>
+  <p>Goal: Operators can define targets and pools without editing JSON.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Add a Provider Targets section or make existing Local LLM endpoint rows explicitly
+      target-like.
+    </li>
+    <li>
+      Add a Provider Pools section:
+      <ul>
+        <li>pool name</li>
+        <li>enabled</li>
+        <li>target membership</li>
+        <li>max concurrent</li>
+        <li>stale lease seconds</li>
+        <li>low-priority aging seconds</li>
+        <li>busy policy</li>
+      </ul>
+    </li>
+    <li>Add per-route pool picker to Task Routing UI.</li>
+    <li>
+      Show effective route summary:
+      <ul>
+        <li>queue/task</li>
+        <li>primary pool</li>
+        <li>fallback pools</li>
+        <li>effective target list</li>
+      </ul>
+    </li>
+    <li>
+      Add validation messages:
+      <ul>
+        <li>target appears in multiple pools</li>
+        <li>pool has no enabled target</li>
+        <li>route points at disabled pool</li>
+        <li>pool target model does not match endpoint <code>/v1/models</code></li>
+      </ul>
+    </li>
+  </ul>
+  <p>Tests:</p>
+  <pre><code class="language-bash">bunx vitest run test/components/admin/settings-page.test.tsx
+bunx vitest run test/admin/repositories.sources-settings.test.ts
+bun run typecheck
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>UI can save and reload pool definitions.</li>
+    <li>Task route can point at a pool.</li>
+    <li>
+      Existing settings without explicit pools are migrated to <code>local-llm-default</code>.
+    </li>
+  </ul>
+  <h3 id="phase-3-codex-escalation-trace-only">Phase 3: Codex Escalation Trace-Only</h3>
+  <p>
+    Goal: Measure whether Codex would recover useful candidates without mutating downstream queues.
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Add escalation eligibility planner for <code>findingCandidate</code>.</li>
+    <li>Add <code>finding_candidate_escalations</code> persistence.</li>
+    <li>
+      Add Codex adapter behind a feature flag:
+      <ul>
+        <li><code>FINDING_CODEX_ESCALATION=trace</code></li>
+        <li>no downstream <code>found_candidates</code> insertion</li>
+        <li>no covering enqueue</li>
+      </ul>
+    </li>
+    <li>Add self-ingestion guard before any live Codex call.</li>
+    <li>
+      Add trace output:
+      <ul>
+        <li>source key</li>
+        <li>primary outcome</li>
+        <li>escalation reason</li>
+        <li>Codex candidate count</li>
+        <li>short output summary</li>
+        <li>rejected reason if any</li>
+      </ul>
+    </li>
+  </ul>
+  <p>Tests:</p>
+  <pre><code class="language-bash">bunx vitest run test/finding-codex-escalation.test.ts
+bunx vitest run test/agent-log-sync.test.ts
+bunx vitest run test/vibe-finding-enqueue.service.test.ts
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>Codex is called only when trigger conditions match.</li>
+    <li>Trace-only mode never inserts <code>found_candidates</code>.</li>
+    <li>Codex-generated sessions/logs are excluded from Vibe memory ingestion.</li>
+    <li>Existing <code>findingCandidate</code> path behaves unchanged when flag is off.</li>
+  </ul>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>Any Codex escalation log appears as new Vibe memory.</li>
+    <li>Escalation runs for low-signal or boilerplate-only memories.</li>
+    <li>Codex output cannot be audited without storing full prompts.</li>
+  </ul>
+  <h3 id="phase-4-codex-escalation-write-mode">Phase 4: Codex Escalation Write Mode</h3>
+  <p>Goal: Promote proven Codex second-pass candidates into normal downstream flow.</p>
+  <p>Entry criteria:</p>
+  <ul>
+    <li>Trace-only Utility Hit Rate is acceptable.</li>
+    <li>Off-topic increase is controlled.</li>
+    <li>Self-ingestion guard is verified.</li>
+    <li>Operator explicitly enables write mode.</li>
+  </ul>
+  <p>Tasks:</p>
+  <ul>
+    <li>Add <code>FINDING_CODEX_ESCALATION=write</code>.</li>
+    <li>Insert accepted Codex candidates into <code>found_candidates</code>.</li>
+    <li>Enqueue <code>covering_evidence_queue</code> only after candidate persistence succeeds.</li>
+    <li>
+      Mark escalation status:
+      <ul>
+        <li><code>accepted</code></li>
+        <li><code>no_candidate</code></li>
+        <li><code>parser_rejected</code></li>
+        <li><code>provider_failed</code></li>
+        <li><code>self_ingestion_blocked</code></li>
+      </ul>
+    </li>
+    <li>Add queue events for escalated candidates.</li>
+  </ul>
+  <p>Tests:</p>
+  <pre><code class="language-bash">bunx vitest run test/queue-worker.test.ts test/finding-codex-escalation.test.ts
+bun run verify
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>One source produces at most one active escalation per provider/model/version.</li>
+    <li>Accepted candidates enter covering through the same path as primary finding.</li>
+    <li>Failed Codex calls do not mark primary job failed retroactively.</li>
+    <li>Downstream mutation is confirmed before completed state.</li>
+  </ul>
+  <h3 id="phase-5-fairness-and-pool-health">Phase 5: Fairness And Pool Health</h3>
+  <p>Goal: Prevent one route from starving another route even inside intended shared pools.</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Add pool health view:
+      <ul>
+        <li>active leases</li>
+        <li>target cooldowns</li>
+        <li>pending by queue</li>
+        <li>oldest pending per queue</li>
+        <li>recent provider busy / unsupported / timeout counts</li>
+      </ul>
+    </li>
+    <li>
+      Add optional fairness policy:
+      <ul>
+        <li><code>priority_order</code> for strict priority</li>
+        <li><code>round_robin_by_queue</code> for shared pools</li>
+      </ul>
+    </li>
+    <li>Add target cooldown on provider busy 503.</li>
+    <li>Add operator warning when a route has pending jobs but no eligible targets.</li>
+  </ul>
+  <p>Tests:</p>
+  <pre><code class="language-bash">bunx vitest run test/queue-provider-pool-scheduler.test.ts
+target/debug/context-stilld queue inspect --json
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      <code>queue inspect --json</code> explains blocked reason as pool full, no eligible target,
+      paused queue, or provider cooldown.
+    </li>
+    <li>Provider busy does not create noisy failed rows.</li>
+    <li>Unsupported model is surfaced as settings error.</li>
+  </ul>
+  <h2 id="rollout-plan">Rollout Plan</h2>
+  <h3 id="slice-a-pool-partition-without-codex">Slice A: Pool Partition Without Codex</h3>
+  <p>Implement phases 0-2 only.</p>
+  <p>Recommended live routing:</p>
+  <pre><code class="language-text">findingCandidate -&gt; finding-qwen-pool
+coveringEvidence -&gt; covering-qwen-or-gemma-pool
+finalizeDistille -&gt; covering-qwen-or-gemma-pool
+episodeDistiller -&gt; episode-ornith-pool
+</code></pre>
+  <p>Success metrics:</p>
+  <ul>
+    <li><code>findingCandidate</code> no longer consumes covering/finalize target.</li>
+    <li><code>coveringEvidence</code> no longer consumes finding target.</li>
+    <li><code>no_candidate</code> rate is measured against a stable Qwen finding route.</li>
+    <li><code>knowledge_items/day</code> recovers without Codex.</li>
+  </ul>
+  <h3 id="slice-b-codex-trace-only">Slice B: Codex Trace-Only</h3>
+  <p>Implement phase 3.</p>
+  <p>Run for several days with:</p>
+  <pre><code class="language-text">FINDING_CODEX_ESCALATION=trace
+</code></pre>
+  <p>Success metrics:</p>
+  <ul>
+    <li>Codex trace candidates have high estimated usefulness.</li>
+    <li>No Codex escalation logs enter Vibe memory.</li>
+    <li>Escalation volume is small enough to control cost.</li>
+  </ul>
+  <h3 id="slice-c-codex-write-mode">Slice C: Codex Write Mode</h3>
+  <p>Implement phase 4 only if Slice B shows value.</p>
+  <p>Write mode should start with a small cap:</p>
+  <pre><code class="language-text">maxEscalationsPerDay = 20
+maxEscalationsPerSource = 1
+</code></pre>
+  <p>Success metrics:</p>
+  <ul>
+    <li>Additional <code>found_candidates</code> from Codex pass covering at a useful rate.</li>
+    <li><code>off_topic</code> / <code>insufficient</code> does not spike.</li>
+    <li>No feedback loop appears in Vibe memory.</li>
+  </ul>
+  <h2 id="metrics">Metrics</h2>
+  <p>Track before/after:</p>
+  <table>
+    <caption>
+      Table: Metrics
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Metric</th>
+        <th scope="col">Definition</th>
+        <th scope="col">Target</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Finding Hit Rate</td>
+        <td><code>candidates_found / (candidates_found + no_candidate)</code></td>
+        <td>Increase</td>
+      </tr>
+      <tr>
+        <td>Knowledge Production</td>
+        <td><code>knowledge_items</code> per day</td>
+        <td>Recover toward previous baseline</td>
+      </tr>
+      <tr>
+        <td>Covering Ready Rate</td>
+        <td><code>knowledge_ready / covering completed</code></td>
+        <td>No regression</td>
+      </tr>
+      <tr>
+        <td>Escalation Hit Rate</td>
+        <td>Codex accepted candidates that pass covering</td>
+        <td>&gt;= 25% initially</td>
+      </tr>
+      <tr>
+        <td>Self-Ingestion Count</td>
+        <td>Codex escalation logs entering <code>vibe_memories</code></td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>Pool Starvation</td>
+        <td>Pending route with no eligible target while other route consumes target</td>
+        <td>0 for dedicated pools</td>
+      </tr>
+      <tr>
+        <td>Provider Busy Noise</td>
+        <td>provider busy rows marked as failed</td>
+        <td>Decrease</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="verification-commands">Verification Commands</h2>
+  <pre><code class="language-bash">bun run typecheck
+bun run lint
+bun run format:check
+bun run docs:check-links
+bunx vitest run test/queue-provider-pool-scheduler.test.ts test/queue-worker.test.ts
+bunx vitest run test/settings-runtime-cache.test.ts test/components/admin/settings-page.test.tsx
+cargo test -p context-stilld queue_lifecycle
+bun run verify
+</code></pre>
+  <p>Live checks:</p>
+  <pre><code class="language-bash">target/debug/context-stilld queue inspect --json
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select target_id, queue_name, status, release_reason, count(*) from llm_provider_leases group by target_id, queue_name, status, release_reason order by count(*) desc;&quot;
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select status, last_outcome_kind, count(*) from finding_candidate_queue group by status, last_outcome_kind order by count(*) desc;&quot;
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select json_extract(metadata,&#39;$.generatedBy&#39;) as generated_by, count(*) from vibe_memories group by generated_by;&quot;
+</code></pre>
+  <h2 id="open-questions">Open Questions</h2>
+  <ul>
+    <li>
+      Codex escalation should use direct API/SDK or Codex CLI? Direct API/SDK is preferred because
+      it avoids <code>.codex/sessions</code> self-ingestion.
+    </li>
+    <li>Should Gemma4 12B be restored as the covering pool target if available?</li>
+    <li>Should <code>finalizeDistille</code> share with covering or have its own small pool?</li>
+    <li>
+      Do we want <code>round_robin_by_queue</code> in the first pool implementation, or is dedicated
+      pool partition enough?
+    </li>
+    <li>
+      Should provider target health checks call <code>/v1/models</code> and validate configured
+      model IDs before queue workers start?
+    </li>
+  </ul>
+  <h2 id="decision-recommendation">Decision Recommendation</h2>
+  <p>
+    Implement Pool-first routing first. It fixes the resource contention problem without introducing
+    Codex cost or self-ingestion risk.
+  </p>
+  <p>
+    Then add Codex escalation in trace-only mode. Codex should remain a second-pass path for
+    high-signal <code>no_candidate</code> rows, not the default
+    <code>findingCandidate</code> executor.
+  </p>
+  <p>Recommended first live configuration after Pool-first routing:</p>
+  <pre><code class="language-text">finding-qwen-pool:
+  Qwen 3.6 27B #1
+
+covering-qwen-or-gemma-pool:
+  Qwen 3.6 27B #2 or Gemma4 12B
+
+episode-ornith-pool:
+  Ornith 1.0 9B
+
+codex-escalation:
+  disabled initially, then trace-only
+</code></pre>
+</article>

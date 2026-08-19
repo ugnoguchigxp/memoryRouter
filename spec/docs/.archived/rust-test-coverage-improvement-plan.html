@@ -1,0 +1,652 @@
+<article lang="ja">
+  <h1 id="rust-test-coverage-改善計画">Rust Test Coverage 改善計画</h1>
+  <blockquote>
+    <p>
+      アーカイブ日: 2026-08-15。coverage 数値目標は概ね達成済みで、残る regression test 方針を
+      <a href="rust-runtime-closeout-implementation-plan.html"
+        >Rust Runtime Closeout Implementation Plan</a
+      >
+      に統合した。
+    </p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    <code>context-stilld</code> の Rust 実装は、daemon / queue / MCP native handler
+    への責務移行が進んでいる。queue lifecycle 周辺はテストが増えている一方、MCP native handler
+    や一部 service module には未カバー領域が残っている。
+  </p>
+  <p>
+    この計画は、安価な LLM
+    実行者へ渡しても安全に進められるよう、カバレッジ改善の対象、順序、禁止事項、検証方法を固定する。
+  </p>
+  <h2 id="現状ベースライン">現状ベースライン</h2>
+  <p>取得日: 2026-06-23</p>
+  <p>実行コマンド:</p>
+  <pre><code class="language-bash">cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <p>結果:</p>
+  <table>
+    <caption>
+      Table: 現状ベースライン
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">指標</th>
+        <th scope="col">現状</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Rust unit tests</td>
+        <td>85 passed</td>
+      </tr>
+      <tr>
+        <td>Total line coverage</td>
+        <td>64.39%</td>
+      </tr>
+      <tr>
+        <td>Total region coverage</td>
+        <td>58.27%</td>
+      </tr>
+      <tr>
+        <td>Total function coverage</td>
+        <td>52.27%</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>重要 module の line coverage:</p>
+  <table>
+    <caption>
+      Table: 現状ベースライン
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">Line coverage</th>
+        <th scope="col">判断</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>domains/queue_lifecycle/claim.rs</code></td>
+        <td>94.14%</td>
+        <td>維持対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/queue_lifecycle/episode_executor.rs</code></td>
+        <td>81.12%</td>
+        <td>維持しつつ不足 edge case を追加</td>
+      </tr>
+      <tr>
+        <td><code>domains/queue_lifecycle/executor.rs</code></td>
+        <td>79.82%</td>
+        <td>80% 前後を維持</td>
+      </tr>
+      <tr>
+        <td><code>domains/queue_lifecycle/inspect.rs</code></td>
+        <td>93.43%</td>
+        <td>維持対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/queue_lifecycle/provider_lease.rs</code></td>
+        <td>80.37%</td>
+        <td>維持しつつ lease edge case を追加</td>
+      </tr>
+      <tr>
+        <td><code>domains/queue_lifecycle/state.rs</code></td>
+        <td>92.02%</td>
+        <td>維持対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_episodes.rs</code></td>
+        <td>0.00%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_knowledge.rs</code></td>
+        <td>0.00%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_memory.rs</code></td>
+        <td>0.00%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_decision.rs</code></td>
+        <td>0.00%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_resources.rs</code></td>
+        <td>0.00%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_handlers.rs</code></td>
+        <td>0.00%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_tools.rs</code></td>
+        <td>5.59%</td>
+        <td>優先改善対象</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/endpoint_server.rs</code></td>
+        <td>23.13%</td>
+        <td>中優先</td>
+      </tr>
+      <tr>
+        <td><code>domains/admin_api_lifecycle/service.rs</code></td>
+        <td>9.04%</td>
+        <td>中優先</td>
+      </tr>
+      <tr>
+        <td><code>domains/backup/service.rs</code></td>
+        <td>37.14%</td>
+        <td>中優先</td>
+      </tr>
+      <tr>
+        <td><code>domains/shared/process.rs</code></td>
+        <td>46.04%</td>
+        <td>中優先</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="方針">方針</h2>
+  <p>
+    全体 80% を即時の hard gate にしない。Rust では line coverage
+    の数値だけを品質指標にしないため、まずは重要な状態遷移、DB contract、error path、handler
+    response contract を増やす。
+  </p>
+  <p>当面の目標:</p>
+  <ul>
+    <li><code>queue_lifecycle</code> は 80% 以上の line coverage を維持する。</li>
+    <li><code>mcp_lifecycle/native_*</code> は 0% module をなくす。</li>
+    <li><code>context-stilld</code> 全体は 64.39% から 70% 台へ上げる。</li>
+    <li>coverage 向上のためだけに本番ロジックを変えない。</li>
+    <li>live daemon、live SQLite、live LLM、network に依存しない unit tests を優先する。</li>
+  </ul>
+  <h2 id="実行者への絶対ルール">実行者への絶対ルール</h2>
+  <ul>
+    <li>変更前に必ず baseline を取る。</li>
+    <li>1 回の PR / 作業単位で対象 module を広げすぎない。</li>
+    <li>本番コードの意味を coverage のために変えない。</li>
+    <li>live app data DB を使わない。テストは temporary SQLite か in-memory fixture を使う。</li>
+    <li>
+      live LLM、HTTP provider、LaunchAgent、実 daemon 起動を unit coverage 改善の前提にしない。
+    </li>
+    <li><code>#[ignore]</code> で失敗するテストを隠さない。</li>
+    <li>flaky な sleep / wall clock 待ちを追加しない。</li>
+    <li>既存の test helper がある場合は再利用する。</li>
+    <li>
+      大きな refactor はしない。必要な場合は、テスト可能にするための小さな helper 抽出だけにする。
+    </li>
+    <li>失敗した検証を未解決のまま完了扱いにしない。</li>
+  </ul>
+  <h2 id="共通コマンド">共通コマンド</h2>
+  <p>初回セットアップ確認:</p>
+  <pre><code class="language-bash">cargo llvm-cov --version
+</code></pre>
+  <p>入っていない場合:</p>
+  <pre><code class="language-bash">cargo install cargo-llvm-cov
+</code></pre>
+  <p>baseline:</p>
+  <pre><code class="language-bash">cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <p>HTML report:</p>
+  <pre><code class="language-bash">cargo llvm-cov -p context-stilld --html --output-dir target/llvm-cov/html
+</code></pre>
+  <p>特定 module のテスト:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld native_episodes -- --nocapture
+cargo test -p context-stilld native_memory -- --nocapture
+cargo test -p context-stilld queue_lifecycle -- --nocapture
+</code></pre>
+  <p>全 Rust test:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld
+</code></pre>
+  <p>repo verification:</p>
+  <pre><code class="language-bash">bun run verify:rust-daemon
+bun run verify
+git diff --check
+</code></pre>
+  <p>docs を変更した場合:</p>
+  <pre><code class="language-bash">bun run docs:check-links
+</code></pre>
+  <h2 id="p0-coverage-script-と-baseline-記録">P0: Coverage Script と Baseline 記録</h2>
+  <p>Goal: 実行者が毎回同じ測定をできるようにする。</p>
+  <p>対象:</p>
+  <ul>
+    <li><code>package.json</code></li>
+    <li><code>spec/docs/rust-test-coverage-improvement-plan.html</code></li>
+  </ul>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>package.json</code> に Rust coverage 用 script を追加する。</li>
+    <li>script 名は既存 style に合わせる。</li>
+    <li>推奨 script:</li>
+  </ul>
+  <pre><code class="language-json">{
+  &quot;coverage:rust&quot;: &quot;cargo llvm-cov -p context-stilld --summary-only&quot;,
+  &quot;coverage:rust:html&quot;: &quot;cargo llvm-cov -p context-stilld --html --output-dir target/llvm-cov/html&quot;
+}
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li><code>bun run coverage:rust</code> で summary が出る。</li>
+    <li><code>bun run coverage:rust:html</code> で HTML report が生成される。</li>
+    <li>baseline の数値を作業メモまたは PR description に残す。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run coverage:rust
+bun run coverage:rust:html
+git diff --check
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li><code>cargo llvm-cov</code> が未インストールで、実行者が install できない。</li>
+    <li>coverage command が test failure 以外の理由で安定して完了しない。</li>
+  </ul>
+  <h2 id="p1-native_episodes-の-unit-tests">P1: <code>native_episodes</code> の Unit Tests</h2>
+  <p>
+    Goal: <code>domains/mcp_lifecycle/native_episodes.rs</code> を 0% から脱出させ、EpisodeCard の
+    read/search contract を固定する。
+  </p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_episodes.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li>空 DB または対象 table がない場合、panic せず error payload または空結果を返す。</li>
+    <li><code>search_episodes</code> が <code>limit</code> を尊重する。</li>
+    <li><code>search_episodes</code> が <code>query</code> に一致する Episode だけを返す。</li>
+    <li>
+      <code>search_episodes</code> が <code>status</code> / <code>repoPath</code> /
+      <code>technologies</code> などの filter を尊重する。
+    </li>
+    <li><code>fetch_episode</code> が存在する id を full payload と refs つきで返す。</li>
+    <li>
+      <code>fetch_episode</code> が存在しない id に対して stable error / not found payload を返す。
+    </li>
+    <li>
+      <code>episode_search_text</code> 相当の検索対象に title、situation、lesson、refs
+      が含まれることを固定する。
+    </li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>temporary SQLite connection を作り、必要最小限の schema と rows だけを入れる。</li>
+    <li>live <code>episode_cards</code> を読まない。</li>
+    <li>既存の <code>NativeToolContext</code> 作成 pattern があればそれに合わせる。</li>
+    <li>
+      private helper を直接テストしたい場合は同一 file の
+      <code>#[cfg(test)] mod tests</code> に追加する。
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li><code>native_episodes.rs</code> の line coverage が 0% ではなくなる。</li>
+    <li>happy path と not found/error path の両方がある。</li>
+    <li>refs 付き payload の schema が固定される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld native_episodes -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p2-native_memory-の-unit-tests">P2: <code>native_memory</code> の Unit Tests</h2>
+  <p>
+    Goal: <code>domains/mcp_lifecycle/native_memory.rs</code> の search/fetch contract を固定する。
+  </p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_memory.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li><code>search_memory</code> が query に一致する memory を返す。</li>
+    <li><code>search_memory</code> が <code>limit</code> と preview 長を尊重する。</li>
+    <li>
+      <code>search_memory</code> が <code>includeContent=false</code> のとき preview/body
+      を過剰に返さない。
+    </li>
+    <li>
+      <code>fetch_memory</code> が <code>start</code> / <code>end</code> /
+      <code>maxChars</code> を尊重する。
+    </li>
+    <li><code>fetch_memory</code> が <code>returnMetaOnly=true</code> のとき本文を返さない。</li>
+    <li>
+      <code>fetch_memory</code> が <code>includeAgentDiffs=true</code> のとき関連 diff を含める。
+    </li>
+    <li>存在しない id は stable error / not found payload を返す。</li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>temporary SQLite に memory row と diff row を最小件数だけ入れる。</li>
+    <li>文字数境界の test は ASCII で作る。Unicode 境界は既存仕様がなければ追加しない。</li>
+    <li>coverage のために truncation 仕様を変えない。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>happy path、limit、range、not found がテストされる。</li>
+    <li>body と metadata の返却境界が固定される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld native_memory -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p3-native_knowledge-の-read-path-tests">
+    P3: <code>native_knowledge</code> の Read Path Tests
+  </h2>
+  <p>
+    Goal: <code>search_knowledge</code> の filter / source refs / status contract
+    を固定する。register 系の write path は次フェーズへ分ける。
+  </p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_knowledge.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li>
+      <code>search_knowledge</code> が
+      <code>query</code
+      >、<code>statuses</code>、<code>technologies</code>、<code>changeTypes</code>、<code
+        >domains</code
+      >
+      を尊重する。
+    </li>
+    <li>default status filter が期待通りに働く。</li>
+    <li><code>source_refs</code> が関連 refs を stable order で返す。</li>
+    <li>JSON array column の parse failure が panic にならない。</li>
+    <li>
+      <code>selected_support_knowledge_ids</code> が Decision evidence から support knowledge id
+      を拾う。
+    </li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>まず read-only helper と <code>search_knowledge</code> に限定する。</li>
+    <li>
+      <code>register_candidates</code>、<code>context_decision_feedback</code> は write path なので
+      P4 まで触らない。
+    </li>
+    <li>schema fixture は必要最小限にする。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>read path の主要 filter が固定される。</li>
+    <li>malformed JSON でも panic しないことが確認される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld native_knowledge -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p4-register_candidates-と-decision-feedback-tests">
+    P4: <code>register_candidates</code> と Decision Feedback Tests
+  </h2>
+  <p>Goal: Knowledge write path の validation と persistence contract を固定する。</p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_knowledge.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_decision.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li><code>register_candidates</code> が valid SKILL-like candidate を insert する。</li>
+    <li><code>register_candidates</code> が required fields 不足を reject する。</li>
+    <li><code>register_candidates</code> が invalid polarity / type / status を reject する。</li>
+    <li><code>infer_title</code> が body 先頭から安定した title を作る。</li>
+    <li>
+      <code>has_skill_like_sections</code> が <code>Use when</code> / <code>Workflow</code> /
+      <code>Verification</code> / <code>Avoid</code> を判定する。
+    </li>
+    <li><code>context_decision_feedback</code> が known decision id に feedback を保存する。</li>
+    <li>unknown decision id は stable error を返す。</li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>DB write は temporary SQLite transaction 内で完結させる。</li>
+    <li>validation を弱めて test を通さない。</li>
+    <li>user-facing message の全文一致は避け、stable field と category を検証する。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>valid insert と invalid reject の両方がある。</li>
+    <li>write path が live DB に触らない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld register_candidates -- --nocapture
+cargo test -p context-stilld native_decision -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p5-native_decision-の-decision-gate-tests">
+    P5: <code>native_decision</code> の Decision Gate Tests
+  </h2>
+  <p>
+    Goal: <code>context_decision</code> の autonomous GO/NO-GO contract を unit test で固定する。
+  </p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_decision.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li>明確な hard stop language がある場合は <code>reject</code> になる。</li>
+    <li>
+      十分な supporting knowledge がある場合は <code>execute</code> または
+      <code>revise_and_execute</code> になる。
+    </li>
+    <li>evidence が弱い場合は confidence / coverage が低くなる。</li>
+    <li>
+      <code>decision_query</code> が <code>decisionPoint</code> と
+      <code>retrievalHints</code> を含む。
+    </li>
+    <li><code>mandate</code> が decision ごとに stable な説明を返す。</li>
+    <li>decision run、evidence、coverage trace が transaction 内で保存される。</li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>LLM call を追加しない。</li>
+    <li>scoring の厳密な数値固定より、decision category、persisted row、主要 field を検証する。</li>
+    <li>prompt wording の全文一致を避ける。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>reject / execute / revise 系の代表 path が固定される。</li>
+    <li>persistence tables への write が確認される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld native_decision -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p6-native_resources--native_tools--native_handlers">
+    P6: <code>native_resources</code> / <code>native_tools</code> / <code>native_handlers</code>
+  </h2>
+  <p>Goal: MCP native surface の tool/resource inventory と dispatch contract を固定する。</p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_resources.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_tools.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_handlers.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li><code>list_resources</code> が expected URI を返す。</li>
+    <li><code>read_resource</code> が known URI を content payload として返す。</li>
+    <li>unknown resource URI が stable error を返す。</li>
+    <li>
+      <code>exposed_tool_count</code> と <code>tool_owner_inventory</code> が主要 tool を含む。
+    </li>
+    <li><code>handle_native_dispatch</code> が known tool を正しい handler へ渡す。</li>
+    <li>unknown tool が stable error を返す。</li>
+    <li><code>initial_instructions</code> が空でない guidance を返す。</li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>handler の中で別 module の詳細まで再検証しない。dispatch されたことだけを見る。</li>
+    <li>resource snapshot は temporary SQLite に最小 row を置いて確認する。</li>
+    <li>locale や環境変数で変わる文字列は全文一致しない。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>MCP native inventory の退行が test で検出できる。</li>
+    <li>unknown tool/resource の error contract が固定される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld native_resources -- --nocapture
+cargo test -p context-stilld native_tools -- --nocapture
+cargo test -p context-stilld native_handlers -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p7-low-risk-service-modules">P7: Low-Risk Service Modules</h2>
+  <p>
+    Goal: 小さく閉じた service/routing module の error path を埋め、全体 coverage を底上げする。
+  </p>
+  <p>対象候補:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/admin_api_lifecycle/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/backup/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/bootstrap/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/doctor/service.rs</code></li>
+    <li><code>crates/context-stilld/src/shared/config.rs</code></li>
+    <li><code>crates/context-stilld/src/shared/fs_paths.rs</code></li>
+    <li><code>crates/context-stilld/src/shared/process.rs</code></li>
+  </ul>
+  <p>優先して追加する tests:</p>
+  <ul>
+    <li>missing file / missing directory の error handling。</li>
+    <li>invalid env var / override の handling。</li>
+    <li>JSON report の stable fields。</li>
+    <li>process supervisor の failure path。</li>
+    <li>preflight が live writer を検出した場合の response。</li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>OS process を本当に長時間起動しない。</li>
+    <li>filesystem は temporary directory を使う。</li>
+    <li>macOS LaunchAgent の実状態には依存しない。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>各 module に happy path と代表 error path がある。</li>
+    <li>test が local machine 状態に依存しない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld admin_api backup bootstrap doctor shared -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="p8-queue-lifecycle-の維持テスト">P8: Queue Lifecycle の維持テスト</h2>
+  <p>
+    Goal: すでに高い coverage の queue lifecycle を維持し、EpisodeDistiller 逐次生成の退行を防ぐ。
+  </p>
+  <p>対象:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/executor.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/provider_lease.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/queue_lifecycle/inspect.rs</code></li>
+  </ul>
+  <p>追加する場合の test 候補:</p>
+  <ul>
+    <li>provider 503 は pending 継続で attempt increment しない。</li>
+    <li>permanent provider error は retry metadata を残す。</li>
+    <li>saved segment metadata がある job は保存済み segment を再処理しない。</li>
+    <li>
+      <code>queue inspect --json</code> の output watchdog が latest episode / segment progress
+      を使う。
+    </li>
+    <li>unsupported queue は fail-closed になる。</li>
+  </ul>
+  <p>実装指示:</p>
+  <ul>
+    <li>ここはすでに coverage が高いため、数値目的で薄い test を増やさない。</li>
+    <li>bug fix や仕様追加に連動する test だけを追加する。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li><code>queue_lifecycle</code> の line coverage が 80% 未満へ落ちない。</li>
+    <li>EpisodeDistiller 逐次生成の core contract が維持される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue_lifecycle -- --nocapture
+cargo llvm-cov -p context-stilld --summary-only
+</code></pre>
+  <h2 id="完了条件">完了条件</h2>
+  <p>短期完了条件:</p>
+  <ul>
+    <li><code>cargo test -p context-stilld</code> が通る。</li>
+    <li><code>cargo llvm-cov -p context-stilld --summary-only</code> が通る。</li>
+    <li><code>mcp_lifecycle/native_*</code> の 0% module が少なくとも 3 つ以上なくなる。</li>
+    <li><code>queue_lifecycle</code> の line coverage が 80% 以上を維持する。</li>
+    <li>全体 line coverage が baseline 64.39% から上がる。</li>
+  </ul>
+  <p>中期完了条件:</p>
+  <ul>
+    <li>全体 line coverage が 70% 以上になる。</li>
+    <li>
+      <code>native_episodes</code>、<code>native_memory</code>、<code>native_resources</code>、<code
+        >native_tools</code
+      >
+      がそれぞれ 50% 以上になる。
+    </li>
+    <li>
+      <code>native_knowledge</code>、<code>native_decision</code> は read path / write path の代表
+      contract がテストされる。
+    </li>
+  </ul>
+  <p>まだ目指さない条件:</p>
+  <ul>
+    <li>全体 80% を hard gate にする。</li>
+    <li>branch coverage を gate にする。</li>
+    <li>live LLM / live daemon / LaunchAgent 依存の coverage を unit test に混ぜる。</li>
+  </ul>
+  <h2 id="作業単位の推奨順序">作業単位の推奨順序</h2>
+  <ol>
+    <li>P0 coverage script を追加する。</li>
+    <li>P1 <code>native_episodes</code> を実装し、coverage を比較する。</li>
+    <li>P2 <code>native_memory</code> を実装し、coverage を比較する。</li>
+    <li>
+      P6 <code>native_resources</code> / <code>native_tools</code> の inventory tests を追加する。
+    </li>
+    <li>P3 <code>native_knowledge</code> read path を追加する。</li>
+    <li>P4/P5 の write path / decision path を小さく分割して追加する。</li>
+    <li>P7 の service modules を小さな PR 単位で追加する。</li>
+    <li>P8 は regression が見つかった場合だけ追加する。</li>
+  </ol>
+  <h2 id="作業ごとの報告テンプレート">作業ごとの報告テンプレート</h2>
+  <p>各作業後に、実行者は次を報告する。</p>
+  <pre><code class="language-text">対象:
+- 変更した module:
+- 追加した tests:
+
+検証:
+- cargo test -p context-stilld ...: pass/fail
+- cargo llvm-cov -p context-stilld --summary-only: pass/fail
+- bun run verify:rust-daemon: pass/fail, 実行しない場合は理由
+- git diff --check: pass/fail
+
+coverage:
+- before total line:
+- after total line:
+- 対象 file before:
+- 対象 file after:
+
+未対応:
+- 残した edge case:
+- 次に触るべき module:
+</code></pre>
+  <h2 id="停止条件">停止条件</h2>
+  <p>次の場合は実装を進めず、原因調査または人間確認に戻す。</p>
+  <ul>
+    <li>baseline coverage が取得できない。</li>
+    <li>対象 module の schema / context fixture が分からず、live DB を使いたくなる。</li>
+    <li>test を通すために本番ロジックの意味変更が必要になる。</li>
+    <li>live LLM、network、LaunchAgent がないと test できない設計になっている。</li>
+    <li>追加 test が flaky になる。</li>
+    <li><code>cargo test -p context-stilld</code> が失敗する。</li>
+    <li><code>cargo llvm-cov -p context-stilld --summary-only</code> が失敗する。</li>
+    <li>coverage は上がったが、behavior contract を何も固定していない。</li>
+  </ul>
+</article>

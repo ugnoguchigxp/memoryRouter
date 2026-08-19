@@ -1,0 +1,459 @@
+<article lang="ja">
+  <h1 id="context-compile-repository-isolation-closeout-evidence">
+    Context Compile Repository Isolation Closeout Evidence
+  </h1>
+  <h2 id="status">Status</h2>
+  <p>
+    Status: implementation and controlled restart complete; producer observation and 24-hour/final
+    audit gates pending.
+  </p>
+  <ul>
+    <li>
+      Current-build enforced canary and producer observation started: 2026-08-16 01:07:10
+      JST（2026-08-15T16:07:10Z）
+    </li>
+    <li>Earliest 24-hour gate audit: 2026-08-17 01:07:10 JST（2026-08-16T16:07:10Z）</li>
+    <li>Earliest 7-day producer gate audit: 2026-08-23 01:07:10 JST（2026-08-22T16:07:10Z）</li>
+    <li>
+      Active runtime: resident Rust <code>context-stilld</code>、12 Rust-native MCP
+      tools、TypeScript sidecar 0
+    </li>
+    <li>
+      Effective database:
+      <code>/Users/y.noguchi/Code/contextStill/data/context-still-core.sqlite</code>
+    </li>
+  </ul>
+  <p>
+    上記のearliest archive decisionは24-hour canaryだけの下限である。producer observationはenabled
+    manifest確定後に7日、identity-bearing PERSISTED 200件、coverage 100%、new unresolved
+    0を要求するため、実際のarchive日はこれより後になる可能性がある。観測期間中にSafety
+    Gate違反、新規unresolved producer、またはnormal
+    workspaceのavailability回帰が発生した場合はarchiveせず、<code>global_only_safe_mode</code>またはexact/text
+    pathで原因を修正する。unscoped fallbackは復活させない。
+  </p>
+  <h2 id="delivered-contract">Delivered Contract</h2>
+  <ul>
+    <li>
+      CLI
+      compileは<code>--repo-path</code>または明示<code>--global</code>を必須にし、cwdをidentityへ昇格しない。
+    </li>
+    <li>
+      markdown/source importはcontent rootとproject rootを分離し、repo/global scopeを明示する。
+    </li>
+    <li>
+      Rust/TypeScript producerはcaptured project rootだけをrepo identityへ使い、project
+      name、content root、cwdから<code>repoKey</code>を生成しない。
+    </li>
+    <li>repo-scoped writeはcanonical identityを必須にし、identityなしを自動global化しない。</li>
+    <li>
+      Knowledge、EpisodeCard、Sourceのmigrationはdeterministic provenanceとreview
+      decisionだけを使用する。
+    </li>
+    <li>
+      Rust-native compile/searchと公開継続するTypeScript
+      pathは、<code>classification_status=classified</code>かつglobalまたは選択basis完全一致をlimit/ranking前に適用する。
+    </li>
+    <li>
+      unscoped fallbackとunscoped vector laneを無効化し、scope decisionをrun、pack、usage、candidate
+      traceへ保存する。
+    </li>
+    <li>
+      replayはidentity snapshotを保持し、identity不明のlegacy
+      runを<code>not_comparable</code>として扱う。cache semanticsはversion
+      2、cacheは既定無効である。
+    </li>
+  </ul>
+  <h2 id="live-migration-evidence">Live Migration Evidence</h2>
+  <h3 id="backup-and-rehearsal">Backup And Rehearsal</h3>
+  <ul>
+    <li>
+      Offline backup:
+      <code
+        >/Users/y.noguchi/Library/Application
+        Support/contextStill/backup/core-unix-ms-1786799658660.sqlite</code
+      >
+    </li>
+    <li>Backup size: 1,175,113,728 bytes</li>
+    <li>
+      Backup SHA-256: <code>862570d04a66ef7dbbeae13fbd17a757fafe10914c68a5dd82aedcc7c2067119</code>
+    </li>
+    <li>
+      Dry-run checksum（2回一致）:
+      <code>eec9a33dbce715ff4276c25ac8ac59c6ef94f21a0b9171f8f680990b2f0e3ff9</code>
+    </li>
+    <li>Temp-copy write: 5,943 updates、14,007 migration audit rows。再実行更新0。</li>
+    <li>
+      Temp-copy restore drill:
+      backupから復元後、review対象rowが<code>unresolved</code>へ戻り、migration audit 0を確認。
+    </li>
+    <li>Live DB <code>PRAGMA integrity_check</code>: <code>ok</code></li>
+    <li>
+      Applied additive revisions: 1-5。revision 2がidentity contract、4がbackfill auditを所有する。
+    </li>
+  </ul>
+  <h3 id="review-and-write-result">Review And Write Result</h3>
+  <ul>
+    <li>
+      Top-50 review artifact:
+      <a href=".archived/context-compile-repository-isolation-top50-review.json"
+        >review decisions</a
+      >
+    </li>
+    <li>Review audit: 50 <code>REPOSITORY_IDENTITY_REVIEW_DECISION</code> events</li>
+    <li>Migration batch audit: 29 events</li>
+    <li>Migration row audit: 14,007 rows</li>
+    <li>Live write: 5,943 rows updated。write後のdry-runは14,007 rowsすべてunchanged。</li>
+  </ul>
+  <table>
+    <caption>
+      Table: Review And Write Result
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Entity</th>
+        <th scope="col">classified global</th>
+        <th scope="col">classified repo</th>
+        <th scope="col">unresolved</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Knowledge</td>
+        <td>29</td>
+        <td>69</td>
+        <td>7,129</td>
+      </tr>
+      <tr>
+        <td>EpisodeCard</td>
+        <td>0</td>
+        <td>5,761</td>
+        <td>841</td>
+      </tr>
+      <tr>
+        <td>Source</td>
+        <td>0</td>
+        <td>79</td>
+        <td>99</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    未分類long tailは削除も推測分類もしていない。normal
+    retrievalからfail-closedで除外されるため、残数0はcloseout条件ではない。
+  </p>
+  <h2 id="enforced-canary-evidence">Enforced Canary Evidence</h2>
+  <h3 id="shadow-deviation-decision">Shadow Deviation Decision</h3>
+  <p>
+    計画上のside-effect-free shadow 50
+    callsを個別modeとして収集する前にenforcementを有効化した。代わりに、切替直前50
+    runとidentity-present enforced 50
+    runを同じSafety/Availability/Performance指標で比較し、wrong-scope candidate/pack hard
+    zeroとnegative fixtureを確認した。既にuser-visible enforced
+    cohortが成功しているため、後からlegacy
+    candidateを再び通常pathで扱うshadowを追加せず、この比較cohortをshadow目的の代替evidenceとする。shadow-only
+    contentをcomposerへ送らないinvariantはfixture/unit testで検証する。
+  </p>
+  <h3 id="identity-present-cohort">Identity-Present Cohort</h3>
+  <p>
+    50 compile callsを2026-08-15 22:15-22:23
+    JSTに実行した。全runは<code>repo_path=/Users/y.noguchi/Code/contextStill</code>、<code>match_basis=repo_path</code>、<code>scope_mode=project</code>、identity
+    contract version 1を保存した。
+  </p>
+  <table>
+    <caption>
+      Table: Identity-Present Cohort
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Safety metric</th>
+        <th scope="col">Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>request/run identity mismatch</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>wrong-scope or unclassified Knowledge in pack</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>wrong-scope or unclassified EpisodeCard in pack</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>missing selected Knowledge/EpisodeCard</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>new unresolved Knowledge/EpisodeCard/Source during cohort</td>
+        <td>0</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="availability-and-performance">Availability And Performance</h3>
+  <p>比較条件は切替直前50 runとidentity-present canary 50 runである。</p>
+  <table>
+    <caption>
+      Table: Availability And Performance
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Metric</th>
+        <th scope="col">Baseline</th>
+        <th scope="col">Canary</th>
+        <th scope="col">Gate</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>No Content</td>
+        <td>0/50</td>
+        <td>0/50</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>median selected Knowledge</td>
+        <td>8</td>
+        <td>8</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>median selected EpisodeCard</td>
+        <td>3</td>
+        <td>3</td>
+        <td>pass</td>
+      </tr>
+      <tr>
+        <td>persisted duration p50</td>
+        <td>11,761 ms</td>
+        <td>8,958 ms</td>
+        <td>pass（-23.8%）</td>
+      </tr>
+      <tr>
+        <td>persisted duration p95</td>
+        <td>19,050 ms</td>
+        <td>14,922 ms</td>
+        <td>pass（-21.7%）</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    31/50 canary runsはexternal composerのgoal-alignment failureによりfallback
+    compositionとなり<code>degraded</code>だった。candidate、pack、No Content、latencyのrelease
+    gateは通過しておりrepository isolation違反ではないが、24-hour observationではこの既存composer
+    laneも継続観測する。
+  </p>
+  <h3 id="negative-smoke">Negative Smoke</h3>
+  <table>
+    <caption>
+      Table: Negative Smoke
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Case</th>
+        <th scope="col">Persisted behavior</th>
+        <th scope="col">Violation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>identity omitted</td>
+        <td><code>match_basis=none</code>、<code>scope_mode=global_only</code></td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td><code>contextStill</code> / <code>contextStill-shadow</code> prefix collision</td>
+        <td>distinct exact <code>repo_path</code> basis</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>Repo B <code>/Users/y.noguchi/Code/NightWorkers</code></td>
+        <td>exact Repo B scope</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>nonexistent absolute path</td>
+        <td>exact path scope、global以外は完全一致のみ</td>
+        <td>0</td>
+      </tr>
+      <tr>
+        <td>relative malformed path</td>
+        <td><code>INVALID_REPO_PATH</code>、run未保存</td>
+        <td>0</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    path case、malformed percent encoding、selected-basis欠落、limit saturation（Knowledge
+    501超、Episode 201超）、composer on/off outboundはshared TypeScript fixtureとRust native
+    testsで検証した。
+  </p>
+  <h2 id="producer-observation">Producer Observation</h2>
+  <p>
+    producer監査はVALIDATED、REJECTED、PERSISTEDを分離し、completion判定にはdurable
+    write後のPERSISTEDだけを使用する。identity-bearing件数にはrepo scope、exact match
+    basis、producer、既知entity kind、binding status、64桁identity
+    fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion
+    falseとする。正規なglobal PERSISTEDは別cohortで集計する。
+  </p>
+  <p>
+    enabled producerと観測開始時刻は任意CLI引数から除去し、<a
+      href="https://github.com/ugnoguchigxp/contextStill/blob/main/shared/fixtures/repository-isolation-producer-manifest-v1.json"
+      >versioned resident-local manifest</a
+    >を唯一の入力にした。manifest fingerprint、status、finalizedAtをreport version
+    3へ保存し、manifest欠落、draft、開始時刻NULL、未観測producerありをfail
+    closedにする。200件の母数はmanifest上のenabled producerが宣言どおりのentity
+    kindへ行ったPERSISTEDだけとし、maintenance-onlyは母数外、未知・disabled・entity不一致はmalformedとする。単一basisの通常writeはidentity
+    contractどおり<code>bindingStatus=not_applicable</code>を受理し、複数identifierでは<code>verified</code>または<code>unverified</code>を受理する。identity/entity/run/alias/audit/created-atのschema
+    capabilityが一つでも欠ける場合もcompletion
+    falseとする。最古eventの時刻だけでは7日経過と判定しない。
+  </p>
+  <p>
+    明示的な<code>observationStartedAt</code>でversion 2へ、versioned
+    manifestを唯一の根拠とする変更でversion 3へ更新した。
+  </p>
+  <p>2026-08-15 22:35 JSTのlive read-only audit結果:</p>
+  <table>
+    <caption>
+      Table: Producer Observation
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Event</th>
+        <th scope="col">Count</th>
+        <th scope="col">Interpretation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>legacy <code>PROJECT_IDENTITY_PRODUCER_ACCEPTED</code></td>
+        <td>5</td>
+        <td>completion対象外</td>
+      </tr>
+      <tr>
+        <td><code>PROJECT_IDENTITY_PRODUCER_PERSISTED</code></td>
+        <td>0</td>
+        <td>7-day/200-event window未開始</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    2026-08-16 01:09 JSTのcurrent-build restart後auditでは、schema capabilityはすべてtrue、recent
+    run mismatchは0、new unresolvedは0だった。観測開始直後のためPERSISTEDは0、enabled
+    coverageは0/3、completionは期待どおりfalseである。
+  </p>
+  <p>
+    resident-local
+    manifestは<code>agent-log-sync.rust</code>、<code>episode-distiller.rust</code>、<code>register-candidates.rust</code>をenabledとして確定した。TypeScript/API
+    writerはmaintenance-onlyとして同じmanifestへ列挙し、resident completion
+    countには含めないが、write contract testの対象からは外さない。
+  </p>
+  <p>
+    2026-08-16 01:07:10 JSTに対象buildのcontrolled restart、MCP smoke、single-writer
+    ownership確認を完了し、その安全確認完了時刻をmanifestの<code>observationStartedAt</code>へ固定した。旧finding/covering
+    worker LaunchAgentもunload済みで、Rust residentだけがlive queue/write
+    ownerである。この時刻から7日以上・identity-bearing PERSISTED 200件以上・coverage 100%・new
+    unresolved 0を実観測する。人工的なfixture writeをlive completion countへ含めない。
+  </p>
+  <h2 id="verification">Verification</h2>
+  <p>2026-08-15に次を実行した。</p>
+  <ul>
+    <li><code>cargo test -p context-stilld</code>: 243 passed</li>
+    <li>
+      <code>cargo clippy --workspace --all-targets -- -D warnings</code>: pass（third-party
+      <code>sqlite-vec</code> C compiler warningのみ）
+    </li>
+    <li><code>cargo fmt --all -- --check</code>: pass</li>
+    <li>targeted repository identity/backfill/replay tests: 88 passed</li>
+    <li><code>bun run typecheck</code>: pass</li>
+    <li><code>bun run lint</code>: 801 files pass</li>
+    <li>
+      <code>bun run verify</code>: pass（system-context checks、typecheck、lint、format、unit
+      tests、web build）
+    </li>
+    <li><code>bun run rust:mcp:smoke</code>: 12 Rust-native tools、0 TypeScript sidecars</li>
+    <li><code>bun run mcp:smoke:sqlite</code>: pass against resident port 39172</li>
+    <li><code>bun run docs:check-links</code>: pass</li>
+  </ul>
+  <p>
+    2026-08-16のcurrent-build code review後にも、<code>bun run verify</code>、<code
+      >cargo test -p context-stilld</code
+    >（246 passed）、<code>cargo clippy -p context-stilld --all-targets -- -D warnings</code
+    >、SQLite backfill/report/runtime/knowledgeのfocused
+    testsを再実行し、すべてpassした。reviewで検出したAPI updateのidentity rebind、unresolved
+    rowのscope rebind、単一identity basisの<code>not_applicable</code>誤拒否、不完全schemaでのfalse
+    completion、非canonical run identity、SQLite timestampのtimezone依存、manifest
+    contradiction/重複は回帰testとともに修正した。controlled restart後の<code
+      >CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon</code
+    >とlive MCP smokeもpassし、旧queue、finding、covering、agent-log-sync
+    LaunchAgentがすべてunload済みであることを確認した。
+  </p>
+  <p>
+    最初の<code>bun run verify</code>
+    rerunで、repoPathをrepoKeyへ派生しなくなった新contractに対する旧test
+    expectationを1件検出し、expectationをcanonical
+    repoPathへ修正した。修正後の全gateはpassした。24-hour
+    observation終了時にも同じcommandを再実行する。
+  </p>
+  <h2 id="archive-checklist">Archive Checklist</h2>
+  <ul>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> P0 caller identity adoption and resident
+      deployment
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> P1 producer identity write contract and
+      durable audit semantics
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> P2 reviewed deterministic migration and
+      rollback drill
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> P3 active Rust/TypeScript retrieval
+      enforcement
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> P4 replay compatibility and cache stale
+      handling
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> 50 identity-present calls and hard-zero
+      Safety Gate
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> negative smoke, Availability Gate,
+      Performance Gate
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> live backup, write, post-write idempotence,
+      integrity check
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> enforced comparison cohort accepted as
+      documented shadow deviation
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> enabled producer inventory/manifest is fixed
+    </li>
+    <li>
+      <input checked="" disabled="" type="checkbox" /> PERSISTED-capable resident build is deployed
+      and observationStartedAt is fixed
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> 7 days、identity-bearing PERSISTED 200件、enabled
+      coverage 100%、new unresolved 0
+    </li>
+    <li><input disabled="" type="checkbox" /> 24 hours elapsed with no Safety Gate violation</li>
+    <li>
+      <input disabled="" type="checkbox" /> final read-only audit and
+      <code>bun run verify</code> closeout rerun
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> move this document, the plan, and T0 evidence to
+      <code>spec/docs/.archived/</code>; update <code>spec/docs/README.html</code>
+    </li>
+  </ul>
+</article>

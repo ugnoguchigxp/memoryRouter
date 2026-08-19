@@ -1,0 +1,2782 @@
+<article lang="en">
+  <h1 id="contextstill-utility-rag-foundation-implementation-plan">
+    ContextStill Utility-RAG Foundation Implementation Plan
+  </h1>
+  <h2 id="status">Status</h2>
+  <p>
+    Status: reviewed and implementation-ready for Terra; live activation is gated by
+    repository-isolation closeout and Rust runtime T1-T4.
+  </p>
+  <p>Created: 2026-08-16</p>
+  <p>Implementation-detail review: 2026-08-17</p>
+  <p>Plan ID: <code>contextstill-utility-rag-foundation-v1</code></p>
+  <p>Target scope: Utility-RAG Phase 0 and Phase 0.5 only</p>
+  <p>
+    Concept authority:
+    <a href="contextstill-utility-rag-concept.html">ContextStill Utility-RAG Concept</a>
+  </p>
+  <p>
+    This plan treats the concept as an approved input. It does not add another concept-review phase.
+    It turns the Phase 0 / 0.5 foundation into bounded delivery units with explicit code ownership,
+    persistence contracts, tests, performance gates, rollout, and rollback.
+  </p>
+  <p>
+    本書はコンセプトを確定入力として扱い、追加のコンセプトレビュー工程を設けない。Phase
+    0／0.5を、実装担当者が追加のアーキテクチャ判断をせずに着手できるdelivery unitへ分解し、live
+    activationだけを既存の安全gateで制御する。
+  </p>
+  <hr />
+  <h2 id="section-0-terra-execution-contract">0. Terra Execution Contract</h2>
+  <p>
+    この章は、Terraへ本書をそのまま渡した場合の実行契約である。本文と矛盾する場合は、Safety
+    Invariants、Fixed Design Decisions、本章の順で優先する。
+  </p>
+  <h3 id="section-01-terraが実装時に判断してよいこと">0.1 Terraが実装時に判断してよいこと</h3>
+  <ul>
+    <li>private helperの配置、局所的な変数名、テスト内のfixture builder名。</li>
+    <li>Rust formatterが要求する改行やimport順。</li>
+    <li>同一delivery unit内での、公開されない小さな関数分割。</li>
+  </ul>
+  <h3 id="section-02-terraが判断してはいけないこと">0.2 Terraが判断してはいけないこと</h3>
+  <ul>
+    <li>
+      public MCP request/response、repository eligibility、schema revision、provider
+      call数、top-8/top-3 budgetを変えること。
+    </li>
+    <li>
+      本書の型名、公開範囲、telemetry field、rollout mode、CLI subcommand、artifact
+      pathを別案へ置き換えること。
+    </li>
+    <li>
+      prerequisite未達を「おそらく安全」と解釈してlive
+      DBへ書くこと、residentを再起動すること、DBをcopy/move/merge/backfillすること。
+    </li>
+    <li>Foundation外のFTS、Vector、Graph、TypeScript ranking parityを同時実装すること。</li>
+  </ul>
+  <h3 id="section-03-実行手順">0.3 実行手順</h3>
+  <ol>
+    <li>
+      作業開始時に
+      <code>git status --short</code> を保存し、既存の変更を自分の変更として上書きしない。
+    </li>
+    <li>
+      F0でscaffold、Foundation code、liveの3つのentry
+      predicateを機械判定する。未達の境界を越えず、live gate未達時はF8へ進まない。
+    </li>
+    <li>
+      F1からF8まで順番を変えない。各unitで「入力、変更、テスト、成果物、exit、stop」をすべて満たしてから次へ進む。
+    </li>
+    <li>
+      各unitのfocused
+      testを先に通し、その後に広いtestを実行する。skipは成功扱いせず、理由をevidenceへ記録する。
+    </li>
+    <li>
+      実装中に本書で定義されていないschema、network call、public argument、live
+      mutationが必要になったら停止し、推測で追加しない。
+    </li>
+    <li>
+      commit、push、resident restart、live
+      canaryは、依頼に明示された場合だけ行う。コード実装の依頼だけではF8のlive操作を認可されたと解釈しない。
+    </li>
+  </ol>
+  <h3 id="section-04-今すぐ実装を依頼された場合の境界">0.4 今すぐ実装を依頼された場合の境界</h3>
+  <ul>
+    <li>TerraはまずF0のmanifest、fixture、evidence draftを実装する。</li>
+    <li>
+      Rust runtime T1のproduction identity/build APIがsource
+      treeに存在しない場合、F1を完了扱いにせず停止する。pure type/fixture
+      testを先行作成してもよいが、productionで仮のdatabase identity/build
+      IDへfallbackしたり、未配線コードを「完了」と報告してはいけない。
+    </li>
+    <li>
+      T1 APIが存在しfocused
+      testが通る場合、repository-isolationのlive観測完了前でもF1-F7のoffline実装を順番どおり進めてよい。
+    </li>
+    <li>
+      F8は別のlive-activation作業である。F8の開始には、本書のlive-entry
+      gateと利用者による明示的な実行依頼の両方が必要である。
+    </li>
+    <li>
+      delivery
+      unit外の既存failureを発見した場合、今回の変更に起因するかを切り分け、無関係ならevidenceへ記録して停止判断を求める。無関係な修正を混ぜない。
+    </li>
+  </ul>
+  <hr />
+  <h2 id="section-1-executive-decision">1. Executive Decision</h2>
+  <p>
+    Implement the Foundation before FTS, Vector, Utility Graph, Density Selector, or Context
+    Capsule.
+  </p>
+  <p>The Foundation release has two outcomes.</p>
+  <ol>
+    <li>
+      Make the active Rust <code>context_compile</code> pipeline measurable and concurrency-safe.
+    </li>
+    <li>Correct the current ranking lockout without introducing a new retrieval lane.</li>
+  </ol>
+  <p>The implementation order is fixed as follows.</p>
+  <ol>
+    <li>
+      Finish the effective-database and runtime-truth prerequisites owned by the Rust runtime
+      closeout plan.
+    </li>
+    <li>
+      Preserve current behavior with a golden contract and extract the active compile semantics from
+      the MCP transport boundary.
+    </li>
+    <li>Normalize timestamp reads and formalize canonical new writes.</li>
+    <li>
+      Add phase, provider-attempt, runtime, candidate-count, and writer-occupancy telemetry without
+      a schema revision.
+    </li>
+    <li>
+      Split <code>context_compile</code> into read-only preparation, external composition, and short
+      Writer persistence.
+    </li>
+    <li>Restore native selection counters and content-version snapshots.</li>
+    <li>Introduce query-first ranking with dynamic utility as a bounded tie-breaker.</li>
+    <li>Compare composition routes offline, then run shadow, canary, and a 24-hour observation.</li>
+  </ol>
+  <p>
+    The release does not add FTS, embeddings, graph edges, online reranking, or a new network call.
+    It preserves the public MCP input and output contract.
+  </p>
+  <hr />
+  <h2 id="section-2-authority-and-dependency-order">2. Authority And Dependency Order</h2>
+  <p>
+    The following documents own different constraints. This plan does not weaken or duplicate them.
+  </p>
+  <table>
+    <caption>
+      Table: 2. Authority And Dependency Order
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Concern</th>
+        <th scope="col">Authority</th>
+        <th scope="col">Effect on this plan</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Repository identity, fail-closed eligibility, producer observation</td>
+        <td>
+          <a href="context-compile-repository-isolation-improvement-plan.html"
+            >Repository Isolation Closeout Plan</a
+          >
+        </td>
+        <td>Scope/classification predicates and hard-zero safety gates remain unchanged</td>
+      </tr>
+      <tr>
+        <td>Live database identity, Doctor, backup, queue truth, controlled restart</td>
+        <td>
+          <a href="rust-runtime-closeout-implementation-plan.html">Rust Runtime Closeout Plan</a>
+        </td>
+        <td>T1-T4 are live-entry prerequisites; T5 Vector is outside this plan</td>
+      </tr>
+      <tr>
+        <td>Compile semantic ownership and module sequencing</td>
+        <td>
+          <a href="repository-isolation-first-product-hardening-plan.html"
+            >Repository Isolation First Product Hardening Plan</a
+          >
+        </td>
+        <td>
+          Rust remains the target semantic owner; TypeScript is not given new ranking semantics
+        </td>
+      </tr>
+      <tr>
+        <td>Utility-RAG architecture and performance budgets</td>
+        <td><a href="contextstill-utility-rag-concept.html">Utility-RAG Concept</a></td>
+        <td>Foundation gate and later-lane boundaries are inherited</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>When constraints conflict, apply this precedence.</p>
+  <ol>
+    <li>Repository isolation safety invariants.</li>
+    <li>Effective database identity and Writer ownership.</li>
+    <li>Foundation non-inferiority gates.</li>
+    <li>Maintainability and delivery-unit preferences.</li>
+  </ol>
+  <h3 id="section-21-code-entry-gate">2.1 Code-entry gate</h3>
+  <p>
+    F0と独立fixture testを開始できる条件は次のとおり。F1-F7へ進む追加条件はT1 production
+    APIの存在とfocused test passである。
+  </p>
+  <ul>
+    <li>テストは一時DBまたは明示的なread-only snapshotのみを使う。</li>
+    <li>resident restart、live DB write、DB copy/move/merge、historical backfillを行わない。</li>
+    <li>
+      runtime identityはRust runtime T1が提供するproduction resolverを唯一のsource of
+      truthとし、Foundation側に別resolverを作らない。
+    </li>
+    <li>
+      F1完了にはT1 production APIとそのfocused test passが必要である。T1未merge時はF0と独立fixture
+      testだけが許可される。
+    </li>
+  </ul>
+  <h3 id="section-22-live-entry-gate">2.2 Live-entry gate</h3>
+  <p>
+    Offline implementation and tests may be developed in an isolated branch before live closeout. Do
+    not rebuild or restart the resident daemon for this plan until all of the following are true.
+  </p>
+  <ul>
+    <li>The repository-isolation 24-hour audit has passed.</li>
+    <li>
+      The repository-isolation final observation has passed: at least 7 days, at least 200
+      identity-bearing <code>PERSISTED</code> events, enabled producer coverage 100%, and new
+      unresolved 0.
+    </li>
+    <li>Rust runtime T1-T3 tests pass.</li>
+    <li>
+      Rust runtime T4 has established one effective database identity across status, paths, Doctor,
+      backup, queue, and vector diagnostics.
+    </li>
+    <li>A recoverable backup of that exact effective database has been verified.</li>
+  </ul>
+  <p>
+    The earliest calendar date is not itself a pass. Every data condition must also be satisfied.
+  </p>
+  <h3 id="section-23-dependency-graph">2.3 Dependency graph</h3>
+  <figure>
+    <pre class="mermaid" data-spec-html-source="markdown">flowchart TD
+    O[&quot;Offline F0 fixtures and contract&quot;] --&gt; F1[&quot;F1 Golden contract and Rust domain seam&quot;]
+    T1[&quot;Rust runtime T1 production identity API&quot;] --&gt; F1
+    F1 --&gt; F2[&quot;F2 Timestamp and baseline contract&quot;]
+    F2 --&gt; F3[&quot;F3 Telemetry and observed Writer API&quot;]
+    F3 --&gt; F4[&quot;F4 Read / compose / persist split&quot;]
+    F4 --&gt; F5[&quot;F5 Counters and content snapshots&quot;]
+    F5 --&gt; F6[&quot;F6 Ranking correction and shadow&quot;]
+    F6 --&gt; F7[&quot;F7 Composition experiment&quot;]
+    I[&quot;Repository isolation final closeout&quot;] --&gt; R[&quot;Rust runtime T1-T4 live truth&quot;]
+    R --&gt; F8
+    F7 --&gt; F8[&quot;F8 Canary and Foundation promotion&quot;]
+    F8 --&gt; P1[&quot;Later plan: Native FTS / RRF&quot;]
+    R -. &quot;separate T5 measurement&quot; .-&gt; V[&quot;Later decision: Vector mode&quot;]
+</pre>
+    <figcaption>Diagram: 2.3 Dependency graph</figcaption>
+  </figure>
+  <hr />
+  <h2 id="section-3-confirmed-starting-state">3. Confirmed Starting State</h2>
+  <p>
+    This section is a planning snapshot, not a permanent source of truth. F0 must recapture it with
+    the versioned manifest before implementation.
+  </p>
+  <p>Read-only snapshot at 2026-08-16 22:51 JST:</p>
+  <table>
+    <caption>
+      Table: 3. Confirmed Starting State
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Observation</th>
+        <th scope="col">Value</th>
+        <th scope="col">Consequence</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Resident runtime</td>
+        <td>Rust <code>context-stilld</code> 0.1.0</td>
+        <td>Active MCP implementation work starts in Rust</td>
+      </tr>
+      <tr>
+        <td>Resident/status database</td>
+        <td>repository <code>data/context-still-core.sqlite</code></td>
+        <td>This is the live Writer database reported by status</td>
+      </tr>
+      <tr>
+        <td><code>paths</code>/Doctor/vector database</td>
+        <td>Application Support database</td>
+        <td>Effective database identity is not yet unified</td>
+      </tr>
+      <tr>
+        <td>Doctor</td>
+        <td>top-level <code>ok</code>, nested bootstrap <code>needs_init</code></td>
+        <td>Readiness cannot yet be used as a release gate</td>
+      </tr>
+      <tr>
+        <td>Vector health</td>
+        <td><code>ok</code>, vector tables absent on the inspected DB</td>
+        <td>Vector is not a Foundation dependency</td>
+      </tr>
+      <tr>
+        <td>Queue</td>
+        <td>1,101 runnable, <code>maintenance_only</code>, executor stopped</td>
+        <td>Queue truth must be closed independently before rollout</td>
+      </tr>
+      <tr>
+        <td>Classified Knowledge</td>
+        <td>global 29, repo 69</td>
+        <td>Evaluation must not treat all active Knowledge as eligible</td>
+      </tr>
+      <tr>
+        <td>Unresolved Knowledge</td>
+        <td>7,129</td>
+        <td>Unresolved remains fail-closed; bulk classification is forbidden</td>
+      </tr>
+      <tr>
+        <td>Classified EpisodeCard</td>
+        <td>repo 5,761</td>
+        <td>Episode evaluation must use exact request eligibility</td>
+      </tr>
+      <tr>
+        <td>Producer PERSISTED</td>
+        <td>162</td>
+        <td>Minimum count alone is not yet met</td>
+      </tr>
+      <tr>
+        <td>Enabled producer coverage</td>
+        <td>1/3</td>
+        <td>
+          <code>episode-distiller.rust</code> and <code>register-candidates.rust</code> are
+          unobserved
+        </td>
+      </tr>
+      <tr>
+        <td>New unresolved during observation</td>
+        <td>0</td>
+        <td>Current safety signal is positive</td>
+      </tr>
+      <tr>
+        <td>Identity-present compile runs</td>
+        <td>116 / 1,856, 6.25%</td>
+        <td>Historical end-to-end baseline is under-sampled</td>
+      </tr>
+      <tr>
+        <td>Identity-present duration</td>
+        <td>p50 9,904.5 ms, p95 15,408.75 ms</td>
+        <td>Provisional only; replace with corrected manifest cohort</td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="section-31-current-active-pipeline">3.1 Current active pipeline</h3>
+  <p>
+    The active <code>context_compile</code> implementation currently enters
+    <code>with_writer</code> before validation and keeps the Writer job while it performs:
+  </p>
+  <ul>
+    <li>identity and request preparation;</li>
+    <li>Knowledge and EpisodeCard reads;</li>
+    <li>settings and provider-secret reads;</li>
+    <li>planner and Composer network calls;</li>
+    <li>pack and usage assembly;</li>
+    <li>the final SQLite transaction.</li>
+  </ul>
+  <p>
+    This means external provider latency can occupy the single Writer even though most of the
+    operation is read-only or network-bound.
+  </p>
+  <h3 id="section-32-current-ranking-defect">3.2 Current ranking defect</h3>
+  <p>Knowledge ranking currently computes one value equivalent to:</p>
+  <pre><code class="language-text">score = query_text_score + rounded_dynamic_score
+</code></pre>
+  <p>
+    It then uses <code>score &gt; 0</code> as candidate eligibility. A high dynamic score can
+    therefore make a query-unmatched item eligible and can lock out query-sensitive candidates.
+  </p>
+  <p>
+    Episode ranking has a related issue: importance is added before the
+    <code>score &gt; 0</code> filter. Foundation corrects both without introducing a learned ranker.
+  </p>
+  <h3 id="section-33-current-timestamp-defect">3.3 Current timestamp defect</h3>
+  <p>
+    Rust-owned writes use <code>unix-ms:&lt;integer&gt;</code>, while other paths and SQLite
+    defaults use ISO or SQLite datetime text. Any report that relies only on
+    <code>datetime(column)</code> can silently omit or misorder Rust rows.
+  </p>
+  <p>
+    Foundation standardizes new active Rust compile writes on
+    <code>unix-ms:&lt;integer&gt;</code> and standardizes comparisons on a shared epoch-millisecond
+    projection. It does not rewrite the live history in place.
+  </p>
+  <hr />
+  <h2 id="section-4-goal-and-definition-of-done">4. Goal And Definition Of Done</h2>
+  <h3 id="section-41-goal">4.1 Goal</h3>
+  <p>
+    Provide a reproducible, scope-safe baseline and a low-contention active Rust compile pipeline so
+    that later retrieval improvements can be evaluated without confounding database identity, Writer
+    occupancy, timing, route-attempt, or ranking-scale defects.
+  </p>
+  <h3 id="section-42-foundation-done">4.2 Foundation done</h3>
+  <p>Foundation is complete only when all are true.</p>
+  <ul>
+    <li>
+      Active Rust compile runs use one effective database identity supplied by the runtime-identity
+      resolver.
+    </li>
+    <li>
+      Repository isolation predicates and request identity snapshots are unchanged and pass
+      hard-zero tests.
+    </li>
+    <li>Retrieval and settings reads use a SQLite read-only connection.</li>
+    <li>
+      No external provider call occurs while the SQLite Writer owns
+      <code>mcp.context_compile.persist</code>.
+    </li>
+    <li>The final business persistence is one bounded Writer job and one transaction.</li>
+    <li>
+      Phase timing, logical LLM calls, provider attempts, failovers, runtime/build identity,
+      pipeline mode, candidate counts, and composition route are queryable from the run snapshot.
+    </li>
+    <li>
+      Exact Writer queue/work/total timing and pre-ledger service timing are queryable from the
+      append-only runtime telemetry ledger by run ID; caller-observed end-to-end timing is captured
+      by the paired MCP harness, and missing or malformed ledger records are measurable.
+    </li>
+    <li>Baseline reports normalize mixed historical timestamp formats.</li>
+    <li>New active Rust compile timestamps have one canonical representation.</li>
+    <li>
+      Selected Knowledge and EpisodeCard snapshots contain content hash and source update timestamp
+      when available.
+    </li>
+    <li>
+      <code>compile_select_count</code> and EpisodeCard <code>compile_use_count</code> are updated
+      atomically with pack persistence.
+    </li>
+    <li>Query evidence alone determines candidate eligibility.</li>
+    <li>
+      Dynamic utility and importance are bounded tie-breakers and cannot introduce a query-unmatched
+      candidate.
+    </li>
+    <li>Current safe top-8/top-3 behavior remains available as rollback mode.</li>
+    <li>Composition experiments do not add calls to the normal online path.</li>
+    <li>Performance, availability, quality, telemetry, and safety promotion gates pass.</li>
+  </ul>
+  <h3 id="section-43-foundation-evidence">4.3 Foundation evidence</h3>
+  <p>Implementation creates a separate evidence document:</p>
+  <pre><code class="language-text">spec/docs/contextstill-utility-rag-foundation-evidence.html
+</code></pre>
+  <p>
+    It records the manifest hash, source commit, binary build identity, effective database
+    fingerprint, test counts, skipped tests, benchmark artifacts, canary results, stop decisions,
+    and final promotion decision.
+  </p>
+  <hr />
+  <h2 id="section-5-scope">5. Scope</h2>
+  <h3 id="section-51-in-scope">5.1 In scope</h3>
+  <ul>
+    <li>Active Rust-native MCP <code>context_compile</code>.</li>
+    <li>A Rust-owned compile domain boundary behind the MCP adapter.</li>
+    <li>Effective database identity consumption.</li>
+    <li>Read-only SQLite compile reads.</li>
+    <li>Writer queue wait and hold-time observation.</li>
+    <li>Runtime, phase, provider-attempt, failover, and candidate-count telemetry.</li>
+    <li>Canonical compile timestamp writes and mixed-format report normalization.</li>
+    <li>Content hash/version snapshots.</li>
+    <li>Native selection counter updates.</li>
+    <li>Query-first deterministic ranking correction.</li>
+    <li>Legacy, split, shadow, and Foundation rollout modes.</li>
+    <li>Fixed-corpus baseline, ranking, concurrency, and composition experiments.</li>
+    <li>Rust tests, SQLite contract tests, MCP smoke, and documentation.</li>
+  </ul>
+  <h3 id="section-52-compatibility-work-in-scope">5.2 Compatibility work in scope</h3>
+  <ul>
+    <li>TypeScript readers must continue to parse Rust run snapshots with additive diagnostics.</li>
+    <li>Shared repository-isolation fixtures remain the safety contract.</li>
+    <li>
+      Maintained APIs that display run details must ignore or expose additive diagnostics without
+      rejecting them.
+    </li>
+    <li>
+      A capability report records which compile surfaces remain Rust-owned or TypeScript-owned.
+    </li>
+  </ul>
+  <h3 id="section-53-out-of-scope">5.3 Out of scope</h3>
+  <ul>
+    <li>FTS5 retrieval or RRF.</li>
+    <li>Vector query generation, embedding cache, vec0, or brute-force cosine.</li>
+    <li>Utility Graph schema, edges, traversal, or behavioral learning.</li>
+    <li>Density Selector, Context Capsule, or delivery-text compression.</li>
+    <li>A new online LLM, embedding, reranker, or provider call.</li>
+    <li>Bulk classification of unresolved Knowledge, Source, or EpisodeCard.</li>
+    <li>Database copy, move, merge, or automatic path consolidation.</li>
+    <li>Queue backlog reset, delete, or provider-policy changes.</li>
+    <li>PostgreSQL parity or removal.</li>
+    <li>Full TypeScript CLI/UI/API migration to the Rust compile owner.</li>
+    <li>Removal of the legacy TypeScript compiler.</li>
+    <li>UI controls for Foundation rollout flags.</li>
+    <li>Historical timestamp rewrite on the live DB.</li>
+  </ul>
+  <hr />
+  <h2 id="section-6-safety-and-performance-invariants">6. Safety And Performance Invariants</h2>
+  <p>These invariants apply in every rollout mode.</p>
+  <ol>
+    <li>
+      Identity is resolved once per request and the same snapshot is used by reads, pack, usage, and
+      traces.
+    </li>
+    <li>Eligibility is applied before arbitrary limit and ranking.</li>
+    <li>Missing identity remains global-only.</li>
+    <li>Unresolved, malformed, conflict, and wrong-project items never enter normal candidates.</li>
+    <li>No rollback may restore an unscoped fallback.</li>
+    <li>
+      Shadow-only candidate text is never sent to a provider, returned to the caller, inserted into
+      the pack, or counted as used.
+    </li>
+    <li>
+      In split modes, the query/read phase never receives a writable SQLite connection;
+      <code>legacy</code> is the documented rollback exception.
+    </li>
+    <li>
+      Provider secrets, prompts, response bodies, Knowledge bodies, and absolute database paths are
+      not written to Foundation telemetry.
+    </li>
+    <li>
+      In split modes, the external compose phase never retains a SQLite connection or Writer handle;
+      <code>legacy</code> preserves the prior boundary only for rollback.
+    </li>
+    <li>Persistence does not update current Knowledge content from an older read snapshot.</li>
+    <li>
+      Business persistence is atomic: run, task trace, pack items, candidate traces, usage,
+      feedback, and counters commit together or not at all.
+    </li>
+    <li>
+      Runtime-ledger append failure cannot roll back a successfully persisted context pack and
+      cannot be counted as a complete performance sample.
+    </li>
+    <li>
+      Normal online logical LLM calls and provider attempts do not increase relative to the selected
+      baseline route.
+    </li>
+    <li>Later retrieval lanes cannot be smuggled into Foundation behind a feature flag.</li>
+  </ol>
+  <hr />
+  <h2 id="section-7-fixed-design-decisions">7. Fixed Design Decisions</h2>
+  <h3 id="section-71-semantic-owner">7.1 Semantic owner</h3>
+  <p>
+    Rust is the Foundation semantic owner. <code>native_compile.rs</code> becomes a thin MCP
+    request/response adapter. New compile semantics live in a Rust domain, not in TypeScript. This
+    closes the Foundation portion of the hardening plan&#39;s A0 ownership decision; the later
+    TypeScript caller migration remains A1 and is not pulled into this release.
+  </p>
+  <p>
+    TypeScript compile surfaces are recorded in the capability matrix but are not given a parallel
+    Foundation ranking implementation. Their migration is a later ownership-convergence delivery.
+  </p>
+  <h3 id="section-72-timestamp-contract">7.2 Timestamp contract</h3>
+  <p>Canonical new Rust persistence format:</p>
+  <pre><code class="language-text">unix-ms:&lt;non-negative base-10 epoch milliseconds&gt;
+</code></pre>
+  <p>Comparison and ordering use a shared normalized epoch-millisecond projection.</p>
+  <pre><code class="language-sql">case
+  when value like &#39;unix-ms:%&#39;
+   and length(substr(value, 9)) between 1 and 16
+   and substr(value, 9) not glob &#39;*[^0-9]*&#39;
+   and cast(substr(value, 9) as integer) between 0 and 8640000000000000
+    then cast(substr(value, 9) as integer)
+  when typeof(value) = &#39;text&#39;
+   and length(value) &gt;= 19
+   and substr(value, 1, 4) not glob &#39;*[^0-9]*&#39;
+   and substr(value, 5, 1) = &#39;-&#39;
+   and substr(value, 6, 2) not glob &#39;*[^0-9]*&#39;
+   and substr(value, 8, 1) = &#39;-&#39;
+   and substr(value, 9, 2) not glob &#39;*[^0-9]*&#39;
+   and substr(value, 11, 1) in (&#39; &#39;, &#39;T&#39;)
+   and substr(value, 12, 2) not glob &#39;*[^0-9]*&#39;
+   and substr(value, 14, 1) = &#39;:&#39;
+   and substr(value, 15, 2) not glob &#39;*[^0-9]*&#39;
+   and substr(value, 17, 1) = &#39;:&#39;
+   and substr(value, 18, 2) not glob &#39;*[^0-9]*&#39;
+   and julianday(value) is not null
+   and cast(round((julianday(value) - 2440587.5) * 86400000.0) as integer)
+       between 0 and 8640000000000000
+    then cast(round((julianday(value) - 2440587.5) * 86400000.0) as integer)
+  else null
+end
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>
+      Prefix matching alone is forbidden: <code>unix-ms:1junk</code>, an empty suffix, a signed
+      suffix, overflow, and values outside the ECMAScript <code>Date</code> range are invalid.
+    </li>
+    <li>
+      Invalid timestamps are counted and excluded from time-window metrics; they are never treated
+      as current time.
+    </li>
+    <li>Equal normalized timestamps are ordered by stable row ID.</li>
+    <li>APIs requiring RFC3339 convert at the presentation boundary.</li>
+    <li>No live historical row is rewritten in Foundation.</li>
+    <li>
+      Rust and TypeScript keep separate implementations but consume one normative fixture:
+      <code>test/fixtures/timestamp-normalization-v1.json</code>. The fixture contains raw input,
+      expected epoch milliseconds or <code>null</code>, and stable-order cases.
+    </li>
+    <li>
+      <code>src/modules/context-compiler/context-compiler.repository.utils.ts::normalizeDate</code>,
+      <code>repository-isolation-report.repository.ts::dateFromUnknown</code>, and
+      <code>sqliteTimestampMillis</code> must conform to the fixture. No new permissive parser is
+      allowed.
+    </li>
+  </ul>
+  <h3 id="section-73-schema-strategy">7.3 Schema strategy</h3>
+  <p>
+    Foundation v1 adds no SQLite table, column, index, <code>user_version</code>, or
+    <code>schema_migrations</code> revision.
+  </p>
+  <p>Reasons:</p>
+  <ul>
+    <li>
+      A new additive revision would prevent direct rollback to a binary whose
+      <code>CURRENT_SCHEMA_REVISION</code> is lower.
+    </li>
+    <li>
+      Existing <code>pack_snapshot</code>, <code>context_compile_candidate_traces.evidence</code>,
+      and run/task fields can carry the bounded Foundation contract.
+    </li>
+    <li>
+      The candidate scale is small enough that JSON extraction is acceptable for Foundation reports.
+    </li>
+  </ul>
+  <p>
+    If later measurements prove JSON aggregation inadequate, a normalized telemetry table requires a
+    separate migration plan with explicit N-1 binary compatibility. It is not added
+    opportunistically.
+  </p>
+  <h3 id="section-74-ranking-policy">7.4 Ranking policy</h3>
+  <p>Foundation uses deterministic lexicographic ranking.</p>
+  <p>Knowledge:</p>
+  <pre><code class="language-text">eligible when query_score &gt; 0
+order by:
+  query_score desc,
+  bounded_dynamic_utility desc,
+  importance desc,
+  updated_at_epoch_ms desc,
+  id asc
+</code></pre>
+  <p>EpisodeCard:</p>
+  <pre><code class="language-text">eligible when query_score &gt; 0
+order by:
+  query_score desc,
+  importance desc,
+  updated_at_epoch_ms desc,
+  id asc
+</code></pre>
+  <p>
+    <code>dynamic_score</code> is normalized before comparison: non-finite values become 0 and
+    finite values are clamped to <code>[0, 100]</code>. It never changes candidate eligibility and
+    never outranks a higher query score. The trace keeps both the raw value and the normalized
+    tie-break value. No weight tuning is required for Foundation.
+  </p>
+  <p>
+    Because JSON cannot represent non-finite numbers, <code>rawDynamicUtility</code> is
+    <code>null</code> and <code>rawDynamicUtilityNonFinite=true</code> for NaN/infinity; otherwise
+    the raw finite value is stored and the flag is false. <code>boundedDynamicUtility</code> is
+    always a finite number in <code>[0, 100]</code>.
+  </p>
+  <p>
+    <code>query_score</code> keeps the current <code>native_common.rs::score_text</code> algorithm
+    byte-for-byte in Foundation. Knowledge input is exactly
+    <code>title + &quot;\n&quot; + body</code>; EpisodeCard input is exactly
+    <code>title + &quot;\n&quot; + situation + &quot;\n&quot; + lesson</code>; the query remains the
+    existing <code>search_text(goal, technologies, changeTypes, domains)</code>. F6 separates
+    features and ordering but does not add stemming, token weighting, exact-match boosts, FTS
+    behavior, or a changed normalization rule. Move <code>score_text</code> into the compile domain
+    and retain a compatibility wrapper only if another native tool still calls it.
+  </p>
+  <p>
+    Implement ordering as explicit tuple comparison, not by combining features into one number.
+    Normalized valid timestamps sort newest first; invalid/<code>None</code> timestamps sort after
+    every valid timestamp; ID ascending is the final total-order key. Use the finite clamped
+    <code>boundedDynamicUtility</code> for float comparison so no partial-order/NaN fallback is
+    needed.
+  </p>
+  <h3 id="section-75-rollout-mode">7.5 Rollout mode</h3>
+  <p>Add one startup setting, parsed strictly and captured in the runtime context:</p>
+  <pre><code class="language-text">CONTEXT_STILL_COMPILE_FOUNDATION_MODE=
+  legacy
+  split_legacy_rank
+  split_shadow_rank
+  foundation
+</code></pre>
+  <p>Semantics:</p>
+  <table>
+    <caption>
+      Table: 7.5 Rollout mode
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Mode</th>
+        <th scope="col">Writer boundary</th>
+        <th scope="col">Delivered ranking</th>
+        <th scope="col">Shadow trace</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>legacy</code></td>
+        <td>Existing whole-operation Writer ownership</td>
+        <td>Current ranking</td>
+        <td>none</td>
+      </tr>
+      <tr>
+        <td><code>split_legacy_rank</code></td>
+        <td>Read / compose / short persist</td>
+        <td>Current ranking</td>
+        <td>none</td>
+      </tr>
+      <tr>
+        <td><code>split_shadow_rank</code></td>
+        <td>Read / compose / short persist</td>
+        <td>Current ranking</td>
+        <td>Foundation IDs/scores only</td>
+      </tr>
+      <tr>
+        <td><code>foundation</code></td>
+        <td>Read / compose / short persist</td>
+        <td>Foundation ranking</td>
+        <td>legacy IDs/scores only</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Invalid values fail resident startup. They do not silently default. The initial code default is
+    <code>legacy</code>; the controlled resident configuration selects later modes.
+  </p>
+  <p>
+    An absent variable means <code>legacy</code>. A present value is ASCII-trimmed and must then
+    equal one lowercase token in the table; empty, mixed-case, or unknown values are invalid. Parse
+    once while constructing <code>CompileRuntimeContext</code>. Tests cover absent, every valid
+    token, empty, surrounding whitespace, mixed-case, and unknown values.
+  </p>
+  <h3 id="section-76-composition-routes">7.6 Composition routes</h3>
+  <p>Foundation implements an opt-in experiment harness for:</p>
+  <ul>
+    <li><code>current_two_call</code>: current planner plus Composer route;</li>
+    <li><code>single_compose</code>: one provider call with the same candidate snapshot;</li>
+    <li><code>deterministic</code>: no provider call.</li>
+  </ul>
+  <p>
+    The normal online default remains <code>current_two_call</code> until a route passes its own
+    paired quality and non-inferiority gate. Foundation completion requires a recorded decision, not
+    a forced route switch.
+  </p>
+  <p>
+    The harness is exposed only through the operator CLI in section 10.3. It prepares each manifest
+    query once, then supplies owned clones of that exact snapshot to every enabled route. It cannot
+    be enabled through MCP arguments or the rollout-mode environment variable.
+  </p>
+  <hr />
+  <h2 id="section-8-target-architecture">8. Target Architecture</h2>
+  <h3 id="section-81-runtime-flow">8.1 Runtime flow</h3>
+  <figure>
+    <pre class="mermaid" data-spec-html-source="markdown">sequenceDiagram
+    participant MCP as MCP adapter
+    participant S as Compile service
+    participant R as Read-only SQLite
+    participant C as External composer
+    participant W as SQLite Writer
+    participant L as Runtime telemetry ledger
+
+    MCP-&gt;&gt;S: validated request + runtime context
+    S-&gt;&gt;R: open effective DB read-only
+    R--&gt;&gt;S: eligible candidates + settings + version snapshots
+    S-&gt;&gt;S: legacy and/or Foundation ranking
+    S--&gt;&gt;R: close read connection
+    S-&gt;&gt;C: delivered candidate snapshot only
+    C--&gt;&gt;S: composition result + attempt trace
+    S-&gt;&gt;W: atomic business persistence
+    W--&gt;&gt;S: observed queue wait + hold time
+    S-&gt;&gt;L: append one bounded record by run ID
+    L--&gt;&gt;S: appended / missing
+    S--&gt;&gt;MCP: existing text content contract
+</pre>
+    <figcaption>Diagram: 8.1 Runtime flow</figcaption>
+  </figure>
+  <h3 id="section-82-rust-module-boundary">8.2 Rust module boundary</h3>
+  <p>Target structure:</p>
+  <pre><code class="language-text">crates/context-stilld/src/domains/context_compile/
+  mod.rs
+  types.rs
+  service.rs
+  request.rs
+  legacy.rs
+  read_repository.rs
+  ranking.rs
+  composer.rs
+  persistence.rs
+  telemetry.rs
+  telemetry_ledger.rs
+  report.rs
+  routing.rs
+  tests.rs
+
+crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs
+  thin parameter validation / adapter only
+</code></pre>
+  <p>Dependency direction:</p>
+  <pre><code class="language-text">mcp_lifecycle -&gt; context_compile -&gt; sqlite_writer / runtime identity
+                               -&gt; provider transport
+</code></pre>
+  <p>
+    <code>context_compile</code> must not depend on MCP JSON envelopes. Provider transport/parser
+    must not depend on persistence. Ranking must be a pure function over owned candidate snapshots.
+  </p>
+  <h3 id="section-83-core-types">8.3 Core types</h3>
+  <p>
+    The following names and ownership boundaries are fixed. A delivery unit may add private SQL row
+    structs or helper enums, but it must not collapse these boundaries or rename them without
+    updating this plan first.
+  </p>
+  <pre><code class="language-rust">pub(crate) struct CompileRuntimeContext {
+    pub(crate) project_root: PathBuf,
+    pub(crate) database: EffectiveDatabaseIdentity,
+    pub(crate) runtime_version: String,
+    pub(crate) runtime_build_id: String,
+    pub(crate) mode: CompileFoundationMode,
+    pub(crate) telemetry_ledger: Arc&lt;FoundationTelemetryLedger&gt;,
+}
+
+pub(crate) struct CompileRequest {
+    pub(crate) goal: String,
+    pub(crate) session_id: Option&lt;String&gt;,
+    pub(crate) facets: RepositoryRequestFacets,
+}
+
+pub(crate) struct PreparedCompile {
+    pub(crate) run_id: String,
+    pub(crate) request: CompileRequest,
+    pub(crate) identity: ResolvedCompileProjectIdentity,
+    pub(crate) knowledge: Vec&lt;KnowledgeSnapshot&gt;,
+    pub(crate) episodes: Vec&lt;EpisodeSnapshot&gt;,
+    pub(crate) legacy_selection: Selection,
+    pub(crate) foundation_selection: Selection,
+    pub(crate) composer_settings: ComposerSettings,
+    pub(crate) telemetry: CompileTelemetryDraft,
+}
+
+pub(crate) struct CompositionResult {
+    pub(crate) markdown: String,
+    pub(crate) used_knowledge: Vec&lt;UsedKnowledge&gt;,
+    pub(crate) used_episodes: Vec&lt;UsedEpisode&gt;,
+    pub(crate) route: CompositionRoute,
+    pub(crate) attempts: Vec&lt;ProviderAttempt&gt;,
+    pub(crate) degraded_reasons: Vec&lt;String&gt;,
+}
+
+pub(crate) struct PersistCompile {
+    pub(crate) prepared: PreparedCompile,
+    pub(crate) delivered_selection: Selection,
+    pub(crate) composition: CompositionResult,
+}
+
+pub(crate) struct CompileOutput {
+    pub(crate) markdown: String,
+    pub(crate) run_id: String,
+}
+</code></pre>
+  <p>
+    <code>EffectiveDatabaseIdentity</code> is imported from the completed Rust runtime T1
+    implementation; Foundation must not define a competing resolver or reconstruct the identity from
+    ambient environment variables. Do not derive <code>Debug</code>, <code>Serialize</code>, or
+    <code>Clone</code> for structures containing provider secrets, full prompt payloads, or response
+    bodies. <code>CompileOutput.run_id</code> remains internal; the MCP adapter returns the existing
+    text contract only.
+  </p>
+  <h3 id="section-84-read-only-connection">8.4 Read-only connection</h3>
+  <p>Open one connection per compile request using read-only flags. Configure:</p>
+  <ul>
+    <li><code>SQLITE_OPEN_READ_ONLY</code>;</li>
+    <li><code>PRAGMA query_only = ON</code>;</li>
+    <li><code>busy_timeout(Duration::from_millis(100))</code>;</li>
+    <li><code>PRAGMA foreign_keys = ON</code>.</li>
+  </ul>
+  <p>
+    Opening the file, setting either PRAGMA, or setting the timeout is fallible and returns
+    <code>CompileError</code>; never retry by opening a default writable connection. A focused test
+    asserts <code>pragma query_only = 1</code>, <code>pragma foreign_keys = 1</code>, and
+    <code>pragma busy_timeout = 100</code>, then proves all DML and DDL attempts fail.
+  </p>
+  <p>
+    Do not execute <code>journal_mode</code>, migration, checkpoint, temp schema, or any
+    write-capable PRAGMA on the read path. Use the effective path already resolved by Rust runtime
+    T1.
+  </p>
+  <p>
+    The read connection is dropped before the first provider call. A concurrency test must prove
+    that no <code>Connection</code> or Writer closure survives into composition.
+  </p>
+  <h3 id="section-85-snapshot-consistency">8.5 Snapshot consistency</h3>
+  <p>Each candidate snapshot includes:</p>
+  <ul>
+    <li>entity ID and kind;</li>
+    <li>title and retrieval/delivery content used for this run;</li>
+    <li>source refs;</li>
+    <li>scope snapshot and identity basis;</li>
+    <li>item <code>updated_at</code> raw value and normalized epoch milliseconds when valid;</li>
+    <li>SHA-256 content hash over the selected fields;</li>
+    <li>query score and bounded tie-break features;</li>
+    <li>delivered, shadow, suppressed, and use state.</li>
+  </ul>
+  <p>
+    If the current entity changes between read and persist, store the selection snapshot. Do not
+    overwrite the current entity. Counter update mismatch is recorded in diagnostics.
+  </p>
+  <p>
+    Content-version evidence uses <code>sha256-canonical-json-v1</code>. Serialize a JSON object
+    with lexicographically sorted keys and UTF-8 without whitespace. Normalize the existing
+    Knowledge <code>sourceRefs</code> string array by de-duplicating exact strings and sorting them
+    lexicographically. Knowledge hashes exactly <code>entityKind</code>, <code>id</code>,
+    <code>type</code>, <code>polarity</code>, <code>title</code>, <code>body</code>, and normalized
+    <code>sourceRefs</code>. EpisodeCard hashes exactly <code>entityKind</code>, <code>id</code>,
+    <code>title</code>, <code>situation</code>, and <code>lesson</code>. Do not include scores,
+    counters, scope, or timestamps in the hash.
+  </p>
+  <p>
+    For every selected candidate,
+    <code>context_compile_candidate_traces.evidence.foundation.contentVersion</code> contains:
+  </p>
+  <pre><code class="language-json">{
+  &quot;algorithm&quot;: &quot;sha256-canonical-json-v1&quot;,
+  &quot;sha256&quot;: &quot;lowercase-64-hex&quot;,
+  &quot;sourceUpdatedAtRaw&quot;: &quot;unix-ms:... or original text&quot;,
+  &quot;sourceUpdatedAtEpochMs&quot;: 1786896000000
+}
+</code></pre>
+  <p>
+    <code>sourceUpdatedAtEpochMs</code> is <code>null</code> when normalization fails; the raw value
+    is bounded to 128 characters and the invalid count is incremented. Full content is stored only
+    in the existing pack snapshot/items required for replay, never duplicated into Foundation
+    diagnostics or the runtime ledger.
+  </p>
+  <h3 id="section-86-fixed-function-boundary">8.6 Fixed function boundary</h3>
+  <p>The implementation exposes exactly these domain entry points inside the crate:</p>
+  <pre><code class="language-rust">// service.rs
+pub(crate) fn compile(
+    request: CompileRequest,
+    context: &amp;CompileRuntimeContext,
+) -&gt; Result&lt;CompileOutput, CompileError&gt;;
+
+// legacy.rs
+pub(crate) fn compile_legacy_on_writer(
+    request: CompileRequest,
+    context: &amp;CompileRuntimeContext,
+) -&gt; Result&lt;WriterExecution&lt;CompileOutput&gt;, CompileError&gt;;
+
+// read_repository.rs
+pub(crate) fn prepare_compile(
+    request: CompileRequest,
+    context: &amp;CompileRuntimeContext,
+) -&gt; Result&lt;PreparedCompile, CompileError&gt;;
+
+// composer.rs
+pub(crate) fn compose(
+    prepared: &amp;PreparedCompile,
+    route: CompositionRoute,
+) -&gt; Result&lt;CompositionResult, CompileError&gt;;
+
+// persistence.rs
+pub(crate) fn persist(
+    command: PersistCompile,
+    context: &amp;CompileRuntimeContext,
+) -&gt; Result&lt;WriterExecution&lt;CompileOutput&gt;, CompileError&gt;;
+
+// telemetry_ledger.rs
+pub(crate) fn append_writer_record(
+    ledger: &amp;FoundationTelemetryLedger,
+    record: &amp;WriterTelemetryRecord,
+) -&gt; Result&lt;(), TelemetryLedgerError&gt;;
+</code></pre>
+  <p>
+    <code>native_compile.rs::context_compile</code> performs only MCP JSON validation, construction
+    of <code>CompileRequest</code>, the <code>service::compile</code> call, and conversion of
+    <code>CompileError</code>/<code>CompileOutput</code> to the existing MCP envelope. SQL, ranking,
+    provider prompt construction, and pack assembly are forbidden in the adapter after F4.
+  </p>
+  <p>
+    <code>service::compile</code> dispatches by the startup-captured mode. <code>legacy</code> calls
+    <code>legacy::compile_legacy_on_writer</code> and preserves whole-operation Writer ownership for
+    rollback parity. The three split modes call <code>prepare_compile</code>, drop the read
+    connection, call <code>compose</code>, then call <code>persist</code>. No request re-reads the
+    mode from the environment.
+  </p>
+  <h3 id="section-87-exact-integration-touch-points">8.7 Exact integration touch points</h3>
+  <table>
+    <caption>
+      Table: 8.7 Exact integration touch points
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Existing file</th>
+        <th scope="col">Required change</th>
+        <th scope="col">Forbidden change</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_tools.rs</code></td>
+        <td>
+          Keep <code>project_root</code> and <code>sqlite_core_path</code>; add
+          <code>compile_runtime: Arc&lt;CompileRuntimeContext&gt;</code> to
+          <code>NativeToolContext</code>
+        </td>
+        <td>Resolve a second DB identity</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/dispatch.rs</code></td>
+        <td>
+          Keep the three existing fields; add
+          <code>compile_runtime: Arc&lt;CompileRuntimeContext&gt;</code> to
+          <code>DispatchConfig</code>
+        </td>
+        <td>Parse mode per request</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/endpoint_server.rs</code></td>
+        <td>
+          Change <code>dispatch_config</code> to return
+          <code>Result&lt;DispatchConfig, CliError&gt;</code>; build the context once from T1
+          runtime identity, <code>VERSION</code>, build ID, mode, and
+          <code>resolve_paths(env).logs_dir</code>; propagate failure from
+          <code>start_in_process</code>; clone the <code>Arc</code> in <code>native_context</code>
+        </td>
+        <td>Read mode or build ID from MCP arguments</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_common.rs</code></td>
+        <td>
+          Move shared timestamp helpers to the domain/shared utility; retain compatibility wrappers
+          only while other native tools need them
+        </td>
+        <td>Open a writable read connection</td>
+      </tr>
+      <tr>
+        <td><code>domains/mcp_lifecycle/native_compile.rs</code></td>
+        <td>
+          Shrink to the adapter described above; preserve current error/output behavior through
+          golden fixtures
+        </td>
+        <td>Keep a Writer closure around network calls</td>
+      </tr>
+      <tr>
+        <td><code>domains/sqlite_writer/service.rs</code></td>
+        <td>Add observed execution at the existing enqueue/dequeue/finish/receive points</td>
+        <td>Create a second Writer or change serialization semantics</td>
+      </tr>
+      <tr>
+        <td><code>domains/sqlite_writer/mod.rs</code></td>
+        <td>Re-export the observed types and <code>execute_for_path_observed</code></td>
+        <td>Remove existing exports</td>
+      </tr>
+      <tr>
+        <td><code>domains/cli/routing.rs</code></td>
+        <td>
+          Add <code>ContextCompileAction</code> and <code>CliCommand::ContextCompile</code>; parse
+          the exact commands in section 10.3
+        </td>
+        <td>Put report logic in the parser</td>
+      </tr>
+      <tr>
+        <td><code>domains/cli/service.rs</code></td>
+        <td>Add exact help lines and examples</td>
+        <td>Advertise live mutation</td>
+      </tr>
+      <tr>
+        <td><code>lib.rs</code></td>
+        <td>
+          Dispatch <code>CliCommand::ContextCompile</code> to
+          <code>domains::context_compile::routing::handle_command</code>
+        </td>
+        <td>Duplicate report behavior</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>The CLI parser accepts only these option sets:</p>
+  <pre><code class="language-text">capabilities: [--out &lt;new-report.json&gt;] [--json]
+baseline:     --manifest &lt;path&gt; --out &lt;new-report.json&gt; [--probe &lt;probe-report.json&gt;] [--json]
+compare:      --manifest &lt;path&gt; --baseline &lt;baseline-report.json&gt; --candidate &lt;candidate-report.json&gt; --out &lt;new-report.json&gt; [--json]
+experiment:   --manifest &lt;path&gt; --out &lt;new-report.json&gt; --allow-provider-calls [--json]
+probe:        --manifest &lt;path&gt; --entry-report &lt;capabilities-report.json&gt; --out &lt;new-report.json&gt; --calls &lt;positive-integer&gt; --allow-live-writes [--json]
+</code></pre>
+  <p>The routing types are fixed:</p>
+  <pre><code class="language-rust">pub enum ContextCompileAction {
+    Capabilities { out: Option&lt;PathBuf&gt; },
+    Baseline { manifest: PathBuf, out: PathBuf, probe: Option&lt;PathBuf&gt; },
+    Compare {
+        manifest: PathBuf,
+        baseline: PathBuf,
+        candidate: PathBuf,
+        out: PathBuf,
+    },
+    Experiment { manifest: PathBuf, out: PathBuf, allow_provider_calls: bool },
+    Probe {
+        manifest: PathBuf,
+        entry_report: PathBuf,
+        out: PathBuf,
+        calls: usize,
+        allow_live_writes: bool,
+    },
+}
+
+pub enum CliCommand {
+    // existing variants unchanged
+    ContextCompile { action: ContextCompileAction, json: bool },
+}
+</code></pre>
+  <p>
+    Missing required value, repeated option, unknown option, or positional remainder returns
+    <code>CliError::invalid_arguments</code>. Option order is arbitrary. JSON mode writes one JSON
+    object to stdout; diagnostics go to stderr and must not corrupt stdout.
+  </p>
+  <p>
+    At resident startup, an invalid rollout mode, missing T1 runtime identity/build ID, or inability
+    to create/open the process ledger directory/file returns <code>CliError</code> and prevents MCP
+    endpoint publication. After startup, an individual append/flush failure follows section 9.3 and
+    does not retroactively fail a successfully persisted compile.
+  </p>
+  <h3 id="section-88-atomic-persistence-order">8.8 Atomic persistence order</h3>
+  <p>
+    <code>persistence::persist</code> submits one <code>mcp.context_compile.persist</code> Writer
+    job and starts one SQLite transaction. Within it, execute in this order:
+  </p>
+  <ol>
+    <li>
+      insert <code>context_compile_runs</code> with <code>snapshotComplete=false</code> and the
+      semantic telemetry known before mutation;
+    </li>
+    <li>insert task trace;</li>
+    <li>insert pack items;</li>
+    <li>insert the bounded candidate-trace union;</li>
+    <li>
+      insert Knowledge usage events, Episode usage rows, feedback, and existing auxiliary run rows;
+    </li>
+    <li>update de-duplicated Knowledge/Episode counters and collect affected-row counts;</li>
+    <li>
+      update only that run&#39;s <code>pack_snapshot.diagnostics.foundation</code> with counter
+      diagnostics and <code>snapshotComplete=true</code>;
+    </li>
+    <li>commit.</li>
+  </ol>
+  <p>
+    Any required statement error rolls back the transaction. In split modes, the current schema
+    revision and these tables are required: <code>context_compile_runs</code>,
+    <code>context_compile_task_traces</code>, <code>context_pack_items</code>,
+    <code>context_compile_candidate_traces</code>, <code>knowledge_items</code>,
+    <code>episode_cards</code>, <code>knowledge_usage_events</code>, and
+    <code>episode_retrieval_feedback</code>. <code>settings</code>/provider configuration may be
+    absent and follows the existing deterministic/degraded composition behavior.
+    <code>legacy</code> preserves the current missing-table degradation contract captured by F1
+    golden cases. There is no post-commit SQLite update for Foundation telemetry. The runtime-ledger
+    append is the sole post-Writer persistence action.
+  </p>
+  <hr />
+  <h2 id="section-9-telemetry-contract">9. Telemetry Contract</h2>
+  <h3 id="section-91-two-store-model">9.1 Two-store model</h3>
+  <p>
+    Writer timing cannot be finalized by updating the same run through a second Writer job: that
+    second job&#39;s own queue/work duration is unknown until it has completed. Foundation therefore
+    uses two stores with one join key.
+  </p>
+  <table>
+    <caption>
+      Table: 9.1 Two-store model
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Store</th>
+        <th scope="col">Written when</th>
+        <th scope="col">Contents</th>
+        <th scope="col">Authority</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>context_compile_runs.pack_snapshot.diagnostics.foundation</code></td>
+        <td>Inside the atomic business transaction</td>
+        <td>semantic/pre-persist telemetry known before Writer completion</td>
+        <td>Run semantics, ranking, route, attempts, counts</td>
+      </tr>
+      <tr>
+        <td>
+          <code
+            >&lt;logs_dir&gt;/context-compile-foundation/&lt;ledger-id&gt;.&lt;sequence&gt;.jsonl</code
+          >
+        </td>
+        <td>Once, after observed Writer completion</td>
+        <td>exact Writer and pre-ledger service timing/result</td>
+        <td>Writer occupancy and phase consistency</td>
+      </tr>
+      <tr>
+        <td><code>context_compile_candidate_traces.evidence.foundation</code></td>
+        <td>Inside the atomic business transaction</td>
+        <td>per-candidate numeric ranking evidence</td>
+        <td>Candidate audit</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    The shared key is the existing <code>runId</code>. The SQLite snapshot declares
+    <code>writerTelemetryExpected=true</code>; it never claims that the later ledger append already
+    succeeded. A performance sample is complete only when the report finds exactly one valid
+    matching ledger record.
+  </p>
+  <h3 id="section-92-persisted-run-snapshot-contract">9.2 Persisted run-snapshot contract</h3>
+  <pre><code class="language-json">{
+  &quot;contractVersion&quot;: 1,
+  &quot;snapshotComplete&quot;: true,
+  &quot;writerTelemetryExpected&quot;: true,
+  &quot;pipelineVersion&quot;: &quot;foundation-v1&quot;,
+  &quot;pipelineMode&quot;: &quot;split_shadow_rank&quot;,
+  &quot;runtime&quot;: {
+    &quot;engine&quot;: &quot;rust-native&quot;,
+    &quot;version&quot;: &quot;0.1.0&quot;,
+    &quot;buildId&quot;: &quot;opaque-build-id&quot;,
+    &quot;databaseIdentitySource&quot;: &quot;live_resident_state&quot;,
+    &quot;databaseIdentityFingerprint&quot;: &quot;sha256&quot;
+  },
+  &quot;timingsUs&quot;: {
+    &quot;prepare&quot;: 0,
+    &quot;retrieval&quot;: 0,
+    &quot;compose&quot;: 0
+  },
+  &quot;llm&quot;: {
+    &quot;logicalCalls&quot;: 0,
+    &quot;providerAttempts&quot;: 0,
+    &quot;failovers&quot;: 0,
+    &quot;attempts&quot;: []
+  },
+  &quot;candidates&quot;: {
+    &quot;eligibleKnowledge&quot;: 0,
+    &quot;queryMatchedKnowledge&quot;: 0,
+    &quot;deliveredKnowledge&quot;: 0,
+    &quot;eligibleEpisodes&quot;: 0,
+    &quot;queryMatchedEpisodes&quot;: 0,
+    &quot;deliveredEpisodes&quot;: 0
+  },
+  &quot;persistence&quot;: {
+    &quot;knowledgeCounterExpected&quot;: 0,
+    &quot;knowledgeCounterUpdated&quot;: 0,
+    &quot;missingKnowledgeIds&quot;: [],
+    &quot;episodeCounterExpected&quot;: 0,
+    &quot;episodeCounterUpdated&quot;: 0,
+    &quot;missingEpisodeIds&quot;: []
+  },
+  &quot;compositionRoute&quot;: &quot;current_two_call&quot;,
+  &quot;rankingPolicy&quot;: &quot;legacy&quot;
+}
+</code></pre>
+  <p>
+    All fields shown are required. Integers use non-negative microseconds/counts. The example
+    defines field names and semantics; JSON serialization order is not significant.
+  </p>
+  <p>
+    Candidate count semantics are fixed: <code>eligible*</code> is the active, classified,
+    scope-safe, facet-matching set before query-score filtering; <code>queryMatched*</code> is the
+    subset with <code>queryScore &gt; 0</code>; <code>delivered*</code> is the unique ordered set
+    supplied to the selected composition route. Shadow-only candidates are never included in
+    <code>delivered*</code>.
+  </p>
+  <p>
+    Candidate trace volume is bounded. In modes without shadow comparison, persist only the
+    delivered selection. In <code>split_shadow_rank</code> and <code>foundation</code>, persist the
+    ordered union of legacy and Foundation top-budget selections: at most 16 Knowledge rows and 6
+    EpisodeCard rows per run before de-duplication. <code>selected=1</code> means delivered in the
+    active mode. A union member not delivered has <code>suppressed=1</code> and
+    <code>suppression_reason=&#39;shadow_only&#39;</code>. <code>evidence.foundation</code> records
+    entity kind, legacy/foundation rank, query score, raw and normalized tie-break features, content
+    version, and <code>delivered</code>/<code>shadow</code> booleans. Do not persist every eligible
+    row; aggregate counts preserve corpus-size visibility.
+  </p>
+  <h3 id="section-93-runtime-writer-ledger-contract">9.3 Runtime Writer-ledger contract</h3>
+  <p>
+    Each resident process owns one append-only segment series named
+    <code>&lt;ledger-id&gt;.&lt;six-digit-sequence&gt;.jsonl</code>. Compute
+    <code>ledger-id</code> as the first 16 lowercase hex characters of SHA-256 over
+    <code>runtimeBuildId + &quot;\n&quot; + pid + &quot;\n&quot; + processStartedAt</code>. The
+    directory comes from <code>resolve_paths(env).logs_dir</code>; neither the absolute log path nor
+    the absolute DB path appears in a record.
+  </p>
+  <pre><code class="language-json">{
+  &quot;contractVersion&quot;: 1,
+  &quot;runId&quot;: &quot;ctxrun_opaque&quot;,
+  &quot;recordedAt&quot;: &quot;unix-ms:1786896000000&quot;,
+  &quot;pipelineVersion&quot;: &quot;foundation-v1&quot;,
+  &quot;pipelineMode&quot;: &quot;split_shadow_rank&quot;,
+  &quot;runtimeVersion&quot;: &quot;0.1.0&quot;,
+  &quot;runtimeBuildId&quot;: &quot;opaque-build-id&quot;,
+  &quot;databaseIdentityFingerprint&quot;: &quot;sha256&quot;,
+  &quot;writer&quot;: {
+    &quot;operation&quot;: &quot;mcp.context_compile.persist&quot;,
+    &quot;queueWaitUs&quot;: 0,
+    &quot;workUs&quot;: 0,
+    &quot;totalUs&quot;: 0,
+    &quot;success&quot;: true,
+    &quot;errorCategory&quot;: null
+  },
+  &quot;preLedgerEndToEndUs&quot;: 0
+}
+</code></pre>
+  <p>Implementation rules:</p>
+  <ul>
+    <li>
+      <code>writer.operation</code> is exactly <code>mcp.context_compile</code> in
+      <code>legacy</code> and <code>mcp.context_compile.persist</code> in every split mode.
+    </li>
+    <li>
+      <code>FoundationTelemetryLedger</code> owns one mutex-protected active segment opened with
+      <code>create_new(true)</code>, <code>append(true)</code>, and write-only access. No request
+      opens its own ledger file.
+    </li>
+    <li>
+      Serialize to an in-memory byte buffer, reject a record over 16 KiB, append the bytes plus one
+      newline using <code>write_all</code>, then call <code>flush</code>. <code>sync_all</code> is
+      not in the request critical path.
+    </li>
+    <li>
+      Before an append would make a segment exceed 16 MiB, flush and close it, increment the
+      sequence, and open the next segment with <code>create_new</code>. Retain the active segment
+      plus the seven newest closed segments for that ledger ID; after the new segment opens
+      successfully, remove older closed segments under the same ledger mutex. Never delete another
+      ledger ID&#39;s files.
+    </li>
+    <li>
+      <code>queueWaitUs</code>, <code>workUs</code>, and <code>totalUs</code> are required but may
+      be <code>null</code> only when the outer observed API returns <code>Err</code> before a job
+      can be observed. Such a record has <code>success=false</code> and a bounded
+      <code>errorCategory</code>.
+    </li>
+    <li>
+      There is exactly one append attempt per compile invocation after the observed API returns,
+      including outer submission failure and persistence-job failure when a run row was not
+      committed.
+    </li>
+    <li>
+      Ledger append failure does not change an already successful MCP result. It emits one bounded
+      structured error containing run ID, build ID, and error category, but no content or path.
+    </li>
+    <li>
+      A malformed/truncated line, duplicate run ID, mismatched build/pipeline/database fingerprint,
+      or missing record makes that run performance-incomplete. Reports count each exclusion reason.
+    </li>
+    <li>
+      Reports scan every valid segment name in the directory. A file that disappears or changes size
+      while being read is counted as <code>ledger_segment_changed</code> and makes that report
+      promotion-ineligible; retrying the report is safe because it is read-only. Evidence records
+      the retained segment names, sizes, and hashes at capture time.
+    </li>
+  </ul>
+  <h3 id="section-94-provider-attempt-trace">9.4 Provider-attempt trace</h3>
+  <p>Each attempt records only:</p>
+  <ul>
+    <li>logical call kind: planner or composer;</li>
+    <li>logical call ordinal;</li>
+    <li>attempt ordinal;</li>
+    <li>provider and model identifiers;</li>
+    <li>route position;</li>
+    <li>success, timeout, rate-limited, transport-error, or parse-error status;</li>
+    <li>duration;</li>
+    <li>failover-from reason code;</li>
+    <li>bounded error category.</li>
+  </ul>
+  <p>
+    Do not store API keys, authorization headers, raw prompt, raw response, full URL query strings,
+    or Knowledge body.
+  </p>
+  <h3 id="section-95-observed-writer-api">9.5 Observed Writer API</h3>
+  <p>
+    Add a non-breaking observed execution API to <code>sqlite_writer</code> with these exact
+    public-within-crate fields:
+  </p>
+  <pre><code class="language-rust">pub(crate) struct WriterExecution&lt;T&gt; {
+    pub(crate) result: Result&lt;T, String&gt;,
+    pub(crate) queue_wait: Duration,
+    pub(crate) work_duration: Duration,
+    pub(crate) total_duration: Duration,
+}
+
+impl SqliteWriterHandle {
+    pub(crate) fn execute_observed&lt;T, F&gt;(
+        &amp;self,
+        operation: impl Into&lt;String&gt;,
+        job: F,
+    ) -&gt; Result&lt;WriterExecution&lt;T&gt;, String&gt;
+    where
+        T: Send + &#39;static,
+        F: FnOnce(&amp;mut Connection) -&gt; Result&lt;T, String&gt; + Send + &#39;static;
+}
+
+pub(crate) fn execute_for_path_observed&lt;T, F&gt;(
+    path: &amp;Path,
+    operation: &amp;&#39;static str,
+    job: F,
+) -&gt; Result&lt;WriterExecution&lt;T&gt;, String&gt;
+where
+    T: Send + &#39;static,
+    F: FnOnce(&amp;mut Connection) -&gt; Result&lt;T, String&gt; + Send + &#39;static;
+</code></pre>
+  <p>
+    The outer <code>Err</code> means the job could not be submitted/observed.
+    <code>WriterExecution.result</code> is the closure result. Existing <code>execute</code> and
+    <code>execute_for_path</code> delegate to the observed primitive and return the old
+    <code>Result&lt;T, String&gt;</code> by flattening these two layers; all existing callers remain
+    source-compatible.
+  </p>
+  <p>Timing points use <code>Instant</code>, never wall-clock timestamps:</p>
+  <ul>
+    <li>enqueue: immediately before channel send;</li>
+    <li>
+      start: immediately after worker dequeue and before setting <code>active_operation</code>;
+    </li>
+    <li>
+      finish: immediately after the closure returns and before clearing
+      <code>active_operation</code>;
+    </li>
+    <li>receive: immediately after the caller receives the response;</li>
+    <li><code>queue_wait = start - enqueue</code>;</li>
+    <li><code>work_duration = finish - start</code>;</li>
+    <li><code>total_duration = receive - enqueue</code>.</li>
+  </ul>
+  <p>
+    The worker response therefore carries start/finish-derived durations in addition to the job
+    result. Existing queue depth, success/failure counts, last operation, and active-operation
+    behavior must remain unchanged.
+  </p>
+  <h3 id="section-96-timing-consistency-and-report-join">9.6 Timing consistency and report join</h3>
+  <p>
+    The baseline/compare reader loads valid JSONL records into a <code>runId</code> map, rejects
+    duplicates, and joins them to run snapshots only when <code>pipelineVersion</code>,
+    <code>runtimeBuildId</code>, and <code>databaseIdentityFingerprint</code> also match. Failed
+    persistence records without a run row contribute to availability counts but not latency
+    percentiles.
+  </p>
+  <p>For complete successful samples:</p>
+  <pre><code class="language-text">prepare + retrieval + compose + writer.totalUs &lt;= preLedgerEndToEndUs + tolerance
+writer.queueWaitUs + writer.workUs &lt;= writer.totalUs + tolerance
+</code></pre>
+  <p>
+    Tolerance is the greater of 2 ms or 1% of <code>preLedgerEndToEndUs</code>. Violations are
+    reported and excluded; repeated violations stop promotion. The ledger cannot include its own
+    append duration without becoming self-referential. Promotion end-to-end p50/p95 therefore comes
+    from the paired MCP client timer measured immediately before request send through complete
+    response receipt; the report keeps this metric separate as
+    <code>callerObservedEndToEndUs</code>.
+  </p>
+  <hr />
+  <h2 id="section-10-baseline-and-experiment-manifest">10. Baseline And Experiment Manifest</h2>
+  <h3 id="section-101-versioned-inputs">10.1 Versioned inputs</h3>
+  <p>Implementation adds:</p>
+  <pre><code class="language-text">spec/context-compile-foundation/manifest.v1.json
+spec/context-compile-foundation/hard-query-set.v1.json
+test/fixtures/context-compile-foundation-v1.json
+</code></pre>
+  <p>
+    The implementation workflow passes
+    <code>--out .tmp/context-compile-foundation/&lt;manifest-id&gt;/&lt;artifact&gt;.json</code>;
+    generated reports are not treated as source. The command itself accepts another explicit new
+    file path for isolated tests. The evidence document records report SHA-256 hashes and the stable
+    aggregate.
+  </p>
+  <p>
+    The source manifest contains thresholds and fixture paths, not a mutable live DB fingerprint or
+    source commit. Every generated report binds the run to <code>sourceCommit</code>,
+    source-tree/build identity, <code>runtimeBuildId</code>, effective DB fingerprint, manifest
+    hash, and every input-fixture hash. This prevents a version-controlled threshold manifest from
+    becoming stale after the next code change.
+  </p>
+  <h3 id="section-102-manifest-minimum-contract">10.2 Manifest minimum contract</h3>
+  <pre><code class="language-json">{
+  &quot;id&quot;: &quot;contextstill-utility-rag-foundation-v1&quot;,
+  &quot;pipelineVersion&quot;: &quot;foundation-v1&quot;,
+  &quot;inputs&quot;: {
+    &quot;hardQuerySet&quot;: &quot;hard-query-set.v1.json&quot;,
+    &quot;goldenFixture&quot;: &quot;../../test/fixtures/context-compile-foundation-v1.json&quot;,
+    &quot;timestampFixture&quot;: &quot;../../test/fixtures/timestamp-normalization-v1.json&quot;
+  },
+  &quot;runtimeBinding&quot;: {
+    &quot;sourceCommitRequired&quot;: true,
+    &quot;runtimeBuildIdRequired&quot;: true,
+    &quot;effectiveDatabaseFingerprintRequired&quot;: true,
+    &quot;cleanSourceTreeRequiredForPromotion&quot;: true
+  },
+  &quot;cohorts&quot;: {
+    &quot;historicalIdentityPresentMin&quot;: 500,
+    &quot;retrievalFixtureRuns&quot;: 500,
+    &quot;rankingHardQueriesMin&quot;: 50,
+    &quot;compositionQueriesMinPerRoute&quot;: 30,
+    &quot;liveBaselineProbeMin&quot;: 100,
+    &quot;shadowIdentityPresentMin&quot;: 50,
+    &quot;canaryIdentityPresentMin&quot;: 100,
+    &quot;canaryWindowHours&quot;: 24
+  },
+  &quot;performance&quot;: {
+    &quot;endToEndP50MultiplierMax&quot;: 1.02,
+    &quot;endToEndP95MultiplierMax&quot;: 1.02,
+    &quot;retrievalP95AbsoluteMsMax&quot;: 100,
+    &quot;retrievalP95AddedMsMax&quot;: 5,
+    &quot;writerQueueWaitP95MsMax&quot;: 20,
+    &quot;persistenceP95MsMax&quot;: 25
+  },
+  &quot;availability&quot;: {
+    &quot;noContentRateAddedMax&quot;: 0.01,
+    &quot;toolErrorRateAddedMax&quot;: 0.0,
+    &quot;composerDegradedRateAddedMax&quot;: 0.05
+  },
+  &quot;ranking&quot;: {
+    &quot;existingUsedKnowledgeRetentionMin&quot;: 0.99,
+    &quot;queryLockoutViolationMax&quot;: 0,
+    &quot;mustNotIncludeAddedMax&quot;: 0
+  },
+  &quot;telemetry&quot;: {
+    &quot;writerLedgerCompleteRateMin&quot;: 0.99,
+    &quot;timingConsistencyViolationRateMax&quot;: 0.01,
+    &quot;redactionViolationMax&quot;: 0
+  },
+  &quot;statistics&quot;: {
+    &quot;confidenceLevel&quot;: 0.95,
+    &quot;pairedBootstrapIterations&quot;: 10000,
+    &quot;bootstrapSeed&quot;: 1337
+  },
+  &quot;safety&quot;: {
+    &quot;wrongProjectMax&quot;: 0,
+    &quot;unresolvedSelectedMax&quot;: 0,
+    &quot;shadowOutboundMax&quot;: 0,
+    &quot;identityMismatchMax&quot;: 0
+  },
+  &quot;stopConditions&quot;: [
+    &quot;safety_violation&quot;,
+    &quot;database_identity_mismatch&quot;,
+    &quot;writer_ownership_violation&quot;,
+    &quot;provider_call_increase&quot;,
+    &quot;performance_gate_failure&quot;
+  ]
+}
+</code></pre>
+  <p>
+    Resolve input paths relative to the manifest file, not the current working directory. The
+    implementation validates the manifest strictly and rejects unknown fields. Missing fixture
+    references, sample sizes, margins, runtime-binding requirements, or stop conditions make the
+    command fail. Missing source commit, build ID, effective DB fingerprint, or fixture hash in a
+    generated report makes promotion ineligible.
+  </p>
+  <p>
+    Percentiles use nearest-rank on ascending values: index <code>max(0, ceil(p * n) - 1)</code>.
+    Paired bootstrap resamples paired query indices with replacement. Use the manifest seed as
+    <code>u64</code> and update it for every draw with
+    <code>state = state * 6364136223846793005 + 1442695040888963407</code> using wrapping
+    arithmetic; sample index is <code>state % n</code>. Confidence bounds use the same nearest-rank
+    rule over the sorted bootstrap deltas. Empty cohorts yield <code>null</code>, never zero, and
+    fail the applicable minimum-sample gate.
+  </p>
+  <h3 id="section-103-baseline-command-surface">10.3 Baseline command surface</h3>
+  <p>Add Rust-owned commands with package-script wrappers:</p>
+  <pre><code class="language-text">context-stilld context-compile capabilities --out &lt;new-report.json&gt; --json
+context-stilld context-compile baseline --manifest &lt;path&gt; --probe &lt;probe-report.json&gt; --out &lt;new-report.json&gt; --json
+context-stilld context-compile compare --manifest &lt;path&gt; --baseline &lt;baseline-report.json&gt; --candidate &lt;candidate-report.json&gt; --out &lt;new-report.json&gt; --json
+context-stilld context-compile experiment --manifest &lt;path&gt; --out &lt;new-report.json&gt; --allow-provider-calls --json
+context-stilld context-compile probe --manifest &lt;path&gt; --entry-report &lt;capabilities-report.json&gt; --out &lt;new-report.json&gt; --calls 100 --allow-live-writes --json
+
+bun run foundation:capabilities -- --out &lt;new-report.json&gt;
+bun run foundation:baseline -- --manifest &lt;path&gt; --probe &lt;probe-report.json&gt; --out &lt;new-report.json&gt;
+bun run foundation:compare -- --manifest &lt;path&gt; --baseline &lt;baseline-report.json&gt; --candidate &lt;candidate-report.json&gt; --out &lt;new-report.json&gt;
+bun run foundation:experiment -- --manifest &lt;path&gt; --out &lt;new-report.json&gt; --allow-provider-calls
+bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilities-report.json&gt; --out &lt;new-report.json&gt; --calls 100 --allow-live-writes
+</code></pre>
+  <p>
+    Add these exact <code>package.json</code> entries; callers supply all subcommand options after
+    <code>--</code>:
+  </p>
+  <pre><code class="language-json">{
+  &quot;foundation:capabilities&quot;: &quot;cargo run -q -p context-stilld -- context-compile capabilities&quot;,
+  &quot;foundation:baseline&quot;: &quot;cargo run -q -p context-stilld -- context-compile baseline&quot;,
+  &quot;foundation:compare&quot;: &quot;cargo run -q -p context-stilld -- context-compile compare&quot;,
+  &quot;foundation:experiment&quot;: &quot;cargo run -q -p context-stilld -- context-compile experiment&quot;,
+  &quot;foundation:probe&quot;: &quot;cargo run -q -p context-stilld -- context-compile probe&quot;
+}
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li>
+      <code>capabilities</code>, <code>baseline</code>, and <code>compare</code> are read-only.
+      <code>experiment</code> may call providers but never writes the DB. Only
+      <code>probe</code> performs normal MCP compile calls and their ordinary business writes.
+    </li>
+    <li>They resolve the same effective database identity as status and Doctor.</li>
+    <li>They refuse an identity mismatch.</li>
+    <li>They never copy the database automatically.</li>
+    <li>
+      <code>--out</code> is required for baseline/compare/experiment/probe and optional for
+      capabilities; whenever present it must not already exist. Write to a sibling temporary file,
+      <code>flush</code>, then atomically rename it. Remove only that temporary file on failure.
+    </li>
+    <li>
+      <code>baseline --probe</code> validates and incorporates caller-observed timings from the
+      probe; omitting <code>--probe</code> is allowed for provisional historical/offline analysis
+      but leaves caller-observed performance gates ineligible.
+    </li>
+    <li>
+      <code>compare</code> reads only the two explicit report files. It rejects a report whose
+      manifest hash, pipeline version, build/source identity policy, effective database fingerprint,
+      or fixture hashes are incompatible, and it never selects “latest” artifacts from a directory.
+    </li>
+    <li>
+      <code>--json</code> prints the exact report object to stdout in addition to writing it to
+      <code>--out</code>; without it, stdout is a bounded human summary. Diagnostics use stderr.
+    </li>
+    <li>
+      <code>experiment</code> refuses to run without the exact
+      <code>--allow-provider-calls</code> flag, never writes run/business tables, prepares through a
+      read-only connection, and does not write prompts or composed bodies to its report. It records
+      hashes, IDs, counts, timings, route outcomes, and bounded error categories.
+    </li>
+    <li>
+      <code>capabilities --json</code> includes the three entry decisions, their individual
+      predicates, runtime build/mode, effective DB fingerprint, and backup fingerprint. F0 supplies
+      <code>--out</code> to save this exact JSON as the capabilities entry report and records its
+      hash in evidence.
+    </li>
+    <li>
+      <code>probe</code> refuses to run without the exact <code>--allow-live-writes</code> flag and
+      an explicit <code>--entry-report</code> whose <code>liveEntryEligible=true</code>, build ID,
+      effective DB fingerprint, and runtime mode still match current runtime truth. The report must
+      be at most 10 minutes old by normalized timestamp. It cycles manifest queries in file order,
+      creates a unique session ID per request, calls the resident MCP endpoint, measures
+      send-through-response latency with <code>Instant</code>, and writes a content-redacted probe
+      report. A probe never changes rollout mode or restarts the resident.
+    </li>
+    <li>Fixture benchmarks use a temp DB or read-only snapshot, never the live DB for writes.</li>
+    <li>
+      <code>baseline</code> has two explicitly labeled cohorts: <code>historicalReadOnly</code> from
+      the effective DB and <code>fixedFixture</code> from a temp DB built from the versioned
+      fixture. It never mixes their rows or denominators.
+    </li>
+    <li>
+      <code>experiment</code> builds candidates from the same fixed-fixture temp DB and reads only
+      provider configuration from the effective DB. This keeps route inputs reproducible without
+      writing live run tables.
+    </li>
+    <li>
+      <code>probe</code> uses the query goals/facets against the live cohort for
+      performance/availability only. Fixture-only expected entity IDs are not scored against live
+      rows.
+    </li>
+    <li>
+      Reports include command version, manifest hash, commit, build ID, database fingerprint, row
+      counts, timestamp-invalid counts, and excluded-sample reasons.
+    </li>
+    <li>
+      Eligible-corpus inventory is grouped by entity kind, scope, classification status, request
+      match basis, and repository identity fingerprint; all-active counts are always reported
+      separately.
+    </li>
+  </ul>
+  <h3 id="section-104-report-envelope">10.4 Report envelope</h3>
+  <p>
+    Baseline and compare reports use the same required envelope. Arrays and nested metric objects
+    may add versioned fields, but these fields cannot be omitted or renamed in contract v1.
+  </p>
+  <pre><code class="language-json">{
+  &quot;contractVersion&quot;: 1,
+  &quot;reportKind&quot;: &quot;baseline&quot;,
+  &quot;generatedAt&quot;: &quot;unix-ms:1786896000000&quot;,
+  &quot;manifest&quot;: { &quot;id&quot;: &quot;contextstill-utility-rag-foundation-v1&quot;, &quot;sha256&quot;: &quot;...&quot; },
+  &quot;binding&quot;: {
+    &quot;sourceCommit&quot;: &quot;...&quot;,
+    &quot;sourceTreeState&quot;: &quot;clean-or-dirty&quot;,
+    &quot;runtimeVersion&quot;: &quot;0.1.0&quot;,
+    &quot;runtimeBuildId&quot;: &quot;...&quot;,
+    &quot;effectiveDatabaseFingerprint&quot;: &quot;...&quot;,
+    &quot;effectiveDatabaseIdentitySource&quot;: &quot;...&quot;,
+    &quot;fixtureSha256&quot;: {}
+  },
+  &quot;cohort&quot;: {
+    &quot;included&quot;: 0,
+    &quot;excluded&quot;: 0,
+    &quot;excludedByReason&quot;: {},
+    &quot;invalidTimestampCount&quot;: 0
+  },
+  &quot;metrics&quot;: {},
+  &quot;safety&quot;: {},
+  &quot;gateResults&quot;: [],
+  &quot;promotionEligible&quot;: false
+}
+</code></pre>
+  <p>
+    For a compare report, <code>reportKind=&quot;compare&quot;</code>, and the report additionally
+    requires <code>baselineReportSha256</code>, <code>baselineBinding</code>,
+    <code>candidateBinding</code>, absolute and relative deltas for every gated metric, paired
+    sample count, confidence interval, and a pass/fail result per manifest gate.
+    <code>promotionEligible</code> is computed only; no command changes rollout mode.
+  </p>
+  <p>
+    For an experiment report, <code>reportKind=&quot;composition_experiment&quot;</code>; it
+    requires one result per <code>(queryId, route)</code> with prepared-snapshot hash, output hash,
+    selected/used IDs, must-include/must-not-include results, token estimate, logical calls,
+    provider attempts, failovers, latency, and bounded error/degraded codes. Raw prompts, candidate
+    bodies, and composed output are forbidden in the report.
+  </p>
+  <p>
+    A capabilities report uses <code>contractVersion=1</code>,
+    <code>reportKind=&quot;capabilities&quot;</code>, <code>generatedAt</code>,
+    <code>ownershipRows[]</code>, all three entry decisions with named predicate results, runtime
+    version/build/mode, effective DB identity source/fingerprint, and backup fingerprint. Every
+    ownership row requires <code>surfaceId</code>, <code>entryPoint</code>,
+    <code>semanticOwner</code>, <code>foundationSemantics</code> (<code>active</code>,
+    <code>adapter</code>, <code>legacy_unmigrated</code>, or <code>not_applicable</code>), and
+    <code>maintained</code>. F0 freezes the discovered row set; later commands must not silently
+    omit a row. The report contains no absolute DB or backup path.
+  </p>
+  <p>
+    A probe report uses the common binding fields with
+    <code>reportKind=&quot;live_probe&quot;</code> and requires <code>requestedCalls</code>,
+    <code>completedCalls</code>, <code>sessionPrefix</code>, one content-redacted observation per
+    call, caller-observed microseconds, result/error category, joined run ID, pipeline mode/build/DB
+    fingerprint, and aggregate availability/latency metrics. The session prefix contains only probe
+    ID and ordinal, never a goal fragment.
+  </p>
+  <h3 id="section-105-corrected-baseline-cohort">10.5 Corrected baseline cohort</h3>
+  <p>Historical baseline includes only runs that satisfy all of the following.</p>
+  <ul>
+    <li>Identity is present and canonical.</li>
+    <li>Repository-isolation mismatch is 0.</li>
+    <li>
+      Runtime/pipeline identity is known or explicitly marked as the legacy comparison cohort.
+    </li>
+    <li>Timestamp normalizes successfully.</li>
+    <li>Composition route and provider route are known.</li>
+    <li>Run is not a fixture, smoke, or incomplete telemetry sample.</li>
+  </ul>
+  <p>
+    Do not compare an Application Support DB cohort to a repository live DB cohort as though they
+    were the same runtime.
+  </p>
+  <h3 id="section-106-input-fixture-contracts">10.6 Input fixture contracts</h3>
+  <p>
+    All fixture JSON files set <code>&quot;contractVersion&quot;: 1</code> and reject unknown fields
+    in validation.
+  </p>
+  <p>
+    <code>hard-query-set.v1.json</code> contains <code>queries[]</code>. Each query requires
+    <code>id</code>, <code>goal</code>, repository facets, <code>mustIncludeKnowledgeIds</code>,
+    <code>mustIncludeEpisodeIds</code>, <code>mustNotIncludeIds</code>, and
+    <code>exactIdentifierLike</code>. Empty expectation arrays are explicit. IDs refer only to the
+    paired test snapshot, never implicitly to current live rows.
+  </p>
+  <p>
+    <code>context-compile-foundation-v1.json</code> contains <code>cases[]</code>. Each case
+    requires:
+  </p>
+  <ul>
+    <li><code>id</code> and one typed MCP request;</li>
+    <li>minimal SQL fixture rows, including identity/classification/timestamps;</li>
+    <li>a deterministic provider script for planner and Composer attempts;</li>
+    <li>
+      expected result kind, text hash, degraded reason codes, eligible/selected/used IDs in order;
+    </li>
+    <li>
+      expected run/task/pack/usage/candidate-trace rows with volatile fields declared in
+      <code>ignoredFields</code>;
+    </li>
+    <li>expected logical-call, provider-attempt, and failover counts.</li>
+  </ul>
+  <p>
+    Golden comparison removes only fields listed in <code>ignoredFields</code>, then compares
+    canonical JSON with object keys sorted and arrays kept in semantic order. Adding a field to
+    <code>ignoredFields</code> requires evidence explaining why it is nondeterministic; IDs,
+    ranking, scope, route, counts, and error/degraded codes may never be ignored.
+  </p>
+  <p>
+    <code>timestamp-normalization-v1.json</code> contains <code>cases[]</code> with
+    <code>raw</code>, <code>expectedEpochMs</code>, and <code>valid</code>, plus
+    <code>stableOrderCases[]</code> containing raw timestamp/row-ID pairs and expected ordered IDs.
+    It includes ISO UTC, ISO offset, SQLite datetime, leap day, empty/malformed
+    <code>unix-ms</code>, trailing junk, negative, overflow, ECMAScript maximum, and
+    maximum-plus-one cases.
+  </p>
+  <hr />
+  <h2 id="section-11-delivery-units">11. Delivery Units</h2>
+  <p>
+    Each unit is independently reviewable and has its own rollback. Behavior changes and live
+    activation are not combined in one commit.
+  </p>
+  <h3 id="section-111-unit-execution-matrix">11.1 Unit execution matrix</h3>
+  <p>
+    Terra uses this table as the work queue. “Exit artifact” means a committed-to-worktree file or a
+    recorded command result in the evidence draft, not a Git commit.
+  </p>
+  <table>
+    <caption>
+      Table: 11.1 Unit execution matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Unit</th>
+        <th scope="col">Required input</th>
+        <th scope="col">Primary files</th>
+        <th scope="col">Exit artifact</th>
+        <th scope="col">May proceed when</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>F0</td>
+        <td>Current source/worktree and prerequisite documents</td>
+        <td>manifest, hard-query set, golden fixture, evidence draft</td>
+        <td>Strictly valid manifest plus three entry decisions</td>
+        <td>Scaffold entry is true; later entries may remain false</td>
+      </tr>
+      <tr>
+        <td>F1</td>
+        <td>F0 golden fixture and T1 production identity/build API</td>
+        <td>new domain, <code>native_compile.rs</code>, <code>domains/mod.rs</code></td>
+        <td>Before/after golden artifact equality</td>
+        <td>Focused Rust tests and golden parity pass</td>
+      </tr>
+      <tr>
+        <td>F2</td>
+        <td>F1 domain seam</td>
+        <td>timestamp utility, report readers, shared fixture</td>
+        <td>Rust/TS/SQL normalization parity</td>
+        <td>Every fixture case agrees; invalids are counted</td>
+      </tr>
+      <tr>
+        <td>F3</td>
+        <td>F2 timestamps, T1 build/DB identity</td>
+        <td>Writer service, telemetry, ledger, CLI router</td>
+        <td>Observed Writer tests and ledger/report join tests</td>
+        <td>Existing Writer tests plus redaction/completeness tests pass</td>
+      </tr>
+      <tr>
+        <td>F4</td>
+        <td>F3 observed API and telemetry</td>
+        <td>read repository, composer, persistence, service</td>
+        <td>Split pipeline with legacy ranking parity</td>
+        <td>Blocked-composer concurrency and atomicity tests pass</td>
+      </tr>
+      <tr>
+        <td>F5</td>
+        <td>F4 transaction boundary</td>
+        <td>persistence and evidence snapshots</td>
+        <td>Exactly-once counters/content-version evidence</td>
+        <td>Success/failure/concurrent-change tests pass</td>
+      </tr>
+      <tr>
+        <td>F6</td>
+        <td>F5 snapshot model</td>
+        <td>ranking and rollout mode</td>
+        <td>Legacy/foundation paired trace</td>
+        <td>Safety/ranking/shadow hard-zero tests pass</td>
+      </tr>
+      <tr>
+        <td>F7</td>
+        <td>F6 fixed snapshot</td>
+        <td>experiment harness and reports</td>
+        <td>Paired route report and route decision</td>
+        <td>Normal path call count remains unchanged</td>
+      </tr>
+      <tr>
+        <td>F8</td>
+        <td>All live-entry predicates and explicit live authorization</td>
+        <td>runtime config and evidence only</td>
+        <td>24-hour canary evidence and promotion/rollback decision</td>
+        <td>Every gate in section 13 passes</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    At the end of each unit, append this record to
+    <code>spec/docs/contextstill-utility-rag-foundation-evidence.html</code>:
+  </p>
+  <pre><code class="language-text">Unit: F&lt;n&gt;
+Source commit/worktree fingerprint:
+Files changed:
+Commands run with exit codes:
+Tests passed / failed / skipped:
+Artifact paths and SHA-256:
+Invariant checks:
+Exit decision: pass | stop
+Stop reason, if any:
+</code></pre>
+  <h3 id="f0-evidence-freeze-and-entry-gate">F0: Evidence Freeze And Entry Gate</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>
+      Recapture status, paths, Doctor, vector, queue, repository isolation, schema revision, runtime
+      PID/start/build, and effective DB fingerprint.
+    </li>
+    <li>
+      Save the exact Foundation manifest hash and the source commit/build binding in evidence; do
+      not write runtime bindings back into the static manifest.
+    </li>
+    <li>Confirm a clean or topic-contained worktree.</li>
+    <li>Record active compile callers and ownership.</li>
+    <li>
+      Write three independent booleans to evidence: <code>scaffoldEntryEligible</code>,
+      <code>foundationCodeEntryEligible</code>, and <code>liveEntryEligible</code>, with one
+      predicate result per line. Do not collapse them into a single readiness value.
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>The manifest validates and every input artifact has a SHA-256.</li>
+    <li>
+      <code>scaffoldEntryEligible=true</code> requires an isolated temp/read-only test setup and no
+      live mutation.
+    </li>
+    <li>
+      <code>foundationCodeEntryEligible=true</code> additionally requires the T1 production
+      identity/build API and its focused tests; only this value allows F1-F7 completion.
+    </li>
+    <li>
+      <code>liveEntryEligible=true</code> requires every section 2.2 predicate, one effective DB
+      across runtime surfaces, and backup source equal to that DB.
+    </li>
+    <li>Live DB is not modified.</li>
+  </ul>
+  <p>Stop:</p>
+  <ul>
+    <li>
+      Stop all work on manifest/schema ambiguity or inability to isolate tests from the live DB.
+    </li>
+    <li>
+      Set <code>liveEntryEligible=false</code>, but continue permitted offline work, for path
+      mismatch, false <code>ok</code>, unresolved producer gate, missing backup, or stale binary.
+    </li>
+  </ul>
+  <h3 id="f1-golden-contract-and-rust-compile-domain-seam">
+    F1: Golden Contract And Rust Compile Domain Seam
+  </h3>
+  <p>Changes:</p>
+  <ul>
+    <li>Add <code>domains/context_compile</code>.</li>
+    <li>
+      Extract in this order: owned row/snapshot types; pure scoring/ranking; provider
+      request/response parsing; pack assembly; persistence SQL. After each move, run the focused
+      tests before deleting the old helper.
+    </li>
+    <li>Keep <code>native_compile.rs</code> as the MCP adapter.</li>
+    <li>
+      Preserve public tool schema, response text, selected IDs, pack rows, usage rows, and degraded
+      behavior.
+    </li>
+    <li>Add a golden fixture comparing before/after run artifacts.</li>
+  </ul>
+  <p>No behavior change is allowed in this unit.</p>
+  <p>Verification:</p>
+  <ul>
+    <li>Existing Rust native compile tests pass unchanged.</li>
+    <li>
+      Golden fixture matches candidate IDs, selected IDs, used IDs, output kind, degraded reasons,
+      pack rows, and identity snapshots.
+    </li>
+    <li>
+      Golden fixture includes planner success, planner failure with fallback, Composer failure with
+      fallback, no-content, rejected arguments, repo-scoped identity, global-only identity, and
+      injected persistence failure.
+    </li>
+    <li>No new provider call.</li>
+    <li>No schema diff.</li>
+  </ul>
+  <p>Rollback:</p>
+  <ul>
+    <li>Revert module seam only; persisted data remains unchanged.</li>
+  </ul>
+  <h3 id="f2-timestamp-and-report-contract">F2: Timestamp And Report Contract</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>
+      Add <code>test/fixtures/timestamp-normalization-v1.json</code> first, then make Rust,
+      TypeScript, and SQL projection conform to it.
+    </li>
+    <li>
+      Move timestamp formatting/parsing out of MCP-native helpers into a shared Rust utility
+      exposing <code>format_unix_ms(non_negative_ms)</code> and
+      <code>normalized_timestamp_sql(column_sql)</code>; the SQL helper accepts only a trusted
+      column expression supplied by code, never user input.
+    </li>
+    <li>Preserve canonical <code>unix-ms</code> new writes.</li>
+    <li>Add mixed-format normalization for Foundation reports.</li>
+    <li>
+      Replace Foundation-relevant raw <code>datetime(created_at)</code> ordering with the normalized
+      projection.
+    </li>
+    <li>Count invalid and out-of-range timestamps.</li>
+    <li>Add same-millisecond stable-ID tie-breaking.</li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>
+      ISO UTC, ISO offset, SQLite datetime, <code>unix-ms</code>, leap-day, invalid, and boundary
+      fixtures.
+    </li>
+    <li>
+      Same input yields the same epoch ordering in Rust and the continued TypeScript report path.
+    </li>
+    <li>No live backfill.</li>
+  </ul>
+  <p>Rollback:</p>
+  <ul>
+    <li>
+      Revert report projection. New writes remain readable because canonical format is already
+      supported.
+    </li>
+  </ul>
+  <h3 id="f3-telemetry-contract-and-observed-writer-api">
+    F3: Telemetry Contract And Observed Writer API
+  </h3>
+  <p>Changes:</p>
+  <ul>
+    <li>Add observed Writer execution without changing existing callers.</li>
+    <li>Add Foundation run-snapshot and Writer-ledger telemetry types.</li>
+    <li>Add runtime engine/version/build and database identity fingerprint.</li>
+    <li>Instrument prepare, retrieval, planner, Composer, and persistence.</li>
+    <li>Count logical calls separately from provider attempts and failovers.</li>
+    <li>
+      Persist semantic telemetry in existing JSON fields and exact Writer timing in the runtime
+      JSONL ledger.
+    </li>
+    <li>Add Foundation capability/baseline/compare commands.</li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>Deterministic clock tests for queue wait/work/total.</li>
+    <li>Multiple queued jobs report monotonic, non-negative measurements.</li>
+    <li>Existing Writer status counters do not regress.</li>
+    <li>
+      Telemetry redaction fixture contains no prompt, response body, secret, full Knowledge body, or
+      absolute DB path.
+    </li>
+    <li>
+      Missing, malformed, duplicate, or identity-mismatched ledger records are visible and excluded
+      from performance cohorts.
+    </li>
+    <li>
+      Outer Writer submission failure and inner persistence failure produce bounded failure records
+      with no fabricated timing.
+    </li>
+  </ul>
+  <p>Rollback:</p>
+  <ul>
+    <li>
+      Existing <code>execute</code> behavior remains intact; Foundation callers can return to
+      unobserved execution.
+    </li>
+  </ul>
+  <h3 id="f4-read--compose--persist-split">F4: Read / Compose / Persist Split</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>
+      Read request settings, provider route, eligible candidates, and snapshots through a read-only
+      connection.
+    </li>
+    <li>Drop the connection before composition.</li>
+    <li>Invoke planner/Composer outside Writer ownership.</li>
+    <li>Persist all business rows in one short Writer transaction.</li>
+    <li>
+      Append one runtime-ledger record after the observed Writer result; do not enqueue a
+      telemetry-only Writer job.
+    </li>
+    <li>Implement <code>legacy</code> and <code>split_legacy_rank</code> modes first.</li>
+    <li>
+      Until F6 lands, set
+      <code>PreparedCompile.foundation_selection = legacy_selection.clone()</code> and do not accept
+      <code>split_shadow_rank</code> or <code>foundation</code> at startup; those two tokens become
+      operationally valid only in F6. The parser enum may exist earlier, but startup returns a clear
+      <code>mode_not_implemented</code> error.
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>
+      A deliberately blocked Composer does not set Writer <code>activeOperation</code> to compile
+      persistence.
+    </li>
+    <li>
+      While Composer is blocked, an unrelated bounded Writer test job completes within the manifest
+      concurrency bound.
+    </li>
+    <li>
+      The read connection rejects <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, and
+      schema mutation.
+    </li>
+    <li>
+      Injected persistence failure leaves no partial run, pack, usage, feedback, or counter rows.
+    </li>
+    <li>
+      Injected ledger failure leaves a valid run and output with a measurable missing-ledger record
+      in the report.
+    </li>
+    <li>
+      <code>legacy</code> and <code>split_legacy_rank</code> have identical delivered IDs and output
+      contract on the golden fixture.
+    </li>
+  </ul>
+  <p>Stop:</p>
+  <ul>
+    <li>Any provider call under Writer ownership.</li>
+    <li>Any partial business persistence.</li>
+    <li>Any wrong-project or unresolved candidate difference.</li>
+  </ul>
+  <p>Rollback:</p>
+  <ul>
+    <li>
+      Set mode to <code>legacy</code> and restart the resident. Safe repository eligibility remains
+      enforced.
+    </li>
+  </ul>
+  <h3 id="f5-native-counters-and-content-snapshots">F5: Native Counters And Content Snapshots</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>Add content hash and source update timestamp to run snapshots and candidate evidence.</li>
+    <li>Deduplicate delivered IDs by entity kind, preserving first-delivered order.</li>
+    <li>
+      For each unique delivered Knowledge ID, run
+      <code>compile_select_count = compile_select_count + 1</code> and set
+      <code>last_compiled_at</code> to the run&#39;s canonical timestamp.
+    </li>
+    <li>
+      For each unique delivered EpisodeCard ID, run
+      <code>compile_use_count = compile_use_count + 1</code>.
+    </li>
+    <li>
+      Do not update Knowledge/Episode content columns, <code>updated_at</code>, Knowledge
+      <code>dynamic_score</code>, or <code>agentic_accept_count</code> in Foundation. Composer-used
+      evidence remains in the existing immutable usage/event rows.
+    </li>
+    <li>Persist composer-used events separately from selection counts.</li>
+    <li>Record counter update count and missing-current-row diagnostics.</li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>Selected counter increments exactly once per successful run.</li>
+    <li>Failed transaction increments nothing.</li>
+    <li>
+      Ledger append retry is not performed in the request path and cannot re-increment counters.
+    </li>
+    <li>Composer-used subset does not change selection-count semantics.</li>
+    <li>Entity modified or deleted after read does not get overwritten by the snapshot.</li>
+    <li>Replayed report reads the historical snapshot, not current content.</li>
+  </ul>
+  <p>Rollback:</p>
+  <ul>
+    <li>Stop counter updates while retaining immutable usage events and snapshots.</li>
+  </ul>
+  <h3 id="f6-ranking-correction-and-shadow">F6: Ranking Correction And Shadow</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>Split query score from dynamic utility and importance.</li>
+    <li>Require positive query score before ranking.</li>
+    <li>Apply the fixed lexicographic policy.</li>
+    <li>Compute legacy and Foundation selections from the same eligible candidate snapshot.</li>
+    <li>Add <code>split_shadow_rank</code> and <code>foundation</code> modes.</li>
+    <li>Store only shadow IDs, ranks, numeric features, and suppression reasons.</li>
+    <li>Preserve top-8 Knowledge and top-3 EpisodeCard budgets.</li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>A query-unmatched item with maximum dynamic score is ineligible.</li>
+    <li>A lower query score cannot beat a higher query score.</li>
+    <li>Dynamic utility orders equal-query-score Knowledge only.</li>
+    <li>Importance orders equal-query-score EpisodeCards only.</li>
+    <li>Stable ordering is independent of insertion order.</li>
+    <li>Repo A/B/global/unresolved/malformed and limit-saturation fixtures pass.</li>
+    <li>Shadow-only outbound, pack, usage, and counter writes are zero.</li>
+    <li>Legacy selection remains available without unscoped fallback.</li>
+  </ul>
+  <p>Rollback:</p>
+  <ul>
+    <li>
+      Set mode to <code>split_legacy_rank</code>; keep the low-contention pipeline while reverting
+      ranking.
+    </li>
+  </ul>
+  <h3 id="f7-composition-experiment-harness">F7: Composition Experiment Harness</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>
+      Add the <code>context-compile experiment</code> CLI action and
+      <code>foundation:experiment</code> package wrapper defined in section 10.3.
+    </li>
+    <li>
+      Render a fixed <code>PreparedCompile</code> snapshot through all enabled experiment routes.
+    </li>
+    <li>Keep provider, model, candidate snapshot, token budget, and query set paired.</li>
+    <li>
+      Save results outside the live run tables unless explicitly running the live selected route.
+    </li>
+    <li>
+      Evaluate must-include, must-not-include, source-ID support, used-item ratio, token estimate,
+      logical calls, attempts, and latency from the redacted report. A separately authorized secure
+      review may append human/task outcome to evidence; if that evidence is absent, the route
+      decision must remain <code>current_two_call</code>.
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <ul>
+    <li>Experiment mode cannot be enabled through public MCP arguments.</li>
+    <li>Normal MCP calls have no additional route or provider attempt.</li>
+    <li>Failed route does not change live default.</li>
+    <li>Artifacts are content-redacted by default and identify source hashes.</li>
+  </ul>
+  <p>Decision:</p>
+  <ul>
+    <li>
+      Keep <code>current_two_call</code> unless another route is non-inferior on quality and
+      improves logical calls or latency.
+    </li>
+    <li>
+      A route decision updates the evidence document and a separate rollout configuration; it does
+      not rewrite the Foundation manifest after seeing results.
+    </li>
+  </ul>
+  <h3 id="f8-shadow-canary-promotion-and-closeout">F8: Shadow, Canary, Promotion, And Closeout</h3>
+  <p>Changes:</p>
+  <ul>
+    <li>
+      Add the <code>context-compile probe</code> CLI action and
+      <code>foundation:probe</code> package wrapper defined in section 10.3.
+    </li>
+    <li>
+      No automatic mode switch, restart, or promotion mutation is implemented; F8 commands only
+      check, call, measure, and write new evidence artifacts.
+    </li>
+  </ul>
+  <p>Sequence:</p>
+  <ol>
+    <li>Deploy the verified Foundation binary in <code>split_legacy_rank</code>.</li>
+    <li>Run MCP smoke and Writer-concurrency smoke.</li>
+    <li>
+      Save a fresh capabilities entry report and observe at least 20 successful identity-present
+      smoke calls.
+    </li>
+    <li>
+      Run a 100-call <code>foundation:probe</code> against the manifest query set and create the
+      <code>split_legacy_rank</code> baseline report with <code>--probe</code>.
+    </li>
+    <li>
+      Switch to <code>split_shadow_rank</code>, save a fresh entry report, and collect at least 50
+      identity-present shadow calls.
+    </li>
+    <li>Run the fixed replay/hard-query comparison and all shadow hard-zero checks.</li>
+    <li>
+      Switch a controlled local cohort to <code>foundation</code> and save a fresh entry report.
+    </li>
+    <li>
+      Collect at least 100 identity-present Foundation calls across at least 24 hours; calls
+      concentrated into a shorter window do not satisfy this observation gate.
+    </li>
+    <li>
+      Run a 100-call <code>foundation:probe</code> with the same manifest query order and create the
+      Foundation candidate baseline report with <code>--probe</code>.
+    </li>
+    <li>
+      Run <code>foundation:compare</code> with the explicit split-legacy baseline and Foundation
+      candidate reports.
+    </li>
+    <li>Re-run safety, availability, quality, performance, telemetry, and rollback gates.</li>
+    <li>Record the default/rollback decision and every artifact hash in Foundation evidence.</li>
+  </ol>
+  <p>
+    Do not combine the first live split-pipeline activation and Foundation ranking activation in one
+    restart.
+  </p>
+  <hr />
+  <h2 id="section-12-verification-matrix">12. Verification Matrix</h2>
+  <table>
+    <caption>
+      Table: 12. Verification Matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Layer</th>
+        <th scope="col">Required proof</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Request contract</td>
+        <td>Unknown/control args rejected; public schema unchanged</td>
+      </tr>
+      <tr>
+        <td>Identity</td>
+        <td>Request/run/task/pack/usage identity snapshot matches</td>
+      </tr>
+      <tr>
+        <td>Eligibility</td>
+        <td>Repo A/B/global/unresolved/malformed and limit-saturation fixtures</td>
+      </tr>
+      <tr>
+        <td>Read boundary</td>
+        <td>Query-only connection rejects writes</td>
+      </tr>
+      <tr>
+        <td>Writer boundary</td>
+        <td>Blocked Composer does not block unrelated Writer job</td>
+      </tr>
+      <tr>
+        <td>Persistence</td>
+        <td>Failure injection proves atomic business rows and counters</td>
+      </tr>
+      <tr>
+        <td>Telemetry</td>
+        <td>Phase/call/attempt/failover counts, timing consistency, redaction, completeness</td>
+      </tr>
+      <tr>
+        <td>Timestamp</td>
+        <td>Mixed formats, invalid formats, boundary and stable ordering</td>
+      </tr>
+      <tr>
+        <td>Ranking</td>
+        <td>Query lockout fixtures and stable tie-break rules</td>
+      </tr>
+      <tr>
+        <td>Shadow</td>
+        <td>Shadow outbound/pack/usage/counter hard zero</td>
+      </tr>
+      <tr>
+        <td>Composition</td>
+        <td>Paired fixed-snapshot route comparison</td>
+      </tr>
+      <tr>
+        <td>Operations</td>
+        <td>Effective DB/build identity, backup, restart, tools/list, status/Doctor agreement</td>
+      </tr>
+      <tr>
+        <td>Compatibility</td>
+        <td>
+          TypeScript readers accept additive diagnostics; old binary can read unchanged schema
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h3 id="section-121-focused-commands">12.1 Focused commands</h3>
+  <pre><code class="language-bash">cargo fmt --check
+cargo clippy -p context-stilld --all-targets -- -D warnings
+cargo test -p context-stilld context_compile
+cargo test -p context-stilld sqlite_writer
+cargo test -p context-stilld runtime_identity
+bun run test:repository-isolation:sqlite
+bun run test:sqlite-runtime
+bunx vitest run test/context-compile-tool-contract.test.ts
+bun run rust:mcp:smoke
+bun run docs:check-links
+git diff --check
+</code></pre>
+  <h3 id="section-122-full-pre-promotion-commands">12.2 Full pre-promotion commands</h3>
+  <pre><code class="language-bash">cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo llvm-cov -p context-stilld --summary-only
+bun run verify
+bun run verify:sqlite
+bun run verify:rust-daemon
+bun run docs:check-links
+git diff --check
+</code></pre>
+  <p>Live checks remain opt-in and must not run from ordinary unit tests.</p>
+  <h3 id="section-123-required-focused-test-locations">12.3 Required focused test locations</h3>
+  <table>
+    <caption>
+      Table: 12.3 Required focused test locations
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Contract</th>
+        <th scope="col">Test location/filter</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Domain golden parity, ranking, redaction, ledger join</td>
+        <td>
+          <code>domains/context_compile/tests.rs</code>;
+          <code>cargo test -p context-stilld context_compile</code>
+        </td>
+      </tr>
+      <tr>
+        <td>Writer observed timing/serialization/failure</td>
+        <td>
+          existing <code>domains/sqlite_writer/service.rs</code> test module;
+          <code>cargo test -p context-stilld sqlite_writer</code>
+        </td>
+      </tr>
+      <tr>
+        <td>MCP schema and adapter output</td>
+        <td>
+          existing <code>native_tools_tests.rs</code> plus <code>native_compile.rs</code> adapter
+          tests
+        </td>
+      </tr>
+      <tr>
+        <td>Timestamp cross-runtime fixture</td>
+        <td>
+          Rust <code>context_compile</code> tests and new
+          <code>test/context-compile-timestamp-contract.test.ts</code> consuming the same JSON
+          fixture
+        </td>
+      </tr>
+      <tr>
+        <td>TypeScript additive diagnostics</td>
+        <td><code>test/context-compile-tool-contract.test.ts</code></td>
+      </tr>
+      <tr>
+        <td>SQLite read-only and report behavior</td>
+        <td>
+          <code>test/sqlite-runtime-support.bun.ts</code> and
+          <code>test/sqlite-repository-isolation-report.bun.ts</code>
+        </td>
+      </tr>
+      <tr>
+        <td>CLI parse/help/JSON purity</td>
+        <td>
+          existing CLI routing/service test modules plus <code>context_compile::routing</code> tests
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Each failure-injection test must assert both the returned error/result and all affected row
+    counts. Tests that assert only the error string are insufficient for the atomicity gate.
+  </p>
+  <hr />
+  <h2 id="section-13-promotion-gates">13. Promotion Gates</h2>
+  <h3 id="section-131-safety-gate">13.1 Safety gate</h3>
+  <p>All are hard zero in fixtures, shadow, and canary.</p>
+  <ul>
+    <li>Wrong-project candidate, outbound, pack, usage, or counter update.</li>
+    <li>Unresolved, malformed, or conflict selection.</li>
+    <li>Request/run/task identity mismatch.</li>
+    <li>Shadow-only outbound, pack, usage, or counter update.</li>
+    <li>External provider call while Writer persistence is active.</li>
+  </ul>
+  <p>One violation stops promotion immediately.</p>
+  <h3 id="section-132-availability-gate">13.2 Availability gate</h3>
+  <ul>
+    <li>No Content rate is non-inferior under the manifest margin.</li>
+    <li>Tool error rate is non-inferior.</li>
+    <li>
+      Composer fallback/degraded rate is reported separately and does not exceed its manifest limit.
+    </li>
+    <li>
+      Runtime-ledger append failure does not turn successfully persisted content into a tool error.
+    </li>
+    <li>
+      Business persistence success is 100% in the controlled canary, excluding intentional failure
+      injection.
+    </li>
+  </ul>
+  <h3 id="section-133-performance-gate">13.3 Performance gate</h3>
+  <p>Use paired queries, the same provider route, and the same effective database cohort.</p>
+  <ul>
+    <li>End-to-end p50 satisfies the manifest non-inferiority margin.</li>
+    <li>End-to-end p95 is at most baseline × 1.02.</li>
+    <li>Retrieval p95 is at most the stricter of 100 ms or baseline + 5 ms.</li>
+    <li>Writer queue wait p95 is at most 20 ms.</li>
+    <li>Business persistence p95 is at most 25 ms.</li>
+    <li>Logical LLM calls do not increase.</li>
+    <li>Provider attempts/failovers do not regress for the same route.</li>
+    <li>Writer hold time excludes provider latency in every split-mode sample.</li>
+  </ul>
+  <h3 id="section-134-ranking-gate">13.4 Ranking gate</h3>
+  <ul>
+    <li>Query lockout fixture violations are 0.</li>
+    <li>Existing-used Knowledge retention is at least 99% as a diagnostic cohort.</li>
+    <li>Hard-query must-include retention is non-inferior.</li>
+    <li>Must-not-include violations do not increase.</li>
+    <li>
+      Exact identifier-like queries do not regress, even though an exact lane is not added yet.
+    </li>
+    <li>Stable ranking replay produces identical IDs and order for the same snapshot.</li>
+  </ul>
+  <h3 id="section-135-telemetry-gate">13.5 Telemetry gate</h3>
+  <ul>
+    <li>Valid one-to-one Writer-ledger join rate is at least 99% in the 24-hour canary.</li>
+    <li>Missing or invalid timestamp rate is reported, not silently dropped.</li>
+    <li>
+      Component/total timing consistency violations are below 1% and individually inspectable.
+    </li>
+    <li>Redaction fixture violations are 0.</li>
+    <li>
+      Every sample identifies runtime engine, version, build ID, pipeline version/mode, database
+      identity fingerprint, and composition route.
+    </li>
+  </ul>
+  <h3 id="section-136-promotion-result">13.6 Promotion result</h3>
+  <p>
+    Promote only <code>foundation</code> mode when every gate passes. Otherwise choose the narrowest
+    safe mode:
+  </p>
+  <ul>
+    <li>Ranking regression only: <code>split_legacy_rank</code>.</li>
+    <li>Split-pipeline regression: <code>legacy</code>.</li>
+    <li>
+      Telemetry regression only: keep split pipeline, mark promotion incomplete, and fix telemetry
+      before using results for later lanes.
+    </li>
+  </ul>
+  <hr />
+  <h2 id="section-14-stop-conditions">14. Stop Conditions</h2>
+  <p>Stop implementation or rollout and review when any occurs.</p>
+  <ul>
+    <li>Effective DB identity differs across any runtime surface.</li>
+    <li>The implementation requires a DB copy, merge, move, or destructive backfill.</li>
+    <li>A schema revision becomes necessary without an N-1 binary compatibility plan.</li>
+    <li>Read-only preparation cannot load all information needed before composition.</li>
+    <li>A provider call still requires a Writer-owned connection.</li>
+    <li>Persisted business rows can be partially committed.</li>
+    <li>Shadow text reaches a provider or user-visible pack.</li>
+    <li>Candidate eligibility changes before the ranking-shadow stage.</li>
+    <li>Repository isolation hard zero is violated.</li>
+    <li>Runtime logical calls or provider attempts increase in the normal path.</li>
+    <li>
+      Writer wait, persistence, or end-to-end p95 crosses its stop threshold after the minimum
+      sample size.
+    </li>
+    <li>Telemetry contains secrets, prompts, raw provider responses, or full Knowledge bodies.</li>
+    <li>
+      Composition experiment requires live-data mutation or duplicates calls in normal MCP requests.
+    </li>
+    <li>TypeScript is given an independent new ranking implementation.</li>
+  </ul>
+  <hr />
+  <h2 id="section-15-rollback">15. Rollback</h2>
+  <h3 id="section-151-code-and-schema">15.1 Code and schema</h3>
+  <p>
+    Foundation v1 has no schema change. The prior verified binary can read the database after
+    rollback.
+  </p>
+  <p>
+    Do not delete Foundation JSON diagnostics from historical run snapshots. Older readers must
+    ignore additive fields.
+  </p>
+  <h3 id="section-152-runtime-mode-rollback">15.2 Runtime mode rollback</h3>
+  <table>
+    <caption>
+      Table: 15.2 Runtime mode rollback
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Failure</th>
+        <th scope="col">Rollback</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Foundation ranking quality</td>
+        <td><code>split_legacy_rank</code></td>
+      </tr>
+      <tr>
+        <td>Shadow implementation</td>
+        <td><code>split_legacy_rank</code></td>
+      </tr>
+      <tr>
+        <td>Split read/compose/write boundary</td>
+        <td><code>legacy</code></td>
+      </tr>
+      <tr>
+        <td>Composition route experiment</td>
+        <td>keep <code>current_two_call</code></td>
+      </tr>
+      <tr>
+        <td>Runtime telemetry ledger</td>
+        <td>
+          keep business pipeline, exclude incomplete performance samples, disable promotion use
+        </td>
+      </tr>
+      <tr>
+        <td>Identity/scope safety</td>
+        <td>stop rollout; return to the last verified fail-closed binary/mode</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Every runtime-mode change requires a controlled resident restart, build/path confirmation,
+    tools/list smoke, and post-restart effective-DB check.
+  </p>
+  <h3 id="section-153-data-rollback">15.3 Data rollback</h3>
+  <ul>
+    <li>Do not restore a database merely because ranking or latency regressed.</li>
+    <li>Restore only after confirmed corruption or invalid business mutation.</li>
+    <li>
+      Counter increments are not decremented during ordinary code rollback; they remain historical
+      selections.
+    </li>
+    <li>
+      If a counter bug causes systematic overcount, handle it through an audited correction plan
+      using immutable usage/run evidence.
+    </li>
+    <li>
+      Runtime-ledger segments follow the bounded rotation contract; copy/hash required evidence
+      before it ages out. Rollback does not delete retained segments.
+    </li>
+  </ul>
+  <hr />
+  <h2 id="section-16-expected-change-surface">16. Expected Change Surface</h2>
+  <p>Required Rust files:</p>
+  <ul>
+    <li><code>crates/context-stilld/src/domains/mod.rs</code></li>
+    <li>new <code>crates/context-stilld/src/domains/context_compile/*</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_common.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_tools.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/dispatch.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/endpoint_server.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_tools_tests.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/sqlite_writer/mod.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/sqlite_writer/service.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/cli/routing.rs</code></li>
+    <li><code>crates/context-stilld/src/domains/cli/service.rs</code></li>
+    <li><code>crates/context-stilld/src/lib.rs</code></li>
+    <li>associated focused test modules</li>
+  </ul>
+  <p>Required TypeScript/scripts/docs files:</p>
+  <ul>
+    <li><code>package.json</code></li>
+    <li><code>src/modules/context-compiler/context-compiler.repository.utils.ts</code></li>
+    <li><code>src/modules/context-compiler/repository-isolation-report.repository.ts</code></li>
+    <li><code>test/sqlite-runtime-support.bun.ts</code></li>
+    <li><code>test/context-compile-tool-contract.test.ts</code></li>
+    <li>new <code>test/context-compile-timestamp-contract.test.ts</code></li>
+    <li>new <code>spec/context-compile-foundation/*</code></li>
+    <li>new <code>test/fixtures/context-compile-foundation-v1.json</code></li>
+    <li>new <code>test/fixtures/timestamp-normalization-v1.json</code></li>
+    <li>
+      <code>spec/docs/contextstill-utility-rag-foundation-evidence.html</code> during implementation
+    </li>
+    <li>
+      public operations documentation only when the rollout setting becomes operator-supported
+    </li>
+  </ul>
+  <p>
+    Conditionally allowed file:
+    <code>src/modules/context-compiler/context-compiler.repository.sqlite.ts</code> may change only
+    if an existing TypeScript run-detail reader otherwise rejects or hides the additive Foundation
+    diagnostics. Add a failing compatibility test before changing it; do not add ranking behavior
+    there.
+  </p>
+  <p>Must not change in Foundation:</p>
+  <ul>
+    <li>FTS/vector schema or index tables;</li>
+    <li>Knowledge classification in bulk;</li>
+    <li>public MCP input fields;</li>
+    <li>queue retry/provider policy;</li>
+    <li>TypeScript compile ranking semantics;</li>
+    <li>Security Intelligence trust boundaries;</li>
+    <li>PostgreSQL migrations.</li>
+  </ul>
+  <hr />
+  <h2 id="section-17-delivery-and-review-boundaries">17. Delivery And Review Boundaries</h2>
+  <p>
+    Keep these as separate reviewable change batches in this order. If the implementation task
+    explicitly authorizes commits or PRs, use one batch per commit/PR; otherwise leave the worktree
+    uncommitted and report the same boundaries in evidence.
+  </p>
+  <ol>
+    <li><code>foundation: freeze manifest and golden fixtures</code></li>
+    <li><code>refactor: add Rust context compile domain seam</code></li>
+    <li><code>fix: normalize compile timestamp reporting</code></li>
+    <li><code>feat: observe SQLite writer execution</code></li>
+    <li><code>feat: persist Foundation compile telemetry</code></li>
+    <li><code>perf: split compile read compose and persist phases</code></li>
+    <li><code>fix: persist native compile counters and snapshots</code></li>
+    <li><code>fix: make compile ranking query-first</code></li>
+    <li><code>test: add composition and Foundation comparison harness</code></li>
+    <li><code>ops: record Foundation canary and promotion evidence</code></li>
+  </ol>
+  <p>
+    Do not combine the behavior-preserving domain move with ranking or Writer-boundary changes. Do
+    not combine code merge with live restart evidence.
+  </p>
+  <hr />
+  <h2 id="section-18-implementation-checklist">18. Implementation Checklist</h2>
+  <h3 id="entry">Entry</h3>
+  <ul>
+    <li>
+      <input disabled="" type="checkbox" /> All three entry predicates are recorded; scaffold entry
+      is true before F0 work and Foundation code entry is true before F1 completion.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Live-entry predicates are recorded separately; a false
+      value blocks only F8/live work.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Before production adapter completion, Rust runtime T1
+      identity API exists.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Before F8, repository isolation final completion and
+      Rust runtime T1-T4 are true.
+    </li>
+    <li><input disabled="" type="checkbox" /> Before F8, effective DB and backup target match.</li>
+    <li>
+      <input disabled="" type="checkbox" /> Manifest, commit, build, and DB fingerprints are frozen.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Existing baseline and golden artifacts are captured.
+    </li>
+  </ul>
+  <h3 id="phase-0">Phase 0</h3>
+  <ul>
+    <li>
+      <input disabled="" type="checkbox" /> Rust compile domain seam exists with golden parity.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Timestamp normalization contract passes mixed-format
+      fixtures.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Observed Writer API passes concurrency and timing tests.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Foundation telemetry is persisted without schema change.
+    </li>
+    <li><input disabled="" type="checkbox" /> Read-only preparation rejects writes.</li>
+    <li><input disabled="" type="checkbox" /> Provider calls occur outside Writer ownership.</li>
+    <li><input disabled="" type="checkbox" /> Business persistence is atomic and bounded.</li>
+    <li>
+      <input disabled="" type="checkbox" /> Runtime Writer ledger is append-only, bounded, redacted,
+      and joinable by run ID.
+    </li>
+    <li><input disabled="" type="checkbox" /> Native counters and content hashes are persisted.</li>
+    <li>
+      <input disabled="" type="checkbox" /> Capability/baseline/compare/experiment/probe commands
+      obey their read/write and artifact contracts.
+    </li>
+    <li><input disabled="" type="checkbox" /> Composition-route decision is recorded.</li>
+  </ul>
+  <h3 id="phase-05">Phase 0.5</h3>
+  <ul>
+    <li><input disabled="" type="checkbox" /> Query score and utility/importance are separated.</li>
+    <li><input disabled="" type="checkbox" /> Query-unmatched candidates remain ineligible.</li>
+    <li>
+      <input disabled="" type="checkbox" /> Legacy and Foundation rankings can be compared from one
+      snapshot.
+    </li>
+    <li><input disabled="" type="checkbox" /> Shadow candidates have no outbound side effects.</li>
+    <li><input disabled="" type="checkbox" /> Stable deterministic ranking fixtures pass.</li>
+  </ul>
+  <h3 id="promotion">Promotion</h3>
+  <ul>
+    <li><input disabled="" type="checkbox" /> <code>split_legacy_rank</code> smoke passes.</li>
+    <li><input disabled="" type="checkbox" /> At least 50 identity-present shadow calls pass.</li>
+    <li>
+      <input disabled="" type="checkbox" /> At least 100 identity-present Foundation canary calls
+      across 24 hours pass.
+    </li>
+    <li>
+      <input disabled="" type="checkbox" /> Safety, availability, performance, ranking, and
+      telemetry gates pass.
+    </li>
+    <li><input disabled="" type="checkbox" /> Rollback drill passes.</li>
+    <li><input disabled="" type="checkbox" /> Foundation evidence records the final decision.</li>
+  </ul>
+  <hr />
+  <h2 id="section-19-completion-and-next-plan">19. Completion And Next Plan</h2>
+  <p>After Foundation promotion:</p>
+  <ol>
+    <li>Freeze the corrected baseline as the input to the Native FTS/RRF implementation plan.</li>
+    <li>
+      Do not copy the Foundation provisional values into later plans without the manifest/evidence
+      hash.
+    </li>
+    <li>Start FTS/RRF planning as a separate delivery program.</li>
+    <li>Keep Vector blocked on Rust runtime T5 and a scoped semantic hard set.</li>
+    <li>Keep Utility Graph blocked on trustworthy labels and its independent promotion gate.</li>
+  </ol>
+  <p>
+    When all Foundation evidence is complete, move this implementation plan and its evidence
+    document to <code>spec/docs/.archived/</code> together. Keep the Utility-RAG concept active as
+    the higher-level architecture authority.
+  </p>
+</article>

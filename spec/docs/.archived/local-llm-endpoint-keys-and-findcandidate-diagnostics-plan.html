@@ -1,0 +1,420 @@
+<article lang="ja">
+  <h1 id="local-llm-endpoint-keys--findcandidate-diagnostics-実装計画">
+    Local LLM Endpoint Keys / findCandidate Diagnostics 実装計画
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>8cf1af8</code>。</p>
+  </blockquote>
+  <h2 id="目的">目的</h2>
+  <p>
+    Local LLM の API key を provider 共通ではなく endpoint/model
+    単位で扱えるようにする。これにより、同じ PC 上の複数 Local LLM endpoint でも別々の key
+    を設定でき、OpenAI / Azure OpenAI / Local LLM の Provider Endpoint UI
+    をできるだけ同じ操作感に寄せる。
+  </p>
+  <p>
+    同時に、<code>findCandidate</code> の
+    <code>no_candidate</code> を「本当に候補なし」と「候補らしき出力が parser / contract
+    で落ちた」に分けて診断できるようにし、未整形の作業ログから rule / procedure / negative knowledge
+    の signal を拾えることをテストで固定する。
+  </p>
+  <h2 id="現状">現状</h2>
+  <ul>
+    <li><code>RuntimeSecretKey</code> は <code>localLlmApiKey</code> を 1 個だけ持つ。</li>
+    <li>
+      <code>LocalLlmModelSettings</code> は <code>name</code> / <code>apiBaseUrl</code> /
+      <code>apiPath</code> / <code>model</code> を持つが、endpoint ごとの secret 参照を持たない。
+    </li>
+    <li>
+      runtime cache は <code>secrets.localLlmApiKey</code> を
+      <code>groupedConfig.localLlm.apiKey</code> に入れる。
+    </li>
+    <li>
+      Local LLM provider は <code>groupedConfig.localLlm.apiKey</code> をすべての Local LLM request
+      の <code>Authorization: Bearer ...</code> に使う。
+    </li>
+    <li>UI は Local LLM endpoint 行を複数表示できるが、API key editor は先頭行にだけ出る。</li>
+    <li>
+      <code>findCandidate</code> は <code>parseStorageCandidatesFromLlmOutput()</code> 後の候補数が
+      0 なら queue を <code>skipped/no_candidate</code> にするが、raw output が
+      <code>[]</code> だったのか parser reject だったのかを永続的に区別できない。
+    </li>
+  </ul>
+  <h2 id="非目標">非目標</h2>
+  <ul>
+    <li>provider pool scheduler の優先度設計は変更しない。</li>
+    <li>Local LLM endpoint の health / lease / route selection 仕様はこの計画では再設計しない。</li>
+    <li>
+      negative knowledge を procedure として保存可能にしない。negative は引き続き rule として扱う。
+    </li>
+    <li>live Qwen smoke を通常 verify に入れない。必要なら opt-in にする。</li>
+  </ul>
+  <h2 id="実装方針">実装方針</h2>
+  <h3 id="section-1-local-llm-api-key-を-endpointmodel-単位にする">
+    1. Local LLM API key を endpoint/model 単位にする
+  </h3>
+  <h4 id="section-11-型と-secret-key-の拡張">1.1 型と secret key の拡張</h4>
+  <ul>
+    <li>
+      <code>RuntimeSecretKey</code> に Local LLM endpoint 用の indexed key を追加する。
+      <ul>
+        <li>
+          例: <code>localLlmApiKey</code>, <code>localLlmApiKey2</code>,
+          <code>localLlmApiKey3</code>, ...
+        </li>
+        <li>
+          Azure OpenAI の <code>azureOpenAiApiKey2</code> 方式に合わせ、既存 secret storage
+          を流用する。
+        </li>
+      </ul>
+    </li>
+    <li>
+      <code>RuntimeSettingsView.providers[&quot;local-llm&quot;]</code> に
+      <code>apiKeySecrets: RuntimeSecretStatus[]</code> を追加する。
+    </li>
+    <li><code>LocalLlmModelSettings</code> 自体に raw secret は持たせない。</li>
+    <li>初期互換として、1 番目の endpoint は既存 <code>localLlmApiKey</code> を使う。</li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>settings API view が Local LLM model 数に対応した <code>apiKeySecrets[]</code> を返す。</li>
+    <li>
+      既存 <code>localLlmApiKey</code> は失効せず、先頭 Local LLM endpoint の key として扱われる。
+    </li>
+  </ul>
+  <h4 id="section-12-settings-repository--runtime-cache">
+    1.2 settings repository / runtime cache
+  </h4>
+  <ul>
+    <li>secret status 生成で <code>localLlmApiKey2</code> 以降を扱う。</li>
+    <li>
+      runtime cache で <code>groupedConfig.localLlm.models[]</code> に resolved API key
+      を対応付ける。
+    </li>
+    <li><code>groupedConfig.localLlm.apiKey</code> は互換用に先頭 endpoint key を保持する。</li>
+    <li>
+      <code>groupedConfig.localLlm.models[]</code> の型に <code>apiKey?: string</code> を追加する。
+    </li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>
+      <code>resolveLocalLlmModelConfig()</code> が選択 endpoint の <code>apiKey</code> も返せる。
+    </li>
+    <li>route が Qwen 50041 を選ぶ場合、50041 endpoint の key が使われる。</li>
+    <li>50043 endpoint を選ぶ場合、50043 endpoint の key が使われる。</li>
+  </ul>
+  <h4 id="section-13-local-llm-provider--rust-queue-executor">
+    1.3 Local LLM provider / Rust queue executor
+  </h4>
+  <ul>
+    <li>
+      TypeScript Local LLM provider は <code>resolveLocalLlmModelConfig(model)</code> の結果から
+      endpoint-specific key を使う。
+    </li>
+    <li>key が endpoint に無い場合だけ provider-level legacy key に fallback する。</li>
+    <li>
+      Rust queue executor が settings JSON から Local LLM target を読む箇所にも endpoint key
+      解決を追加する。
+      <ul>
+        <li>Rust 側に raw secret を settings JSON へ保存しない。</li>
+        <li>secret table から <code>localLlmApiKey{index}</code> を読む。</li>
+        <li>
+          endpoint target ID と model index の対応が必要なら、settings の
+          <code>models[]</code> 順で解決する。
+        </li>
+      </ul>
+    </li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>TS 経路と Rust queue 経路の両方で、同じ endpoint に同じ key が使われる。</li>
+    <li>
+      secret 未設定 endpoint は key なし request または legacy fallback になり、別 endpoint の key
+      を誤用しない。
+    </li>
+  </ul>
+  <h4 id="section-14-provider-endpoint-ui">1.4 Provider Endpoint UI</h4>
+  <ul>
+    <li>Local LLM 各 endpoint row に API Key editor を表示する。</li>
+    <li>
+      Azure OpenAI と同じく、2 番目以降は <code>API Key 2</code> /
+      <code>API Key 3</code> のように見せる。
+    </li>
+    <li>
+      OpenAI / Azure OpenAI / Local LLM の endpoint card の field order をできるだけ揃える。
+      <ul>
+        <li>Name</li>
+        <li>Kind</li>
+        <li>Endpoint</li>
+        <li>API Path / API Version</li>
+        <li>Models</li>
+        <li>API Key</li>
+        <li>Health</li>
+      </ul>
+    </li>
+    <li>
+      Local LLM の provider-level key editor は廃止または legacy 表示にしない。ユーザーには endpoint
+      key として見せる。
+    </li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>Qwen endpoint 行にも API Key field が見える。</li>
+    <li>gemma endpoint 行と Qwen endpoint 行で別々の key を保存できる。</li>
+    <li>key の clear / masked status が endpoint ごとに表示される。</li>
+  </ul>
+  <h3 id="section-2-findcandidate-の-no_candidate-診断を分ける">
+    2. <code>findCandidate</code> の <code>no_candidate</code> 診断を分ける
+  </h3>
+  <h4 id="section-21-parser-reject-reason-を返す">2.1 parser reject reason を返す</h4>
+  <ul>
+    <li>
+      <code>parseStorageCandidatesFromLlmOutput()</code> は現在
+      <code>CandidateRecord[]</code> だけを返す。
+    </li>
+    <li>
+      追加 API を作る。
+      <ul>
+        <li>例: <code>parseStorageCandidatesWithDiagnostics(llmOutput)</code></li>
+        <li>return: <code>{ candidates, diagnostics }</code></li>
+      </ul>
+    </li>
+    <li>
+      diagnostics には最低限これを含める。
+      <ul>
+        <li><code>rawWasEmptyArray</code></li>
+        <li><code>rawCandidateLikeCount</code></li>
+        <li><code>droppedMissingType</code></li>
+        <li><code>droppedMissingPolarity</code></li>
+        <li><code>droppedNeutral</code></li>
+        <li><code>droppedNegativeProcedure</code></li>
+        <li><code>droppedInvalidProcedureShape</code></li>
+        <li><code>plainTextFallbackUsed</code></li>
+      </ul>
+    </li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>既存 parser API は互換維持する。</li>
+    <li>新 API で「本当に <code>[]</code>」と「candidate-like object が全落ち」を区別できる。</li>
+  </ul>
+  <h4 id="section-22-audit--queue-event-に保存する">2.2 audit / queue event に保存する</h4>
+  <ul>
+    <li><code>runFindCandidate()</code> の storage/CLI 共通部分で parser diagnostics を作る。</li>
+    <li>
+      <code>candidateCount=0</code> の場合だけ、短い raw output preview と diagnostics を audit
+      payload に保存する。
+      <ul>
+        <li>preview は長さ上限を設ける。</li>
+        <li>secret / prompt 全文 / tool result 全文は保存しない。</li>
+      </ul>
+    </li>
+    <li>queue 側の <code>no_candidate</code> event metadata にも diagnostics summary を入れる。</li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>
+      <code>skipped/no_candidate</code> 行を見たとき、<code>[]</code> だったのか parser reject
+      だったのか追える。
+    </li>
+    <li>raw preview は短く、機密や巨大 text を保存しない。</li>
+  </ul>
+  <h3 id="section-3-未整形作業ログからの抽出テストを追加する">
+    3. 未整形作業ログからの抽出テストを追加する
+  </h3>
+  <h4 id="section-31-systemcontext-文言テストを強化">3.1 SystemContext 文言テストを強化</h4>
+  <p>既存テストは次の文言を確認している。</p>
+  <ul>
+    <li><code>Use when: / Workflow: / Verification: / Avoid:</code></li>
+    <li><code>失敗原因、修正方法、検証方法</code></li>
+    <li><code>negative の rule 候補として出す</code></li>
+  </ul>
+  <p>これに加えて、未整形作業ログから構成してよいことを確認する。</p>
+  <ul>
+    <li>
+      source に見出しがなくても、手順・検証・回避条件が読み取れるなら procedure に構成してよい。
+    </li>
+    <li>
+      source に直接 <code>negative</code> と書かれていなくても、禁止・誤方針・再発防止なら negative
+      rule にしてよい。
+    </li>
+    <li>単なる進捗報告だけなら <code>[]</code> でよい。</li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>
+      SystemContext が「完成済み候補の変換」ではなく「作業ログから signal
+      を発見して候補化する」ことをテストで固定する。
+    </li>
+  </ul>
+  <h4 id="section-32-parser-contract-テスト">3.2 parser contract テスト</h4>
+  <p>
+    未整形ログを直接 parser に入れるのではなく、LLM が未整形ログから生成した想定 output を parser
+    へ入れる。
+  </p>
+  <p>ケース:</p>
+  <ul>
+    <li>
+      positive rule:
+      <ul>
+        <li>
+          入力 signal:
+          <code>status だけで判断せず live DB / LaunchAgent / process truth を見る</code>
+        </li>
+        <li>期待: <code>type=rule</code>, <code>polarity=positive</code></li>
+      </ul>
+    </li>
+    <li>
+      positive procedure:
+      <ul>
+        <li>
+          入力 signal:
+          <code
+            >backup -&gt; DB 集計 -&gt; stale worker 確認 -&gt; 対象 worker restart -&gt; heartbeat
+            / event 確認</code
+          >
+        </li>
+        <li>
+          期待: SKILL.md 風 body を持つ <code>type=procedure</code>, <code>polarity=positive</code>
+        </li>
+      </ul>
+    </li>
+    <li>
+      negative rule:
+      <ul>
+        <li>
+          入力 signal:
+          <code
+            >findCandidate と coverEvidence を優先したいだけで、Task Routing を単一 target
+            に固定してはいけない</code
+          >
+        </li>
+        <li>期待: <code>type=rule</code>, <code>polarity=negative</code></li>
+      </ul>
+    </li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>3 種類が parser/storage contract 上すべて受け入れられる。</li>
+    <li>negative procedure は引き続き落ちる。</li>
+  </ul>
+  <h4 id="section-33-opt-in-live-smoke">3.3 opt-in live smoke</h4>
+  <ul>
+    <li>通常 verify には入れない。</li>
+    <li><code>FIND_CANDIDATE_LIVE_LLM=1</code> の時だけ、短い fixture を Qwen target に投げる。</li>
+    <li>timeout / provider unavailable は test failure ではなく skipped diagnostic にする。</li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>live Qwen が利用可能な時だけ、parsed candidate の type/polarity 分布を確認できる。</li>
+    <li>provider 停止や timeout が通常開発を壊さない。</li>
+  </ul>
+  <h3 id="section-4-systemcontext-改善">4. SystemContext 改善</h3>
+  <p>追加する文意:</p>
+  <ul>
+    <li>source が完成済み rule/procedure 形式でなくてもよい。</li>
+    <li>
+      作業ログから、適用条件・操作順序・検証・回避条件が読み取れる場合は、procedure body を SKILL.md
+      風に構成してよい。
+    </li>
+    <li>
+      source が
+      <code>negative</code>
+      と明示していなくても、ユーザーが否定した方針、レビューで退けられた実装、再発防止の禁止条件は
+      negative rule として扱う。
+    </li>
+    <li>ただし、source にない事実を補完してはいけない。</li>
+  </ul>
+  <p>完了条件:</p>
+  <ul>
+    <li>
+      no_candidate を減らすために何でも候補化するのではなく、候補化してよい signal
+      の範囲が明確になる。
+    </li>
+    <li>単なる進捗報告だけのログは引き続き <code>[]</code> にできる。</li>
+  </ul>
+  <h2 id="実装順序">実装順序</h2>
+  <ol>
+    <li>
+      <code>RuntimeSecretKey</code> / settings view / web repository 型に Local LLM indexed key
+      を追加する。
+    </li>
+    <li>settings API が Local LLM endpoint ごとの secret status を返すようにする。</li>
+    <li>UI で各 Local LLM endpoint row に API Key editor を出す。</li>
+    <li>runtime cache と Local LLM provider で endpoint-specific key を解決する。</li>
+    <li>Rust queue executor の Local LLM target key 解決を endpoint-specific に合わせる。</li>
+    <li>parser diagnostics API を追加する。</li>
+    <li><code>findCandidate</code> audit / queue event に no_candidate diagnostics を保存する。</li>
+    <li>未整形作業ログ fixture の unit tests を追加する。</li>
+    <li>SystemContext を最小限強化する。</li>
+    <li>opt-in live Qwen smoke を追加する。</li>
+  </ol>
+  <h2 id="検証ゲート">検証ゲート</h2>
+  <ul>
+    <li><code>bunx vitest run test/settings-runtime-cache.test.ts</code></li>
+    <li><code>bunx vitest run test/components/admin/settings-page.test.tsx</code></li>
+    <li><code>bunx vitest run test/find-candidate.test.ts</code></li>
+    <li><code>bunx vitest run test/queue-worker.test.ts</code></li>
+    <li><code>bun run typecheck</code></li>
+    <li>
+      Rust 側を触った場合:
+      <ul>
+        <li><code>cargo test -p context-stilld queue_lifecycle</code></li>
+        <li><code>cargo clippy -p context-stilld --all-targets -- -D warnings</code></li>
+      </ul>
+    </li>
+    <li>
+      任意:
+      <ul>
+        <li>
+          <code
+            >FIND_CANDIDATE_LIVE_LLM=1 bunx vitest run test/live/find-candidate-live.test.ts</code
+          >
+        </li>
+      </ul>
+    </li>
+  </ul>
+  <h2 id="リスクと対策">リスクと対策</h2>
+  <ul>
+    <li>
+      リスク: endpoint index の変更で secret が別 endpoint に見える。
+      <ul>
+        <li>
+          対策: 既存 Azure と同じ index secret 方式を採る場合でも、UI の delete / reorder
+          仕様を確認する。必要なら endpoint <code>id</code> ベース secret key へ切り替える。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: settings JSON に raw key を入れてしまう。
+      <ul>
+        <li>
+          対策: settings JSON は secret ref / status のみ。raw key は settings table の secret row
+          だけに保存する。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: SystemContext 強化で低価値ログまで候補化される。
+      <ul>
+        <li>
+          対策: 単なる進捗報告は除外する既存指示を残し、fixture に no-candidate case を含める。
+        </li>
+      </ul>
+    </li>
+    <li>
+      リスク: live Qwen smoke が遅い。
+      <ul>
+        <li>対策: opt-in にし、timeout は diagnostic skip として扱う。</li>
+      </ul>
+    </li>
+  </ul>
+  <h2 id="停止条件">停止条件</h2>
+  <ul>
+    <li>endpoint-specific key を TS と Rust の両経路で同じように解決できない。</li>
+    <li>key が settings JSON や audit log に raw で残る。</li>
+    <li>parser diagnostics が raw output を過剰に保存する。</li>
+    <li>SystemContext 改善で単なる進捗ログを大量に候補化する回帰が出る。</li>
+  </ul>
+</article>

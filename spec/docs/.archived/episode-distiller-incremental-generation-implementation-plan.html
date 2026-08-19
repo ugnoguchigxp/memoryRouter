@@ -1,0 +1,560 @@
+<article lang="ja">
+  <h1 id="episodedistiller-逐次生成-実装計画">EpisodeDistiller 逐次生成 実装計画</h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>18b1429</code>。</p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    現在の Rust <code>episodeDistiller</code> は、source を segment に分割し、各 segment から
+    canonical Episode 候補を生成したあと、job の最後にまとめて
+    <code>episode_cards</code> へ保存する。
+  </p>
+  <p>この方式は job 単位の完了整合性は分かりやすいが、次の問題がある。</p>
+  <ul>
+    <li>長時間 job の途中で Episode 出力が見えない。</li>
+    <li>
+      heartbeat は更新されても、LLM が進んでいるのか、HTTP request
+      が詰まっているだけなのかを判定しづらい。
+    </li>
+    <li>途中で失敗した場合、保存可能だった Episode まで失われる。</li>
+    <li>
+      「10分以内に新規 Episode
+      出力があれば正常、20分近く無出力なら回復検討」という運用基準を直接適用できない。
+    </li>
+  </ul>
+  <p>
+    この計画は、<code>episodeDistiller</code> を「job 末尾一括保存」から「segment
+    ごとに生成し、保存可能な Episode
+    は即時保存しながら継続する」方式へ移行するための実装順序、完了条件、検証ゲート、停止条件を定義する。
+  </p>
+  <h2 id="目的">目的</h2>
+  <ul>
+    <li>保存可能な Episode を job 終了前に <code>episode_cards</code> へ永続化する。</li>
+    <li>最新 Episode 出力時刻を、稼働判定の主信号として使えるようにする。</li>
+    <li>segment 単位の進捗、失敗、保存済み Episode、再開位置を queue metadata に残す。</li>
+    <li>途中失敗後の再実行で、保存済み Episode を壊さず未処理部分から再開できるようにする。</li>
+    <li>重複と低品質 Episode は保存前に抑止する。</li>
+  </ul>
+  <h2 id="非目的">非目的</h2>
+  <ul>
+    <li><code>findCandidate</code> に Episode 作成責務を戻さない。</li>
+    <li>Episode 検索/API/UI の大規模再設計は行わない。</li>
+    <li>既存 EpisodeCard の全文再生成はこの計画に含めない。</li>
+    <li>provider pool / queue scheduler の優先順位設計を広げない。</li>
+    <li>live DB を使う破壊的 smoke を検証ゲートにしない。</li>
+  </ul>
+  <h2 id="現状の重要な制約">現状の重要な制約</h2>
+  <ul>
+    <li>
+      <code>episode_cards.created_at</code> は <code>2026-...T...Z</code> と
+      <code>2026-... ...</code> の形式が混在している。監視SQLでは
+      <code>MAX(datetime(created_at))</code> を使う。
+    </li>
+    <li>
+      Rust executor の heartbeat は処理本体とは別に更新される。heartbeat だけを正常判定に使わない。
+    </li>
+    <li>
+      <code>create_episode_idempotently()</code> は deterministic
+      <code>source_key</code> を使って既存 Episode
+      を再利用できる。この性質を再開/重複防止の中心に置く。
+    </li>
+    <li>
+      既存の <code>episodeDistiller</code> metadata には
+      <code>generated</code
+      >、<code>deduped</code>、<code>failedSegments</code>、<code>segmentErrors</code>、<code
+        >episodeIds</code
+      >
+      があるが、処理中に更新される progress contract はまだ不足している。
+    </li>
+  </ul>
+  <h2 id="変更対象">変更対象</h2>
+  <p>Primary files:</p>
+  <table>
+    <caption>
+      Table: 変更対象
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">変更内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs</code></td>
+        <td>
+          segment ごとの即時保存、progress metadata 更新、再開 skip、無出力 watchdog を実装する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>crates/context-stilld/src/domains/queue_lifecycle/executor.rs</code></td>
+        <td>必要なら watchdog 判定や timeout 理由を queue executor report に反映する。</td>
+      </tr>
+      <tr>
+        <td><code>crates/context-stilld/src/domains/queue_lifecycle/inspect.rs</code></td>
+        <td>
+          必要なら <code>queue inspect --json</code> に latest output / progress 情報を追加する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/episodeDistiller/worker.ts</code></td>
+        <td>
+          TypeScript manual fallback との意味差が出る場合だけ追随する。resident path の主実装は Rust
+          とする。
+        </td>
+      </tr>
+      <tr>
+        <td><code>web/src/modules/admin/components/queue.page.tsx</code></td>
+        <td>必要なら progress metadata 表示を追加する。初期実装では必須にしない。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Test files:</p>
+  <table>
+    <caption>
+      Table: 変更対象
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">確認内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>
+          <code>crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs</code> tests
+        </td>
+        <td>segment ごとの即時保存、再開、重複skip、watchdog metadata を固定する。</td>
+      </tr>
+      <tr>
+        <td>
+          <code>crates/context-stilld/src/domains/queue_lifecycle/provider_lease_tests.rs</code>
+        </td>
+        <td>provider lease / heartbeat の既存契約が壊れていないことを確認する。</td>
+      </tr>
+      <tr>
+        <td><code>test/episode-card.repository.sqlite.test.ts</code></td>
+        <td>保存済み EpisodeCard の SQLite read path が維持されることを確認する。</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="progress-metadata-contract">Progress Metadata Contract</h2>
+  <p><code>episode_distiller_queue.metadata.episodeDistiller</code> に次のフィールドを追加する。</p>
+  <pre><code class="language-json">{
+  &quot;segmentCount&quot;: 9,
+  &quot;currentSegment&quot;: 3,
+  &quot;lastSegmentStartedAt&quot;: &quot;2026-06-23T03:13:00Z&quot;,
+  &quot;lastSegmentCompletedAt&quot;: &quot;2026-06-23T03:16:20Z&quot;,
+  &quot;lastEpisodeCreatedAt&quot;: &quot;2026-06-23T03:16:20Z&quot;,
+  &quot;savedEpisodeIds&quot;: [&quot;...&quot;],
+  &quot;savedSourceKeys&quot;: [&quot;vibe_memory:...:episode:...&quot;],
+  &quot;acceptedCandidateCount&quot;: 4,
+  &quot;generated&quot;: 4,
+  &quot;deduped&quot;: 1,
+  &quot;skipped&quot;: 2,
+  &quot;valueSkipped&quot;: 1,
+  &quot;duplicateGenerationKindSkipped&quot;: 1,
+  &quot;failedSegments&quot;: 1,
+  &quot;segmentResults&quot;: [
+    {
+      &quot;segment&quot;: 0,
+      &quot;status&quot;: &quot;saved&quot;,
+      &quot;episodeIds&quot;: [&quot;...&quot;],
+      &quot;startedAt&quot;: &quot;...&quot;,
+      &quot;completedAt&quot;: &quot;...&quot;
+    }
+  ],
+  &quot;segmentErrors&quot;: [
+    {
+      &quot;segment&quot;: 2,
+      &quot;error&quot;: &quot;...&quot;
+    }
+  ]
+}
+</code></pre>
+  <p>Rules:</p>
+  <ul>
+    <li><code>savedEpisodeIds</code> is append-only for one job execution.</li>
+    <li><code>savedSourceKeys</code> is used for restart skip checks.</li>
+    <li>
+      <code>lastEpisodeCreatedAt</code> updates only after an actual
+      <code>episode_cards</code> insert or dedupe confirmation.
+    </li>
+    <li>
+      <code>lastSegmentCompletedAt</code> updates after a segment is fully handled, even if it
+      produced no saved Episode.
+    </li>
+    <li>
+      <code>currentSegment</code> is the segment currently being attempted or the next segment to
+      resume.
+    </li>
+    <li>Existing summary fields remain available at job completion.</li>
+  </ul>
+  <h2 id="runtime-freshness-contract">Runtime Freshness Contract</h2>
+  <p>監視の主信号は Episode 出力時刻である。</p>
+  <p>Normal:</p>
+  <ul>
+    <li>
+      <code
+        >MAX(datetime(episode_cards.created_at)) &gt;= datetime(&#39;now&#39;, &#39;-10
+        minutes&#39;)</code
+      >
+    </li>
+  </ul>
+  <p>Warning:</p>
+  <ul>
+    <li>running <code>episodeDistiller</code> があり、latest Episode output が 10 分より古い。</li>
+  </ul>
+  <p>Recovery candidate:</p>
+  <ul>
+    <li>running <code>episodeDistiller</code> があり、latest Episode output が 20 分より古い。</li>
+    <li>
+      かつ <code>lastSegmentCompletedAt</code> または <code>lastEpisodeCreatedAt</code> が 20
+      分以上進んでいない。
+    </li>
+  </ul>
+  <p>Do not use as normal signal:</p>
+  <ul>
+    <li>queue row heartbeat only.</li>
+    <li>provider lease heartbeat only.</li>
+    <li>daemon PID existence only.</li>
+  </ul>
+  <p>Baseline SQL:</p>
+  <pre><code class="language-sql">select
+  datetime(&#39;now&#39;) as now,
+  max(datetime(created_at)) as latest_episode_created_utc,
+  round((julianday(datetime(&#39;now&#39;)) - julianday(max(datetime(created_at)))) * 24 * 60, 2)
+    as minutes_since_latest_episode
+from episode_cards;
+
+select
+  id,
+  status,
+  locked_at,
+  heartbeat_at,
+  json_extract(metadata, &#39;$.episodeDistiller.currentSegment&#39;) as current_segment,
+  json_extract(metadata, &#39;$.episodeDistiller.segmentCount&#39;) as segment_count,
+  json_extract(metadata, &#39;$.episodeDistiller.lastSegmentCompletedAt&#39;) as last_segment_completed_at,
+  json_extract(metadata, &#39;$.episodeDistiller.lastEpisodeCreatedAt&#39;) as last_episode_created_at
+from episode_distiller_queue
+where status = &#39;running&#39;;
+</code></pre>
+  <h2 id="p0-baseline-and-fixtures">P0: Baseline And Fixtures</h2>
+  <p>Goal: 現在の一括保存挙動をテストで固定し、変更後に意図した差分だけを確認できるようにする。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>Rust episode executor tests に、複数 segment の fixture を追加する。</li>
+    <li>既存の job-end save 挙動を baseline として記録する。</li>
+    <li>
+      <code>datetime(created_at)</code> を使う freshness SQL をテスト/ドキュメントに固定する。
+    </li>
+    <li>
+      <code>create_episode_idempotently()</code> の source key dedupe
+      挙動を再開前提としてテストする。
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>変更前の一括保存挙動を再現するテストがある。</li>
+    <li>created_at 形式混在でも latest output が正しく取れる。</li>
+    <li>source key dedupe が再実行で duplicate insert を作らない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld episode
+cargo test -p context-stilld queue_lifecycle::episode_executor -- --nocapture
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>baseline fixture が live DB の偶然の形に依存する。</li>
+    <li>created_at の文字列 <code>MAX()</code> を監視基準に使う。</li>
+  </ul>
+  <h2 id="p1-segment-progress-metadata">P1: Segment Progress Metadata</h2>
+  <p>Goal: 保存タイミングを変える前に、segment 進捗を queue row へ記録する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>process_episode_distiller_job()</code> の segment loop で
+      <code>currentSegment</code>、<code>segmentCount</code>、<code>lastSegmentStartedAt</code>
+      を更新する。
+    </li>
+    <li>
+      segment 完了時に <code>lastSegmentCompletedAt</code> と
+      <code>segmentResults</code> を更新する。
+    </li>
+    <li>
+      parse failure、low value skip、duplicate generation kind skip を segment result
+      として記録する。
+    </li>
+    <li>metadata 更新は best-effort ではなく、失敗したら job failure として扱う。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>running job の metadata から現在 segment と最終完了 segment が読める。</li>
+    <li>segment が Episode を保存しない場合でも進捗が更新される。</li>
+    <li>既存 summary metadata と互換性を保つ。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld episode
+cargo run -q -p context-stilld -- queue inspect --json
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>heartbeat だけが進み、segment progress が更新されない。</li>
+    <li>metadata 更新失敗を無視して job が進む。</li>
+  </ul>
+  <h2 id="p2-immediate-save-per-segment">P2: Immediate Save Per Segment</h2>
+  <p>Goal: 保存可能な Episode を segment 完了時点で <code>episode_cards</code> へ保存する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>pending: Vec&lt;PendingEpisode&gt;</code> を job 全体の蓄積ではなく segment-local
+      に変更する。
+    </li>
+    <li>
+      segment ごとに canonical candidate を品質判定し、保存可能なものだけ
+      <code>create_episode_idempotently()</code> へ渡す。
+    </li>
+    <li>
+      保存成功後すぐに <code>savedEpisodeIds</code>、<code>savedSourceKeys</code>、<code
+        >lastEpisodeCreatedAt</code
+      >
+      を metadata に反映する。
+    </li>
+    <li>job 完了時は summary metadata を既存 shape と互換になるよう集計する。</li>
+    <li>
+      segment 内で複数 Episode が作られる場合は、保存順と source key を deterministic に保つ。
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>job が running のままでも、合格 Episode は <code>episode_cards</code> に存在する。</li>
+    <li>latest Episode output freshness が running job の途中で更新される。</li>
+    <li>job completion metadata の <code>episodeIds</code> は実在 EpisodeCard id と一致する。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld episode
+bun test --timeout=30000 --max-concurrency=1 ./test/episode-card.repository.sqlite.test.ts
+</code></pre>
+  <p>Live read-only check after deploy:</p>
+  <pre><code class="language-sql">select max(datetime(created_at)) from episode_cards;
+select id, status, json_extract(metadata, &#39;$.episodeDistiller.savedEpisodeIds&#39;)
+from episode_distiller_queue
+where status in (&#39;running&#39;, &#39;completed&#39;)
+order by datetime(coalesce(completed_at, locked_at)) desc
+limit 5;
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>queue job が completed になる前に保存された Episode が refs なしになる。</li>
+    <li>immediate save 後の job failure で保存済み Episode が orphan になる。</li>
+    <li>summary metadata と saved Episode ids が食い違う。</li>
+  </ul>
+  <h2 id="p3-resume-from-saved-progress">P3: Resume From Saved Progress</h2>
+  <p>Goal: 途中失敗後の再実行で、保存済み Episode を壊さず未処理 segment から続行する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      job load 時に metadata の <code>savedSourceKeys</code> と <code>segmentResults</code> を読む。
+    </li>
+    <li>
+      既存 <code>episode_cards</code> からも source key を確認し、metadata 欠落時にも dedupe
+      できるようにする。
+    </li>
+    <li>
+      完了済み segment は skip し、skip したことを
+      <code>segmentResults</code> に追記または維持する。
+    </li>
+    <li>前回失敗 segment は再試行対象にする。</li>
+    <li>保存済み Episode の再保存は <code>deduped</code> として数える。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>segment 途中で失敗した job を再実行しても、保存済み Episode は重複しない。</li>
+    <li>未処理 segment だけが処理される。</li>
+    <li>metadata が一部欠落しても source key dedupe で安全に復旧できる。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld episode_resume
+cargo test -p context-stilld queue
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>再実行で同一 source key の Episode が複数保存される。</li>
+    <li>metadata 欠落時に全 segment を無条件再生成して重複を作る。</li>
+  </ul>
+  <h2 id="p4-no-output-watchdog-and-recovery-state">P4: No-Output Watchdog And Recovery State</h2>
+  <p>Goal: 「20分近く無出力なら強制終了を検討する」状態を機械的に判定できるようにする。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      running job の <code>locked_at</code>、<code>lastEpisodeCreatedAt</code>、<code
+        >lastSegmentCompletedAt</code
+      >
+      を使って freshness を算出する helper を追加する。
+    </li>
+    <li>
+      <code>queue inspect --json</code> に episodeDistiller の latest output freshness
+      を追加するか、doctor/operation query で読める形にする。
+    </li>
+    <li>
+      Recovery candidate は即 kill ではなく、まず <code>stalled_output</code> 状態または diagnostic
+      field として見せる。
+    </li>
+    <li>
+      強制終了する場合の仕様を決める。
+      <ul>
+        <li>
+          active provider lease を <code>stale_recovered</code> または
+          <code>worker_failed</code> 理由で解放する。
+        </li>
+        <li>queue row は保存済み progress を残して <code>pending</code> に戻す。</li>
+        <li><code>next_run_at</code> に短い cooldown を設定する。</li>
+        <li>
+          <code>distillation_queue_events</code> に <code>retried</code> または
+          <code>failed</code> を記録する。
+        </li>
+      </ul>
+    </li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>10分以内の Episode output は normal と判定される。</li>
+    <li>20分以上 output/progress がない running job は recovery candidate と判定される。</li>
+    <li>heartbeat が新しくても output/progress が止まっていれば normal にならない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld queue_lifecycle::inspect
+cargo test -p context-stilld episode
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>正常に長い LLM request を無条件 kill する。</li>
+    <li>保存済み Episode を未確定扱いに戻す。</li>
+    <li>provider lease だけ解放して queue row を running のまま残す。</li>
+  </ul>
+  <h2 id="p5-ui--operations-surface">P5: UI / Operations Surface</h2>
+  <p>
+    Goal: 運用者が heartbeat ではなく output freshness と segment progress
+    を見て判断できるようにする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      Queue page に
+      <code>latestEpisodeOutputAt</code>、<code>minutesSinceLatestEpisodeOutput</code>、<code
+        >currentSegment/segmentCount</code
+      >
+      を表示する。
+    </li>
+    <li>running job で 10分超の無出力は warning、20分超は recovery candidate として表示する。</li>
+    <li><code>spec/docs/pub/operations.md</code> に read-only SQL と判断基準を追記する。</li>
+    <li>強制終了操作は初期実装では自動化しない。まず read-only 判定と手動回復手順を固定する。</li>
+  </ul>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>UI/operations で heartbeat と output freshness が区別される。</li>
+    <li>20分無出力の job を見つける read-only 手順がある。</li>
+    <li>強制終了は明示操作であり、自動 kill は別計画に分離される。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run typecheck
+bunx vitest run web/src
+bun run docs:check-links
+</code></pre>
+  <p>Stop conditions:</p>
+  <ul>
+    <li>heartbeat freshness を正常表示の主条件として使う。</li>
+    <li>recovery candidate 表示が自動 kill と同義になる。</li>
+  </ul>
+  <h2 id="runtime-verification-matrix">Runtime Verification Matrix</h2>
+  <table>
+    <caption>
+      Table: Runtime Verification Matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Scenario</th>
+        <th scope="col">Expected evidence</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>running job produced an Episode</td>
+        <td><code>episode_cards</code> has a new row before queue completion</td>
+      </tr>
+      <tr>
+        <td>segment produced no valuable Episode</td>
+        <td>
+          <code>segmentResults</code> records skipped/valueSkipped and
+          <code>lastSegmentCompletedAt</code> advances
+        </td>
+      </tr>
+      <tr>
+        <td>segment parse failed</td>
+        <td>
+          <code>segmentErrors</code> records segment index and job continues when other segments can
+          proceed
+        </td>
+      </tr>
+      <tr>
+        <td>job fails after saving some Episodes</td>
+        <td>
+          saved Episode ids remain, queue row returns to pending/failed with progress metadata
+        </td>
+      </tr>
+      <tr>
+        <td>job resumes</td>
+        <td>saved source keys are skipped or deduped, remaining segments run</td>
+      </tr>
+      <tr>
+        <td>no output for 20 minutes</td>
+        <td>inspect/operations marks recovery candidate despite heartbeat updates</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="final-completion-criteria">Final Completion Criteria</h2>
+  <ul>
+    <li><code>episodeDistiller</code> no longer waits until job end to save all EpisodeCards.</li>
+    <li>A running job can update latest Episode output within the job lifetime.</li>
+    <li>
+      <code>episode_distiller_queue.metadata.episodeDistiller</code> contains enough progress to
+      explain current segment, saved Episodes, skipped segments, and failure points.
+    </li>
+    <li>Re-running a partially completed job does not duplicate saved Episodes.</li>
+    <li>Completed queue rows still reference real EpisodeCard ids.</li>
+    <li>
+      Read-only operations can classify normal/warning/recovery candidate without relying on
+      heartbeat alone.
+    </li>
+  </ul>
+  <h2 id="global-verification-gate">Global Verification Gate</h2>
+  <p>Run before considering the migration complete:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld episode
+cargo test -p context-stilld queue
+bun test --timeout=30000 --max-concurrency=1 ./test/episode-card.repository.sqlite.test.ts
+bun run verify:rust-daemon
+bun run docs:check-links
+</code></pre>
+  <p>Read-only live sanity check:</p>
+  <pre><code class="language-bash">cargo run -q -p context-stilld -- queue inspect --json
+sqlite3 data/context-still-core.sqlite &quot;
+select max(datetime(created_at)) as latest_episode_created_utc from episode_cards;
+select status, count(*) from episode_distiller_queue group by status;
+select status, queue_name, queue_job_id, heartbeat_at from llm_provider_leases where status = &#39;active&#39;;
+&quot;
+</code></pre>
+  <h2 id="global-stop-conditions">Global Stop Conditions</h2>
+  <p>Stop and review if:</p>
+  <ul>
+    <li>queue completion happens before downstream EpisodeCard persistence is confirmed.</li>
+    <li>immediate save creates EpisodeCards without <code>episode_refs</code>.</li>
+    <li>partial failure loses saved Episode ids from metadata.</li>
+    <li>resume creates duplicate EpisodeCards for the same deterministic source key.</li>
+    <li>output freshness cannot be computed from SQLite without ad hoc timestamp parsing.</li>
+    <li>
+      watchdog logic would kill a job solely because heartbeat is old or solely because heartbeat is
+      fresh.
+    </li>
+  </ul>
+</article>

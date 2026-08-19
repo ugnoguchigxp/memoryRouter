@@ -1,0 +1,521 @@
+<article lang="ja">
+  <h1 id="vibe-memory-finding-controlled-enqueue-実装計画">
+    Vibe Memory Finding Controlled Enqueue 実装計画
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>8627be3</code>。</p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    Codex 履歴ログの取り込み自体は動いている。<code>codex_logs</code> 由来の
+    <code>vibe_memories</code> は直近まで増えており、同じ新規 memory から
+    <code>episode_distiller_queue</code> も作られている。
+  </p>
+  <p>
+    一方で、<code>finding_candidate_queue</code> の
+    <code>source_kind=&#39;vibe_memory&#39;</code> は 2026-06-27
+    付近で新規作成が止まっている。直近の Codex vibe memory には
+    <code>episode_distiller_queue</code> は存在するが
+    <code>finding_candidate_queue</code> が存在しないものがまとまって発生している。
+  </p>
+  <p>
+    原因は parser の全面破損ではなく、現行の TS / Rust <code>agent-log-sync</code> が新規 vibe
+    memory 作成時に <code>episode_distiller_queue</code> だけを enqueue し、<code
+      >finding_candidate_queue</code
+    >
+    へ流さない設計になっていること。
+  </p>
+  <p>
+    ただし、以前のように agent log chunk を無条件で finding に流す挙動へ戻してはいけない。chunk
+    単位の <code>no_candidate</code> が大量発生する問題を避けるため、既存の
+    <a href="./findcandidate-vibe-memory-filtered-input-plan.html"
+      >FindCandidate Vibe Memory Filtered Input 実装計画</a
+    >
+    と整合する controlled enqueue を正規挙動として追加する。
+  </p>
+  <h2 id="目的">目的</h2>
+  <ul>
+    <li>
+      新規 vibe memory から、条件を満たすものだけを <code>finding_candidate_queue</code> に enqueue
+      する正規経路を追加する。
+    </li>
+    <li>
+      <code>findCandidate</code> の入力は既存の deterministic filtered input reader に統一する。
+    </li>
+    <li>
+      agent log sync の責務を「vibe memory / Episode job 作成」と「新規 memory に対する
+      deterministic な controlled finding enqueue」までに限定する。
+    </li>
+    <li>TS と Rust の取り込み結果が、同じ選別条件・同じ queue metadata で扱えるようにする。</li>
+    <li>
+      live DB に溜まった未 enqueue の Codex vibe memory を、少量から安全に backfill
+      できるようにする。
+    </li>
+  </ul>
+  <h2 id="非目的">非目的</h2>
+  <ul>
+    <li>agent log chunk を無条件に <code>finding_candidate_queue</code> へ戻さない。</li>
+    <li><code>findCandidate</code> の semantic chunk / candidatelet pipeline を復活させない。</li>
+    <li>EpisodeDistiller の chunk 保存や queue 生成を変更しない。</li>
+    <li><code>coveringEvidence</code> / <code>finalizeDistille</code> の設計変更を含めない。</li>
+    <li>live DB の既存 completed / skipped finding job を削除しない。</li>
+    <li>LLM による事前要約や分類で enqueue 対象を決めない。</li>
+  </ul>
+  <h2 id="正規挙動">正規挙動</h2>
+  <h3 id="現行の正しい前提">現行の正しい前提</h3>
+  <ul>
+    <li>
+      <code>agent-log-sync</code> は Codex / Antigravity / Claude logs から
+      <code>vibe_memories</code> を作る。
+    </li>
+    <li>新規 vibe memory から <code>episode_distiller_queue</code> を作る。</li>
+    <li>
+      <code>findCandidate</code> は
+      <code>sourceInput.targetKind=&#39;vibe_memory&#39;</code> を処理できる。
+    </li>
+    <li>
+      vibe memory の <code>findCandidate</code> 入力は
+      <code>readFilteredVibeMemoryForCandidateWindow()</code> を通る。
+    </li>
+  </ul>
+  <h3 id="追加する正規経路">追加する正規経路</h3>
+  <p>新しい controlled enqueue は、2つの経路で動く。</p>
+  <ul>
+    <li>
+      steady-state: Rust resident <code>agent-log-sync</code> が新規
+      <code>vibe_memories</code> を保存した同じ transaction 内で、eligible なものだけを
+      <code>finding_candidate_queue</code> に入れる。
+    </li>
+    <li>
+      backfill / dry-run: TS CLI が既存の未 enqueue <code>vibe_memories</code> を scan し、同じ
+      deterministic selector で少量ずつ投入できるようにする。
+    </li>
+  </ul>
+  <figure>
+    <pre class="mermaid" data-spec-html-source="markdown">flowchart TD
+  A[&quot;agent-log-sync&quot;] --&gt; B[&quot;vibe_memories&quot;]
+  B --&gt; C[&quot;episode_distiller_queue&quot;]
+  B --&gt; D[&quot;vibe finding enqueue selector&quot;]
+  D --&gt;|eligible| E[&quot;finding_candidate_queue source_kind=vibe_memory&quot;]
+  E --&gt; F[&quot;findCandidate filtered input reader&quot;]
+  F --&gt; G[&quot;found_candidates&quot;]
+  G --&gt; H[&quot;covering_evidence_queue&quot;]
+</pre>
+    <figcaption>Diagram: 追加する正規経路</figcaption>
+  </figure>
+  <p>
+    steady-state では、<code>agent-log-sync</code> が新規 memory の保存と同時に
+    <code>findingCandidate</code> queue event まで記録する。これにより Codex
+    ログ取り込みの正規経路だけで finding が再開する。
+  </p>
+  <p>
+    backfill は sync cursor を持たず、DB の <code>finding_candidate_queue</code> existence check を
+    source of truth にして、過去分だけを安全に補う。
+  </p>
+  <h2 id="eligibility">Eligibility</h2>
+  <h3 id="対象にする">対象にする</h3>
+  <ul>
+    <li>
+      <code>vibe_memories.metadata.sourceId</code> が <code>codex_logs</code>、または CLI /
+      scheduler の <code>--source</code> で指定された source。
+    </li>
+    <li>
+      <code>finding_candidate_queue</code> に同じ <code>source_kind=&#39;vibe_memory&#39;</code>,
+      <code>source_key=vibe_memories.id</code>, <code>distillation_version</code> の job
+      が存在しない。
+    </li>
+    <li><code>vibe_memories.content</code> が最小文字数を満たす。</li>
+    <li>
+      filtered input の素材として、以下のいずれかを含む。
+      <ul>
+        <li>ユーザーの継続的 preference / 禁止事項 / 作業境界</li>
+        <li>原因、修正、検証、復旧手順</li>
+        <li>code review の指摘と対応</li>
+        <li>test / build / lint / queue / DB / daemon などの実行結果</li>
+        <li><code>agent_diff_entries</code> 由来の diff / file path / command</li>
+      </ul>
+    </li>
+  </ul>
+  <h3 id="低優先または除外する">低優先または除外する</h3>
+  <ul>
+    <li>AGENTS / environment_context / initial_instructions が大半を占める chunk。</li>
+    <li>「確認します」「次に実行します」だけの進捗報告。</li>
+    <li>content が短すぎる chunk。</li>
+    <li>
+      同一 session の中で、ユーザー依頼だけ、または assistant の途中経過だけに偏っている chunk。
+    </li>
+    <li>
+      既に <code>no_candidate</code> 済みで、同じ distillation version かつ同じ source_key
+      の再処理理由がないもの。
+    </li>
+  </ul>
+  <h3 id="初期-scoring">初期 scoring</h3>
+  <p>初期実装では LLM を使わず deterministic score にする。</p>
+  <pre><code class="language-ts">score =
+  +40 if content contains verification/failure/fix/review keywords
+  +30 if agent_diff_entries exist
+  +20 if roles include both user and assistant
+  +15 if content contains queue/db/daemon/provider/runtime keywords
+  +10 if content contains test/build/lint/verify command keywords
+  -40 if boilerplate ratio is high
+  -30 if content length is below minimum
+</code></pre>
+  <p>
+    enqueue threshold は最初は保守的に <code>score &gt;= 50</code> とし、CLI option
+    で上書きできるようにする。
+  </p>
+  <h2 id="queue-metadata">Queue Metadata</h2>
+  <p><code>enqueueFindingJob()</code> には次の metadata を渡す。</p>
+  <pre><code class="language-ts">{
+  enqueuedBy: &quot;vibe-finding-controlled-enqueue&quot;,
+  enqueueReason: &quot;eligible_vibe_memory&quot;,
+  sourceId: &quot;codex_logs&quot;,
+  sessionId: &quot;...&quot;,
+  chunkIndex: 2,
+  dedupeKey: &quot;...&quot;,
+  eligibilityScore: 75,
+  eligibilitySignals: [&quot;has_diff&quot;, &quot;verification_terms&quot;, &quot;mixed_roles&quot;],
+  sourceCreatedAt: &quot;...&quot;,
+  backfill: true
+}
+</code></pre>
+  <p>
+    既存 worker は <code>finding_candidate_queue</code> の
+    <code>source_kind=&#39;vibe_memory&#39;</code> job を処理できるため、worker
+    の責務は原則変更しない。
+  </p>
+  <h2 id="implementation-order">Implementation Order</h2>
+  <h3 id="t0-baseline-を固定する">T0: Baseline を固定する</h3>
+  <p>Goal: 変更前の停止点を DB で再確認し、以後の検証に使える基準値を残す。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>codex_logs</code> 由来の vibe memory 件数と最新時刻を確認する。</li>
+    <li>
+      <code>finding_candidate_queue</code> の
+      <code>source_kind=&#39;vibe_memory&#39;</code> 最新時刻を確認する。
+    </li>
+    <li>未 enqueue の直近 Codex vibe memory 件数を確認する。</li>
+    <li><code>episode_distiller_queue</code> は作られていることを確認する。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select json_extract(metadata,&#39;$.sourceId&#39;) as source_id, count(*) as count, max(created_at) as newest from vibe_memories group by 1 order by newest desc;&quot;
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select source_kind, status, last_outcome_kind, count(*) as count, max(created_at) as newest from finding_candidate_queue group by 1,2,3 order by newest desc;&quot;
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select count(*) as codex_vibes_without_finding from vibe_memories vm left join finding_candidate_queue fq on fq.source_kind=&#39;vibe_memory&#39; and fq.source_key=vm.id where json_extract(vm.metadata,&#39;$.sourceId&#39;)=&#39;codex_logs&#39; and fq.id is null;&quot;
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>「ログは入っているが finding queue がない」状態を数値で再現できている。</li>
+  </ul>
+  <h3 id="t1-eligibility-selector-を追加する">T1: Eligibility selector を追加する</h3>
+  <p>Goal: DB row から deterministic に enqueue 可否を判定する共通 module を追加する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>src/modules/findCandidate/vibe-finding-eligibility.ts</code> を追加する。</li>
+    <li>SQLite row と Postgres row の両方から同じ入力型に正規化する。</li>
+    <li>
+      content / metadata / agent diff count から <code>eligible</code>, <code>score</code>,
+      <code>signals</code>, <code>rejectReasons</code> を返す。
+    </li>
+    <li>LLM 呼び出し、要約、分類は行わない。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bunx vitest run test/vibe-finding-eligibility.test.ts
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>boilerplate だけの memory は reject される。</li>
+    <li>diff / verification / failure / user preference を含む memory は eligible になる。</li>
+    <li>score と reject reason がテストで固定されている。</li>
+  </ul>
+  <h3 id="t2-backfill--dry-run-cli-を追加する">T2: backfill / dry-run CLI を追加する</h3>
+  <p>Goal: live DB の未 enqueue vibe memory を少量から安全に queue へ戻せる CLI を追加する。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li><code>src/cli/enqueue-vibe-findings.ts</code> を追加する。</li>
+    <li>
+      options:
+      <ul>
+        <li><code>--dry-run</code></li>
+        <li><code>--write</code></li>
+        <li><code>--source codex_logs|antigravity_logs|claude_logs|all</code></li>
+        <li><code>--since-days N</code></li>
+        <li><code>--limit N</code></li>
+        <li><code>--min-score N</code></li>
+        <li><code>--json</code></li>
+      </ul>
+    </li>
+    <li>未 enqueue の vibe memory を新しい順に scan する。</li>
+    <li>
+      <code>enqueueFindingJob()</code> を使って <code>source_kind=&#39;vibe_memory&#39;</code> の
+      <code>source_target</code> job を作る。
+    </li>
+    <li>dry-run では wouldEnqueue / rejected / alreadyQueued の内訳を出す。</li>
+    <li>write でも default limit は小さくする。</li>
+    <li><code>package.json</code> に script を追加する。</li>
+  </ul>
+  <p>Proposed scripts:</p>
+  <pre><code class="language-json">{
+  &quot;queue:enqueue-vibe-findings:dry-run&quot;: &quot;bun run src/cli/enqueue-vibe-findings.ts --dry-run&quot;,
+  &quot;queue:enqueue-vibe-findings:write&quot;: &quot;bun run src/cli/enqueue-vibe-findings.ts --write&quot;
+}
+</code></pre>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run queue:enqueue-vibe-findings:dry-run -- --source codex_logs --since-days 3 --limit 20 --json
+bun run queue:enqueue-vibe-findings:write -- --source codex_logs --since-days 3 --limit 5 --json
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select status, count(*) from finding_candidate_queue where source_kind=&#39;vibe_memory&#39; and json_extract(metadata,&#39;$.enqueuedBy&#39;)=&#39;vibe-finding-controlled-enqueue&#39; group by status;&quot;
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>dry-run で eligible / rejected の理由が見える。</li>
+    <li>write で <code>finding_candidate_queue</code> に少量の pending job が作られる。</li>
+    <li>同じ memory を再実行しても重複 job が増えない。</li>
+  </ul>
+  <h3 id="t3-rust-steady-state-enqueue-を追加する">T3: Rust steady-state enqueue を追加する</h3>
+  <p>
+    Goal: agent-log-sync 後に、新規 eligible vibe memory が自然に finding queue へ流れるようにする。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>crates/context-stilld/src/domains/agent_log_sync/store.rs</code> で新規
+      <code>vibe_memories</code> 保存後に controlled eligibility を評価する。
+    </li>
+    <li>
+      eligible な場合だけ <code>finding_candidate_queue</code> に
+      <code>source_kind=&#39;vibe_memory&#39;</code> job を作る。
+    </li>
+    <li>
+      <code>distillation_queue_events.queue_name=&#39;findingCandidate&#39;</code> で enqueue event
+      を残す。
+    </li>
+    <li>
+      metadata は TS CLI と同じ <code>enqueuedBy</code>, <code>eligibilityScore</code>,
+      <code>eligibilitySignals</code>, <code>sourceId</code>, <code>sessionId</code>,
+      <code>chunkIndex</code>, <code>dedupeKey</code> を持たせる。
+    </li>
+    <li><code>backfill: false</code> を入れ、TS CLI の backfill job と区別する。</li>
+  </ul>
+  <p>Initial policy:</p>
+  <ul>
+    <li>default source: <code>codex_logs</code></li>
+    <li>min score: 50</li>
+    <li>min content chars: 120</li>
+    <li>LLM 事前分類なし</li>
+    <li><code>AGENT_LOG_MIN_DISTILLABLE_CHARS</code> 未満で保存されない chunk は対象外</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld agent_log_sync
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select queue_name,event_type,count(*) as count,max(created_at) as newest from distillation_queue_events where queue_name=&#39;findingCandidate&#39; group by 1,2 order by newest desc;&quot;
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>新規 vibe memory 作成後、eligible なものだけが finding job になる。</li>
+    <li>
+      Rust resident 経路でも <code>finding_candidate_queue</code> に
+      <code>source_kind=&#39;vibe_memory&#39;</code> job が作られる。
+    </li>
+  </ul>
+  <h3 id="t4-rust-codex-parser-metadata-parity-を直す">
+    T4: Rust Codex parser metadata parity を直す
+  </h3>
+  <p>
+    Goal: Rust resident <code>agent_log_sync</code> で作られる Codex vibe memory に、TS と同等の
+    project metadata を入れる。
+  </p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      <code>crates/context-stilld/src/domains/agent_log_sync/ingest.rs</code> で
+      <code>turn_context</code> の <code>payload.cwd</code> を読む。
+    </li>
+    <li>
+      <code>session_meta.cwd</code> と <code>turn_context.cwd</code> の両方を context
+      更新対象にする。
+    </li>
+    <li>Rust 側にも project root / project name derivation を入れる。</li>
+    <li>
+      <code>store.rs</code> の memory metadata に <code>cwd</code>, <code>projectName</code>,
+      <code>projectRoot</code> を入れる。
+    </li>
+    <li>
+      既存 metadata の <code>sourceId</code>, <code>chunkIndex</code>,
+      <code>dedupeKey</code> は維持する。
+    </li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">cargo test -p context-stilld agent_log_sync
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      <code>turn_context.cwd</code> だけを持つ Codex log fixture でも
+      <code>projectName</code> が入る。
+    </li>
+    <li>TS / Rust sync の metadata shape が用途上揃う。</li>
+  </ul>
+  <h3 id="t5-operational-diagnostics-を追加する">T5: Operational diagnostics を追加する</h3>
+  <p>Goal: 今後同じ断線を doctor / report で検出できるようにする。</p>
+  <p>Tasks:</p>
+  <ul>
+    <li>
+      doctor または専用 CLI report に以下を表示する。
+      <ul>
+        <li><code>codex_logs</code> vibe memory 最新時刻</li>
+        <li><code>vibe_memory</code> finding job 最新時刻</li>
+        <li>未 enqueue vibe memory 件数</li>
+        <li>controlled enqueue 由来 job の pending / completed / skipped 件数</li>
+        <li><code>no_candidate</code> rate</li>
+      </ul>
+    </li>
+    <li>初期実装では専用 CLI の summary でもよい。</li>
+  </ul>
+  <p>Verification:</p>
+  <pre><code class="language-bash">bun run queue:enqueue-vibe-findings:dry-run -- --source codex_logs --since-days 7 --limit 1 --json
+</code></pre>
+  <p>Completion criteria:</p>
+  <ul>
+    <li>
+      「vibe memory は増えているが finding job が増えていない」状態を 1 command で検出できる。
+    </li>
+  </ul>
+  <h2 id="tests-to-add">Tests To Add</h2>
+  <ul>
+    <li>
+      <p><code>test/vibe-finding-eligibility.test.ts</code></p>
+      <ul>
+        <li>boilerplate-only reject</li>
+        <li>progress-only reject</li>
+        <li>verification / failure / review / diff signal accept</li>
+        <li>score threshold</li>
+      </ul>
+    </li>
+    <li>
+      <p><code>test/enqueue-vibe-findings-cli.test.ts</code> または既存 CLI test suite</p>
+      <ul>
+        <li>dry-run は DB mutation しない</li>
+        <li>write は pending finding job を作る</li>
+        <li>duplicate run は同一 source_key を増やさない</li>
+        <li>rejected item の reason が report に出る</li>
+      </ul>
+    </li>
+    <li>
+      <p><code>test/queue-worker.test.ts</code></p>
+      <ul>
+        <li>
+          controlled enqueue metadata を持つ vibe memory finding job が既存 worker で処理される
+        </li>
+      </ul>
+    </li>
+    <li>
+      <p><code>crates/context-stilld</code> tests</p>
+      <ul>
+        <li>
+          <code>turn_context.cwd</code> を含む Codex JSONL を ingest し project metadata
+          が保存される
+        </li>
+      </ul>
+    </li>
+  </ul>
+  <h2 id="live-backfill-procedure">Live Backfill Procedure</h2>
+  <ol>
+    <li>dry-run で対象数を見る。</li>
+  </ol>
+  <pre><code class="language-bash">bun run queue:enqueue-vibe-findings:dry-run -- --source codex_logs --since-days 3 --limit 50 --json
+</code></pre>
+  <ol>
+    <li>最初は 5 件だけ投入する。</li>
+  </ol>
+  <pre><code class="language-bash">bun run queue:enqueue-vibe-findings:write -- --source codex_logs --since-days 3 --limit 5 --json
+</code></pre>
+  <ol>
+    <li>worker を 1 件ずつ処理する。</li>
+  </ol>
+  <pre><code class="language-bash">bun run queue:finding:once
+</code></pre>
+  <ol>
+    <li>downstream mutation を確認する。</li>
+  </ol>
+  <pre><code class="language-bash">sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select status,last_outcome_kind,count(*) from finding_candidate_queue where source_kind=&#39;vibe_memory&#39; and json_extract(metadata,&#39;$.enqueuedBy&#39;)=&#39;vibe-finding-controlled-enqueue&#39; group by 1,2;&quot;
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select count(*) as found_candidates from found_candidates fc join finding_candidate_queue fq on fq.id=fc.finding_job_id where json_extract(fq.metadata,&#39;$.enqueuedBy&#39;)=&#39;vibe-finding-controlled-enqueue&#39;;&quot;
+
+sqlite3 -header -column data/context-still-core.sqlite \
+  &quot;select count(*) as covering_jobs from covering_evidence_queue cq join found_candidates fc on fc.id=cq.found_candidate_id join finding_candidate_queue fq on fq.id=fc.finding_job_id where json_extract(fq.metadata,&#39;$.enqueuedBy&#39;)=&#39;vibe-finding-controlled-enqueue&#39;;&quot;
+</code></pre>
+  <ol>
+    <li>
+      <code>no_candidate</code> が高すぎる場合は <code>--min-score</code> を上げ、eligibility の
+      reject 条件を強める。
+    </li>
+  </ol>
+  <h2 id="rollout-gates">Rollout Gates</h2>
+  <h3 id="gate-1-cli-dry-run">Gate 1: CLI dry-run</h3>
+  <ul>
+    <li>dry-run が mutation しない。</li>
+    <li>eligible / rejected の分類が説明可能。</li>
+    <li>未 enqueue 件数が baseline と整合する。</li>
+  </ul>
+  <h3 id="gate-2-small-write">Gate 2: Small write</h3>
+  <ul>
+    <li>5 件以下の write で pending job が作られる。</li>
+    <li>duplicate run で job が増えない。</li>
+    <li><code>distillation_queue_events</code> に <code>enqueued</code> が残る。</li>
+  </ul>
+  <h3 id="gate-3-worker-processing">Gate 3: Worker processing</h3>
+  <ul>
+    <li><code>queue:finding:once</code> で controlled enqueue job が処理される。</li>
+    <li>
+      <code>candidates_found</code> / <code>no_candidate</code> /
+      <code>failed</code> が正しく記録される。
+    </li>
+    <li>
+      candidate がある場合は <code>found_candidates</code> と
+      <code>covering_evidence_queue</code> まで到達する。
+    </li>
+  </ul>
+  <h3 id="gate-4-steady-state">Gate 4: Steady state</h3>
+  <ul>
+    <li>新規 Codex vibe memory が作られた後、eligible なものだけ finding queue に入る。</li>
+    <li>backlog が増え続けない。</li>
+    <li><code>no_candidate</code> rate が許容範囲に収まる。</li>
+  </ul>
+  <h2 id="stop-conditions">Stop Conditions</h2>
+  <ul>
+    <li>dry-run の eligible がほぼ全件になり、controlled enqueue と呼べない。</li>
+    <li><code>no_candidate</code> rate が高く、以前の chunk spam と同じ状態になる。</li>
+    <li>Rust / TS で source metadata が大きくずれ、selector の結果が揃わない。</li>
+    <li>worker が <code>source_missing</code> を出す。</li>
+    <li>
+      <code>found_candidates</code> は作られるが <code>covering_evidence_queue</code> へ進まない。
+    </li>
+    <li>queue backlog が既存 interactive 作業を圧迫する。</li>
+  </ul>
+  <h2 id="final-verification-gate">Final Verification Gate</h2>
+  <pre><code class="language-bash">bunx vitest run test/vibe-finding-eligibility.test.ts
+bunx vitest run test/queue-worker.test.ts
+cargo test -p context-stilld agent_log_sync
+bun run docs:check-links
+bun run verify:rust-daemon
+bun run verify
+</code></pre>
+  <p>Expected:</p>
+  <ul>
+    <li>agent-log-sync は引き続き vibe memory と Episode job を作る。</li>
+    <li>finding enqueue は controlled scheduler / CLI 経由で発生する。</li>
+    <li><code>findCandidate</code> は vibe memory filtered input を使う。</li>
+    <li>Rust / TS の metadata parity が保たれる。</li>
+    <li>
+      少量 backfill で <code>finding_candidate_queue</code> から downstream mutation
+      まで確認できる。
+    </li>
+  </ul>
+</article>

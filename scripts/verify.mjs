@@ -7,6 +7,7 @@ const tasks = [
   { label: "typecheck", script: "typecheck" },
   { label: "lint", script: "lint" },
   { label: "format:check", script: "format:check" },
+  { label: "spec:check", script: "spec:check" },
   { label: "test:unit", script: "test:unit" },
   { label: "build:web", script: "build:web" },
 ];

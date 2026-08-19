@@ -1,0 +1,467 @@
+<article lang="ja">
+  <h1 id="episode--knowledge-utility-retrieval-第1弾-実装計画">
+    Episode / Knowledge Utility Retrieval 第1弾 実装計画
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>3c28e2e</code>。</p>
+  </blockquote>
+  <p>
+    Status: implementation plan Created: 2026-06-29 Related idea note was removed when deferred
+    documentation was deleted.
+  </p>
+  <h2 id="goal">Goal</h2>
+  <p>
+    未活用の Knowledge / Episode がなぜ
+    <code>context_compile</code> に乗らないのかを、まず実データで見えるようにする。
+  </p>
+  <p>
+    第1弾では retrieval の採用結果を変えない。既存の direct retrieval、ranking、agentic
+    refine、token budget、pack composition は維持し、utility 候補は最終 pack に入れず trace-only
+    で記録する。
+  </p>
+  <h2 id="non-goals">Non Goals</h2>
+  <ul>
+    <li><code>context_compile</code> の最終 pack に utility candidate を追加しない。</li>
+    <li>既存 text / vector / facet retrieval を置き換えない。</li>
+    <li><code>dynamicScore</code> の計算式を変更しない。</li>
+    <li>EpisodeCard を Knowledge と同じ scoring lane に混ぜない。</li>
+    <li>EpisodeCard を source truth として扱わない。</li>
+    <li>negative knowledge 登録の shape を大きくしない。</li>
+    <li>新しい semantic runtime や外部依存を追加しない。</li>
+  </ul>
+  <h2 id="current-constraints">Current Constraints</h2>
+  <ul>
+    <li>
+      <code>context_compile_candidate_traces</code> には rank、selected、suppressed、agentic
+      decision、<code>evidence</code> が既にある。
+    </li>
+    <li>
+      <code>context_compile_evals</code> には outcome と relevance / actionability / coverage /
+      specificity がある。
+    </li>
+    <li>
+      <code>knowledge_usage_events</code> には selected knowledge の used / not_used / off_topic /
+      wrong verdict がある。
+    </li>
+    <li>
+      EpisodeCard は <code>episode_card</code> pack item として procedures 側に入るが、Knowledge
+      ではなく precedent として扱う。
+    </li>
+    <li>
+      negative knowledge は
+      <code>polarity=negative</code>、<code>avoid</code>、<code>prefer</code>、applicability /
+      metadata を中心にした最小 shape を維持する。
+    </li>
+    <li>
+      <code>context_compile_candidate_traces</code> は
+      <code>(run_id, item_kind, item_id)</code> unique なので、utility lane が既存 candidate と同じ
+      item を出した場合は新規行を作らず既存 trace の
+      <code>evidence.utilitySignals</code> に追記する。
+    </li>
+    <li>
+      <code>usage_off_topic_count30d</code> のような集計値は物理列ではなく、<code
+        >knowledge_usage_events</code
+      >
+      から report / lane 計算時に derive する。
+    </li>
+  </ul>
+  <h2 id="implementation-surface">Implementation Surface</h2>
+  <p>第1弾で触る対象を以下に限定する。</p>
+  <ul>
+    <li>
+      <code>src/modules/context-compiler/context-compiler.service.ts</code>
+      <ul>
+        <li>utility trace-only candidate の計算呼び出しと candidate trace evidence の付与。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/context-compiler/context-compiler.repository.ts</code>
+      <ul>
+        <li>既存 trace 保存 API を壊さず、必要なら evidence merge helper を追加する。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/context-compiler/context-compiler.repository.sqlite.ts</code>
+      <ul>
+        <li>SQLite の trace evidence merge / report query。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/knowledge/knowledge.service.ts</code>
+      <ul>
+        <li>negative inverse 用の lightweight intent / metadata 検索 helper。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/modules/knowledge/knowledge-feedback.service.ts</code>
+      <ul>
+        <li>off_topic / wrong / used 集計 helper が必要な場合だけ追加。</li>
+      </ul>
+    </li>
+    <li>
+      <code>src/cli/utility-retrieval-report.ts</code>
+      <ul>
+        <li>baseline / observation report 用の新規 CLI。</li>
+      </ul>
+    </li>
+    <li>
+      <code>package.json</code>
+      <ul>
+        <li><code>utility:retrieval-report</code> script を追加する。</li>
+      </ul>
+    </li>
+  </ul>
+  <h2 id="runtime-guard">Runtime Guard</h2>
+  <p>第1弾は trace-only でも DB 書き込みが増えるため feature flag を置く。</p>
+  <ul>
+    <li>flag: <code>CONTEXT_COMPILE_UTILITY_TRACE</code></li>
+    <li>default: enabled</li>
+    <li>disabled value: <code>0</code>, <code>false</code>, <code>off</code></li>
+    <li>
+      disabled 時の期待動作: baseline / report CLI は動くが、<code>context_compile</code> 中の
+      utility trace-only candidate 保存は行わない。
+    </li>
+  </ul>
+  <h2 id="p0-baseline-snapshot">P0: Baseline Snapshot</h2>
+  <p>実装前に、直近 run の現状値を採取する。</p>
+  <h3 id="実装">実装</h3>
+  <ol>
+    <li><code>src/cli/utility-retrieval-report.ts</code> を追加する。</li>
+    <li>
+      <code>context_compile</code> の直近 run から baseline を計算する。デフォルトは
+      <code>--since-days 14 --limit 200</code> とする。
+    </li>
+    <li><code>--mode baseline</code> と <code>--mode observation</code> を持たせる。</li>
+    <li><code>--since-days</code>、<code>--limit</code>、<code>--json</code> を受け付ける。</li>
+    <li>
+      baseline は SQLite を主対象にする。PostgreSQL path が残っている場合も、SQLite を先に固定する。
+    </li>
+    <li>出力は JSON にする。stdout は最終 JSON だけにする。</li>
+  </ol>
+  <h3 id="指標">指標</h3>
+  <ul>
+    <li>
+      <code>activationRate</code>: <code>compile_select_count &gt; 0</code> の active knowledge
+      割合。
+    </li>
+    <li>
+      <code>coldKnowledgeRate</code>: <code>compile_select_count = 0</code> の active knowledge
+      割合。
+    </li>
+    <li>
+      <code>negativeSelectionRate</code>: selected knowledge のうち
+      <code>polarity=negative</code> の割合。
+    </li>
+    <li><code>episodeSelectionRate</code>: compile run あたり EpisodeCard selected 件数。</li>
+    <li>
+      <code>candidateDropByStage</code>:
+      <ul>
+        <li><code>not_retrieved</code></li>
+        <li><code>retrieved_but_ranked_out</code></li>
+        <li><code>ranked_but_budgeted_out</code></li>
+        <li><code>agentic_rejected</code></li>
+        <li><code>trace_only</code></li>
+        <li><code>selected</code></li>
+      </ul>
+    </li>
+    <li>
+      <code>evalBaseline</code>:
+      <ul>
+        <li>average relevance</li>
+        <li>average actionability</li>
+        <li>average coverage</li>
+        <li>average specificity</li>
+        <li>outcome distribution</li>
+      </ul>
+    </li>
+    <li>
+      <code>offTopicWrongRate</code>: knowledge usage verdict の <code>off_topic</code> /
+      <code>wrong</code> 割合。
+    </li>
+  </ul>
+  <p>
+    <code>candidateDropByStage.not_retrieved</code> は candidate trace
+    に存在しない個別行ではない。active knowledge 全体から、観測 window 内で
+    <code>context_compile_candidate_traces</code> に一度も出ていない件数として aggregate
+    で計算する。
+  </p>
+  <h3 id="command">Command</h3>
+  <pre><code class="language-bash">CONTEXT_STILL_DB_BACKEND=sqlite bun run utility:retrieval-report -- --mode baseline --since-days 14 --limit 200 --json
+</code></pre>
+  <h3 id="verification">Verification</h3>
+  <ul>
+    <li>実データ DB で baseline JSON が出る。</li>
+    <li>knowledge が 0 件、candidate trace が 0 件、eval が 0 件の場合も落ちずに理由を出す。</li>
+    <li>
+      baseline の query は
+      <code>context_compile_runs</code
+      >、<code>context_compile_candidate_traces</code>、<code>context_pack_items</code>、<code>knowledge_items</code>、<code>context_compile_evals</code>、<code
+        >knowledge_usage_events</code
+      >
+      の現在の実体と一致する。
+    </li>
+    <li>stdout に説明ログが混ざらず、JSON parse できる。</li>
+  </ul>
+  <h2 id="p1-candidate-drop-classification">P1: Candidate Drop Classification</h2>
+  <p>未採用の原因を trace 上で分類する。</p>
+  <h3 id="実装-1">実装</h3>
+  <ol>
+    <li>
+      candidate trace 保存時の <code>evidence</code> に <code>dropStage</code> と
+      <code>dropReason</code> を追加する。
+    </li>
+    <li>既存 trace schema は破壊しない。新列を増やす前に <code>evidence</code> JSON に入れる。</li>
+    <li><code>dropStage</code> は pack 採用結果から derive できる範囲に限定する。</li>
+    <li>
+      <code>dropReason</code> は機械判定できる値だけにする。説明文は
+      <code>evidence.dropExplanation</code> に分離する。
+    </li>
+  </ol>
+  <h3 id="dropstage">dropStage</h3>
+  <pre><code class="language-ts">type CandidateDropStage =
+  | &quot;selected&quot;
+  | &quot;retrieved_but_ranked_out&quot;
+  | &quot;ranked_but_budgeted_out&quot;
+  | &quot;agentic_rejected&quot;
+  | &quot;suppressed_duplicate&quot;
+  | &quot;trace_only&quot;;
+</code></pre>
+  <h3 id="dropreason">dropReason</h3>
+  <pre><code class="language-ts">type CandidateDropReason =
+  | &quot;selected&quot;
+  | &quot;below_final_rank_limit&quot;
+  | &quot;section_token_budget&quot;
+  | &quot;agentic_rejected&quot;
+  | &quot;near_duplicate&quot;
+  | &quot;utility_trace_only&quot;
+  | &quot;unknown&quot;;
+</code></pre>
+  <h3 id="verification-1">Verification</h3>
+  <ul>
+    <li>selected candidate は <code>dropStage: &quot;selected&quot;</code> になる。</li>
+    <li>duplicate suppression を受けた candidate は <code>suppressed_duplicate</code> になる。</li>
+    <li>
+      agentic refine が使われた場合、rejected candidate が
+      <code>agentic_rejected</code> として追える。
+    </li>
+    <li>token budget で落ちた candidate は <code>ranked_but_budgeted_out</code> として追える。</li>
+    <li>既存の compile detail 画面や API が壊れない。</li>
+    <li>
+      <code>evidence</code> JSON が object のまま保存され、既存 reader が未知 field を無視できる。
+    </li>
+  </ul>
+  <h2 id="p2-co-selection-trace-only-lane">P2: Co-selection Trace-only Lane</h2>
+  <p>
+    direct candidate に対して、過去に一緒に選ばれた Knowledge を trace-only 候補として計算する。
+  </p>
+  <h3 id="実装-2">実装</h3>
+  <ol>
+    <li><code>src/modules/context-compiler/utility-retrieval.service.ts</code> を追加する。</li>
+    <li>selected direct candidates の knowledge id を seed にする。</li>
+    <li><code>context_pack_items</code> から同一 run 内の co-selection pair を集計する。</li>
+    <li><code>context_compile_evals</code> outcome で重み付けする。</li>
+    <li>
+      最大 5 件だけ trace-only candidate として
+      <code>context_compile_candidate_traces</code> に保存する。
+    </li>
+    <li>final pack には入れない。</li>
+    <li>
+      同一 run の通常 candidate と同じ item が出た場合は、既存 candidate row に
+      <code>utilitySignals.coSelection</code> を merge する。
+    </li>
+  </ol>
+  <h3 id="scoring">scoring</h3>
+  <pre><code class="language-text">coSelectionScore =
+  useful_pair_count * 3
+  + partial_pair_count
+  - misleading_pair_count * 2
+</code></pre>
+  <p>同じ pair でも方向を保持する。</p>
+  <pre><code class="language-text">directKnowledgeId -&gt; utilityKnowledgeId
+</code></pre>
+  <h3 id="trace-evidence">trace evidence</h3>
+  <pre><code class="language-json">{
+  &quot;utilityLane&quot;: &quot;co_selection&quot;,
+  &quot;traceOnly&quot;: true,
+  &quot;seedKnowledgeIds&quot;: [&quot;...&quot;],
+  &quot;coSelectionScore&quot;: 0,
+  &quot;supportingRunCount&quot;: 0,
+  &quot;outcomeBreakdown&quot;: {
+    &quot;useful&quot;: 0,
+    &quot;partial&quot;: 0,
+    &quot;misleading&quot;: 0
+  },
+  &quot;adoptionReason&quot;: &quot;...&quot;,
+  &quot;rejectIf&quot;: [&quot;...&quot;]
+}
+</code></pre>
+  <h3 id="verification-2">Verification</h3>
+  <ul>
+    <li>co-selection candidate は <code>selected=false</code> で保存される。</li>
+    <li>
+      <code>rankingReason</code> から <code>utility_trace_only:co_selection</code> と判別できる。
+    </li>
+    <li>direct candidate と同じ knowledge id は重複保存しない。</li>
+    <li>
+      <code>wrong</code> / <code>off_topic</code> verdict が強い knowledge は candidate にしない。
+    </li>
+    <li>
+      historical pair が 0 件の DB では lane が空になり、compile は degraded / failed にならない。
+    </li>
+  </ul>
+  <h2 id="p3-exploration-trace-only-lane">P3: Exploration Trace-only Lane</h2>
+  <p>一度も、またはほとんど選ばれていない Knowledge に出会う機会を trace-only で作る。</p>
+  <h3 id="実装-3">実装</h3>
+  <ol>
+    <li>active knowledge から eligible candidate を抽出する。</li>
+    <li>
+      <code>compile_select_count &lt;= 2</code>、<code>importance &gt;= 40</code>、<code
+        >confidence &gt;= 50</code
+      >
+      を初期条件にする。
+    </li>
+    <li>
+      <code>explicit_downvote_count &gt; 0</code>、30日以内の <code>off_topic</code> /
+      <code>wrong</code> verdict、deprecated / stale は除外する。
+    </li>
+    <li>retrievalMode / facets / polarity に極端に反するものは除外する。</li>
+    <li>最大 1 件だけ trace-only candidate として保存する。</li>
+  </ol>
+  <h3 id="selection-strategy">Selection Strategy</h3>
+  <p>初期は deterministic weighted random にする。</p>
+  <ul>
+    <li>seed: <code>runId</code> または goal hash</li>
+    <li>weight: <code>importance * 0.6 + confidence * 0.4</code></li>
+    <li>同一 run で同じ candidate が二重に出ないようにする</li>
+  </ul>
+  <h3 id="verification-3">Verification</h3>
+  <ul>
+    <li>final pack は変わらない。</li>
+    <li>exploration candidate は <code>selected=false</code> で保存される。</li>
+    <li>同じ条件で同じ run を再評価しても候補が安定する。</li>
+    <li>deprecated / stale / wrong / off_topic の候補は出ない。</li>
+    <li>eligible candidate が 0 件でも compile は通常どおり完了する。</li>
+  </ul>
+  <h2 id="p4-negative-inverse-trace-only-lane">P4: Negative Inverse Trace-only Lane</h2>
+  <p>negative knowledge は goal とテキスト類似しにくいため、逆引き候補を trace-only で記録する。</p>
+  <h3 id="実装-4">実装</h3>
+  <ol>
+    <li>goal / changeTypes / domains から constrained intent を軽量に推定する。</li>
+    <li>まずは既存の <code>intentTags</code>、applicability、metadata を検索対象にする。</li>
+    <li>新しい必須列や専用テーブルは追加しない。</li>
+    <li><code>polarity=negative</code> の candidate だけを対象にする。</li>
+    <li>最大 1 件だけ trace-only candidate として保存する。</li>
+    <li>
+      <code>metadata.constrainedIntents</code> が存在する場合だけ補助的に読む。存在しない場合は
+      <code>intentTags</code> と facets だけで判定する。
+    </li>
+  </ol>
+  <h3 id="初期-intent-例">初期 intent 例</h3>
+  <ul>
+    <li><code>modify_schema</code></li>
+    <li><code>production_change</code></li>
+    <li><code>requeue</code></li>
+    <li><code>delete_or_reset</code></li>
+    <li><code>restart_owner</code></li>
+    <li><code>provider_change</code></li>
+    <li><code>runtime_truth_check</code></li>
+  </ul>
+  <h3 id="verification-4">Verification</h3>
+  <ul>
+    <li>positive knowledge path に影響しない。</li>
+    <li>negative candidate は <code>polarity=negative</code> のものだけになる。</li>
+    <li>
+      <code>technologies</code>、<code>changeTypes</code>、<code>domains</code> の applicability
+      が落ちない。
+    </li>
+    <li>negative body / avoid / prefer の日本語保存ルールを壊さない。</li>
+    <li><code>register_candidate(s)</code> の input schema を第1弾では変更しない。</li>
+  </ul>
+  <h2 id="p5-observation-report">P5: Observation Report</h2>
+  <p>第1弾の実装後、約2週間の観測に使う report を出せるようにする。</p>
+  <h3 id="実装-5">実装</h3>
+  <ol>
+    <li>baseline と同じ指標を、実装後の期間で再計算する。</li>
+    <li>utility lane ごとに hit / reject / off_topic / wrong を集計する。</li>
+    <li><code>compile_eval</code> の coverage / actionability が悪化していないか見る。</li>
+    <li>EpisodeCard は selected 件数と feedback verdict を Knowledge とは分けて出す。</li>
+  </ol>
+  <h3 id="command-1">Command</h3>
+  <pre><code class="language-bash">CONTEXT_STILL_DB_BACKEND=sqlite bun run utility:retrieval-report -- --mode observation --since-days 14 --limit 500 --json
+</code></pre>
+  <h3 id="第1弾の成功条件">第1弾の成功条件</h3>
+  <ul>
+    <li>
+      <code>activationRate</code> が改善傾向、または <code>coldKnowledgeRate</code> が低下傾向。
+    </li>
+    <li>utility trace-only candidate のうち、後続 feedback / eval で有用そうなものが 25% 以上。</li>
+    <li><code>off_topic</code> / <code>wrong</code> が増えない。</li>
+    <li><code>context_compile</code> の pack 内容は第1弾で変わらない。</li>
+    <li>baseline / observation report で、次に進むべき lane が説明できる。</li>
+  </ul>
+  <h3 id="第2弾に進む条件">第2弾に進む条件</h3>
+  <p>約2週間観測して、次のいずれかを満たす場合だけ第2弾へ進む。</p>
+  <ul>
+    <li><code>activationRate</code> がほぼ変わらない。</li>
+    <li><code>coldKnowledgeRate</code> が下がらない。</li>
+    <li>negative knowledge が依然として必要な goal で拾われない。</li>
+    <li>
+      EpisodeCard が selected されても <code>used</code> /
+      <code>needs_raw_check</code> 以外の価値に繋がらない。
+    </li>
+    <li>compile eval の coverage が改善しない。</li>
+  </ul>
+  <h2 id="tests">Tests</h2>
+  <ul>
+    <li><code>test/context-compile-candidate-trace.test.ts</code></li>
+    <li><code>test/context-compiler.service.test.ts</code></li>
+    <li><code>test/knowledge-value.service.test.ts</code></li>
+    <li><code>test/knowledge-feedback.service.test.ts</code></li>
+    <li><code>test/episode-card.repository.sqlite.test.ts</code></li>
+    <li>baseline / observation report 用の新規 CLI test</li>
+  </ul>
+  <h2 id="verification-commands">Verification Commands</h2>
+  <p>第1弾の実装 PR では、最低限この順で確認する。</p>
+  <pre><code class="language-bash">bunx vitest run test/context-compile-candidate-trace.test.ts test/context-compiler.service.test.ts test/knowledge-feedback.service.test.ts test/episode-card.repository.sqlite.test.ts
+CONTEXT_STILL_DB_BACKEND=sqlite bun run utility:retrieval-report -- --mode baseline --since-days 14 --limit 50 --json
+bun run docs:check-links
+bun run typecheck
+</code></pre>
+  <p>期待結果:</p>
+  <ul>
+    <li>targeted tests が通る。</li>
+    <li>report command が JSON を返す。</li>
+    <li>docs link check が通る。</li>
+    <li>typecheck が通る。</li>
+  </ul>
+  <p>失敗時対応:</p>
+  <ul>
+    <li>report command が JSON 以外を stdout に出す場合は CLI を修正してから進む。</li>
+    <li>
+      trace-only candidate が selected pack に混入した場合は feature flag を off にし、P2-P4
+      の保存処理を止める。
+    </li>
+    <li>
+      typecheck が既存 unrelated error で止まる場合は、該当 error
+      が今回変更と無関係であることを記録し、targeted tests と CLI JSON を最低限の gate にする。
+    </li>
+  </ul>
+  <h2 id="stop-conditions">Stop Conditions</h2>
+  <ul>
+    <li>trace-only candidate が final pack に混入する。</li>
+    <li>selected knowledge count や pack snapshot が第1弾で変わる。</li>
+    <li>negative knowledge 登録 shape が肥大化する。</li>
+    <li>EpisodeCard が Knowledge usage / Knowledge signals に混ざる。</li>
+    <li>baseline が取れないまま utility lane 実装に進む。</li>
+    <li><code>off_topic</code> / <code>wrong</code> の増加を観測できない設計になる。</li>
+    <li><code>CONTEXT_COMPILE_UTILITY_TRACE=0</code> で trace-only 書き込みを止められない。</li>
+  </ul>
+  <h2 id="done">Done</h2>
+  <ul>
+    <li>baseline JSON を実データで取得できる。</li>
+    <li>co-selection / exploration / negative inverse の trace-only candidate が保存される。</li>
+    <li>final pack は第1弾前後で意図せず変わらない。</li>
+    <li>約2週間後に第2弾へ進むか判断できる observation report が出せる。</li>
+    <li>上記 Verification Commands の結果が記録されている。</li>
+  </ul>
+</article>

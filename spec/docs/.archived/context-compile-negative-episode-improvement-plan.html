@@ -1,0 +1,480 @@
+<article lang="ja">
+  <h1 id="context_compile-negative-knowledge--episodecard-改善-実装計画">
+    context_compile Negative Knowledge / EpisodeCard 改善 実装計画
+  </h1>
+  <blockquote>
+    <p>アーカイブ日: 2026-08-15。実装コミット: <code>c6ace5f</code>。</p>
+  </blockquote>
+  <blockquote>
+    <p>
+      状態: plan draft 作成日: 2026-06-22 最終更新: 2026-06-22 関連:
+      <a href="episode-card-quality-improvement-implementation-plan.html"
+        >EpisodeCard 品質改善 実装計画</a
+      >,
+      <a href="decision-signal-integration-implementation-plan.html"
+        >Decision Signal Integration 実装計画</a
+      >
+    </p>
+  </blockquote>
+  <h2 id="背景">背景</h2>
+  <p>
+    2026-06-22 時点の <code>context_compile</code> は、negative knowledge と EpisodeCard
+    をロジック上すでに利用している。
+  </p>
+  <ul>
+    <li>
+      negative knowledge は positive knowledge と別に
+      <code>retrieveKnowledge(... polarities: [&quot;negative&quot;])</code> で検索され、統合
+      ranking 後に <code>guardrails</code> として pack に入る。
+    </li>
+    <li>
+      response composer は <code>negative guardrails</code> を参考情報ではなく negative evidence
+      として扱う SystemContext を持つ。
+    </li>
+    <li>
+      EpisodeCard は <code>searchEpisodes()</code> で検索され、最大 2 件が
+      <code>episode_card</code> の procedure item として pack に追加される。
+    </li>
+    <li>
+      EpisodeCard は <code>recordEpisodeUsage({ usageKind: &quot;compile&quot; })</code> で compile
+      利用回数も更新される。
+    </li>
+  </ul>
+  <p>
+    一方で、現状には「効いているが見えにくい」箇所が残っている。特に EpisodeCard は knowledge
+    ranking / candidate trace / selected knowledge usage
+    と別レーンなので、利用されていないように見える。また agentic refine には
+    <code>polarity</code> が渡らないため、negative knowledge が refine 段階では通常候補に見える。
+  </p>
+  <p>
+    この計画は、現行設計を大きく変えずに、negative knowledge の扱いをより明示し、EpisodeCard
+    の利用実態を観測しやすくするための小さな改善順序を定義する。
+  </p>
+  <h2 id="目的">目的</h2>
+  <ul>
+    <li>agentic refine が negative knowledge を通常の support と誤認しないようにする。</li>
+    <li>
+      EpisodeCard が compile で使われた事実を diagnostics / detail / tests から追えるようにする。
+    </li>
+    <li>
+      EpisodeCard を primary evidence や Knowledge と混ぜず、precedent としての境界を維持する。
+    </li>
+    <li>既存 MCP response shape、DB schema、Knowledge ranking、promotion gate を破壊しない。</li>
+  </ul>
+  <h2 id="非目的">非目的</h2>
+  <ul>
+    <li>EpisodeCard と Knowledge の検索レーンを統合しない。</li>
+    <li>
+      production ranking、knowledge score、appliesTo 更新、promotion gates
+      をこの計画では変更しない。
+    </li>
+    <li>EpisodeCard 専用の新規テーブルや migration を追加しない。</li>
+    <li><code>context_compile</code> の top-level MCP response shape を破壊的に変えない。</li>
+    <li>EpisodeCard を <code>context_decision</code> の primary evidence に昇格しない。</li>
+    <li>Episode 検索を LLM 再ランキングに置き換えない。</li>
+  </ul>
+  <h2 id="現状の実装ポイント">現状の実装ポイント</h2>
+  <table>
+    <caption>
+      Table: 現状の実装ポイント
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">領域</th>
+        <th scope="col">現状</th>
+        <th scope="col">評価</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>negative retrieval</td>
+        <td>
+          <code>positiveKnowledge</code> と <code>negativeKnowledge</code> を別
+          <code>retrieveKnowledge</code> で取得
+        </td>
+        <td>良い。検索レーンは明確。</td>
+      </tr>
+      <tr>
+        <td>negative pack section</td>
+        <td><code>polarity === &quot;negative&quot;</code> を <code>guardrails</code> に変換</td>
+        <td>良い。最終 pack の意味は明確。</td>
+      </tr>
+      <tr>
+        <td>agentic refine</td>
+        <td>候補に <code>polarity</code> / <code>section</code> が渡らない</td>
+        <td>改善余地。選別 LLM は negative を通常候補として見る。</td>
+      </tr>
+      <tr>
+        <td>response composer</td>
+        <td><code>negative guardrails</code> を negative evidence として扱う指示あり</td>
+        <td>良い。最終出力側は意図通り。</td>
+      </tr>
+      <tr>
+        <td>Episode retrieval</td>
+        <td><code>searchEpisodes()</code> で scoped/global を検索し最大 2 件選択</td>
+        <td>良い。過剰投入を避けている。</td>
+      </tr>
+      <tr>
+        <td>Episode pack item</td>
+        <td>
+          <code>section: &quot;procedures&quot;</code>、<code
+            >itemKind: &quot;episode_card&quot;</code
+          >
+          で追加
+        </td>
+        <td>妥当。ただし見えにくい。</td>
+      </tr>
+      <tr>
+        <td>Episode usage</td>
+        <td><code>compile_use_count</code> を更新</td>
+        <td>良い。ただし compile detail / diagnostics で追跡しづらい。</td>
+      </tr>
+      <tr>
+        <td>tests</td>
+        <td>negative guardrails と Episode precedent の最低限のテストあり</td>
+        <td>良い。観測性の回帰テストは追加余地あり。</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="変更対象ファイル">変更対象ファイル</h2>
+  <p>Primary files:</p>
+  <table>
+    <caption>
+      Table: 変更対象ファイル
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ファイル</th>
+        <th scope="col">変更内容</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>src/modules/context-compiler/agentic-refine.service.ts</code></td>
+        <td>
+          <code>AgenticCandidate</code> に <code>polarity</code> と
+          <code>section</code> 相当の情報を追加し、System/User prompt で negative guardrail
+          の選別ルールを明示する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/context-compiler/context-compiler.service.ts</code></td>
+        <td>
+          agentic refine へ <code>polarity</code> を渡す。Episode retrieval stats と selected
+          Episode refs を diagnostics に残す。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/context-compiler/context-response-composer.service.ts</code></td>
+        <td>
+          必要なら EpisodeCard を <code>knowledge candidates</code> ではなく
+          <code>episode precedents</code> として prompt 表示する。negative guardrail
+          指示は維持する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/context-compiler/context-compiler.repository.ts</code></td>
+        <td>
+          compile detail で EpisodeCard selected item が追いやすいか確認し、必要なら既存 shape
+          内で補助情報を整える。
+        </td>
+      </tr>
+      <tr>
+        <td><code>src/modules/context-compiler/context-compiler.repository.sqlite.ts</code></td>
+        <td>SQLite 側も同じ detail / selected item 表示を維持する。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>Test files:</p>
+  <table>
+    <caption>
+      Table: 変更対象ファイル
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ファイル</th>
+        <th scope="col">追加/更新する確認</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>test/context-compiler.service.test.ts</code></td>
+        <td>
+          negative <code>polarity</code> が agentic refine に渡ること、Episode stats / sourceRefs /
+          usage が保存されることを確認する。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/agentic-refine.service.test.ts</code> または既存の agentic refine test</td>
+        <td>negative 候補が prompt 上で guardrail として提示されることを確認する。</td>
+      </tr>
+      <tr>
+        <td><code>test/context-response-composer.service.test.ts</code></td>
+        <td>EpisodeCard が composer prompt 上で Knowledge と混同されないことを確認する。</td>
+      </tr>
+      <tr>
+        <td><code>test/context-compiler-repository.test.ts</code></td>
+        <td>
+          compile detail が <code>episode_card</code> selected item を維持して返すことを確認する。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="p0-negative-knowledge-を-agentic-refine-でも-guardrail-として扱う">
+    P0: negative knowledge を agentic refine でも guardrail として扱う
+  </h2>
+  <h3 id="変更">変更</h3>
+  <p><code>AgenticCandidate</code> に次を追加する。</p>
+  <pre><code class="language-ts">type AgenticCandidate = {
+  id: string;
+  type: KnowledgeItem[&quot;type&quot;];
+  status: KnowledgeStatus;
+  title: string;
+  content: string;
+  score: number;
+  sourceRefs: string[];
+  polarity?: &quot;positive&quot; | &quot;negative&quot; | &quot;neutral&quot;;
+  section?: &quot;rules&quot; | &quot;procedures&quot; | &quot;guardrails&quot;;
+};
+</code></pre>
+  <p>
+    <code>compileContextPack</code> から <code>agenticRefine()</code> を呼ぶとき、<code
+      >compressedKnowledge</code
+    >
+    の <code>polarity</code> を渡す。
+  </p>
+  <p>agentic refine system prompt に追加する指示:</p>
+  <ul>
+    <li>
+      <code>polarity=negative</code> または
+      <code>section=guardrails</code> の候補は、実行を後押しする support
+      ではなく、避ける条件、先に確認する条件、修正してから進む条件として評価する。
+    </li>
+    <li>
+      現在の goal に直接適用される negative guardrail は、positive support
+      が少なくても選別対象に残す。
+    </li>
+    <li>goal に関係しない negative guardrail は落としてよい。</li>
+    <li>
+      selectedIds の順序は「直接実行に必要な positive context」と「直接適用される
+      guardrail」の両方を反映する。
+    </li>
+  </ul>
+  <h3 id="受け入れ条件">受け入れ条件</h3>
+  <ul>
+    <li>
+      <code>agenticRefine()</code> の user prompt JSON に negative 候補の
+      <code>polarity</code> または <code>section</code> が含まれる。
+    </li>
+    <li>
+      negative guardrail が agentic refine で選ばれた場合、最終 pack では従来通り
+      <code>guardrails</code> に入る。
+    </li>
+    <li>agentic refine が無効な場合の挙動は不変。</li>
+    <li>
+      <code>selectedKnowledgeIds</code>、<code>knowledge_usage_events</code>、candidate trace
+      の既存保存形式を破壊しない。
+    </li>
+  </ul>
+  <h2 id="p1-episodecard-利用を-diagnostics-で見える化する">
+    P1: EpisodeCard 利用を diagnostics で見える化する
+  </h2>
+  <h3 id="変更-1">変更</h3>
+  <p>
+    <code>retrieveEpisodePrecedents()</code> の stats を、現在の <code>hitCount</code> /
+    <code>selectedCount</code> / <code>searchFailed</code> から、既存 shape
+    互換を維持しつつ次の補助情報を加える。
+  </p>
+  <pre><code class="language-ts">episodes: {
+  hitCount: number;
+  selectedCount: number;
+  searchFailed: boolean;
+  selectedIds?: string[];
+  selectedTitles?: string[];
+  scopedHitCount?: number;
+  globalHitCount?: number;
+  usedFor?: &quot;compile_precedent&quot;;
+}
+</code></pre>
+  <p>
+    <code>sourceRefs</code> には現状通り <code>context-still://episodes/{id}</code> と raw refs
+    を含める。新規 top-level field は追加しない。
+  </p>
+  <h3 id="受け入れ条件-1">受け入れ条件</h3>
+  <ul>
+    <li>
+      Episode が選ばれた compile run の
+      <code>pack.diagnostics.retrievalStats.episodes.selectedIds</code> で ID を確認できる。
+    </li>
+    <li><code>pack.sourceRefs</code> に <code>context-still://episodes/{id}</code> が残る。</li>
+    <li>
+      <code>recordEpisodeUsage({ usageKind: &quot;compile&quot; })</code> が従来通り呼ばれる。
+    </li>
+    <li>
+      Episode が 0 件の場合も existing diagnostics shape と互換で、<code>No Content</code>
+      判定を悪化させない。
+    </li>
+  </ul>
+  <h2 id="p2-composer-prompt-で-episodecard-を-knowledge-と混同しない">
+    P2: Composer prompt で EpisodeCard を Knowledge と混同しない
+  </h2>
+  <h3 id="変更-2">変更</h3>
+  <p>
+    現状の EpisodeCard pack item は <code>section: &quot;procedures&quot;</code> であり、composer
+    では procedures の一部として扱われる。まずは output shape を変えず、prompt
+    上のラベルだけ分ける。
+  </p>
+  <p>候補:</p>
+  <ul>
+    <li>
+      <code>buildComposerUserPrompt()</code> で
+      <code>item.itemKind === &quot;episode_card&quot;</code> を
+      <code>episode precedents:</code> に分離する。
+    </li>
+    <li>
+      通常の <code>knowledge candidates:</code> には <code>rule</code> / <code>procedure</code> の
+      Knowledge だけを載せる。
+    </li>
+    <li>
+      Episode precedent には <code>id</code>、<code>title</code>、<code>summary</code>、<code
+        >sourceRefs</code
+      >
+      の短いヒントだけを載せる。
+    </li>
+  </ul>
+  <p>composer system prompt に追加する指示:</p>
+  <ul>
+    <li>Episode precedents are past similar cases, not Knowledge rules.</li>
+    <li>
+      Episode precedent は実装方針の参考にできるが、現在の source truth や decision evidence
+      としては扱わない。
+    </li>
+    <li>使う場合は「過去の類似ケース」として要約し、現在のコード確認を前提にする。</li>
+  </ul>
+  <h3 id="受け入れ条件-2">受け入れ条件</h3>
+  <ul>
+    <li>agentic composer 有効時の user prompt に <code>episode precedents:</code> が出る。</li>
+    <li><code>knowledge candidates:</code> には <code>episode_card</code> が混ざらない。</li>
+    <li>
+      fallback composer は現状通り procedures に Episode を含めてもよいが、文言が
+      <code>Past episode:</code> であることを維持する。
+    </li>
+    <li>MCP response の <code>pack.procedures</code> 互換は維持する。</li>
+  </ul>
+  <h2 id="p3-compile-detail--ui-で利用状況を追えるようにする">
+    P3: Compile detail / UI で利用状況を追えるようにする
+  </h2>
+  <h3 id="変更-3">変更</h3>
+  <p>
+    既存の <code>context_pack_items</code> と <code>packSnapshot</code> には
+    <code>itemKind: &quot;episode_card&quot;</code> が保存される。まず repository/API
+    の返却でこれが欠落していないことをテストで固定する。
+  </p>
+  <p>
+    必要なら、既存 detail response 内で次を derived summary として追加する。ただし top-level MCP
+    response には追加しない。
+  </p>
+  <pre><code class="language-ts">episodeSignals?: Array&lt;{
+  episodeId: string;
+  title: string;
+  section: &quot;procedures&quot;;
+  sourceRefs: string[];
+}&gt;;
+</code></pre>
+  <p>この derived summary は UI/API detail 専用とし、compile pack schema には追加しない。</p>
+  <h3 id="受け入れ条件-3">受け入れ条件</h3>
+  <ul>
+    <li>
+      <code>getCompileRunDetail()</code> で <code>selectedItems</code> または derived summary から
+      EpisodeCard が追える。
+    </li>
+    <li>SQLite/Postgres の repository で挙動が一致する。</li>
+    <li><code>knowledgeSignals</code> に EpisodeCard を混ぜない。</li>
+    <li>UI 変更が必要な場合も、既存 table/card の小さな追加表示に留める。</li>
+  </ul>
+  <h2 id="p4-実データで効果確認する">P4: 実データで効果確認する</h2>
+  <h3 id="変更-4">変更</h3>
+  <p>実装後、手元 SQLite で代表的な compile を 2-3 件実行して、次を確認する。</p>
+  <ul>
+    <li>negative guardrail がある goal で <code>guardrails</code> が落ちていない。</li>
+    <li>EpisodeCard にヒットする goal で <code>episodes.selectedIds</code> が残る。</li>
+    <li><code>context-still://episodes/{id}</code> が <code>sourceRefs</code> に残る。</li>
+    <li><code>compile_use_count</code> が増える。</li>
+  </ul>
+  <h3 id="受け入れ条件-4">受け入れ条件</h3>
+  <p>確認 SQL 例:</p>
+  <pre><code class="language-sql">select id, json_extract(pack_snapshot, &#39;$.diagnostics.retrievalStats.episodes.selectedCount&#39;) as selected_count
+from context_compile_runs
+order by created_at desc
+limit 10;
+</code></pre>
+  <pre><code class="language-sql">select id, title, compile_use_count
+from episode_cards
+where compile_use_count &gt; 0
+order by updated_at desc
+limit 10;
+</code></pre>
+  <h2 id="実装順序">実装順序</h2>
+  <ol>
+    <li>
+      P0: <code>AgenticCandidate</code> に <code>polarity</code> /
+      <code>section</code> を追加し、prompt と tests を更新する。
+    </li>
+    <li>
+      P1: Episode retrieval stats に selected IDs / titles を追加し、service tests を更新する。
+    </li>
+    <li>
+      P2: Composer prompt の <code>episode precedents</code> 分離を追加し、composer tests
+      を更新する。
+    </li>
+    <li>
+      P3: compile detail repository の EpisodeCard 可視性をテストで固定し、必要なら derived summary
+      を追加する。
+    </li>
+    <li>P4: SQLite 実データで compile smoke を実行し、diagnostics と usage count を確認する。</li>
+  </ol>
+  <h2 id="検証コマンド">検証コマンド</h2>
+  <p>Focused:</p>
+  <pre><code class="language-bash">bunx vitest run test/context-compiler.service.test.ts test/context-response-composer.service.test.ts
+</code></pre>
+  <p>追加テスト作成後:</p>
+  <pre><code class="language-bash">bunx vitest run test/context-compiler.service.test.ts test/context-response-composer.service.test.ts test/context-compiler-repository.test.ts
+</code></pre>
+  <p>代表 gate:</p>
+  <pre><code class="language-bash">bun run verify
+</code></pre>
+  <p>Docs only 変更時:</p>
+  <pre><code class="language-bash">bun run docs:check-links
+</code></pre>
+  <h2 id="停止条件">停止条件</h2>
+  <ul>
+    <li>
+      agentic refine の変更で negative guardrail が <code>rules</code> /
+      <code>procedures</code> に混ざる場合は停止する。
+    </li>
+    <li>
+      EpisodeCard を Knowledge usage / Knowledge signals
+      に混ぜる必要が出た場合は停止し、設計を再確認する。
+    </li>
+    <li>compile pack schema の破壊的変更が必要になった場合は停止する。</li>
+    <li>DB schema migration が必要になった場合は、この計画から切り出す。</li>
+    <li>
+      Episode 検索品質そのものを大きく変えたくなった場合は、実データで「良い Episode
+      が存在するのに出ない」証拠を先に取る。
+    </li>
+  </ul>
+  <h2 id="完了条件">完了条件</h2>
+  <ul>
+    <li>negative knowledge は retrieve / refine / compose の全段階で guardrail として扱われる。</li>
+    <li>
+      EpisodeCard は compile precedent として利用され、diagnostics と sourceRefs
+      から利用事実を追える。
+    </li>
+    <li>EpisodeCard は Knowledge として記録されず、primary evidence とも混ざらない。</li>
+    <li>focused tests と docs link check が通る。</li>
+    <li>
+      実データで少なくとも 1 件、EpisodeCard の <code>compile_use_count</code> 増加と diagnostics の
+      <code>selectedIds</code> を確認できる。
+    </li>
+  </ul>
+</article>

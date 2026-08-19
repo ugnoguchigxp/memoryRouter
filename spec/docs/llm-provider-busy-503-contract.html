@@ -1,0 +1,40 @@
+<article lang="ja">
+  <h1 id="llm-provider-busy-503-contract">LLM Provider busy 503 contract</h1>
+  <h2 id="purpose">Purpose</h2>
+  <p>
+    LLM Provider がすでに別作業中で新しい生成リクエストを受けられない場合、queue
+    側に一時的な受け入れ不可として伝えるための契約です。queue はこの 503
+    を恒久障害として扱わず、待機後に同じ job を再試行します。
+  </p>
+  <h2 id="provider-response">Provider response</h2>
+  <p>Provider は busy 時に <code>503 Service Unavailable</code> を返してください。</p>
+  <pre><code class="language-http">HTTP/1.1 503 Service Unavailable
+Retry-After: 30
+Content-Type: application/json
+Cache-Control: no-store
+</code></pre>
+  <pre><code class="language-json">{
+  &quot;error&quot;: &quot;llm_busy&quot;,
+  &quot;message&quot;: &quot;LLM worker is currently busy. Retry later.&quot;,
+  &quot;retryable&quot;: true,
+  &quot;retryAfterSeconds&quot;: 30
+}
+</code></pre>
+  <h2 id="queue-behavior">Queue behavior</h2>
+  <ul>
+    <li><code>503</code> は LLM Provider の一時的な busy として扱います。</li>
+    <li><code>Retry-After</code> がある場合はその秒数を使います。</li>
+    <li><code>Retry-After</code> がない場合は 30 秒後に再試行します。</li>
+    <li>
+      job は <code>pending</code> に戻し、<code>next_run_at</code> を待機後の時刻に設定します。
+    </li>
+    <li><code>last_outcome_kind</code> は <code>provider_unavailable_retry</code> とします。</li>
+  </ul>
+  <h2 id="non-goals">Non-goals</h2>
+  <ul>
+    <li><code>429 Too Many Requests</code> の意味づけは変更しません。</li>
+    <li><code>400</code> 系の入力エラーは retry 対象にしません。</li>
+    <li>Provider transport failure と Provider busy を同じ分類にしません。</li>
+    <li>queue 側で job を完了扱いにしてから再実行する運用にはしません。</li>
+  </ul>
+</article>
