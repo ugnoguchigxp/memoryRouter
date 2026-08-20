@@ -22,13 +22,21 @@ Cache-Control: no-store
 </code></pre>
   <h2 id="queue-behavior">Queue behavior</h2>
   <ul>
-    <li><code>503</code> は LLM Provider の一時的な busy として扱います。</li>
+    <li>
+      <code>503</code> は LLM Provider の一時的な busy として扱います。
+    </li>
     <li><code>Retry-After</code> がある場合はその秒数を使います。</li>
     <li><code>Retry-After</code> がない場合は 30 秒後に再試行します。</li>
     <li>
-      job は <code>pending</code> に戻し、<code>next_run_at</code> を待機後の時刻に設定します。
+      job は <code>pending</code> に戻し、<code
+        >next_run_at</code
+      >
+      を待機後の時刻に設定します。
     </li>
-    <li><code>last_outcome_kind</code> は <code>provider_unavailable_retry</code> とします。</li>
+    <li>
+      <code>last_outcome_kind</code> は
+      <code>provider_unavailable_retry</code> とします。
+    </li>
   </ul>
   <h2 id="non-goals">Non-goals</h2>
   <ul>

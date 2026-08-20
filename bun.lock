@@ -56,7 +56,7 @@
         "drizzle-kit": "0.31.10",
         "jsdom": "29.1.1",
         "s11tnext-cli": "0.1.2",
-        "spec-html": "0.1.1",
+        "spec-html": "0.1.3",
         "tailwindcss": "4.3.0",
         "tw-animate-css": "1.4.0",
         "typescript": "6.0.2",
@@ -1313,7 +1313,7 @@
 
     "source-map-support": ["source-map-support@0.5.21", "", { "dependencies": { "buffer-from": "^1.0.0", "source-map": "^0.6.0" } }, "sha512-uBHU3L3czsIyYXKX88fdrGovxdSCoTGDRZ6SYXtSRxLZUzHg5P/66Ht6uoUlHu9EZod+inXhKo3qQgwXUT/y1w=="],
 
-    "spec-html": ["spec-html@0.1.1", "", { "dependencies": { "github-slugger": "2.0.0", "html-validate": "10.17.0", "marked": "18.0.10", "open": "^11.0.1", "prettier": "3.9.6" }, "peerDependencies": { "chart.js": "^4.5.1", "mermaid": "^11.16.1" }, "optionalPeers": ["chart.js", "mermaid"], "bin": { "spec-html": "dist/cli.js" } }, "sha512-y7xi0avWWMixrHfFMRneZsaXaYmWQF9f+QGqeUV45YDyuul0FsPM2PKFjn5KxizmKo3nAyoxJOw+VoVBhdmqlg=="],
+    "spec-html": ["spec-html@0.1.3", "", { "dependencies": { "github-slugger": "2.0.0", "html-validate": "10.17.0", "marked": "18.0.10", "open": "11.0.1", "prettier": "3.9.6" }, "peerDependencies": { "chart.js": "^4.5.1", "mermaid": "^11.16.1" }, "optionalPeers": ["chart.js", "mermaid"], "bin": { "spec-html": "dist/cli.js" } }, "sha512-mQbcp5bO8w5ZTopRl2DbfKFMyLcuaVfViPFbsB0esHBmTdKZsN4+60XeowhCL7QQUOaIwbgYMSdNaolYP6yWyA=="],
 
     "split2": ["split2@4.2.0", "", {}, "sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg=="],
 

@@ -11,43 +11,52 @@
   </blockquote>
   <h2 id="purpose">Purpose</h2>
   <p>
-    <code>sqlite-vec</code> だけを先行して Rust 化し、Bun SQLite の dynamic extension loading
-    制約から外す。
+    <code>sqlite-vec</code> だけを先行して Rust 化し、Bun SQLite の dynamic
+    extension loading 制約から外す。
   </p>
   <p>
     この計画は daemon / queue / MCP の全面 Rust 化ではない。対象は vector storage と vector search
     の ownership だけである。Hono API server と UI-time repository は当面 Drizzle
     を使い続けてよい。ただし、API server が vector index の rebuild / search / health
-    を必要とする場合は、Drizzle で <code>sqlite-vec</code> を直接扱わず、Rust vector layer を呼ぶ。
+    を必要とする場合は、Drizzle で <code>sqlite-vec</code> を直接扱わず、Rust
+    vector layer を呼ぶ。
   </p>
   <h2 id="current-baseline">Current Baseline</h2>
   <p>確認済みの現状:</p>
   <ul>
     <li>
-      <code>bun run doctor</code> は <code>SQLITE_VECTOR_EXTENSION_UNAVAILABLE</code> を返す。
+      <code>bun run doctor</code> は
+      <code>SQLITE_VECTOR_EXTENSION_UNAVAILABLE</code> を返す。
     </li>
     <li>
       <code>sqlite-vec</code> npm package と
       <code>node_modules/sqlite-vec-darwin-arm64/vec0.dylib</code> は存在する。
     </li>
     <li>
-      <code>bun:sqlite</code> は <code>OMIT_LOAD_EXTENSION=1</code> /
-      <code>ENABLE_LOAD_EXTENSION=0</code> のため、<code>db.loadExtension()</code> が
-      <code>This build of sqlite3 does not support dynamic extension loading</code> で失敗する。
+      <code>bun:sqlite</code> は
+      <code>OMIT_LOAD_EXTENSION=1</code> /
+      <code>ENABLE_LOAD_EXTENSION=0</code> のため、<code
+        >db.loadExtension()</code
+      >
+      が <code>This build of sqlite3 does not support dynamic extension loading</code> で失敗する。
     </li>
     <li>
-      <code>src/db/sqlite/client.ts</code> は <code>sqlite-vec</code> npm package から loadable path
-      を取得し、Bun SQLite の <code>loadExtension()</code> に渡している。
+      <code>src/db/sqlite/client.ts</code> は
+      <code>sqlite-vec</code> npm package から loadable path を取得し、Bun
+      SQLite の <code>loadExtension()</code> に渡している。
     </li>
     <li>
       <code>src/db/sqlite/core-repository.ts</code> は
-      <code>vector.available=false</code> の場合、<code>knowledge_items_vec_fallback</code> /
-      <code>source_fragments_vec_fallback</code> の JSON embedding を TypeScript で cosine
+      <code>vector.available=false</code> の場合、<code
+        >knowledge_items_vec_fallback</code
+      >
+      / <code>source_fragments_vec_fallback</code> の JSON embedding を TypeScript で cosine
       計算する。
     </li>
     <li>
       live DB では <code>knowledge_items_vec</code> /
-      <code>source_fragments_vec</code> は存在せず、fallback tables には embedding が入っている。
+      <code>source_fragments_vec</code> は存在せず、fallback tables には embedding
+      が入っている。
     </li>
     <li>
       <code>context-stilld</code> crate はすでに
@@ -58,12 +67,12 @@
   <h2 id="desired-end-state">Desired End State</h2>
   <ul>
     <li>
-      <code>sqlite-vec</code> の registration、vec0 virtual table creation、vector rebuild、vector
-      search は Rust が所有する。
+      <code>sqlite-vec</code> の registration、vec0 virtual table
+      creation、vector rebuild、vector search は Rust が所有する。
     </li>
     <li>
-      Rust 側は <code>sqlite-vec</code> Rust crate を使い、Bun の dynamic extension loading
-      に依存しない。
+      Rust 側は <code>sqlite-vec</code> Rust crate を使い、Bun の dynamic
+      extension loading に依存しない。
     </li>
     <li>
       <code>context-stilld doctor summary --json</code> または dedicated Rust command が sqlite-vec
@@ -79,8 +88,8 @@
     </li>
     <li>fallback JSON embedding tables は移行中の互換 read / rebuild source として残す。</li>
     <li>
-      npm <code>sqlite-vec</code> dependency と Bun vector loading path は、Rust path が default
-      になった後で legacy として削除候補にする。
+      npm <code>sqlite-vec</code> dependency と Bun vector loading path
+      は、Rust path が default になった後で legacy として削除候補にする。
     </li>
   </ul>
   <h2 id="non-goals">Non-Goals</h2>
@@ -98,12 +107,12 @@
   <ul>
     <li>sqlite-vec registration and availability probe.</li>
     <li>
-      <code>knowledge_items_vec</code> / <code>source_fragments_vec</code> vec0 virtual table
-      creation.
+      <code>knowledge_items_vec</code> /
+      <code>source_fragments_vec</code> vec0 virtual table creation.
     </li>
     <li>
-      <code>knowledge_items_vec_map</code> / <code>source_fragments_vec_map</code> rowid mapping
-      mutation when writing vec0 rows.
+      <code>knowledge_items_vec_map</code> /
+      <code>source_fragments_vec_map</code> rowid mapping mutation when writing vec0 rows.
     </li>
     <li>vector index rebuild from existing fallback embedding rows.</li>
     <li>vector search through vec0 <code>MATCH</code> queries.</li>
@@ -121,11 +130,14 @@
   <p>Shared during transition:</p>
   <ul>
     <li>
-      <code>knowledge_items_vec_fallback</code> / <code>source_fragments_vec_fallback</code> remain
-      the compatibility source of truth for embeddings until Rust vec0 index is proven and
-      backfilled.
+      <code>knowledge_items_vec_fallback</code> /
+      <code>source_fragments_vec_fallback</code> remain the compatibility source of truth for
+      embeddings until Rust vec0 index is proven and backfilled.
     </li>
-    <li><code>core_vector_metadata</code> records whether the latest rebuild used sqlite-vec.</li>
+    <li>
+      <code>core_vector_metadata</code> records whether the latest rebuild used
+      sqlite-vec.
+    </li>
     <li>
       API server may call Rust vector layer for vector-specific operations while still using Drizzle
       for surrounding rows.
@@ -207,8 +219,14 @@ cargo test -p context-stilld vector
   <p>Completion criteria:</p>
   <ul>
     <li>Rust test proves <code>vec_version()</code> works.</li>
-    <li>Rust test proves <code>vec0</code> table creation and <code>MATCH</code> query work.</li>
-    <li>No Bun, Node, npm <code>sqlite-vec</code>, or dylib path participates in the test.</li>
+    <li>
+      Rust test proves <code>vec0</code> table creation and
+      <code>MATCH</code> query work.
+    </li>
+    <li>
+      No Bun, Node, npm <code>sqlite-vec</code>, or dylib path participates in
+      the test.
+    </li>
   </ul>
   <p>Verification:</p>
   <pre><code class="language-bash">cargo test -p context-stilld vector
@@ -217,8 +235,8 @@ cargo clippy --workspace --all-targets -- -D warnings
   <p>Stop conditions:</p>
   <ul>
     <li>
-      The Rust crate cannot be used with the current <code>rusqlite</code> / bundled SQLite
-      combination.
+      The Rust crate cannot be used with the current <code>rusqlite</code> /
+      bundled SQLite combination.
     </li>
     <li>The Rust test silently falls back to JSON cosine instead of using vec0.</li>
   </ul>
@@ -237,10 +255,7 @@ cargo clippy --workspace --all-targets -- -D warnings
         <li><code>ensure_vector_schema(connection, dimension)</code>.</li>
         <li><code>probe_vector_capability(connection)</code>.</li>
         <li><code>read_vector_metadata(connection)</code>.</li>
-        <li>
-          <code>write_vector_metadata(connection, name, dimension, row_count, uses_sqlite_vec)</code
-          >.
-        </li>
+        <li><code>write_vector_metadata(connection, name, dimension, row_count, uses_sqlite_vec)</code>.</li>
       </ul>
     </li>
     <li>
@@ -263,7 +278,10 @@ cargo clippy --workspace --all-targets -- -D warnings
       Rust can create vec0 tables on a temporary DB with the same names as the TypeScript path.
     </li>
     <li>Re-running schema setup is safe.</li>
-    <li>Metadata records <code>uses_sqlite_vec=true</code> only when vec0 is actually usable.</li>
+    <li>
+      Metadata records <code>uses_sqlite_vec=true</code> only when vec0 is actually
+      usable.
+    </li>
   </ul>
   <p>Verification:</p>
   <pre><code class="language-bash">cargo test -p context-stilld vector
@@ -327,11 +345,19 @@ cargo run -q -p context-stilld -- vector rebuild --dry-run --json
       Match existing TypeScript output fields:
       <ul>
         <li>
-          knowledge: <code>id</code>, <code>title</code>, <code>body</code>, <code>score</code>.
+          knowledge: <code>id</code>,
+          <code>title</code>,
+          <code>body</code>,
+          <code>score</code>.
         </li>
         <li>
-          source fragment: <code>id</code>, <code>sourceId</code>, <code>sourceUri</code>,
-          <code>locator</code>, <code>heading</code>, <code>content</code>, <code>score</code>.
+          source fragment: <code>id</code>,
+          <code>sourceId</code>,
+          <code>sourceUri</code>,
+          <code>locator</code>,
+          <code>heading</code>,
+          <code>content</code>,
+          <code>score</code>.
         </li>
       </ul>
     </li>
@@ -382,8 +408,10 @@ cargo run -q -p context-stilld -- vector rebuild --dry-run --json
       Add explicit runtime capability:
       <ul>
         <li>
-          <code>vectorEngine</code>: <code>rust_sqlite_vec</code> /
-          <code>typescript_json_fallback</code> / <code>unavailable</code>.
+          <code>vectorEngine</code>:
+          <code>rust_sqlite_vec</code> /
+          <code>typescript_json_fallback</code> /
+          <code>unavailable</code>.
         </li>
         <li><code>reason</code> when degraded.</li>
       </ul>
@@ -430,8 +458,8 @@ bun run verify:rust-daemon
     </li>
     <li>Update TypeScript doctor database inspector to consume Rust vector health.</li>
     <li>
-      Keep Bun <code>loadExtension()</code> failure as legacy diagnostic evidence, not the primary
-      health check.
+      Keep Bun <code>loadExtension()</code> failure as legacy diagnostic evidence,
+      not the primary health check.
     </li>
     <li>
       Add a doctor reason for Rust vector degraded if vec0 is unavailable after Rust registration.
@@ -440,8 +468,8 @@ bun run verify:rust-daemon
   <p>Completion criteria:</p>
   <ul>
     <li>
-      <code>bun run doctor</code> no longer reports sqlite-vec unavailable solely because Bun cannot
-      load dynamic extensions.
+      <code>bun run doctor</code> no longer reports sqlite-vec unavailable solely
+      because Bun cannot load dynamic extensions.
     </li>
     <li>Rust doctor can independently prove vec0 availability.</li>
     <li>Doctor output makes fallback mode visible when fallback is intentionally used.</li>
@@ -471,8 +499,7 @@ bun run doctor
     </li>
     <li>
       Remove npm <code>sqlite-vec</code> only after
-      <code>rg &quot;sqlite-vec|getLoadablePath|loadExtension&quot;</code> shows no default code
-      path depends on it.
+      <code>rg &quot;sqlite-vec|getLoadablePath|loadExtension&quot;</code> shows no default code path depends on it.
     </li>
     <li>Update docs to state Rust owns sqlite-vec.</li>
   </ul>
@@ -480,7 +507,9 @@ bun run doctor
   <ul>
     <li>Default vector engine is Rust sqlite-vec.</li>
     <li><code>SQLITE_VECTOR_EXTENSION_UNAVAILABLE</code> is gone when Rust vec0 is healthy.</li>
-    <li>npm <code>sqlite-vec</code> is no longer needed for default runtime.</li>
+    <li>
+      npm <code>sqlite-vec</code> is no longer needed for default runtime.
+    </li>
     <li>API server still uses Drizzle for non-vector operations.</li>
   </ul>
   <p>Verification:</p>
@@ -493,8 +522,8 @@ bun run verify
   <p>Stop conditions:</p>
   <ul>
     <li>
-      Removing npm <code>sqlite-vec</code> breaks manual migration/backfill tools that still need
-      it.
+      Removing npm <code>sqlite-vec</code> breaks manual migration/backfill
+      tools that still need it.
     </li>
     <li>Default switch changes non-vector API behavior.</li>
     <li>Live validation has not rebuilt or probed vec0 indexes.</li>
@@ -520,7 +549,10 @@ bun run doctor
 </code></pre>
   <p>Stop immediately if:</p>
   <ul>
-    <li><code>pragma integrity_check</code> is not <code>ok</code>;</li>
+    <li>
+      <code>pragma integrity_check</code> is not
+      <code>ok</code>;
+    </li>
     <li>dimension distribution does not match configured embedding dimension;</li>
     <li>vec0 search returns empty while fallback tables have valid rows;</li>
     <li>doctor cannot distinguish Rust vec0 from TypeScript fallback.</li>
@@ -556,9 +588,7 @@ bun run doctor
   <h2 id="references">References</h2>
   <ul>
     <li>Current Bun failure point: <code>src/db/sqlite/client.ts</code></li>
-    <li>
-      Current TypeScript fallback vector search: <code>src/db/sqlite/core-repository.ts</code>
-    </li>
+    <li>Current TypeScript fallback vector search: <code>src/db/sqlite/core-repository.ts</code></li>
     <li>Rust daemon crate: <code>crates/context-stilld/Cargo.toml</code></li>
     <li>
       sqlite-vec Rust integration:

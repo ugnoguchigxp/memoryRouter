@@ -1607,13 +1607,15 @@ Phase E: Persist
   <hr />
   <h2 id="section-25-promotion-gates">25. Promotion Gates</h2>
   <p>
-    この節では、higher-is-better metricは <code>new - baseline</code>、lower-is-better metricは
+    この節では、higher-is-better metricは
+    <code>new - baseline</code>、lower-is-better metricは
     <code>baseline - new</code> として、正の値が改善を表すoriented paired
     differenceへ揃える。「改善」は、そのconfidence interval下限がmanifestで定義したminimum
     effectを上回ることを指す。「非劣化」は、同じ下限が事前定義した許容劣化幅
-    <code>-Δ</code> 以上であることを指す。<code>0 violation</code
-    >は統計推定ではなく、対象cohort内の全件一致条件である。Manifestにsample
-    size、<code>Δ</code>、minimum effectがないexperimentはpromotionできない。
+    <code>-Δ</code>
+    以上であることを指す。<code>0 violation</code>は統計推定ではなく、対象cohort内の全件一致条件である。Manifestにsample
+    size、<code>Δ</code>、minimum
+    effectがないexperimentはpromotionできない。
   </p>
   <h3 id="section-251-foundation-gate">25.1 Foundation gate</h3>
   <ul>

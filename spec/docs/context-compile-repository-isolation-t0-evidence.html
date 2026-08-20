@@ -11,17 +11,18 @@
   <h2 id="shared-fixture-and-reproduction">Shared Fixture And Reproduction</h2>
   <p>
     The canonical fixture is
-    <code>test/fixtures/context-compile-repository-isolation-v1.json</code>. Rust, TypeScript,
-    SQLite, and PostgreSQL consume the same file or its candidate records. It covers:
+    <code>test/fixtures/context-compile-repository-isolation-v1.json</code>. Rust, TypeScript, SQLite, and PostgreSQL consume
+    the same file or its candidate records. It covers:
   </p>
   <ul>
     <li>
-      no identity, <code>projectRef</code>, <code>repoKey</code>, and
+      no identity, <code>projectRef</code>,
+      <code>repoKey</code>, and
       <code>repoPath</code> selection bases;
     </li>
     <li>
-      POSIX, Windows, and local <code>file://</code> paths plus invalid relative, remote-host,
-      query-bearing, and malformed-percent file URIs;
+      POSIX, Windows, and local <code>file://</code> paths plus invalid
+      relative, remote-host, query-bearing, and malformed-percent file URIs;
     </li>
     <li>authoritative multi-identifier agreement and conflict;</li>
     <li>
@@ -89,8 +90,9 @@
   </table>
   <p>
     Because the live database predates the additive canonical entity columns, the report
-    deliberately maps rows to unresolved instead of inferring <code>classified</code> or
-    <code>global</code>. In particular, a legacy EpisodeCard <code>repo_key</code> is an inventory
+    deliberately maps rows to unresolved instead of inferring
+    <code>classified</code> or <code>global</code>. In
+    particular, a legacy EpisodeCard <code>repo_key</code> is an inventory
     signal but does not override the missing <code>classification_status</code> contract.
   </p>
   <p>
@@ -182,10 +184,8 @@
       <tr>
         <td>PostgreSQL fixture/report</td>
         <td>
-          <code
-            >CONTEXT_STILL_RUN_DB_TESTS=1 bunx vitest run
-            test/repository-isolation-report.integration.test.ts</code
-          >
+          <code>CONTEXT_STILL_RUN_DB_TESTS=1 bunx vitest run
+            test/repository-isolation-report.integration.test.ts</code>
         </td>
         <td>1</td>
         <td>0</td>
@@ -201,8 +201,8 @@
     </tbody>
   </table>
   <p>
-    The PostgreSQL suite used a dedicated <code>context_still_test</code> database. A skipped
-    integration suite is not counted as success; the recorded run executed the test.
+    The PostgreSQL suite used a dedicated <code>context_still_test</code> database. A
+    skipped integration suite is not counted as success; the recorded run executed the test.
   </p>
   <h2 id="t0-decision">T0 Decision</h2>
   <p>

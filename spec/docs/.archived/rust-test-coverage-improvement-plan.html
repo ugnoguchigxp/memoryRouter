@@ -11,9 +11,9 @@
   </blockquote>
   <h2 id="背景">背景</h2>
   <p>
-    <code>context-stilld</code> の Rust 実装は、daemon / queue / MCP native handler
-    への責務移行が進んでいる。queue lifecycle 周辺はテストが増えている一方、MCP native handler
-    や一部 service module には未カバー領域が残っている。
+    <code>context-stilld</code> の Rust 実装は、daemon / queue / MCP native
+    handler への責務移行が進んでいる。queue lifecycle 周辺はテストが増えている一方、MCP native
+    handler や一部 service module には未カバー領域が残っている。
   </p>
   <p>
     この計画は、安価な LLM
@@ -245,10 +245,14 @@ git diff --check
 </code></pre>
   <p>Stop conditions:</p>
   <ul>
-    <li><code>cargo llvm-cov</code> が未インストールで、実行者が install できない。</li>
+    <li>
+      <code>cargo llvm-cov</code> が未インストールで、実行者が install できない。
+    </li>
     <li>coverage command が test failure 以外の理由で安定して完了しない。</li>
   </ul>
-  <h2 id="p1-native_episodes-の-unit-tests">P1: <code>native_episodes</code> の Unit Tests</h2>
+  <h2 id="p1-native_episodes-の-unit-tests">
+    P1: <code>native_episodes</code> の Unit Tests
+  </h2>
   <p>
     Goal: <code>domains/mcp_lifecycle/native_episodes.rs</code> を 0% から脱出させ、EpisodeCard の
     read/search contract を固定する。
@@ -260,15 +264,27 @@ git diff --check
   <p>優先して追加する tests:</p>
   <ul>
     <li>空 DB または対象 table がない場合、panic せず error payload または空結果を返す。</li>
-    <li><code>search_episodes</code> が <code>limit</code> を尊重する。</li>
-    <li><code>search_episodes</code> が <code>query</code> に一致する Episode だけを返す。</li>
     <li>
-      <code>search_episodes</code> が <code>status</code> / <code>repoPath</code> /
+      <code>search_episodes</code> が
+      <code>limit</code> を尊重する。
+    </li>
+    <li>
+      <code>search_episodes</code> が
+      <code>query</code> に一致する Episode だけを返す。
+    </li>
+    <li>
+      <code>search_episodes</code> が
+      <code>status</code> /
+      <code>repoPath</code> /
       <code>technologies</code> などの filter を尊重する。
     </li>
-    <li><code>fetch_episode</code> が存在する id を full payload と refs つきで返す。</li>
     <li>
-      <code>fetch_episode</code> が存在しない id に対して stable error / not found payload を返す。
+      <code>fetch_episode</code> が存在する id を full payload と refs
+      つきで返す。
+    </li>
+    <li>
+      <code>fetch_episode</code> が存在しない id に対して stable error / not
+      found payload を返す。
     </li>
     <li>
       <code>episode_search_text</code> 相当の検索対象に title、situation、lesson、refs
@@ -279,7 +295,9 @@ git diff --check
   <ul>
     <li>temporary SQLite connection を作り、必要最小限の schema と rows だけを入れる。</li>
     <li>live <code>episode_cards</code> を読まない。</li>
-    <li>既存の <code>NativeToolContext</code> 作成 pattern があればそれに合わせる。</li>
+    <li>
+      既存の <code>NativeToolContext</code> 作成 pattern があればそれに合わせる。
+    </li>
     <li>
       private helper を直接テストしたい場合は同一 file の
       <code>#[cfg(test)] mod tests</code> に追加する。
@@ -295,10 +313,10 @@ git diff --check
   <pre><code class="language-bash">cargo test -p context-stilld native_episodes -- --nocapture
 cargo llvm-cov -p context-stilld --summary-only
 </code></pre>
-  <h2 id="p2-native_memory-の-unit-tests">P2: <code>native_memory</code> の Unit Tests</h2>
-  <p>
-    Goal: <code>domains/mcp_lifecycle/native_memory.rs</code> の search/fetch contract を固定する。
-  </p>
+  <h2 id="p2-native_memory-の-unit-tests">
+    P2: <code>native_memory</code> の Unit Tests
+  </h2>
+  <p>Goal: <code>domains/mcp_lifecycle/native_memory.rs</code> の search/fetch contract を固定する。</p>
   <p>対象:</p>
   <ul>
     <li><code>crates/context-stilld/src/domains/mcp_lifecycle/native_memory.rs</code></li>
@@ -306,18 +324,26 @@ cargo llvm-cov -p context-stilld --summary-only
   <p>優先して追加する tests:</p>
   <ul>
     <li><code>search_memory</code> が query に一致する memory を返す。</li>
-    <li><code>search_memory</code> が <code>limit</code> と preview 長を尊重する。</li>
     <li>
-      <code>search_memory</code> が <code>includeContent=false</code> のとき preview/body
-      を過剰に返さない。
+      <code>search_memory</code> が
+      <code>limit</code> と preview 長を尊重する。
     </li>
     <li>
-      <code>fetch_memory</code> が <code>start</code> / <code>end</code> /
+      <code>search_memory</code> が
+      <code>includeContent=false</code> のとき preview/body を過剰に返さない。
+    </li>
+    <li>
+      <code>fetch_memory</code> が <code>start</code> /
+      <code>end</code> /
       <code>maxChars</code> を尊重する。
     </li>
-    <li><code>fetch_memory</code> が <code>returnMetaOnly=true</code> のとき本文を返さない。</li>
     <li>
-      <code>fetch_memory</code> が <code>includeAgentDiffs=true</code> のとき関連 diff を含める。
+      <code>fetch_memory</code> が
+      <code>returnMetaOnly=true</code> のとき本文を返さない。
+    </li>
+    <li>
+      <code>fetch_memory</code> が
+      <code>includeAgentDiffs=true</code> のとき関連 diff を含める。
     </li>
     <li>存在しない id は stable error / not found payload を返す。</li>
   </ul>
@@ -369,8 +395,8 @@ cargo llvm-cov -p context-stilld --summary-only
   <ul>
     <li>まず read-only helper と <code>search_knowledge</code> に限定する。</li>
     <li>
-      <code>register_candidates</code>、<code>context_decision_feedback</code> は write path なので
-      P4 まで触らない。
+      <code>register_candidates</code>、<code>context_decision_feedback</code> は
+      write path なので P4 まで触らない。
     </li>
     <li>schema fixture は必要最小限にする。</li>
   </ul>
@@ -394,15 +420,23 @@ cargo llvm-cov -p context-stilld --summary-only
   </ul>
   <p>優先して追加する tests:</p>
   <ul>
-    <li><code>register_candidates</code> が valid SKILL-like candidate を insert する。</li>
+    <li>
+      <code>register_candidates</code> が valid SKILL-like candidate を insert する。
+    </li>
     <li><code>register_candidates</code> が required fields 不足を reject する。</li>
-    <li><code>register_candidates</code> が invalid polarity / type / status を reject する。</li>
+    <li>
+      <code>register_candidates</code> が invalid polarity / type / status を reject
+      する。
+    </li>
     <li><code>infer_title</code> が body 先頭から安定した title を作る。</li>
     <li>
-      <code>has_skill_like_sections</code> が <code>Use when</code> / <code>Workflow</code> /
-      <code>Verification</code> / <code>Avoid</code> を判定する。
+      <code>has_skill_like_sections</code> が <code>Use when</code> /
+      <code>Workflow</code> / <code>Verification</code> /
+      <code>Avoid</code> を判定する。
     </li>
-    <li><code>context_decision_feedback</code> が known decision id に feedback を保存する。</li>
+    <li>
+      <code>context_decision_feedback</code> が known decision id に feedback を保存する。
+    </li>
     <li>unknown decision id は stable error を返す。</li>
   </ul>
   <p>実装指示:</p>
@@ -425,7 +459,8 @@ cargo llvm-cov -p context-stilld --summary-only
     P5: <code>native_decision</code> の Decision Gate Tests
   </h2>
   <p>
-    Goal: <code>context_decision</code> の autonomous GO/NO-GO contract を unit test で固定する。
+    Goal: <code>context_decision</code> の autonomous GO/NO-GO contract を unit test
+    で固定する。
   </p>
   <p>対象:</p>
   <ul>
@@ -433,14 +468,17 @@ cargo llvm-cov -p context-stilld --summary-only
   </ul>
   <p>優先して追加する tests:</p>
   <ul>
-    <li>明確な hard stop language がある場合は <code>reject</code> になる。</li>
+    <li>
+      明確な hard stop language がある場合は <code>reject</code> になる。
+    </li>
     <li>
       十分な supporting knowledge がある場合は <code>execute</code> または
       <code>revise_and_execute</code> になる。
     </li>
     <li>evidence が弱い場合は confidence / coverage が低くなる。</li>
     <li>
-      <code>decision_query</code> が <code>decisionPoint</code> と
+      <code>decision_query</code> が
+      <code>decisionPoint</code> と
       <code>retrievalHints</code> を含む。
     </li>
     <li><code>mandate</code> が decision ごとに stable な説明を返す。</li>
@@ -462,7 +500,8 @@ cargo llvm-cov -p context-stilld --summary-only
 cargo llvm-cov -p context-stilld --summary-only
 </code></pre>
   <h2 id="p6-native_resources--native_tools--native_handlers">
-    P6: <code>native_resources</code> / <code>native_tools</code> / <code>native_handlers</code>
+    P6: <code>native_resources</code> /
+    <code>native_tools</code> / <code>native_handlers</code>
   </h2>
   <p>Goal: MCP native surface の tool/resource inventory と dispatch contract を固定する。</p>
   <p>対象:</p>
@@ -474,10 +513,13 @@ cargo llvm-cov -p context-stilld --summary-only
   <p>優先して追加する tests:</p>
   <ul>
     <li><code>list_resources</code> が expected URI を返す。</li>
-    <li><code>read_resource</code> が known URI を content payload として返す。</li>
+    <li>
+      <code>read_resource</code> が known URI を content payload として返す。
+    </li>
     <li>unknown resource URI が stable error を返す。</li>
     <li>
-      <code>exposed_tool_count</code> と <code>tool_owner_inventory</code> が主要 tool を含む。
+      <code>exposed_tool_count</code> と
+      <code>tool_owner_inventory</code> が主要 tool を含む。
     </li>
     <li><code>handle_native_dispatch</code> が known tool を正しい handler へ渡す。</li>
     <li>unknown tool が stable error を返す。</li>
@@ -554,8 +596,8 @@ cargo llvm-cov -p context-stilld --summary-only
     <li>permanent provider error は retry metadata を残す。</li>
     <li>saved segment metadata がある job は保存済み segment を再処理しない。</li>
     <li>
-      <code>queue inspect --json</code> の output watchdog が latest episode / segment progress
-      を使う。
+      <code>queue inspect --json</code> の output watchdog が latest episode / segment
+      progress を使う。
     </li>
     <li>unsupported queue は fail-closed になる。</li>
   </ul>
@@ -578,7 +620,9 @@ cargo llvm-cov -p context-stilld --summary-only
   <ul>
     <li><code>cargo test -p context-stilld</code> が通る。</li>
     <li><code>cargo llvm-cov -p context-stilld --summary-only</code> が通る。</li>
-    <li><code>mcp_lifecycle/native_*</code> の 0% module が少なくとも 3 つ以上なくなる。</li>
+    <li>
+      <code>mcp_lifecycle/native_*</code> の 0% module が少なくとも 3 つ以上なくなる。
+    </li>
     <li><code>queue_lifecycle</code> の line coverage が 80% 以上を維持する。</li>
     <li>全体 line coverage が baseline 64.39% から上がる。</li>
   </ul>
@@ -586,14 +630,15 @@ cargo llvm-cov -p context-stilld --summary-only
   <ul>
     <li>全体 line coverage が 70% 以上になる。</li>
     <li>
-      <code>native_episodes</code>、<code>native_memory</code>、<code>native_resources</code>、<code
+      <code>native_episodes</code
+      >、<code>native_memory</code>、<code>native_resources</code>、<code
         >native_tools</code
       >
       がそれぞれ 50% 以上になる。
     </li>
     <li>
-      <code>native_knowledge</code>、<code>native_decision</code> は read path / write path の代表
-      contract がテストされる。
+      <code>native_knowledge</code>、<code>native_decision</code> は
+      read path / write path の代表 contract がテストされる。
     </li>
   </ul>
   <p>まだ目指さない条件:</p>
@@ -608,7 +653,8 @@ cargo llvm-cov -p context-stilld --summary-only
     <li>P1 <code>native_episodes</code> を実装し、coverage を比較する。</li>
     <li>P2 <code>native_memory</code> を実装し、coverage を比較する。</li>
     <li>
-      P6 <code>native_resources</code> / <code>native_tools</code> の inventory tests を追加する。
+      P6 <code>native_resources</code> /
+      <code>native_tools</code> の inventory tests を追加する。
     </li>
     <li>P3 <code>native_knowledge</code> read path を追加する。</li>
     <li>P4/P5 の write path / decision path を小さく分割して追加する。</li>

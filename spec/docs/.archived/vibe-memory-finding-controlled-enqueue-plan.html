@@ -13,14 +13,14 @@
   </p>
   <p>
     一方で、<code>finding_candidate_queue</code> の
-    <code>source_kind=&#39;vibe_memory&#39;</code> は 2026-06-27
-    付近で新規作成が止まっている。直近の Codex vibe memory には
-    <code>episode_distiller_queue</code> は存在するが
+    <code>source_kind=&#39;vibe_memory&#39;</code> は 2026-06-27 付近で新規作成が止まっている。直近の
+    Codex vibe memory には <code>episode_distiller_queue</code> は存在するが
     <code>finding_candidate_queue</code> が存在しないものがまとまって発生している。
   </p>
   <p>
-    原因は parser の全面破損ではなく、現行の TS / Rust <code>agent-log-sync</code> が新規 vibe
-    memory 作成時に <code>episode_distiller_queue</code> だけを enqueue し、<code
+    原因は parser の全面破損ではなく、現行の TS / Rust
+    <code>agent-log-sync</code> が新規 vibe memory 作成時に
+    <code>episode_distiller_queue</code> だけを enqueue し、<code
       >finding_candidate_queue</code
     >
     へ流さない設計になっていること。
@@ -36,11 +36,12 @@
   <h2 id="目的">目的</h2>
   <ul>
     <li>
-      新規 vibe memory から、条件を満たすものだけを <code>finding_candidate_queue</code> に enqueue
-      する正規経路を追加する。
+      新規 vibe memory から、条件を満たすものだけを <code>finding_candidate_queue</code> に
+      enqueue する正規経路を追加する。
     </li>
     <li>
-      <code>findCandidate</code> の入力は既存の deterministic filtered input reader に統一する。
+      <code>findCandidate</code> の入力は既存の deterministic filtered input
+      reader に統一する。
     </li>
     <li>
       agent log sync の責務を「vibe memory / Episode job 作成」と「新規 memory に対する
@@ -55,9 +56,15 @@
   <h2 id="非目的">非目的</h2>
   <ul>
     <li>agent log chunk を無条件に <code>finding_candidate_queue</code> へ戻さない。</li>
-    <li><code>findCandidate</code> の semantic chunk / candidatelet pipeline を復活させない。</li>
+    <li>
+      <code>findCandidate</code> の semantic chunk / candidatelet pipeline
+      を復活させない。
+    </li>
     <li>EpisodeDistiller の chunk 保存や queue 生成を変更しない。</li>
-    <li><code>coveringEvidence</code> / <code>finalizeDistille</code> の設計変更を含めない。</li>
+    <li>
+      <code>coveringEvidence</code> /
+      <code>finalizeDistille</code> の設計変更を含めない。
+    </li>
     <li>live DB の既存 completed / skipped finding job を削除しない。</li>
     <li>LLM による事前要約や分類で enqueue 対象を決めない。</li>
   </ul>
@@ -83,12 +90,12 @@
   <ul>
     <li>
       steady-state: Rust resident <code>agent-log-sync</code> が新規
-      <code>vibe_memories</code> を保存した同じ transaction 内で、eligible なものだけを
-      <code>finding_candidate_queue</code> に入れる。
+      <code>vibe_memories</code> を保存した同じ transaction 内で、eligible
+      なものだけを <code>finding_candidate_queue</code> に入れる。
     </li>
     <li>
-      backfill / dry-run: TS CLI が既存の未 enqueue <code>vibe_memories</code> を scan し、同じ
-      deterministic selector で少量ずつ投入できるようにする。
+      backfill / dry-run: TS CLI が既存の未 enqueue <code>vibe_memories</code> を
+      scan し、同じ deterministic selector で少量ずつ投入できるようにする。
     </li>
   </ul>
   <figure>
@@ -109,20 +116,21 @@
     ログ取り込みの正規経路だけで finding が再開する。
   </p>
   <p>
-    backfill は sync cursor を持たず、DB の <code>finding_candidate_queue</code> existence check を
-    source of truth にして、過去分だけを安全に補う。
+    backfill は sync cursor を持たず、DB の <code>finding_candidate_queue</code> existence
+    check を source of truth にして、過去分だけを安全に補う。
   </p>
   <h2 id="eligibility">Eligibility</h2>
   <h3 id="対象にする">対象にする</h3>
   <ul>
     <li>
-      <code>vibe_memories.metadata.sourceId</code> が <code>codex_logs</code>、または CLI /
-      scheduler の <code>--source</code> で指定された source。
+      <code>vibe_memories.metadata.sourceId</code> が
+      <code>codex_logs</code>、または CLI / scheduler の
+      <code>--source</code> で指定された source。
     </li>
     <li>
-      <code>finding_candidate_queue</code> に同じ <code>source_kind=&#39;vibe_memory&#39;</code>,
-      <code>source_key=vibe_memories.id</code>, <code>distillation_version</code> の job
-      が存在しない。
+      <code>finding_candidate_queue</code> に同じ
+      <code>source_kind=&#39;vibe_memory&#39;</code>, <code>source_key=vibe_memories.id</code>,
+      <code>distillation_version</code> の job が存在しない。
     </li>
     <li><code>vibe_memories.content</code> が最小文字数を満たす。</li>
     <li>
@@ -145,8 +153,8 @@
       同一 session の中で、ユーザー依頼だけ、または assistant の途中経過だけに偏っている chunk。
     </li>
     <li>
-      既に <code>no_candidate</code> 済みで、同じ distillation version かつ同じ source_key
-      の再処理理由がないもの。
+      既に <code>no_candidate</code> 済みで、同じ distillation version かつ同じ
+      source_key の再処理理由がないもの。
     </li>
   </ul>
   <h3 id="初期-scoring">初期 scoring</h3>
@@ -189,7 +197,9 @@
   <p>Goal: 変更前の停止点を DB で再確認し、以後の検証に使える基準値を残す。</p>
   <p>Tasks:</p>
   <ul>
-    <li><code>codex_logs</code> 由来の vibe memory 件数と最新時刻を確認する。</li>
+    <li>
+      <code>codex_logs</code> 由来の vibe memory 件数と最新時刻を確認する。
+    </li>
     <li>
       <code>finding_candidate_queue</code> の
       <code>source_kind=&#39;vibe_memory&#39;</code> 最新時刻を確認する。
@@ -218,8 +228,9 @@ sqlite3 -header -column data/context-still-core.sqlite \
     <li><code>src/modules/findCandidate/vibe-finding-eligibility.ts</code> を追加する。</li>
     <li>SQLite row と Postgres row の両方から同じ入力型に正規化する。</li>
     <li>
-      content / metadata / agent diff count から <code>eligible</code>, <code>score</code>,
-      <code>signals</code>, <code>rejectReasons</code> を返す。
+      content / metadata / agent diff count から <code>eligible</code>,
+      <code>score</code>, <code>signals</code>,
+      <code>rejectReasons</code> を返す。
     </li>
     <li>LLM 呼び出し、要約、分類は行わない。</li>
   </ul>
@@ -251,7 +262,8 @@ sqlite3 -header -column data/context-still-core.sqlite \
     </li>
     <li>未 enqueue の vibe memory を新しい順に scan する。</li>
     <li>
-      <code>enqueueFindingJob()</code> を使って <code>source_kind=&#39;vibe_memory&#39;</code> の
+      <code>enqueueFindingJob()</code> を使って
+      <code>source_kind=&#39;vibe_memory&#39;</code> の
       <code>source_target</code> job を作る。
     </li>
     <li>dry-run では wouldEnqueue / rejected / alreadyQueued の内訳を出す。</li>
@@ -290,16 +302,17 @@ sqlite3 -header -column data/context-still-core.sqlite \
       eligible な場合だけ <code>finding_candidate_queue</code> に
       <code>source_kind=&#39;vibe_memory&#39;</code> job を作る。
     </li>
+    <li><code>distillation_queue_events.queue_name=&#39;findingCandidate&#39;</code> で enqueue event を残す。</li>
     <li>
-      <code>distillation_queue_events.queue_name=&#39;findingCandidate&#39;</code> で enqueue event
-      を残す。
+      metadata は TS CLI と同じ <code>enqueuedBy</code>,
+      <code>eligibilityScore</code>, <code>eligibilitySignals</code>,
+      <code>sourceId</code>, <code>sessionId</code>,
+      <code>chunkIndex</code>,
+      <code>dedupeKey</code> を持たせる。
     </li>
     <li>
-      metadata は TS CLI と同じ <code>enqueuedBy</code>, <code>eligibilityScore</code>,
-      <code>eligibilitySignals</code>, <code>sourceId</code>, <code>sessionId</code>,
-      <code>chunkIndex</code>, <code>dedupeKey</code> を持たせる。
+      <code>backfill: false</code> を入れ、TS CLI の backfill job と区別する。
     </li>
-    <li><code>backfill: false</code> を入れ、TS CLI の backfill job と区別する。</li>
   </ul>
   <p>Initial policy:</p>
   <ul>
@@ -326,26 +339,29 @@ sqlite3 -header -column data/context-still-core.sqlite \
     T4: Rust Codex parser metadata parity を直す
   </h3>
   <p>
-    Goal: Rust resident <code>agent_log_sync</code> で作られる Codex vibe memory に、TS と同等の
-    project metadata を入れる。
+    Goal: Rust resident <code>agent_log_sync</code> で作られる Codex vibe memory
+    に、TS と同等の project metadata を入れる。
   </p>
   <p>Tasks:</p>
   <ul>
     <li>
       <code>crates/context-stilld/src/domains/agent_log_sync/ingest.rs</code> で
-      <code>turn_context</code> の <code>payload.cwd</code> を読む。
+      <code>turn_context</code> の
+      <code>payload.cwd</code> を読む。
     </li>
     <li>
-      <code>session_meta.cwd</code> と <code>turn_context.cwd</code> の両方を context
-      更新対象にする。
+      <code>session_meta.cwd</code> と
+      <code>turn_context.cwd</code> の両方を context 更新対象にする。
     </li>
     <li>Rust 側にも project root / project name derivation を入れる。</li>
     <li>
-      <code>store.rs</code> の memory metadata に <code>cwd</code>, <code>projectName</code>,
+      <code>store.rs</code> の memory metadata に
+      <code>cwd</code>, <code>projectName</code>,
       <code>projectRoot</code> を入れる。
     </li>
     <li>
-      既存 metadata の <code>sourceId</code>, <code>chunkIndex</code>,
+      既存 metadata の <code>sourceId</code>,
+      <code>chunkIndex</code>,
       <code>dedupeKey</code> は維持する。
     </li>
   </ul>
@@ -417,8 +433,8 @@ sqlite3 -header -column data/context-still-core.sqlite \
       <p><code>crates/context-stilld</code> tests</p>
       <ul>
         <li>
-          <code>turn_context.cwd</code> を含む Codex JSONL を ingest し project metadata
-          が保存される
+          <code>turn_context.cwd</code> を含む Codex JSONL を ingest し project
+          metadata が保存される
         </li>
       </ul>
     </li>
@@ -453,8 +469,8 @@ sqlite3 -header -column data/context-still-core.sqlite \
 </code></pre>
   <ol>
     <li>
-      <code>no_candidate</code> が高すぎる場合は <code>--min-score</code> を上げ、eligibility の
-      reject 条件を強める。
+      <code>no_candidate</code> が高すぎる場合は
+      <code>--min-score</code> を上げ、eligibility の reject 条件を強める。
     </li>
   </ol>
   <h2 id="rollout-gates">Rollout Gates</h2>
@@ -468,7 +484,10 @@ sqlite3 -header -column data/context-still-core.sqlite \
   <ul>
     <li>5 件以下の write で pending job が作られる。</li>
     <li>duplicate run で job が増えない。</li>
-    <li><code>distillation_queue_events</code> に <code>enqueued</code> が残る。</li>
+    <li>
+      <code>distillation_queue_events</code> に
+      <code>enqueued</code> が残る。
+    </li>
   </ul>
   <h3 id="gate-3-worker-processing">Gate 3: Worker processing</h3>
   <ul>
@@ -491,11 +510,14 @@ sqlite3 -header -column data/context-still-core.sqlite \
   <h2 id="stop-conditions">Stop Conditions</h2>
   <ul>
     <li>dry-run の eligible がほぼ全件になり、controlled enqueue と呼べない。</li>
-    <li><code>no_candidate</code> rate が高く、以前の chunk spam と同じ状態になる。</li>
+    <li>
+      <code>no_candidate</code> rate が高く、以前の chunk spam と同じ状態になる。
+    </li>
     <li>Rust / TS で source metadata が大きくずれ、selector の結果が揃わない。</li>
     <li>worker が <code>source_missing</code> を出す。</li>
     <li>
-      <code>found_candidates</code> は作られるが <code>covering_evidence_queue</code> へ進まない。
+      <code>found_candidates</code> は作られるが
+      <code>covering_evidence_queue</code> へ進まない。
     </li>
     <li>queue backlog が既存 interactive 作業を圧迫する。</li>
   </ul>

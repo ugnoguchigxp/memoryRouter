@@ -7,7 +7,8 @@
     </p>
   </blockquote>
   <p>
-    ContextStill で <code>s11tnext</code> と <code>s11tnext-cli</code> を production profile
+    ContextStill で <code>s11tnext</code> と
+    <code>s11tnext-cli</code> を production profile
     で実利用した所見を記録する。初回評価は <code>0.1.0</code>、再評価は
     <code>0.1.2</code> で実施した。回避策を恒久化せず、package
     側へ還元できる粒度で再現条件と改善案を残す。
@@ -15,15 +16,22 @@
   <h2 id="contextstill-implementation-result">ContextStill implementation result</h2>
   <ul>
     <li>production catalog: 25 contexts / 25 files</li>
-    <li>required locale coverage: <code>ja-JP</code> / <code>en-US</code> ともに 100%</li>
+    <li>
+      required locale coverage: <code>ja-JP</code> /
+      <code>en-US</code> ともに 100%
+    </li>
     <li>application-owned direct <code>role: &quot;system&quot;</code> construction: 0</li>
     <li>legacy boundary allowlist: 0</li>
     <li>
-      package versions: <code>s11tnext@0.1.2</code> / <code>s11tnext-cli@0.1.2</code> の exact match
+      package versions: <code>s11tnext@0.1.2</code> /
+      <code>s11tnext-cli@0.1.2</code> の exact match
     </li>
     <li>artifact: version 2、compiler <code>0.1.2</code></li>
     <li>
-      provider message: authored role、<code>messageRole</code>、<code>messageHash</code> を使用
+      provider message: authored role、<code>messageRole</code>、<code
+        >messageHash</code
+      >
+      を使用
     </li>
     <li>
       generated catalog、typecheck、lint、format、unit tests、Web build を含む
@@ -122,23 +130,26 @@
   <p>改善案:</p>
   <ul>
     <li>render option または context-level policy として final newline を選択可能にする。</li>
-    <li>あるいは <code>content.text</code> と別に composition-safe fragment API を提供する。</li>
+    <li>
+      あるいは <code>content.text</code> と別に composition-safe fragment API
+      を提供する。
+    </li>
     <li>hash contract の対象が fragment か final provider payload かを guide で明確にする。</li>
   </ul>
   <p>0.1.2 再検証:</p>
   <ul>
-    <li>
-      <code>CatalogBinding.trailingNewline = false</code> を全 provider-bound binding に設定した。
-    </li>
+    <li><code>CatalogBinding.trailingNewline = false</code> を全 provider-bound binding に設定した。</li>
     <li>rendered hash と role-aware message hash の両方を送信メッセージ生成時に検証した。</li>
     <li>S11N-001 は解消。</li>
   </ul>
   <h3 id="s11n-002-optional-variable">S11N-002: optional variable</h3>
   <p>
     <code>contextCompiler.agenticRefine</code> の
-    <code>technologies</code>、<code>changeTypes</code>、<code>domains</code> は入力上 optional
-    だが、生成される value map では全変数が必須になる。現在は空文字を渡すため、値がない場合も
-    delimiter block が prompt に残る。
+    <code>technologies</code
+    >、<code>changeTypes</code>、<code>domains</code>
+    は入力上 optional だが、生成される value map
+    では全変数が必須になる。現在は空文字を渡すため、値がない場合も delimiter block が prompt
+    に残る。
   </p>
   <p>改善案:</p>
   <ul>
@@ -147,8 +158,8 @@
     </li>
     <li>空文字を意味のある値と区別し、missing 時に section 全体を省略できるようにする。</li>
     <li>
-      generated type を <code>name?: T</code> にしつつ、translation 間で条件構造が一致することを
-      compiler が検証する。
+      generated type を <code>name?: T</code> にしつつ、translation
+      間で条件構造が一致することを compiler が検証する。
     </li>
   </ul>
   <p>0.1.2 再検証:</p>
@@ -158,15 +169,17 @@
       <code>required = false</code> に変更した。
     </li>
     <li>
-      <code>omit_if_empty = true</code> により空の delimiter block が描画されないことをテストした。
+      <code>omit_if_empty = true</code> により空の delimiter block
+      が描画されないことをテストした。
     </li>
     <li>S11N-002 は解消。</li>
   </ul>
   <h3 id="s11n-003-catalog-global-source-locale">S11N-003: catalog-global source locale</h3>
   <p>
     ContextStill の既存 prompt は route ごとに日本語と英語が混在する。source locale が project
-    全体で <code>ja-JP</code> のため、英語を正本として維持したい context でも
-    <code>ja-JP</code> source と同一の <code>en-US</code> translation を重複記述した。
+    全体で <code>ja-JP</code> のため、英語を正本として維持したい context
+    でも <code>ja-JP</code> source と同一の
+    <code>en-US</code> translation を重複記述した。
   </p>
   <p>改善案:</p>
   <ul>
@@ -186,35 +199,41 @@
   <p>
     生成された <code>.s11tnext/catalog.generated.ts</code> を source module から import
     すると、<code>composite: true</code> の TypeScript 6 project は
-    <code>TS6307</code> を出した。<code>tsconfig.json</code> の
-    <code>include</code> へ生成物を追加すると解消した。
+    <code>TS6307</code> を出した。<code
+      >tsconfig.json</code
+    >
+    の <code>include</code> へ生成物を追加すると解消した。
   </p>
   <p>改善案:</p>
   <ul>
     <li>getting started の TypeScript integration に composite project の設定例を追加する。</li>
     <li>
-      <code>out_dir</code> を <code>src</code> 配下へ置く選択肢と repository root に置く選択肢の
+      <code>out_dir</code> を
+      <code>src</code> 配下へ置く選択肢と repository root に置く選択肢の
       trade-off を記載する。
     </li>
     <li>CLI が tsconfig を検出した場合に actionable hint を出す。</li>
   </ul>
   <p>0.1.2 再検証:</p>
   <ul>
-    <li>composite project 向けの <code>include</code> 設定例が公式 guide に追加された。</li>
+    <li>
+      composite project 向けの <code>include</code> 設定例が公式 guide
+      に追加された。
+    </li>
     <li>host側の明示設定自体は必要なため、状態は Mitigated とする。</li>
   </ul>
   <h3 id="s11n-005-generated-formatting">S11N-005: generated formatting</h3>
   <p>
     生成 TS は tab indent で、ContextStill は Biome の space indent を使う。generated file を
-    formatter 対象にすると毎回差分が生じるため、<code>.s11tnext/**</code> を formatter/linter
-    対象外にした。
+    formatter 対象にすると毎回差分が生じるため、<code>.s11tnext/**</code> を
+    formatter/linter 対象外にした。
   </p>
   <p>改善案:</p>
   <ul>
     <li>generated output を formatter-neutral な最小形式にする。</li>
     <li>
-      indent style option、または host formatter を通しても <code>build --check</code> が壊れない
-      contract を提供する。
+      indent style option、または host formatter を通しても
+      <code>build --check</code> が壊れない contract を提供する。
     </li>
     <li>guide で generated directory の formatter ignore を案内する。</li>
   </ul>
@@ -239,15 +258,21 @@
       provider adapter 向けに exact submitted text/hash を検証する helper を提供する。 -複数
       fragment から final payload digest を作る composition receipt contract を検討する。
     </li>
-    <li><code>bindText()</code> が manifest を失うことを型/API名でさらに目立たせる。</li>
+    <li>
+      <code>bindText()</code> が manifest
+      を失うことを型/API名でさらに目立たせる。
+    </li>
   </ul>
   <p>0.1.2 再検証:</p>
   <ul>
     <li>
       manifest に <code>messageRole</code> と
-      <code>messageHash</code> が追加され、host側でroleと本文の組を検証可能になった。
+      <code>messageHash</code>
+      が追加され、host側でroleと本文の組を検証可能になった。
     </li>
-    <li><code>bindRequest().finalize()</code> にbyte-range composition receiptが追加された。</li>
+    <li>
+      <code>bindRequest().finalize()</code> にbyte-range composition receiptが追加された。
+    </li>
     <li>外部providerへのdelivery証明は引き続きhost責務であるため、状態は Mitigated とする。</li>
   </ul>
   <h3 id="s11n-007-公開状態と-readme">S11N-007: 公開状態と README</h3>

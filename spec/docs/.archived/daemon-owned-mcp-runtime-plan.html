@@ -2,12 +2,15 @@
   <h1 id="daemon-owned-mcp-runtime-plan">Daemon-Owned MCP Runtime Plan</h1>
   <blockquote>
     <p>
-      アーカイブ日: 2026-08-15。実装コミット: <code>64cdcf2</code>、legacy path 削除:
-      <code>5f1bdb3</code>。
+      アーカイブ日: 2026-08-15。実装コミット: <code>64cdcf2</code>、legacy
+      path 削除: <code>5f1bdb3</code>。
     </p>
   </blockquote>
   <h2 id="purpose">Purpose</h2>
-  <p>MCP の所有権を stdio child process から常駐 <code>context-stilld</code> daemon へ戻す。</p>
+  <p>
+    MCP の所有権を stdio child process から常駐 <code>context-stilld</code> daemon
+    へ戻す。
+  </p>
   <p>
     過去の direct stdio MCP は、MCP client の再起動・切断・親プロセス不整合時に
     <code>bun run src/index.ts</code> が残留しやすい。stdio 側の graceful shutdown
@@ -24,8 +27,8 @@
     </li>
     <li><code>bun run src/index.ts</code> direct stdio MCP は削除し、復元しない。</li>
     <li>
-      <code>StdioServerTransport</code> / <code>StdioClientTransport</code> を本番 runtime path
-      から外す。
+      <code>StdioServerTransport</code> /
+      <code>StdioClientTransport</code> を本番 runtime path から外す。
     </li>
     <li>
       TypeScript tool logic は短期的には残せるが、stdio process としてではなく daemon-managed worker
@@ -123,16 +126,16 @@ context-stilld doctor summary --json
 context-stilld mcp smoke --json
 </code></pre>
   <p>
-    <code>mcp endpoint</code> returns the local endpoint URL, readiness state, auth/token state if
-    any, and active session counts.
+    <code>mcp endpoint</code> returns the local endpoint URL, readiness state,
+    auth/token state if any, and active session counts.
   </p>
   <h3 id="deleted--forbidden">Deleted / Forbidden</h3>
   <pre><code class="language-bash">bun run start:mcp:stdio
 context-stilld mcp serve
 </code></pre>
   <p>
-    <code>context-stilld mcp start|stop</code> may manage only the daemon endpoint worker. They must
-    not spawn a stdio MCP child.
+    <code>context-stilld mcp start|stop</code> may manage only the daemon endpoint worker. They
+    must not spawn a stdio MCP child.
   </p>
   <h2 id="daemon-endpoint">Daemon Endpoint</h2>
   <p>Default endpoint:</p>
@@ -171,7 +174,9 @@ enabled = true
   </ol>
   <p>Rejected bridge options:</p>
   <ul>
-    <li>daemon spawning <code>bun run src/index.ts</code> as a background stdio MCP server.</li>
+    <li>
+      daemon spawning <code>bun run src/index.ts</code> as a background stdio MCP server.
+    </li>
     <li>daemon foreground stdio proxy as the default MCP client path.</li>
     <li>cleanup-only process management that lets orphaned stdio servers happen first.</li>
   </ul>
@@ -195,17 +200,15 @@ enabled = true
     <li>daemon shutdown closes all sessions before stopping workers.</li>
     <li>worker crash marks affected sessions degraded and returns structured MCP errors.</li>
     <li>
-      stale sessions are visible in <code>context-stilld mcp sessions --json</code> until reconciled
-      or archived.
+      stale sessions are visible in <code>context-stilld mcp sessions --json</code> until reconciled or
+      archived.
     </li>
   </ul>
   <h2 id="migration-phases">Migration Phases</h2>
   <h3 id="phase-1-document-and-guard-legacy-stdio">Phase 1: Document and Guard Legacy stdio</h3>
   <ul>
     <li>Add this plan.</li>
-    <li>
-      Update <code>rust-daemon-replacement-readiness-plan.html</code> to supersede MCP stdio proxy.
-    </li>
+    <li>Update <code>rust-daemon-replacement-readiness-plan.html</code> to supersede MCP stdio proxy.</li>
     <li>Remove direct stdio MCP from public docs.</li>
     <li>Add diagnostics that warn when MCP config still uses command-based registration.</li>
   </ul>
@@ -217,7 +220,9 @@ enabled = true
   <ul>
     <li>Add daemon HTTP/streamable MCP endpoint.</li>
     <li>
-      Implement <code>mcp endpoint</code>, <code>mcp status</code>, and <code>mcp sessions</code>.
+      Implement <code>mcp endpoint</code>,
+      <code>mcp status</code>, and
+      <code>mcp sessions</code>.
     </li>
     <li>Serve a minimal list-tools response from the daemon endpoint.</li>
     <li>Do not yet remove TypeScript MCP tools.</li>
@@ -247,7 +252,8 @@ pgrep -af &quot;bun run src/index.ts&quot; # must return no daemon-owned MCP pro
     <li>Change <code>setup-mcp-config</code> to write URL-based daemon config.</li>
     <li>Change onboarding snippets to URL-based daemon config.</li>
     <li>
-      Update <code>README.md</code>, <code>spec/docs/pub/getting-started.md</code>, and
+      Update <code>README.md</code>,
+      <code>spec/docs/pub/getting-started.md</code>, and
       <code>spec/docs/pub/mcp-tools.md</code>.
     </li>
     <li>Add migration warning for command-based configs.</li>
@@ -273,27 +279,29 @@ bun run verify
 bun run verify:rust-daemon
 context-stilld mcp smoke --json
 </code></pre>
-  <p>The <code>rg</code> command should return no production runtime references.</p>
+  <p>
+    The <code>rg</code> command should return no production runtime
+    references.
+  </p>
   <h2 id="acceptance-criteria">Acceptance Criteria</h2>
   <ul>
     <li>MCP client registration no longer spawns <code>bun</code>.</li>
-    <li>
-      <code>pgrep -af &quot;bun run src/index.ts&quot;</code> remains empty during normal MCP use.
-    </li>
+    <li><code>pgrep -af &quot;bun run src/index.ts&quot;</code> remains empty during normal MCP use.</li>
     <li>
       Killing or restarting the MCP client does not leave daemon worker or session state stale.
     </li>
+    <li><code>context-stilld mcp sessions --json</code> shows active sessions and close reasons.</li>
     <li>
-      <code>context-stilld mcp sessions --json</code> shows active sessions and close reasons.
+      Stopping <code>context-stilld</code> closes MCP sessions and tool workers.
     </li>
-    <li>Stopping <code>context-stilld</code> closes MCP sessions and tool workers.</li>
     <li>
-      Restarting <code>context-stilld</code> restores endpoint availability without user editing MCP
-      config.
+      Restarting <code>context-stilld</code> restores endpoint availability without
+      user editing MCP config.
     </li>
     <li>All command-based context-still MCP docs are removed.</li>
     <li>
-      <code>StdioServerTransport</code> is absent from production context-still MCP runtime code.
+      <code>StdioServerTransport</code> is absent from production context-still MCP
+      runtime code.
     </li>
   </ul>
   <h2 id="rollback">Rollback</h2>

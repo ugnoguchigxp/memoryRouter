@@ -7,7 +7,8 @@
     <li>Version: <code>0.1</code></li>
     <li>Last updated: 2026-08-15</li>
     <li>
-      Applies to: <code>vulnWorkbench</code>, <code>NightWorkers</code>, <code>contextStill</code>
+      Applies to: <code>vulnWorkbench</code>,
+      <code>NightWorkers</code>, <code>contextStill</code>
     </li>
   </ul>
   <p>
@@ -317,9 +318,8 @@ contextStill             │             vulnWorkbench
     <li>NightWorkersのTask/Run/Queue判断</li>
   </ul>
   <p>
-    Project-scoped knowledgeを保持する場合も、canonical declarationとして扱わない。<code
-      >PaymentService requires ManagerGuard</code
-    >のようなproject固有の必須条件はrepositoryまたはOntology
+    Project-scoped knowledgeを保持する場合も、canonical
+    declarationとして扱わない。<code>PaymentService requires ManagerGuard</code>のようなproject固有の必須条件はrepositoryまたはOntology
     Coreを正本とし、contextStillはrevision付き参照またはderived lessonとして扱う。
   </p>
   <h3 id="section-54-target-repository--ontology-core">5.4 Target Repository / Ontology Core</h3>
@@ -467,7 +467,9 @@ producerVersion
     <li>node / edgeにsource revision、provenance、confidence、coverageを持たせる。</li>
     <li>raw source bodyやsecretをagent-facing payloadへ含めない。</li>
     <li>full graphの構築完了をscan開始条件にしない。</li>
-    <li>analyzer不足は<code>unavailable</code>や<code>degraded</code>として表現する。</li>
+    <li>
+      analyzer不足は<code>unavailable</code>や<code>degraded</code>として表現する。
+    </li>
     <li>source revision変更時は再計算またはstale化する。</li>
   </ul>
   <hr />
@@ -490,7 +492,8 @@ Candidate:
     <li>unknown</li>
   </ul>
   <p>
-    <code>guardが観測されない</code>ことと<code>guardが存在しない</code>ことを区別する。analyzer
+    <code>guardが観測されない</code
+    >ことと<code>guardが存在しない</code>ことを区別する。analyzer
     coverageが低下した場合は<code>resolved</code>ではなく<code>coverage_lost</code>または<code>unknown</code>とする。
   </p>
   <p>初期use caseは狭くする。</p>
@@ -607,7 +610,8 @@ IaC change
     <li>LLM tokens / cost</li>
   </ul>
   <p>
-    <code>Security Information Gain</code>を直接観測できる前提にしない。初期は次のproxyで比較する。
+    <code>Security Information Gain</code
+    >を直接観測できる前提にしない。初期は次のproxyで比較する。
   </p>
   <ul>
     <li>new coverage</li>

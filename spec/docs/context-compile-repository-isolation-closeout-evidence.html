@@ -68,15 +68,11 @@
   <ul>
     <li>
       Offline backup:
-      <code
-        >/Users/y.noguchi/Library/Application
-        Support/contextStill/backup/core-unix-ms-1786799658660.sqlite</code
-      >
+      <code>/Users/y.noguchi/Library/Application
+        Support/contextStill/backup/core-unix-ms-1786799658660.sqlite</code>
     </li>
     <li>Backup size: 1,175,113,728 bytes</li>
-    <li>
-      Backup SHA-256: <code>862570d04a66ef7dbbeae13fbd17a757fafe10914c68a5dd82aedcc7c2067119</code>
-    </li>
+    <li>Backup SHA-256: <code>862570d04a66ef7dbbeae13fbd17a757fafe10914c68a5dd82aedcc7c2067119</code></li>
     <li>
       Dry-run checksum（2回一致）:
       <code>eec9a33dbce715ff4276c25ac8ac59c6ef94f21a0b9171f8f680990b2f0e3ff9</code>
@@ -84,9 +80,13 @@
     <li>Temp-copy write: 5,943 updates、14,007 migration audit rows。再実行更新0。</li>
     <li>
       Temp-copy restore drill:
-      backupから復元後、review対象rowが<code>unresolved</code>へ戻り、migration audit 0を確認。
+      backupから復元後、review対象rowが<code>unresolved</code>へ戻り、migration
+      audit 0を確認。
     </li>
-    <li>Live DB <code>PRAGMA integrity_check</code>: <code>ok</code></li>
+    <li>
+      Live DB <code>PRAGMA integrity_check</code>:
+      <code>ok</code>
+    </li>
     <li>
       Applied additive revisions: 1-5。revision 2がidentity contract、4がbackfill auditを所有する。
     </li>
@@ -241,9 +241,9 @@
   </table>
   <p>
     31/50 canary runsはexternal composerのgoal-alignment failureによりfallback
-    compositionとなり<code>degraded</code>だった。candidate、pack、No Content、latencyのrelease
-    gateは通過しておりrepository isolation違反ではないが、24-hour observationではこの既存composer
-    laneも継続観測する。
+    compositionとなり<code>degraded</code>だった。candidate、pack、No
+    Content、latencyのrelease gateは通過しておりrepository isolation違反ではないが、24-hour
+    observationではこの既存composer laneも継続観測する。
   </p>
   <h3 id="negative-smoke">Negative Smoke</h3>
   <table>
@@ -260,11 +260,16 @@
     <tbody>
       <tr>
         <td>identity omitted</td>
-        <td><code>match_basis=none</code>、<code>scope_mode=global_only</code></td>
+        <td>
+          <code>match_basis=none</code>、<code>scope_mode=global_only</code>
+        </td>
         <td>0</td>
       </tr>
       <tr>
-        <td><code>contextStill</code> / <code>contextStill-shadow</code> prefix collision</td>
+        <td>
+          <code>contextStill</code> /
+          <code>contextStill-shadow</code> prefix collision
+        </td>
         <td>distinct exact <code>repo_path</code> basis</td>
         <td>0</td>
       </tr>
@@ -370,24 +375,26 @@
     <li><code>bun run typecheck</code>: pass</li>
     <li><code>bun run lint</code>: 801 files pass</li>
     <li>
-      <code>bun run verify</code>: pass（system-context checks、typecheck、lint、format、unit
-      tests、web build）
+      <code>bun run verify</code>: pass（system-context
+      checks、typecheck、lint、format、unit tests、web build）
     </li>
-    <li><code>bun run rust:mcp:smoke</code>: 12 Rust-native tools、0 TypeScript sidecars</li>
+    <li>
+      <code>bun run rust:mcp:smoke</code>: 12 Rust-native tools、0 TypeScript sidecars
+    </li>
     <li><code>bun run mcp:smoke:sqlite</code>: pass against resident port 39172</li>
     <li><code>bun run docs:check-links</code>: pass</li>
   </ul>
   <p>
-    2026-08-16のcurrent-build code review後にも、<code>bun run verify</code>、<code
-      >cargo test -p context-stilld</code
-    >（246 passed）、<code>cargo clippy -p context-stilld --all-targets -- -D warnings</code
-    >、SQLite backfill/report/runtime/knowledgeのfocused
-    testsを再実行し、すべてpassした。reviewで検出したAPI updateのidentity rebind、unresolved
-    rowのscope rebind、単一identity basisの<code>not_applicable</code>誤拒否、不完全schemaでのfalse
+    2026-08-16のcurrent-build code
+    review後にも、<code>bun run verify</code>、<code>cargo test -p context-stilld</code>（246
+    passed）、<code>cargo clippy -p context-stilld --all-targets -- -D warnings</code>、SQLite
+    backfill/report/runtime/knowledgeのfocused testsを再実行し、すべてpassした。reviewで検出したAPI
+    updateのidentity rebind、unresolved rowのscope rebind、単一identity
+    basisの<code>not_applicable</code>誤拒否、不完全schemaでのfalse
     completion、非canonical run identity、SQLite timestampのtimezone依存、manifest
-    contradiction/重複は回帰testとともに修正した。controlled restart後の<code
-      >CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon</code
-    >とlive MCP smokeもpassし、旧queue、finding、covering、agent-log-sync
+    contradiction/重複は回帰testとともに修正した。controlled
+    restart後の<code>CONTEXT_STILL_VERIFY_LIVE_OWNERSHIP=1 bun run verify:rust-daemon</code>とlive MCP
+    smokeもpassし、旧queue、finding、covering、agent-log-sync
     LaunchAgentがすべてunload済みであることを確認した。
   </p>
   <p>
@@ -453,7 +460,8 @@
     </li>
     <li>
       <input disabled="" type="checkbox" /> move this document, the plan, and T0 evidence to
-      <code>spec/docs/.archived/</code>; update <code>spec/docs/README.html</code>
+      <code>spec/docs/.archived/</code>; update
+      <code>spec/docs/README.html</code>
     </li>
   </ul>
 </article>

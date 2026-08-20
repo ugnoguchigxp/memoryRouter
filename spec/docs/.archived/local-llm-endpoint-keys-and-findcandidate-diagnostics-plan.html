@@ -14,30 +14,36 @@
   </p>
   <p>
     同時に、<code>findCandidate</code> の
-    <code>no_candidate</code> を「本当に候補なし」と「候補らしき出力が parser / contract
-    で落ちた」に分けて診断できるようにし、未整形の作業ログから rule / procedure / negative knowledge
-    の signal を拾えることをテストで固定する。
+    <code>no_candidate</code> を「本当に候補なし」と「候補らしき出力が parser /
+    contract で落ちた」に分けて診断できるようにし、未整形の作業ログから rule / procedure / negative
+    knowledge の signal を拾えることをテストで固定する。
   </p>
   <h2 id="現状">現状</h2>
   <ul>
-    <li><code>RuntimeSecretKey</code> は <code>localLlmApiKey</code> を 1 個だけ持つ。</li>
     <li>
-      <code>LocalLlmModelSettings</code> は <code>name</code> / <code>apiBaseUrl</code> /
-      <code>apiPath</code> / <code>model</code> を持つが、endpoint ごとの secret 参照を持たない。
+      <code>RuntimeSecretKey</code> は
+      <code>localLlmApiKey</code> を 1 個だけ持つ。
+    </li>
+    <li>
+      <code>LocalLlmModelSettings</code> は <code>name</code> /
+      <code>apiBaseUrl</code> / <code>apiPath</code> /
+      <code>model</code> を持つが、endpoint ごとの secret 参照を持たない。
     </li>
     <li>
       runtime cache は <code>secrets.localLlmApiKey</code> を
       <code>groupedConfig.localLlm.apiKey</code> に入れる。
     </li>
     <li>
-      Local LLM provider は <code>groupedConfig.localLlm.apiKey</code> をすべての Local LLM request
-      の <code>Authorization: Bearer ...</code> に使う。
+      Local LLM provider は <code>groupedConfig.localLlm.apiKey</code> をすべての Local LLM
+      request の <code>Authorization: Bearer ...</code> に使う。
     </li>
     <li>UI は Local LLM endpoint 行を複数表示できるが、API key editor は先頭行にだけ出る。</li>
     <li>
-      <code>findCandidate</code> は <code>parseStorageCandidatesFromLlmOutput()</code> 後の候補数が
-      0 なら queue を <code>skipped/no_candidate</code> にするが、raw output が
-      <code>[]</code> だったのか parser reject だったのかを永続的に区別できない。
+      <code>findCandidate</code> は
+      <code>parseStorageCandidatesFromLlmOutput()</code> 後の候補数が 0 なら queue を
+      <code>skipped/no_candidate</code> にするが、raw output が
+      <code>[]</code> だったのか parser reject
+      だったのかを永続的に区別できない。
     </li>
   </ul>
   <h2 id="非目標">非目標</h2>
@@ -56,15 +62,17 @@
   <h4 id="section-11-型と-secret-key-の拡張">1.1 型と secret key の拡張</h4>
   <ul>
     <li>
-      <code>RuntimeSecretKey</code> に Local LLM endpoint 用の indexed key を追加する。
+      <code>RuntimeSecretKey</code> に Local LLM endpoint 用の indexed key
+      を追加する。
       <ul>
         <li>
-          例: <code>localLlmApiKey</code>, <code>localLlmApiKey2</code>,
+          例: <code>localLlmApiKey</code>,
+          <code>localLlmApiKey2</code>,
           <code>localLlmApiKey3</code>, ...
         </li>
         <li>
-          Azure OpenAI の <code>azureOpenAiApiKey2</code> 方式に合わせ、既存 secret storage
-          を流用する。
+          Azure OpenAI の <code>azureOpenAiApiKey2</code> 方式に合わせ、既存 secret
+          storage を流用する。
         </li>
       </ul>
     </li>
@@ -73,13 +81,19 @@
       <code>apiKeySecrets: RuntimeSecretStatus[]</code> を追加する。
     </li>
     <li><code>LocalLlmModelSettings</code> 自体に raw secret は持たせない。</li>
-    <li>初期互換として、1 番目の endpoint は既存 <code>localLlmApiKey</code> を使う。</li>
+    <li>
+      初期互換として、1 番目の endpoint は既存 <code>localLlmApiKey</code> を使う。
+    </li>
   </ul>
   <p>完了条件:</p>
   <ul>
-    <li>settings API view が Local LLM model 数に対応した <code>apiKeySecrets[]</code> を返す。</li>
     <li>
-      既存 <code>localLlmApiKey</code> は失効せず、先頭 Local LLM endpoint の key として扱われる。
+      settings API view が Local LLM model 数に対応した
+      <code>apiKeySecrets[]</code> を返す。
+    </li>
+    <li>
+      既存 <code>localLlmApiKey</code> は失効せず、先頭 Local LLM endpoint の key
+      として扱われる。
     </li>
   </ul>
   <h4 id="section-12-settings-repository--runtime-cache">
@@ -93,13 +107,15 @@
     </li>
     <li><code>groupedConfig.localLlm.apiKey</code> は互換用に先頭 endpoint key を保持する。</li>
     <li>
-      <code>groupedConfig.localLlm.models[]</code> の型に <code>apiKey?: string</code> を追加する。
+      <code>groupedConfig.localLlm.models[]</code> の型に
+      <code>apiKey?: string</code> を追加する。
     </li>
   </ul>
   <p>完了条件:</p>
   <ul>
     <li>
-      <code>resolveLocalLlmModelConfig()</code> が選択 endpoint の <code>apiKey</code> も返せる。
+      <code>resolveLocalLlmModelConfig()</code> が選択 endpoint の
+      <code>apiKey</code> も返せる。
     </li>
     <li>route が Qwen 50041 を選ぶ場合、50041 endpoint の key が使われる。</li>
     <li>50043 endpoint を選ぶ場合、50043 endpoint の key が使われる。</li>
@@ -165,7 +181,8 @@
     <li>key の clear / masked status が endpoint ごとに表示される。</li>
   </ul>
   <h3 id="section-2-findcandidate-の-no_candidate-診断を分ける">
-    2. <code>findCandidate</code> の <code>no_candidate</code> 診断を分ける
+    2. <code>findCandidate</code> の
+    <code>no_candidate</code> 診断を分ける
   </h3>
   <h4 id="section-21-parser-reject-reason-を返す">2.1 parser reject reason を返す</h4>
   <ul>
@@ -197,26 +214,37 @@
   <p>完了条件:</p>
   <ul>
     <li>既存 parser API は互換維持する。</li>
-    <li>新 API で「本当に <code>[]</code>」と「candidate-like object が全落ち」を区別できる。</li>
+    <li>
+      新 API で「本当に <code>[]</code>」と「candidate-like object
+      が全落ち」を区別できる。
+    </li>
   </ul>
   <h4 id="section-22-audit--queue-event-に保存する">2.2 audit / queue event に保存する</h4>
   <ul>
-    <li><code>runFindCandidate()</code> の storage/CLI 共通部分で parser diagnostics を作る。</li>
     <li>
-      <code>candidateCount=0</code> の場合だけ、短い raw output preview と diagnostics を audit
-      payload に保存する。
+      <code>runFindCandidate()</code> の storage/CLI 共通部分で parser diagnostics
+      を作る。
+    </li>
+    <li>
+      <code>candidateCount=0</code> の場合だけ、短い raw output preview と
+      diagnostics を audit payload に保存する。
       <ul>
         <li>preview は長さ上限を設ける。</li>
         <li>secret / prompt 全文 / tool result 全文は保存しない。</li>
       </ul>
     </li>
-    <li>queue 側の <code>no_candidate</code> event metadata にも diagnostics summary を入れる。</li>
+    <li>
+      queue 側の <code>no_candidate</code> event metadata にも diagnostics
+      summary を入れる。
+    </li>
   </ul>
   <p>完了条件:</p>
   <ul>
     <li>
-      <code>skipped/no_candidate</code> 行を見たとき、<code>[]</code> だったのか parser reject
-      だったのか追える。
+      <code>skipped/no_candidate</code> 行を見たとき、<code
+        >[]</code
+      >
+      だったのか parser reject だったのか追える。
     </li>
     <li>raw preview は短く、機密や巨大 text を保存しない。</li>
   </ul>
@@ -236,8 +264,9 @@
       source に見出しがなくても、手順・検証・回避条件が読み取れるなら procedure に構成してよい。
     </li>
     <li>
-      source に直接 <code>negative</code> と書かれていなくても、禁止・誤方針・再発防止なら negative
-      rule にしてよい。
+      source に直接
+      <code>negative</code> と書かれていなくても、禁止・誤方針・再発防止なら
+      negative rule にしてよい。
     </li>
     <li>単なる進捗報告だけなら <code>[]</code> でよい。</li>
   </ul>
@@ -262,7 +291,10 @@
           入力 signal:
           <code>status だけで判断せず live DB / LaunchAgent / process truth を見る</code>
         </li>
-        <li>期待: <code>type=rule</code>, <code>polarity=positive</code></li>
+        <li>
+          期待: <code>type=rule</code>,
+          <code>polarity=positive</code>
+        </li>
       </ul>
     </li>
     <li>
@@ -270,13 +302,12 @@
       <ul>
         <li>
           入力 signal:
-          <code
-            >backup -&gt; DB 集計 -&gt; stale worker 確認 -&gt; 対象 worker restart -&gt; heartbeat
-            / event 確認</code
-          >
+          <code>backup -&gt; DB 集計 -&gt; stale worker 確認 -&gt; 対象 worker restart -&gt; heartbeat
+            / event 確認</code>
         </li>
         <li>
-          期待: SKILL.md 風 body を持つ <code>type=procedure</code>, <code>polarity=positive</code>
+          期待: SKILL.md 風 body を持つ <code>type=procedure</code>,
+          <code>polarity=positive</code>
         </li>
       </ul>
     </li>
@@ -285,12 +316,13 @@
       <ul>
         <li>
           入力 signal:
-          <code
-            >findCandidate と coverEvidence を優先したいだけで、Task Routing を単一 target
-            に固定してはいけない</code
-          >
+          <code>findCandidate と coverEvidence を優先したいだけで、Task Routing を単一 target
+            に固定してはいけない</code>
         </li>
-        <li>期待: <code>type=rule</code>, <code>polarity=negative</code></li>
+        <li>
+          期待: <code>type=rule</code>,
+          <code>polarity=negative</code>
+        </li>
       </ul>
     </li>
   </ul>
@@ -302,7 +334,9 @@
   <h4 id="section-33-opt-in-live-smoke">3.3 opt-in live smoke</h4>
   <ul>
     <li>通常 verify には入れない。</li>
-    <li><code>FIND_CANDIDATE_LIVE_LLM=1</code> の時だけ、短い fixture を Qwen target に投げる。</li>
+    <li>
+      <code>FIND_CANDIDATE_LIVE_LLM=1</code> の時だけ、短い fixture を Qwen target に投げる。
+    </li>
     <li>timeout / provider unavailable は test failure ではなく skipped diagnostic にする。</li>
   </ul>
   <p>完了条件:</p>
@@ -332,20 +366,25 @@
       no_candidate を減らすために何でも候補化するのではなく、候補化してよい signal
       の範囲が明確になる。
     </li>
-    <li>単なる進捗報告だけのログは引き続き <code>[]</code> にできる。</li>
+    <li>
+      単なる進捗報告だけのログは引き続き <code>[]</code> にできる。
+    </li>
   </ul>
   <h2 id="実装順序">実装順序</h2>
   <ol>
     <li>
-      <code>RuntimeSecretKey</code> / settings view / web repository 型に Local LLM indexed key
-      を追加する。
+      <code>RuntimeSecretKey</code> / settings view / web repository 型に Local LLM
+      indexed key を追加する。
     </li>
     <li>settings API が Local LLM endpoint ごとの secret status を返すようにする。</li>
     <li>UI で各 Local LLM endpoint row に API Key editor を出す。</li>
     <li>runtime cache と Local LLM provider で endpoint-specific key を解決する。</li>
     <li>Rust queue executor の Local LLM target key 解決を endpoint-specific に合わせる。</li>
     <li>parser diagnostics API を追加する。</li>
-    <li><code>findCandidate</code> audit / queue event に no_candidate diagnostics を保存する。</li>
+    <li>
+      <code>findCandidate</code> audit / queue event に no_candidate diagnostics
+      を保存する。
+    </li>
     <li>未整形作業ログ fixture の unit tests を追加する。</li>
     <li>SystemContext を最小限強化する。</li>
     <li>opt-in live Qwen smoke を追加する。</li>
@@ -368,9 +407,7 @@
       任意:
       <ul>
         <li>
-          <code
-            >FIND_CANDIDATE_LIVE_LLM=1 bunx vitest run test/live/find-candidate-live.test.ts</code
-          >
+          <code>FIND_CANDIDATE_LIVE_LLM=1 bunx vitest run test/live/find-candidate-live.test.ts</code>
         </li>
       </ul>
     </li>
@@ -382,7 +419,8 @@
       <ul>
         <li>
           対策: 既存 Azure と同じ index secret 方式を採る場合でも、UI の delete / reorder
-          仕様を確認する。必要なら endpoint <code>id</code> ベース secret key へ切り替える。
+          仕様を確認する。必要なら endpoint <code>id</code> ベース
+          secret key へ切り替える。
         </li>
       </ul>
     </li>

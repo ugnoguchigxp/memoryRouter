@@ -11,9 +11,10 @@
   </blockquote>
   <h2 id="目的">目的</h2>
   <p>
-    この文書は、<code>context_decision</code> の判断品質を 90 点以上に引き上げるために、既存の
-    <code>context_compile</code>、graph、community、landscape、attractor 指標を Decision の evidence
-    / scoring / reliability gate / feedback loop に統合する実装計画である。
+    この文書は、<code>context_decision</code> の判断品質を 90
+    点以上に引き上げるために、既存の
+    <code>context_compile</code>、graph、community、landscape、attractor 指標を
+    Decision の evidence / scoring / reliability gate / feedback loop に統合する実装計画である。
   </p>
   <p>
     中心方針は、Decision を単発の Knowledge 検索だけで判断させず、既に蓄積されている「過去に compile
@@ -24,7 +25,9 @@
   <p>90 点以上の品質は、次を満たす状態と定義する。</p>
   <ul>
     <li>
-      <code>reject</code> / <code>rollback</code> / <code>discard</code> /
+      <code>reject</code> /
+      <code>rollback</code> /
+      <code>discard</code> /
       <code>escalate</code> が返った場合、agent message と mandate
       が対象アクション停止を明確に示す。
     </li>
@@ -32,20 +35,20 @@
       Good/Bad feedback が final decision に応じた正しい evidence role と community に作用する。
     </li>
     <li>
-      <code>counter_evidence</code> が first-class evidence として保存、表示、LLM judgment
-      prompt、reliability gate に入る。
+      <code>counter_evidence</code> が first-class evidence として保存、表示、LLM
+      judgment prompt、reliability gate に入る。
     </li>
     <li>
-      <code>context_compile</code> の selected / suppressed / feedback / eval signals が Decision
-      scoring に反映される。
+      <code>context_compile</code> の selected / suppressed / feedback / eval
+      signals が Decision scoring に反映される。
     </li>
     <li>
       graph / community / landscape / attractor signals が confidence cap、support boost、risk
       boost、revise/reject rule に反映される。
     </li>
     <li>
-      検索や LLM が失敗しても、<code>decision=escalate</code> の failed/degraded Decision run
-      が監査可能に残る。
+      検索や LLM が失敗しても、<code>decision=escalate</code> の failed/degraded
+      Decision run が監査可能に残る。
     </li>
     <li>
       Decision 関連ユニットテストに加えて、fixture-based calibration test で 90
@@ -135,17 +138,23 @@
   <ul>
     <li><code>used</code> が多い Knowledge は support を強める。</li>
     <li>
-      <code>wrong</code> / <code>off_topic</code> がある Knowledge は risk / counter evidence
+      <code>wrong</code> /
+      <code>off_topic</code> がある Knowledge は risk / counter evidence
       を強める。
     </li>
-    <li><code>not_used</code> が多い Knowledge は direct execute の根拠として弱める。</li>
     <li>
-      <code>suppressed</code> / <code>agenticDecision=rejected</code> は support として使う前に
-      confidence cap をかける。
+      <code>not_used</code> が多い Knowledge は direct execute
+      の根拠として弱める。
     </li>
     <li>
-      compile eval が <code>misleading</code> / <code>unused</code> の run によく出た Knowledge は
-      negative signal として扱う。
+      <code>suppressed</code> /
+      <code>agenticDecision=rejected</code> は support として使う前に confidence cap
+      をかける。
+    </li>
+    <li>
+      compile eval が <code>misleading</code> /
+      <code>unused</code> の run によく出た Knowledge は negative signal
+      として扱う。
     </li>
   </ul>
   <h3 id="graph--community-signals">graph / community signals</h3>
@@ -170,9 +179,13 @@
     </li>
     <li><code>thinEvidence</code> community は confidence cap をかける。</li>
     <li><code>stale</code> community は freshness cap をかける。</li>
-    <li><code>dead</code> community は direct execute の根拠にしない。</li>
     <li>
-      community が過度に分散している場合は根拠が散っているとみなし、<code>revise_and_execute</code>
+      <code>dead</code> community は direct execute の根拠にしない。
+    </li>
+    <li>
+      community が過度に分散している場合は根拠が散っているとみなし、<code
+        >revise_and_execute</code
+      >
       へ寄せる。
     </li>
   </ul>
@@ -200,16 +213,23 @@
   </ul>
   <p>Decision での用途:</p>
   <ul>
-    <li><code>strong_attractor</code> / <code>useful_attractor</code> は support boost。</li>
     <li>
-      <code>negative_attractor_candidate</code> / <code>wrong_review_required</code> は reject /
-      revise boost。
+      <code>strong_attractor</code> /
+      <code>useful_attractor</code> は support boost。
     </li>
     <li>
-      <code>over_selected_not_used</code> は direct execute を弱め、<code>revise_and_execute</code>
+      <code>negative_attractor_candidate</code> /
+      <code>wrong_review_required</code> は reject / revise boost。
+    </li>
+    <li>
+      <code>over_selected_not_used</code> は direct execute を弱め、<code
+        >revise_and_execute</code
+      >
       に寄せる。
     </li>
-    <li><code>dead_zone_reachability_risk</code> は参考信号として扱い、support にはしない。</li>
+    <li>
+      <code>dead_zone_reachability_risk</code> は参考信号として扱い、support にはしない。
+    </li>
     <li><code>dead_zone_stale</code> は confidence cap。</li>
     <li><code>feedback_insufficient</code> は confidence cap と追加 feedback 推奨。</li>
   </ul>
@@ -255,8 +275,8 @@
 };
 </code></pre>
   <p>
-    この情報は、まず <code>confidenceTrace</code> と evidence metadata に保存する。MCP result の
-    top-level shape は維持する。
+    この情報は、まず <code>confidenceTrace</code> と evidence metadata
+    に保存する。MCP result の top-level shape は維持する。
   </p>
   <h3 id="decision-signal-repository">Decision Signal Repository</h3>
   <p>新規 module 候補:</p>
@@ -277,7 +297,8 @@
     初期実装では、signal 取得失敗は Decision 実行を止めない。<code
       >confidenceTrace.signalStatus</code
     >
-    に <code>partial</code> / <code>failed</code> を記録する。
+    に <code>partial</code> /
+    <code>failed</code> を記録する。
   </p>
   <h2 id="実装マイルストーン">実装マイルストーン</h2>
   <h3 id="m0-baseline-と評価-fixture">M0: baseline と評価 fixture</h3>
@@ -329,19 +350,24 @@
     <tbody>
       <tr>
         <td><code>execute</code></td>
-        <td><code>selected_support</code>, <code>user_preference</code></td>
+        <td>
+          <code>selected_support</code>, <code>user_preference</code>
+        </td>
         <td><code>selected_support</code></td>
       </tr>
       <tr>
         <td><code>revise_and_execute</code></td>
         <td>
-          <code>risk_warning</code>, <code>counter_evidence</code>, verification-related evidence
+          <code>risk_warning</code>,
+          <code>counter_evidence</code>, verification-related evidence
         </td>
         <td>selected support if revision was unnecessary</td>
       </tr>
       <tr>
         <td><code>reject</code></td>
-        <td><code>risk_warning</code>, <code>counter_evidence</code></td>
+        <td>
+          <code>risk_warning</code>, <code>counter_evidence</code>
+        </td>
         <td>risk/counter if reject was wrong</td>
       </tr>
       <tr>
@@ -364,7 +390,9 @@
   <p>検証:</p>
   <ul>
     <li>Good <code>reject</code> が support を boost しない。</li>
-    <li>Good <code>reject</code> が risk/counter evidence を boost する。</li>
+    <li>
+      Good <code>reject</code> が risk/counter evidence を boost する。
+    </li>
     <li>Bad <code>execute</code> が selected support を penalize する。</li>
   </ul>
   <h3 id="m2-counter-evidence-を-first-class-evidence-にする">
@@ -373,22 +401,29 @@
   <p>目的: counter evidence を scoring だけでなく、保存・表示・LLM prompt・feedback に接続する。</p>
   <p>実装:</p>
   <ul>
-    <li><code>ContextDecisionEvidenceRole</code> に <code>counter_evidence</code> を追加する。</li>
-    <li><code>counterHits</code> の上位を <code>evidenceCandidates</code> に含める。</li>
     <li>
-      <code>buildKnowledgeBriefs()</code> と prompt に <code>Counter Evidence</code> section
-      を追加する。
+      <code>ContextDecisionEvidenceRole</code> に
+      <code>counter_evidence</code> を追加する。
     </li>
     <li>
-      UI の <code>Knowledge Used</code> と <code>Risk Evidence</code> とは別に counter evidence
-      を表示する。
+      <code>counterHits</code> の上位を
+      <code>evidenceCandidates</code> に含める。
+    </li>
+    <li>
+      <code>buildKnowledgeBriefs()</code> と prompt に
+      <code>Counter Evidence</code> section を追加する。
+    </li>
+    <li>
+      UI の <code>Knowledge Used</code> と
+      <code>Risk Evidence</code> とは別に counter evidence を表示する。
     </li>
     <li>feedback target の対象 role に含める。</li>
   </ul>
   <p>検証:</p>
   <ul>
     <li>
-      counter evidence のみで <code>revise_and_execute</code> または <code>reject</code> に寄る。
+      counter evidence のみで <code>revise_and_execute</code> または
+      <code>reject</code> に寄る。
     </li>
     <li>final answer が counter evidence の具体的根拠を説明する。</li>
     <li>counter evidence が coverage だけでなく evidence rows に残る。</li>
@@ -400,13 +435,18 @@
   <p>実装:</p>
   <ul>
     <li>evidence knowledge IDs から compile signals を取得する。</li>
-    <li><code>scoreContextDecision()</code> に compile support boost / penalty を入れる。</li>
+    <li>
+      <code>scoreContextDecision()</code> に compile support boost / penalty を入れる。
+    </li>
     <li><code>ContextDecisionKnowledgeAssessment</code> に compile signal summary を追加する。</li>
     <li><code>confidenceTrace.compileSignals</code> を保存する。</li>
   </ul>
   <p>初期 rule:</p>
   <ul>
-    <li><code>usedCount &gt; 0</code> かつ <code>wrongCount = 0</code> なら support boost。</li>
+    <li>
+      <code>usedCount &gt; 0</code> かつ
+      <code>wrongCount = 0</code> なら support boost。
+    </li>
     <li><code>wrongCount &gt; 0</code> は blocking risk。</li>
     <li><code>offTopicCount &gt; 0</code> は reject/revise boost。</li>
     <li><code>notUsedRate</code> が高い場合は direct execute を弱める。</li>
@@ -414,11 +454,16 @@
   </ul>
   <p>検証:</p>
   <ul>
-    <li>compile <code>wrong</code> がある support は execute にならない。</li>
     <li>
-      compile <code>used</code> が安定している support は weak coverage でも confidence が上がる。
+      compile <code>wrong</code> がある support は execute にならない。
     </li>
-    <li><code>off_topic</code> が多い Knowledge は risk/counter 扱いになる。</li>
+    <li>
+      compile <code>used</code> が安定している support は weak coverage
+      でも confidence が上がる。
+    </li>
+    <li>
+      <code>off_topic</code> が多い Knowledge は risk/counter 扱いになる。
+    </li>
   </ul>
   <h3 id="m4-graphcommunitylandscape-signals-を統合">
     M4: graph/community/landscape signals を統合
@@ -471,8 +516,9 @@
   <ul>
     <li>各 rule が <code>reliabilityGate.appliedRules</code> に残る。</li>
     <li>
-      blocking rule がある場合、LLM が <code>execute</code> を返しても final decision が
-      <code>reject</code> または <code>revise_and_execute</code> になる。
+      blocking rule がある場合、LLM が <code>execute</code> を返しても final
+      decision が <code>reject</code> または
+      <code>revise_and_execute</code> になる。
     </li>
   </ul>
   <h3 id="m6-agentmessage-validator-と-failed-run-persistence">
@@ -481,21 +527,25 @@
   <p>目的: Decision result と返却文言の矛盾をなくし、失敗時も監査可能にする。</p>
   <p>実装:</p>
   <ul>
-    <li>final decision と <code>agentMessage</code> の post-check を追加する。</li>
     <li>
-      <code>reject</code> / <code>rollback</code> / <code>discard</code> / <code>escalate</code> で
+      final decision と <code>agentMessage</code> の post-check を追加する。
+    </li>
+    <li>
+      <code>reject</code> / <code>rollback</code> /
+      <code>discard</code> / <code>escalate</code> で
       proceed claims があれば fallback message に差し替える。
     </li>
     <li>
       <code>searchKnowledge</code> / signal repository / LLM 失敗時に
-      <code>decision=escalate</code>, <code>status=failed</code> or <code>degraded</code> の run
-      を保存する。
+      <code>decision=escalate</code>, <code>status=failed</code> or
+      <code>degraded</code> の run を保存する。
     </li>
   </ul>
   <p>検証:</p>
   <ul>
     <li>
-      <code>reject</code> なのに「進めます」「execute」などを含む LLM answer は fallback になる。
+      <code>reject</code> なのに「進めます」「execute」などを含む LLM
+      answer は fallback になる。
     </li>
     <li>retrieval failure でも Decision run が残る。</li>
     <li>MCP response は既存 shape を維持する。</li>
@@ -509,10 +559,11 @@
       を固定する。
     </li>
     <li>
-      <code>bunx vitest run test/context-decision*.test.ts</code> に加えて calibration test を代表
-      gate に含める。
+      <code>bunx vitest run test/context-decision*.test.ts</code> に加えて calibration test を代表 gate に含める。
     </li>
-    <li>必要なら <code>doctor</code> に Decision signal health を追加する。</li>
+    <li>
+      必要なら <code>doctor</code> に Decision signal health を追加する。
+    </li>
   </ul>
   <p>合格条件:</p>
   <ul>
@@ -585,7 +636,8 @@ bun run test:sqlite-runtime
       <tr>
         <td>signal が多すぎて判断が不透明になる</td>
         <td>
-          <code>confidenceTrace</code> に rule-by-rule で保存し、agentMessage には主要理由だけ出す
+          <code>confidenceTrace</code> に rule-by-rule で保存し、agentMessage
+          には主要理由だけ出す
         </td>
       </tr>
       <tr>
@@ -598,7 +650,10 @@ bun run test:sqlite-runtime
       </tr>
       <tr>
         <td>community signal が古い</td>
-        <td><code>labelUpdatedAt</code> / snapshot freshness を見て confidence cap にする</td>
+        <td>
+          <code>labelUpdatedAt</code> / snapshot freshness を見て confidence cap
+          にする
+        </td>
       </tr>
       <tr>
         <td>LLM が signal を無視する</td>

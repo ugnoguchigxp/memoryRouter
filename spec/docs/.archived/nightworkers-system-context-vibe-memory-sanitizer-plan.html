@@ -13,18 +13,21 @@
   <p>
     代表例は、NightWorkers が Codex SDK に渡す prompt の末尾に付与する
     <code>[NightWorkers Runtime Contract]</code> である。この block は
-    <code>taskId</code>、<code>runId</code>、<code>repoRoot</code>、<code>executionMode</code>、MCP
+    <code>taskId</code
+    >、<code>runId</code>、<code>repoRoot</code>、<code>executionMode</code>、MCP
     tool contract、Todo / closeout / verification の内部規約を含む。
   </p>
   <p>
     この情報は NightWorkers の監査や失敗解析には有用だが、contextStill の
-    <code>agent-log-sync</code> がそのまま vibe memory 化すると、実装タスク履歴ではなく
-    SystemContext / Runtime Contract が後続の memory retrieval / distillation に混入する。
+    <code>agent-log-sync</code> がそのまま vibe memory
+    化すると、実装タスク履歴ではなく SystemContext / Runtime Contract が後続の memory retrieval /
+    distillation に混入する。
   </p>
   <p>
     一方で、実装タスクそのものの履歴は vibe memory に残したい。ユーザー依頼、実装の流れ、assistant
-    の報告、tool call 由来の diff、final report は、後続の <code>context_compile</code> /
-    <code>context_decision</code> / Episode 生成に有用な作業経験である。
+    の報告、tool call 由来の diff、final report は、後続の
+    <code>context_compile</code> / <code>context_decision</code> /
+    Episode 生成に有用な作業経験である。
   </p>
   <p>
     この計画は、NightWorkers implementation task の履歴を保持しつつ、implementation lane に混入した
@@ -40,8 +43,11 @@
     </li>
     <li>contract 除去後も、ユーザー依頼や実装タスク本文があれば保存対象として維持する。</li>
     <li>
-      <code>taskId</code>、<code>runId</code>、<code>executionMode</code> などの小さい紐付け情報は
-      metadata として保存できるようにする。
+      <code>taskId</code
+      >、<code>runId</code>、<code
+        >executionMode</code
+      >
+      などの小さい紐付け情報は metadata として保存できるようにする。
     </li>
     <li>
       TypeScript agent-log-sync と resident Rust agent-log-sync の両経路で保存結果を一致させる。
@@ -68,19 +74,21 @@
       <code>filterDistillableAgentLogMessages()</code> が message 単位の除外を担う。
     </li>
     <li>
-      TypeScript path では <code>src/modules/agent-log-sync/sync.service.ts</code> が SQLite /
-      Postgres の <code>vibe_memories</code> insert と episode enqueue を持つ。
+      TypeScript path では <code>src/modules/agent-log-sync/sync.service.ts</code> が SQLite / Postgres の
+      <code>vibe_memories</code> insert と episode enqueue を持つ。
     </li>
     <li>
-      TypeScript path には既に <code>isCodexInternalProviderPromptMessage()</code> があり、Codex
-      内部 provider prompt と次 assistant を skip する。ただし NightWorkers Runtime Contract
+      TypeScript path には既に <code>isCodexInternalProviderPromptMessage()</code> があり、Codex 内部
+      provider prompt と次 assistant を skip する。ただし NightWorkers Runtime Contract
       には未対応である。
     </li>
     <li>
       Rust resident path では
       <code>crates/context-stilld/src/domains/agent_log_sync/ingest.rs</code> が Codex JSONL を
-      <code>ChatMessage</code> に変換し、<code>store.rs</code> が transcript 化して
-      <code>vibe_memories</code> に保存する。
+      <code>ChatMessage</code> に変換し、<code
+        >store.rs</code
+      >
+      が transcript 化して <code>vibe_memories</code> に保存する。
     </li>
     <li>
       resident runtime は agent-log-sync を Rust 側で所有しうるため、TypeScript だけに sanitizer
@@ -91,8 +99,8 @@
       の長さで保存可否を決める。contract 除去後の readable content に対して判定する必要がある。
     </li>
     <li>
-      <code>agent_diff_entries</code> は tool call や diff extraction に依存するため、contract
-      除去は chat content に限定し、diff 抽出 path を壊さない。
+      <code>agent_diff_entries</code> は tool call や diff extraction
+      に依存するため、contract 除去は chat content に限定し、diff 抽出 path を壊さない。
     </li>
     <li>
       <code>dedupe_key</code> は
@@ -107,14 +115,19 @@
     <li>assistant の実装説明、調査結果、検証結果、final report。</li>
     <li>tool call 由来の diff / patch 抽出結果。</li>
     <li>
-      <code>taskId</code>、<code>runId</code>、<code>executionMode</code>、<code>repoRoot</code>
+      <code>taskId</code
+      >、<code>runId</code>、<code>executionMode</code>、<code
+        >repoRoot</code
+      >
       などの短い識別 metadata。
     </li>
     <li>session / project metadata。</li>
   </ul>
   <h3 id="落とす内容">落とす内容</h3>
   <ul>
-    <li><code>[NightWorkers Runtime Contract]</code> marker から始まる Runtime Contract block。</li>
+    <li>
+      <code>[NightWorkers Runtime Contract]</code> marker から始まる Runtime Contract block。
+    </li>
     <li>
       contract 内の MCP tool rules、Todo rules、verification rules、closeout rules、import rules。
     </li>
@@ -125,21 +138,24 @@
   <pre><code class="language-text">executionMode: implementation
 </code></pre>
   <p>
-    <code>runtime_debug</code>、<code>planning</code>、<code>review</code>、<code
+    <code>runtime_debug</code
+    >、<code>planning</code>、<code>review</code>、<code
       >general_answer</code
     >
     はこの計画の対象外とし、必要になった時点で別途判断する。
   </p>
   <h2 id="chunk--dedupe-stability-contract">Chunk / Dedupe Stability Contract</h2>
   <p>
-    Sanitizer は <code>chunkMessages()</code> の前ではなく、chunk が決まった後、<code
-      >buildTranscript()</code
-    >
-    / <code>buildReadableTranscript()</code> / diff extraction の直前に適用する。
+    Sanitizer は <code>chunkMessages()</code> の前ではなく、chunk
+    が決まった後、<code>buildTranscript()</code> /
+    <code>buildReadableTranscript()</code> / diff extraction の直前に適用する。
   </p>
   <p>理由:</p>
   <ul>
-    <li><code>chunkIndex</code> と <code>dedupeKey</code> を既存 path と同じ計算に保つ。</li>
+    <li>
+      <code>chunkIndex</code> と
+      <code>dedupeKey</code> を既存 path と同じ計算に保つ。
+    </li>
     <li>
       Runtime Contract は非常に長く、chunk 前に削ると同じ session の後続 message が別 chunk
       に移動する可能性がある。
@@ -153,10 +169,13 @@
   <ul>
     <li>grouping と chunking は raw ingest message で行う。</li>
     <li>
-      各 chunk の中で <code>sanitizeNightWorkersRuntimeContractChunk(chunk)</code> を作り、保存用
-      transcript と diff extraction には sanitized chunk を使う。
+      各 chunk の中で <code>sanitizeNightWorkersRuntimeContractChunk(chunk)</code> を作り、保存用 transcript と
+      diff extraction には sanitized chunk を使う。
     </li>
-    <li><code>dedupeKey</code> は raw chunk の <code>chunkIndex</code> から作る。</li>
+    <li>
+      <code>dedupeKey</code> は raw chunk の
+      <code>chunkIndex</code> から作る。
+    </li>
     <li>sanitizer 後の chunk が空なら、その chunk は保存しない。</li>
     <li>
       <code>AGENT_LOG_MIN_DISTILLABLE_CHARS</code> は sanitized readable transcript
@@ -182,7 +201,9 @@
 </code></pre>
   <p>Rules:</p>
   <ul>
-    <li><code>messageCount</code> は保存対象になった sanitized message 数を表す。</li>
+    <li>
+      <code>messageCount</code> は保存対象になった sanitized message 数を表す。
+    </li>
     <li><code>rawMessageCount</code> は chunking 時点の raw message 数を表す。</li>
     <li>
       <code>nightWorkersRuntimeContractStripped</code> は 1 件以上 strip した場合だけ
@@ -190,8 +211,8 @@
     </li>
     <li><code>nightWorkersRuntimeContractStrippedCount</code> は strip した message 数を表す。</li>
     <li>
-      <code>nightWorkersTaskId</code> / <code>nightWorkersRunId</code> は contract block
-      から抽出できた場合だけ保存する。
+      <code>nightWorkersTaskId</code> / <code>nightWorkersRunId</code> は
+      contract block から抽出できた場合だけ保存する。
     </li>
     <li>metadata に Runtime Contract 本文や長い prompt 本文を保存しない。</li>
   </ul>
@@ -224,7 +245,10 @@ export function sanitizeNightWorkersRuntimeContractChunk(
       marker 以降の block に <code>executionMode: implementation</code> がない場合は変更しない。
     </li>
     <li>marker より前の本文を trim して残す。</li>
-    <li>marker より前が空なら <code>null</code> を返して message ごと除外する。</li>
+    <li>
+      marker より前が空なら <code>null</code> を返して message
+      ごと除外する。
+    </li>
     <li>
       metadata に次を追加する。
       <ul>
@@ -236,8 +260,8 @@ export function sanitizeNightWorkersRuntimeContractChunk(
     </li>
   </ul>
   <p>
-    <code>filterDistillableAgentLogMessages()</code> では、既存の excluded metadata / internal
-    provider prompt / task log skip の意味を変えない。Runtime Contract sanitizer は chunk identity
+    <code>filterDistillableAgentLogMessages()</code> では、既存の excluded metadata / internal provider
+    prompt / task log skip の意味を変えない。Runtime Contract sanitizer は chunk identity
     を保つため、<code>sync.service.ts</code> の chunk loop 内で
     <code>chunkMessages(sessionMessages)</code> の後に適用する。
   </p>
@@ -259,8 +283,9 @@ export function sanitizeNightWorkersRuntimeContractChunk(
     </li>
   </ul>
   <p>
-    初期実装では <code>store.rs</code> 側を優先する。理由は、保存直前の content leak guard を
-    TypeScript の <code>sync.service.ts</code> と同じ境界で持てるためである。Rust でも raw message
+    初期実装では <code>store.rs</code> 側を優先する。理由は、保存直前の
+    content leak guard を TypeScript の
+    <code>sync.service.ts</code> と同じ境界で持てるためである。Rust でも raw message
     で chunk を決め、chunk ごとに sanitized copy を作って transcript 化する。
   </p>
   <p>候補 API:</p>
@@ -278,7 +303,10 @@ fn strip_nightworkers_runtime_contract(content: &amp;str) -&gt; Option&lt;(Strin
   </ul>
   <p>Rust:</p>
   <ul>
-    <li><code>store_source_result()</code> の <code>insert into vibe_memories</code> 前。</li>
+    <li>
+      <code>store_source_result()</code> の
+      <code>insert into vibe_memories</code> 前。
+    </li>
     <li><code>vibe_memories_fts</code> insert 前。</li>
   </ul>
   <p>Guard rules:</p>
@@ -359,8 +387,8 @@ fn strip_nightworkers_runtime_contract(content: &amp;str) -&gt; Option&lt;(Strin
       <tr>
         <td><code>test/agent-log-sync.service.test.ts</code></td>
         <td>
-          sanitizer が chunking 前に走らず、<code>dedupeKey</code> / <code>chunkIndex</code> の
-          identity が保たれることを固定する。
+          sanitizer が chunking 前に走らず、<code>dedupeKey</code> /
+          <code>chunkIndex</code> の identity が保たれることを固定する。
         </td>
       </tr>
       <tr>
@@ -396,8 +424,9 @@ fn strip_nightworkers_runtime_contract(content: &amp;str) -&gt; Option&lt;(Strin
       sync 対象になるかを把握する。
     </li>
     <li>
-      直近の NightWorkers implementation run 由来と思われる <code>vibe_memories</code> を 1-3
-      件だけ抽出し、保存されている content と metadata の形を記録する。
+      直近の NightWorkers implementation run 由来と思われる
+      <code>vibe_memories</code> を 1-3 件だけ抽出し、保存されている content と
+      metadata の形を記録する。
     </li>
     <li>Rust resident agent-log-sync が有効か、TypeScript CLI path が使われているかを確認する。</li>
   </ol>
@@ -484,12 +513,17 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
   <ol>
     <li><code>stripNightWorkersRuntimeContract(content)</code> を追加する。</li>
     <li>
-      marker 以降の block から <code>executionMode</code>、<code>taskId</code>、<code>runId</code>
+      marker 以降の block から
+      <code>executionMode</code
+      >、<code>taskId</code>、<code>runId</code>
       を抽出する。
     </li>
     <li><code>executionMode !== &quot;implementation&quot;</code> なら変更しない。</li>
     <li><code>sanitizeNightWorkersRuntimeContractChunk(chunk)</code> を追加する。</li>
-    <li><code>sync.service.ts</code> の chunk loop で、raw chunk から sanitized chunk を作る。</li>
+    <li>
+      <code>sync.service.ts</code> の chunk loop で、raw chunk から sanitized chunk
+      を作る。
+    </li>
     <li>
       <code>buildTranscript()</code
       >、<code>buildReadableTranscript()</code>、<code>extractUnifiedDiffsFromText()</code>、<code
@@ -499,8 +533,8 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
     </li>
     <li>sanitizer 後に empty chunk になった場合は保存しない。</li>
     <li>
-      <code>dedupeKey</code> は raw chunk の <code>chunkIndex</code> で作り、sanitized content
-      から再計算しない。
+      <code>dedupeKey</code> は raw chunk の
+      <code>chunkIndex</code> で作り、sanitized content から再計算しない。
     </li>
     <li>
       metadata 付与後も <code>isExcludedAgentLogMetadata()</code> が機能するよう、既存 key
@@ -509,7 +543,10 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
   </ol>
   <p>Acceptance:</p>
   <ul>
-    <li><code>syncAllAgentLogs</code> の imported count は、実装依頼本文が残る場合は 1 のまま。</li>
+    <li>
+      <code>syncAllAgentLogs</code> の imported count は、実装依頼本文が残る場合は 1
+      のまま。
+    </li>
     <li>
       <code>vibe_memories.content</code> に
       <code>[NightWorkers Runtime Contract]</code> が入らない。
@@ -529,8 +566,14 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
     Step 3: TypeScript 保存直前 guard を追加する
   </h3>
   <ol>
-    <li>SQLite path で <code>redactedContent</code> insert 前に marker 残存を確認する。</li>
-    <li>Postgres path で <code>redactedContent</code> insert 前に marker 残存を確認する。</li>
+    <li>
+      SQLite path で <code>redactedContent</code> insert 前に marker
+      残存を確認する。
+    </li>
+    <li>
+      Postgres path で <code>redactedContent</code> insert 前に marker
+      残存を確認する。
+    </li>
     <li>
       targeted implementation Runtime Contract marker が残っている場合は該当 chunk を skip する。
     </li>
@@ -542,7 +585,9 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
   </ol>
   <p>Acceptance:</p>
   <ul>
-    <li>sanitizer 漏れがあっても <code>vibe_memories</code> には保存されない。</li>
+    <li>
+      sanitizer 漏れがあっても <code>vibe_memories</code> には保存されない。
+    </li>
     <li>agent-log-sync run 自体は他 chunk を処理し続ける。</li>
   </ul>
   <p>Failure handling:</p>
@@ -558,9 +603,13 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
   </ul>
   <h3 id="step-4-rust-resident-sanitizer-を実装する">Step 4: Rust resident sanitizer を実装する</h3>
   <ol>
-    <li><code>store.rs</code> に TypeScript と同じ marker / executionMode 判定を追加する。</li>
     <li>
-      <code>chunk_messages</code> 後、<code>build_readable_transcript</code> 前に sanitizer を通す。
+      <code>store.rs</code> に TypeScript と同じ marker / executionMode
+      判定を追加する。
+    </li>
+    <li>
+      <code>chunk_messages</code> 後、<code>build_readable_transcript</code>
+      前に sanitizer を通す。
     </li>
     <li>空になった message は除外する。</li>
     <li><code>build_memory_metadata()</code> が strip metadata を集約できるようにする。</li>
@@ -584,8 +633,8 @@ where id in (&#39;codex_logs&#39;, &#39;codex_logs_historical_backfill&#39;);
       TypeScript と Rust の metadata key がズレる場合は、Rust 側の key を TypeScript に合わせる。
     </li>
     <li>
-      <code>vibe_memories</code> は sanitized でも FTS に marker が残る場合は、FTS insert の content
-      source を修正するまで完了扱いにしない。
+      <code>vibe_memories</code> は sanitized でも FTS に marker が残る場合は、FTS
+      insert の content source を修正するまで完了扱いにしない。
     </li>
   </ul>
   <h3 id="step-5-既存汚染データの診断だけを追加する">Step 5: 既存汚染データの診断だけを追加する</h3>
@@ -655,8 +704,8 @@ limit 50;
       側対応が未完了である。
     </li>
     <li>
-      <code>vibe_memories.content</code> は抑止できても <code>vibe_memories_fts</code> に marker
-      が残る。
+      <code>vibe_memories.content</code> は抑止できても
+      <code>vibe_memories_fts</code> に marker が残る。
     </li>
     <li>
       sanitizer 後の metadata 付与で既存 dedupe key が変わり、同じ session/chunk

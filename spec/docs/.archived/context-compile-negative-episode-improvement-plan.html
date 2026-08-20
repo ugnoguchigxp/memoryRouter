@@ -18,33 +18,33 @@
   </blockquote>
   <h2 id="背景">背景</h2>
   <p>
-    2026-06-22 時点の <code>context_compile</code> は、negative knowledge と EpisodeCard
-    をロジック上すでに利用している。
+    2026-06-22 時点の <code>context_compile</code> は、negative knowledge と
+    EpisodeCard をロジック上すでに利用している。
   </p>
   <ul>
     <li>
       negative knowledge は positive knowledge と別に
-      <code>retrieveKnowledge(... polarities: [&quot;negative&quot;])</code> で検索され、統合
-      ranking 後に <code>guardrails</code> として pack に入る。
+      <code>retrieveKnowledge(... polarities: [&quot;negative&quot;])</code> で検索され、統合 ranking 後に
+      <code>guardrails</code> として pack に入る。
     </li>
     <li>
-      response composer は <code>negative guardrails</code> を参考情報ではなく negative evidence
-      として扱う SystemContext を持つ。
+      response composer は <code>negative guardrails</code> を参考情報ではなく negative
+      evidence として扱う SystemContext を持つ。
     </li>
     <li>
       EpisodeCard は <code>searchEpisodes()</code> で検索され、最大 2 件が
       <code>episode_card</code> の procedure item として pack に追加される。
     </li>
     <li>
-      EpisodeCard は <code>recordEpisodeUsage({ usageKind: &quot;compile&quot; })</code> で compile
-      利用回数も更新される。
+      EpisodeCard は <code>recordEpisodeUsage({ usageKind: &quot;compile&quot; })</code> で compile 利用回数も更新される。
     </li>
   </ul>
   <p>
     一方で、現状には「効いているが見えにくい」箇所が残っている。特に EpisodeCard は knowledge
     ranking / candidate trace / selected knowledge usage
     と別レーンなので、利用されていないように見える。また agentic refine には
-    <code>polarity</code> が渡らないため、negative knowledge が refine 段階では通常候補に見える。
+    <code>polarity</code> が渡らないため、negative knowledge が refine
+    段階では通常候補に見える。
   </p>
   <p>
     この計画は、現行設計を大きく変えずに、negative knowledge の扱いをより明示し、EpisodeCard
@@ -69,8 +69,13 @@
       をこの計画では変更しない。
     </li>
     <li>EpisodeCard 専用の新規テーブルや migration を追加しない。</li>
-    <li><code>context_compile</code> の top-level MCP response shape を破壊的に変えない。</li>
-    <li>EpisodeCard を <code>context_decision</code> の primary evidence に昇格しない。</li>
+    <li>
+      <code>context_compile</code> の top-level MCP response shape
+      を破壊的に変えない。
+    </li>
+    <li>
+      EpisodeCard を <code>context_decision</code> の primary evidence に昇格しない。
+    </li>
     <li>Episode 検索を LLM 再ランキングに置き換えない。</li>
   </ul>
   <h2 id="現状の実装ポイント">現状の実装ポイント</h2>
@@ -89,24 +94,33 @@
       <tr>
         <td>negative retrieval</td>
         <td>
-          <code>positiveKnowledge</code> と <code>negativeKnowledge</code> を別
+          <code>positiveKnowledge</code> と
+          <code>negativeKnowledge</code> を別
           <code>retrieveKnowledge</code> で取得
         </td>
         <td>良い。検索レーンは明確。</td>
       </tr>
       <tr>
         <td>negative pack section</td>
-        <td><code>polarity === &quot;negative&quot;</code> を <code>guardrails</code> に変換</td>
+        <td>
+          <code>polarity === &quot;negative&quot;</code> を
+          <code>guardrails</code> に変換
+        </td>
         <td>良い。最終 pack の意味は明確。</td>
       </tr>
       <tr>
         <td>agentic refine</td>
-        <td>候補に <code>polarity</code> / <code>section</code> が渡らない</td>
+        <td>
+          候補に <code>polarity</code> /
+          <code>section</code> が渡らない
+        </td>
         <td>改善余地。選別 LLM は negative を通常候補として見る。</td>
       </tr>
       <tr>
         <td>response composer</td>
-        <td><code>negative guardrails</code> を negative evidence として扱う指示あり</td>
+        <td>
+          <code>negative guardrails</code> を negative evidence として扱う指示あり
+        </td>
         <td>良い。最終出力側は意図通り。</td>
       </tr>
       <tr>
@@ -117,9 +131,7 @@
       <tr>
         <td>Episode pack item</td>
         <td>
-          <code>section: &quot;procedures&quot;</code>、<code
-            >itemKind: &quot;episode_card&quot;</code
-          >
+          <code>section: &quot;procedures&quot;</code>、<code>itemKind: &quot;episode_card&quot;</code>
           で追加
         </td>
         <td>妥当。ただし見えにくい。</td>
@@ -152,16 +164,17 @@
       <tr>
         <td><code>src/modules/context-compiler/agentic-refine.service.ts</code></td>
         <td>
-          <code>AgenticCandidate</code> に <code>polarity</code> と
-          <code>section</code> 相当の情報を追加し、System/User prompt で negative guardrail
-          の選別ルールを明示する。
+          <code>AgenticCandidate</code> に
+          <code>polarity</code> と
+          <code>section</code> 相当の情報を追加し、System/User prompt で
+          negative guardrail の選別ルールを明示する。
         </td>
       </tr>
       <tr>
         <td><code>src/modules/context-compiler/context-compiler.service.ts</code></td>
         <td>
-          agentic refine へ <code>polarity</code> を渡す。Episode retrieval stats と selected
-          Episode refs を diagnostics に残す。
+          agentic refine へ <code>polarity</code> を渡す。Episode retrieval
+          stats と selected Episode refs を diagnostics に残す。
         </td>
       </tr>
       <tr>
@@ -200,8 +213,8 @@
       <tr>
         <td><code>test/context-compiler.service.test.ts</code></td>
         <td>
-          negative <code>polarity</code> が agentic refine に渡ること、Episode stats / sourceRefs /
-          usage が保存されることを確認する。
+          negative <code>polarity</code> が agentic refine
+          に渡ること、Episode stats / sourceRefs / usage が保存されることを確認する。
         </td>
       </tr>
       <tr>
@@ -215,7 +228,8 @@
       <tr>
         <td><code>test/context-compiler-repository.test.ts</code></td>
         <td>
-          compile detail が <code>episode_card</code> selected item を維持して返すことを確認する。
+          compile detail が <code>episode_card</code> selected item
+          を維持して返すことを確認する。
         </td>
       </tr>
     </tbody>
@@ -238,7 +252,8 @@
 };
 </code></pre>
   <p>
-    <code>compileContextPack</code> から <code>agenticRefine()</code> を呼ぶとき、<code
+    <code>compileContextPack</code> から
+    <code>agenticRefine()</code> を呼ぶとき、<code
       >compressedKnowledge</code
     >
     の <code>polarity</code> を渡す。
@@ -264,7 +279,8 @@
   <ul>
     <li>
       <code>agenticRefine()</code> の user prompt JSON に negative 候補の
-      <code>polarity</code> または <code>section</code> が含まれる。
+      <code>polarity</code> または
+      <code>section</code> が含まれる。
     </li>
     <li>
       negative guardrail が agentic refine で選ばれた場合、最終 pack では従来通り
@@ -272,8 +288,8 @@
     </li>
     <li>agentic refine が無効な場合の挙動は不変。</li>
     <li>
-      <code>selectedKnowledgeIds</code>、<code>knowledge_usage_events</code>、candidate trace
-      の既存保存形式を破壊しない。
+      <code>selectedKnowledgeIds</code
+      >、<code>knowledge_usage_events</code>、candidate trace の既存保存形式を破壊しない。
     </li>
   </ul>
   <h2 id="p1-episodecard-利用を-diagnostics-で見える化する">
@@ -281,8 +297,9 @@
   </h2>
   <h3 id="変更-1">変更</h3>
   <p>
-    <code>retrieveEpisodePrecedents()</code> の stats を、現在の <code>hitCount</code> /
-    <code>selectedCount</code> / <code>searchFailed</code> から、既存 shape
+    <code>retrieveEpisodePrecedents()</code> の stats を、現在の
+    <code>hitCount</code> / <code>selectedCount</code> /
+    <code>searchFailed</code> から、既存 shape
     互換を維持しつつ次の補助情報を加える。
   </p>
   <pre><code class="language-ts">episodes: {
@@ -297,8 +314,9 @@
 }
 </code></pre>
   <p>
-    <code>sourceRefs</code> には現状通り <code>context-still://episodes/{id}</code> と raw refs
-    を含める。新規 top-level field は追加しない。
+    <code>sourceRefs</code> には現状通り
+    <code>context-still://episodes/{id}</code> と raw refs を含める。新規 top-level field
+    は追加しない。
   </p>
   <h3 id="受け入れ条件-1">受け入れ条件</h3>
   <ul>
@@ -306,12 +324,15 @@
       Episode が選ばれた compile run の
       <code>pack.diagnostics.retrievalStats.episodes.selectedIds</code> で ID を確認できる。
     </li>
-    <li><code>pack.sourceRefs</code> に <code>context-still://episodes/{id}</code> が残る。</li>
     <li>
-      <code>recordEpisodeUsage({ usageKind: &quot;compile&quot; })</code> が従来通り呼ばれる。
+      <code>pack.sourceRefs</code> に
+      <code>context-still://episodes/{id}</code> が残る。
     </li>
+    <li><code>recordEpisodeUsage({ usageKind: &quot;compile&quot; })</code> が従来通り呼ばれる。</li>
     <li>
-      Episode が 0 件の場合も existing diagnostics shape と互換で、<code>No Content</code>
+      Episode が 0 件の場合も existing diagnostics shape と互換で、<code
+        >No Content</code
+      >
       判定を悪化させない。
     </li>
   </ul>
@@ -332,11 +353,14 @@
       <code>episode precedents:</code> に分離する。
     </li>
     <li>
-      通常の <code>knowledge candidates:</code> には <code>rule</code> / <code>procedure</code> の
+      通常の <code>knowledge candidates:</code> には
+      <code>rule</code> / <code>procedure</code> の
       Knowledge だけを載せる。
     </li>
     <li>
-      Episode precedent には <code>id</code>、<code>title</code>、<code>summary</code>、<code
+      Episode precedent には
+      <code>id</code
+      >、<code>title</code>、<code>summary</code>、<code
         >sourceRefs</code
       >
       の短いヒントだけを載せる。
@@ -353,8 +377,13 @@
   </ul>
   <h3 id="受け入れ条件-2">受け入れ条件</h3>
   <ul>
-    <li>agentic composer 有効時の user prompt に <code>episode precedents:</code> が出る。</li>
-    <li><code>knowledge candidates:</code> には <code>episode_card</code> が混ざらない。</li>
+    <li>
+      agentic composer 有効時の user prompt に <code>episode precedents:</code> が出る。
+    </li>
+    <li>
+      <code>knowledge candidates:</code> には
+      <code>episode_card</code> が混ざらない。
+    </li>
     <li>
       fallback composer は現状通り procedures に Episode を含めてもよいが、文言が
       <code>Past episode:</code> であることを維持する。
@@ -366,7 +395,8 @@
   </h2>
   <h3 id="変更-3">変更</h3>
   <p>
-    既存の <code>context_pack_items</code> と <code>packSnapshot</code> には
+    既存の <code>context_pack_items</code> と
+    <code>packSnapshot</code> には
     <code>itemKind: &quot;episode_card&quot;</code> が保存される。まず repository/API
     の返却でこれが欠落していないことをテストで固定する。
   </p>
@@ -385,8 +415,9 @@
   <h3 id="受け入れ条件-3">受け入れ条件</h3>
   <ul>
     <li>
-      <code>getCompileRunDetail()</code> で <code>selectedItems</code> または derived summary から
-      EpisodeCard が追える。
+      <code>getCompileRunDetail()</code> で
+      <code>selectedItems</code> または derived summary から EpisodeCard
+      が追える。
     </li>
     <li>SQLite/Postgres の repository で挙動が一致する。</li>
     <li><code>knowledgeSignals</code> に EpisodeCard を混ぜない。</li>
@@ -396,9 +427,15 @@
   <h3 id="変更-4">変更</h3>
   <p>実装後、手元 SQLite で代表的な compile を 2-3 件実行して、次を確認する。</p>
   <ul>
-    <li>negative guardrail がある goal で <code>guardrails</code> が落ちていない。</li>
+    <li>
+      negative guardrail がある goal で
+      <code>guardrails</code> が落ちていない。
+    </li>
     <li>EpisodeCard にヒットする goal で <code>episodes.selectedIds</code> が残る。</li>
-    <li><code>context-still://episodes/{id}</code> が <code>sourceRefs</code> に残る。</li>
+    <li>
+      <code>context-still://episodes/{id}</code> が
+      <code>sourceRefs</code> に残る。
+    </li>
     <li><code>compile_use_count</code> が増える。</li>
   </ul>
   <h3 id="受け入れ条件-4">受け入れ条件</h3>
@@ -417,15 +454,16 @@ limit 10;
   <h2 id="実装順序">実装順序</h2>
   <ol>
     <li>
-      P0: <code>AgenticCandidate</code> に <code>polarity</code> /
+      P0: <code>AgenticCandidate</code> に
+      <code>polarity</code> /
       <code>section</code> を追加し、prompt と tests を更新する。
     </li>
     <li>
       P1: Episode retrieval stats に selected IDs / titles を追加し、service tests を更新する。
     </li>
     <li>
-      P2: Composer prompt の <code>episode precedents</code> 分離を追加し、composer tests
-      を更新する。
+      P2: Composer prompt の <code>episode precedents</code> 分離を追加し、composer
+      tests を更新する。
     </li>
     <li>
       P3: compile detail repository の EpisodeCard 可視性をテストで固定し、必要なら derived summary
@@ -473,8 +511,8 @@ limit 10;
     <li>EpisodeCard は Knowledge として記録されず、primary evidence とも混ざらない。</li>
     <li>focused tests と docs link check が通る。</li>
     <li>
-      実データで少なくとも 1 件、EpisodeCard の <code>compile_use_count</code> 増加と diagnostics の
-      <code>selectedIds</code> を確認できる。
+      実データで少なくとも 1 件、EpisodeCard の <code>compile_use_count</code> 増加と
+      diagnostics の <code>selectedIds</code> を確認できる。
     </li>
   </ul>
 </article>

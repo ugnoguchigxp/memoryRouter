@@ -44,10 +44,10 @@
     </li>
   </ul>
   <p>
-    2026-07-24 時点の機械的な初期棚卸しでは、<code>role: &quot;system&quot;</code> は型定義を除いて
-    23 箇所、12 implementation files に存在する。これとは別に、直接 provider message になっていない
-    SystemContext builder、Codex provider envelope、user role / reminder に混在する author-authored
-    instruction がある。
+    2026-07-24 時点の機械的な初期棚卸しでは、<code>role: &quot;system&quot;</code>
+    は型定義を除いて 23 箇所、12 implementation files に存在する。これとは別に、直接 provider
+    message になっていない SystemContext builder、Codex provider envelope、user role / reminder
+    に混在する author-authored instruction がある。
   </p>
   <p>
     s11tnext は、この自然言語 authoring を TOML に分離し、検証済み catalog、型付き key/value
@@ -94,15 +94,16 @@
   <p>全面採用は、次をすべて満たした時だけ完了とする。</p>
   <ol>
     <li>
-      型定義を除く <code>role: &quot;system&quot;</code> の content が、全経路で s11tnext invocation
-      の <code>content.text</code> から渡される。
+      型定義を除く <code>role: &quot;system&quot;</code> の content が、全経路で s11tnext
+      invocation の <code>content.text</code> から渡される。
     </li>
     <li>
       Codex provider adapter を含め、送信直前に自然言語 instruction
       を文字列結合で追加する経路がない。
     </li>
     <li>
-      <code>*SystemPrompt()</code>、<code>*SystemContext()</code>、system prompt 用文字列配列が
+      <code>*SystemPrompt()</code
+      >、<code>*SystemContext()</code>、system prompt 用文字列配列が
       <code>src/modules/system-context/</code> 以外に残らない。
     </li>
     <li>
@@ -123,10 +124,12 @@
       <code>build --check</code> が通る。
     </li>
     <li>
-      全 context が <code>ja-JP</code> と <code>en-US</code> の required locale coverage を満たす。
+      全 context が <code>ja-JP</code> と
+      <code>en-US</code> の required locale coverage を満たす。
     </li>
     <li>
-      現在日本語で送信している route は <code>ja-JP</code>、現在英語で送信している route は
+      現在日本語で送信している route は
+      <code>ja-JP</code>、現在英語で送信している route は
       <code>en-US</code> を request し、移行だけで使用言語を変えない。
     </li>
     <li>
@@ -160,10 +163,13 @@
   <h2 id="採用方針">採用方針</h2>
   <h3 id="version-contract">Version contract</h3>
   <ul>
-    <li><code>s11tnext</code> と <code>s11tnext-cli</code> は同じ exact version に固定する。</li>
     <li>
-      初期 version は <code>0.1.0</code>。2026-07-24 に Runtime / CLI を exact
-      <code>0.1.2</code> へ更新した。
+      <code>s11tnext</code> と
+      <code>s11tnext-cli</code> は同じ exact version に固定する。
+    </li>
+    <li>
+      初期 version は <code>0.1.0</code>。2026-07-24 に Runtime / CLI を
+      exact <code>0.1.2</code> へ更新した。
     </li>
     <li>caret / tilde range は使用しない。</li>
     <li>
@@ -198,18 +204,22 @@
   <ul>
     <li>catalog の source locale は <code>ja-JP</code> とする。</li>
     <li>
-      development profile は移行中も <code>ja-JP</code> / <code>en-US</code> の両方を required
-      にし、新規 context の translation debt を作らない。
+      development profile は移行中も <code>ja-JP</code> /
+      <code>en-US</code> の両方を required にし、新規 context の
+      translation debt を作らない。
     </li>
-    <li>production profile も <code>ja-JP</code> / <code>en-US</code> を required にする。</li>
     <li>
-      現在英語の SystemContext は、同じ英語本文を <code>en-US</code> translation に移し、対応する
+      production profile も <code>ja-JP</code> /
+      <code>en-US</code> を required にする。
+    </li>
+    <li>
+      現在英語の SystemContext は、同じ英語本文を
+      <code>en-US</code> translation に移し、対応する
       <code>ja-JP</code> source を新規 authoring する。
     </li>
     <li>
-      現在日本語の SystemContext は <code>ja-JP</code> source を byte-level baseline とし、<code
-        >en-US</code
-      >
+      現在日本語の SystemContext は <code>ja-JP</code> source を
+      byte-level baseline とし、<code>en-US</code>
       translation を追加する。
     </li>
     <li>
@@ -268,38 +278,57 @@ encoding = &quot;json-value&quot;
     <li>tool result: <code>untrusted</code></li>
     <li>fetched/retrieved document: <code>untrusted</code></li>
     <li>
-      DB に保存された candidate/knowledge/episode body: origin に関係なく <code>untrusted</code>
+      DB に保存された candidate/knowledge/episode body: origin に関係なく
+      <code>untrusted</code>
     </li>
     <li>provider response: <code>untrusted</code></li>
   </ul>
   <p>
-    <code>trusted</code> への変更は lint 回避手段として使わない。値の origin が不明なら
-    <code>untrusted</code> に倒す。
+    <code>trusted</code> への変更は lint 回避手段として使わない。値の
+    origin が不明なら <code>untrusted</code> に倒す。
   </p>
   <h3 id="section-contract">Section contract</h3>
   <p>
-    各 <code>.context.toml</code> は可能な限り ordered <code>sections</code> を使い、manifest の
+    各 <code>.context.toml</code> は可能な限り ordered
+    <code>sections</code> を使い、manifest の
     <code>sectionIds</code> を意味のある監査情報にする。
   </p>
   <p>Kinds:</p>
   <ul>
     <li><code>instruction</code>: role、判断原則、禁止事項。</li>
-    <li><code>runtime-fact</code>: threshold、route mode、tool names などの runtime values。</li>
+    <li>
+      <code>runtime-fact</code>: threshold、route mode、tool names などの
+      runtime values。
+    </li>
     <li><code>tool-contract</code>: tool を呼ぶ条件、最大回数、結果の扱い。</li>
-    <li><code>output-contract</code>: JSON shape、Markdown shape、language/output restriction。</li>
-    <li><code>overlay</code>: source kind、response style、provider-specific supplement。</li>
+    <li>
+      <code>output-contract</code>: JSON shape、Markdown shape、language/output
+      restriction。
+    </li>
+    <li>
+      <code>overlay</code>: source kind、response style、provider-specific
+      supplement。
+    </li>
   </ul>
   <p>Severity:</p>
   <ul>
-    <li><code>must</code>: parser/security/safety/output shape に必要。</li>
+    <li>
+      <code>must</code>: parser/security/safety/output shape に必要。
+    </li>
     <li><code>should</code>: quality preference。</li>
     <li><code>may</code>: optional guidance。</li>
   </ul>
   <p>Enforcement:</p>
   <ul>
     <li><code>prompt</code>: prompt 文面だけで要求する。</li>
-    <li><code>schema</code>: provider structured output / tool schema が直接強制する。</li>
-    <li><code>host</code>: parser、validator、authorization、runtime code が強制する。</li>
+    <li>
+      <code>schema</code>: provider structured output / tool schema
+      が直接強制する。
+    </li>
+    <li>
+      <code>host</code>: parser、validator、authorization、runtime code
+      が強制する。
+    </li>
   </ul>
   <p>
     実際に host/schema enforcement がない section を <code>schema</code> /
@@ -355,17 +384,26 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
 </code></pre>
   <p>Rules:</p>
   <ul>
-    <li>provider-bound path は <code>bind()</code> または <code>bindRequest()</code> を使う。</li>
     <li>
-      <code>bindText()</code> は manifest が不要と明示できる non-provider composition
-      にだけ許可する。
+      provider-bound path は <code>bind()</code> または
+      <code>bindRequest()</code> を使う。
+    </li>
+    <li>
+      <code>bindText()</code> は manifest が不要と明示できる non-provider
+      composition にだけ許可する。
     </li>
     <li>
       <code>createTextRenderer()</code> は top-level locale
       を呼び出しごとに読み直す必要が発生した時だけ使う。全面採用のためだけに無理に使わない。
     </li>
-    <li>context key を無型の <code>string</code> として外部から受け取らない。</li>
-    <li>provider へ送る直前に <code>trim()</code>、改行除去、文字列追加をしない。</li>
+    <li>
+      context key を無型の
+      <code>string</code> として外部から受け取らない。
+    </li>
+    <li>
+      provider へ送る直前に
+      <code>trim()</code>、改行除去、文字列追加をしない。
+    </li>
     <li>
       provider adapter が message framing を行う場合も、s11tnext の rendered text 自体は変更しない。
     </li>
@@ -376,8 +414,9 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   </ul>
   <h3 id="request-metadata">Request metadata</h3>
   <p>
-    <code>LlmChatRequest</code> と <code>DistillationModelRequest</code> の application-owned
-    metadata に <code>systemContextTrace</code> を追加する。provider HTTP body / SDK input へ
+    <code>LlmChatRequest</code> と
+    <code>DistillationModelRequest</code> の application-owned metadata に
+    <code>systemContextTrace</code> を追加する。provider HTTP body / SDK input へ
     metadata object 自体を送らない。
   </p>
   <p>
@@ -599,8 +638,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   </ul>
   <p>
     未使用 builder は catalog へ機械的に移さず、call graph と test-only import
-    を確認して削除する。再利用される共通 section は <code>bindRequest()</code> で最終 invocation
-    に取り込む。
+    を確認して削除する。再利用される共通 section は
+    <code>bindRequest()</code> で最終 invocation に取り込む。
   </p>
   <h2 id="実装フェーズ">実装フェーズ</h2>
   <h3 id="phase-0-baseline-と完全-inventory">Phase 0: Baseline と完全 inventory</h3>
@@ -612,7 +651,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
     <li>provider adapter が追加する自然言語 instruction を列挙する。</li>
     <li>system 以外の message / reminder に含まれる author-authored instruction を列挙する。</li>
     <li>
-      <code>distillation-prompts.ts</code> など test-only / dead builder の call graph を確認する。
+      <code>distillation-prompts.ts</code> など test-only / dead builder の call graph
+      を確認する。
     </li>
     <li>各 active route について代表 input fixture と現在の rendered system text を保存する。</li>
     <li>current prompt の hash、文字数、推定 token 数、末尾改行の有無を記録する。</li>
@@ -651,8 +691,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
     <li><code>s11tnext.config.toml</code> を追加する。</li>
     <li>keyspace owner と variable profiles を追加する。</li>
     <li>
-      development / production release profile に <code>ja-JP</code> と <code>en-US</code> を
-      required 設定する。
+      development / production release profile に <code>ja-JP</code> と
+      <code>en-US</code> を required 設定する。
     </li>
     <li>scripts を追加する。</li>
   </ol>
@@ -665,12 +705,13 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
 </code></pre>
   <ol>
     <li>
-      <code>.s11tnext/catalog.generated.ts</code> を <code>tsconfig.json</code> の include
-      に追加する。
+      <code>.s11tnext/catalog.generated.ts</code> を
+      <code>tsconfig.json</code> の include に追加する。
     </li>
     <li>最初の bootstrap context と generated pair を commit 対象にする。</li>
     <li>
-      <code>bun run verify</code> に <code>s11tnext:lint</code> と
+      <code>bun run verify</code> に
+      <code>s11tnext:lint</code> と
       <code>s11tnext:check</code> を追加する。
     </li>
     <li>package version 一致を CI で確認する。</li>
@@ -688,22 +729,27 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   <ol>
     <li><code>src/modules/system-context/catalog.ts</code> を追加する。</li>
     <li>
-      generated <code>createAppCatalog()</code> で JSON を <code>unknown</code> から検証する。
+      generated <code>createAppCatalog()</code> で JSON を
+      <code>unknown</code> から検証する。
     </li>
     <li>process singleton として catalog を一度だけ生成する。</li>
     <li><code>system-context.service.ts</code> に typed render API を追加する。</li>
     <li>route -&gt; key / locale の registry を追加する。</li>
-    <li><code>SystemContextTrace</code> を LLM application request metadata に追加する。</li>
-    <li><code>runDistillationCompletion()</code> が trace を multi-round request で保持する。</li>
+    <li>
+      <code>SystemContextTrace</code> を LLM application request metadata に追加する。
+    </li>
+    <li>
+      <code>runDistillationCompletion()</code> が trace を multi-round request で保持する。
+    </li>
     <li>existing coverEvidence audit payload に manifest を追加する。</li>
     <li>
-      existing domain audit がない provider call には <code>SYSTEM_CONTEXT_USED</code> event
-      を追加する。
+      existing domain audit がない provider call には
+      <code>SYSTEM_CONTEXT_USED</code> event を追加する。
     </li>
     <li>event は logical completion ごとに 1 件とし、tool round ごとの重複記録を避ける。</li>
     <li>
-      manifest と実際の system message text の <code>verifyRenderedHash()</code> を provider
-      dispatch 直前に test/dev で検証する。
+      manifest と実際の system message text の <code>verifyRenderedHash()</code> を
+      provider dispatch 直前に test/dev で検証する。
     </li>
   </ol>
   <p>Acceptance:</p>
@@ -802,14 +848,17 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
     <li>branch condition は code に残す。</li>
     <li>branch が選ぶ自然言語は context key variant にする。</li>
     <li>
-      arbitrary <code>extraLines</code> API は廃止し、有限 variant、typed overlay、または別 context
-      composition に置き換える。
+      arbitrary <code>extraLines</code> API は廃止し、有限 variant、typed
+      overlay、または別 context composition に置き換える。
     </li>
     <li>
-      common context を再利用する場合は <code>bindRequest()</code> で共通 fragment を render
-      し、最後の <code>invoke()</code> が provider へ送る完全な text を返す。
+      common context を再利用する場合は <code>bindRequest()</code> で共通 fragment
+      を render し、最後の <code>invoke()</code> が provider へ送る完全な
+      text を返す。
     </li>
-    <li><code>finalize()</code> は request 内の最新 invocation にだけ行う。</li>
+    <li>
+      <code>finalize()</code> は request 内の最新 invocation にだけ行う。
+    </li>
     <li>
       render trace は「呼び出した fragment」であり、最終 prompt に byte-for-byte
       含まれた証明ではないことを test/documentation に明記する。
@@ -818,8 +867,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   <p>Acceptance:</p>
   <ul>
     <li>
-      <code>sourceKind</code> / <code>responseStyle</code> の branch は readable な key selection
-      になる。
+      <code>sourceKind</code> / <code>responseStyle</code> の
+      branch は readable な key selection になる。
     </li>
     <li>prompt 文面の array splice / conditional text construction が消える。</li>
     <li>common fragment と final invocation の manifest trace が残る。</li>
@@ -841,7 +890,10 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
     <li>
       host parser/validator が強制する規則は <code>enforcement = &quot;host&quot;</code> とする。
     </li>
-    <li>current English route は <code>en-US</code> を bind して本文を維持する。</li>
+    <li>
+      current English route は <code>en-US</code> を bind
+      して本文を維持する。
+    </li>
     <li>日本語 source は翻訳として別途 authoring し、coverage を満たす。</li>
     <li>
       ContextDecision では deterministic decision logic と natural-language judgment policy
@@ -865,7 +917,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   </h3>
   <ol>
     <li>
-      <code>codex.provider.ts</code> の <code>[Instructions]</code> 以下の自然言語 suffix を
+      <code>codex.provider.ts</code> の
+      <code>[Instructions]</code> 以下の自然言語 suffix を
       <code>provider.codex.finalResponse</code> へ移す。
     </li>
     <li>
@@ -873,9 +926,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
       directive は残さない。
     </li>
     <li>
-      <code>blankResponseReminder</code>、<code>requireToolCallReminder</code>、<code
-        >toolResultReminder</code
-      >
+      <code>blankResponseReminder</code
+      >、<code>requireToolCallReminder</code>、<code>toolResultReminder</code>
       を棚卸しする。
     </li>
     <li>output/behavior を指示する reminder は catalog key へ移す。</li>
@@ -901,7 +953,10 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
       <code>src/modules/system-context/</code> 以外の inline
       <code>role: &quot;system&quot;</code> content。
     </li>
-    <li><code>SystemPrompt</code> / <code>SystemContext</code> builder。</li>
+    <li>
+      <code>SystemPrompt</code> /
+      <code>SystemContext</code> builder。
+    </li>
     <li>provider adapter の instruction suffix。</li>
     <li>known message/reminder properties の長い自然言語 literal。</li>
     <li>catalog に存在しない inventory key。</li>
@@ -925,8 +980,8 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   </h3>
   <ol>
     <li>
-      <code>inspect --coverage</code> で <code>ja-JP</code> / <code>en-US</code> の direct coverage
-      を確認する。
+      <code>inspect --coverage</code> で <code>ja-JP</code> /
+      <code>en-US</code> の direct coverage を確認する。
     </li>
     <li>fallback behavior test を追加する。</li>
     <li>missing locale が暗黙 fallback しないことを確認する。</li>
@@ -1017,7 +1072,9 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
     </li>
     <li>error code/message/file/path/line/column が修正に十分か。</li>
     <li><code>inspect</code> が large catalog の日常 review に十分か。</li>
-    <li><code>build --check</code> の diff/原因表示が CI troubleshooting に十分か。</li>
+    <li>
+      <code>build --check</code> の diff/原因表示が CI troubleshooting に十分か。
+    </li>
     <li>source/translation の placeholder mismatch diagnostic が理解しやすいか。</li>
   </ul>
   <h3 id="generated-types">Generated types</h3>
@@ -1089,7 +1146,10 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   <h3 id="security-fixtures">Security fixtures</h3>
   <ul>
     <li><code>&lt;/S11TNEXT_DELIMITED_CONTEXT&gt;</code> を含む user text</li>
-    <li><code>&lt;</code>, <code>&gt;</code>, <code>&amp;</code>, U+2028, U+2029</li>
+    <li>
+      <code>&lt;</code>, <code>&gt;</code>,
+      <code>&amp;</code>, U+2028, U+2029
+    </li>
     <li>JSON object 内の boundary-like string</li>
     <li>cyclic JSON</li>
     <li>sparse array</li>
@@ -1126,7 +1186,10 @@ export function renderSystemContext&lt;K extends SystemContextKey&gt;(
   <ul>
     <li><code>context_compile</code> agentic refine / plan / compose</li>
     <li><code>findCandidate</code> wiki / vibe memory / Codex escalation</li>
-    <li><code>coverEvidence</code> applicability / value / web / MCP / negative / repair</li>
+    <li>
+      <code>coverEvidence</code> applicability / value / web / MCP / negative /
+      repair
+    </li>
     <li><code>episodeDistiller</code> chunk / card / duplicate review</li>
     <li><code>context_decision</code> judge / repair / answer</li>
     <li>dead-zone merge review</li>
@@ -1254,7 +1317,10 @@ cargo clippy -p context-stilld --all-targets -- -D warnings
   <p>次の場合、対象 route の切替を止めて s11tnext または integration layer を修正する。</p>
   <ul>
     <li>untrusted runtime value を safe contract のまま表現できない。</li>
-    <li>provider へ送信した text と <code>renderedHash</code> の一致を証明できない。</li>
+    <li>
+      provider へ送信した text と
+      <code>renderedHash</code> の一致を証明できない。
+    </li>
     <li>artifact/generated pair の不整合を fail-closed にできない。</li>
     <li>requested locale と実際の送信言語が一致しない。</li>
     <li>parser success、tool-call compliance、decision consistency に重大回帰がある。</li>
@@ -1312,10 +1378,12 @@ cargo clippy -p context-stilld --all-targets -- -D warnings
       <input checked="" disabled="" type="checkbox" /> provider-bound manifest correlation 100%
     </li>
     <li>
-      <input checked="" disabled="" type="checkbox" /> <code>ja-JP</code> direct coverage 100%
+      <input checked="" disabled="" type="checkbox" />
+      <code>ja-JP</code> direct coverage 100%
     </li>
     <li>
-      <input checked="" disabled="" type="checkbox" /> <code>en-US</code> direct coverage 100%
+      <input checked="" disabled="" type="checkbox" />
+      <code>en-US</code> direct coverage 100%
     </li>
     <li><input checked="" disabled="" type="checkbox" /> boundary allowlist は空</li>
     <li><input checked="" disabled="" type="checkbox" /> package versions exact match</li>

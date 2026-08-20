@@ -7,16 +7,19 @@
   </blockquote>
   <h2 id="purpose">Purpose</h2>
   <p>
-    <code>findingCandidate</code> の knowledge 発見率を戻すために、次の2案を同じ実装計画として扱う。
+    <code>findingCandidate</code> の knowledge
+    発見率を戻すために、次の2案を同じ実装計画として扱う。
   </p>
   <ol>
     <li>
-      Codex / 5.4 mini class の高性能モデルを <code>findingCandidate</code> の second-pass /
-      escalation に使う。
+      Codex / 5.4 mini class の高性能モデルを <code>findingCandidate</code> の
+      second-pass / escalation に使う。
     </li>
     <li>
-      Local LLM の provider target を Pool として定義し、<code>taskRouting</code> が model ではなく
-      Pool を向ける運用レイヤーを作る。
+      Local LLM の provider target を Pool として定義し、<code
+        >taskRouting</code
+      >
+      が model ではなく Pool を向ける運用レイヤーを作る。
     </li>
   </ol>
   <p>
@@ -27,17 +30,21 @@
   <p>直近調査で見えた事実:</p>
   <ul>
     <li>
-      <code>findingCandidate</code> は入口であり、ここで <code>no_candidate</code> になると
+      <code>findingCandidate</code> は入口であり、ここで
+      <code>no_candidate</code> になると
       <code>coveringEvidence</code> 以降では復活できない。
     </li>
     <li>
       <code>coveringEvidence</code> は候補が来れば
-      <code>knowledge_ready</code> を一定量出しているため、現状の主な歩留まり低下は finding
-      側に寄っている。
+      <code>knowledge_ready</code> を一定量出しているため、現状の主な歩留まり低下は
+      finding 側に寄っている。
     </li>
     <li>
-      Ornith 1.0 9B は <code>episodeDistiller</code> では有用だが、<code>findingCandidate</code> /
-      <code>coveringEvidence</code> の主担当としては recall / abstraction が不安定になりやすい。
+      Ornith 1.0 9B は <code>episodeDistiller</code> では有用だが、<code
+        >findingCandidate</code
+      >
+      / <code>coveringEvidence</code> の主担当としては recall / abstraction
+      が不安定になりやすい。
     </li>
     <li>
       Qwen 3.6 27B を2機使える場合でも、同一 pool を複数 route が奪い合うと片方の route
@@ -55,11 +62,15 @@
   <h2 id="desired-end-state">Desired End State</h2>
   <ul>
     <li>Settings UI で Provider Target と Provider Pool を定義できる。</li>
-    <li><code>taskRouting</code> は <code>providerPoolId</code> を第一優先の向き先として扱う。</li>
     <li>
-      <code>findingCandidate</code> / <code>coveringEvidence</code> /
-      <code>finalizeDistille</code> / <code>episodeDistiller</code> は、用途別 pool
-      に明示的に割り当てられる。
+      <code>taskRouting</code> は
+      <code>providerPoolId</code> を第一優先の向き先として扱う。
+    </li>
+    <li>
+      <code>findingCandidate</code> /
+      <code>coveringEvidence</code> /
+      <code>finalizeDistille</code> /
+      <code>episodeDistiller</code> は、用途別 pool に明示的に割り当てられる。
     </li>
     <li>同じ target が同時に複数 job へ lease されない。</li>
     <li>pool full の場合は provider に投げず、queue 側で wait する。</li>
@@ -67,8 +78,9 @@
       provider busy 503 は target cooldown / retry-later として扱い、route failure と区別する。
     </li>
     <li>
-      Codex escalation は一次経路ではなく、条件を満たした <code>no_candidate</code> / low-confidence
-      finding だけを second-pass する。
+      Codex escalation は一次経路ではなく、条件を満たした
+      <code>no_candidate</code> / low-confidence finding だけを second-pass
+      する。
     </li>
     <li>Codex escalation の実行ログは Vibe memory / findingCandidate の再入力にならない。</li>
     <li>
@@ -81,8 +93,8 @@
     <li>Codex を <code>findingCandidate</code> の主経路にいきなり置かない。</li>
     <li>Provider 側の 503 だけで route fairness を実現しようとしない。</li>
     <li>
-      <code>coveringEvidence</code> / <code>finalizeDistille</code> の business logic
-      をこの計画で再設計しない。
+      <code>coveringEvidence</code> /
+      <code>finalizeDistille</code> の business logic をこの計画で再設計しない。
     </li>
     <li><code>episodeDistiller</code> を Qwen 優先へ戻すことは目的にしない。</li>
     <li>
@@ -139,12 +151,16 @@
   <p>Pool separation rule:</p>
   <ul>
     <li>
-      <code>findingCandidate</code> と <code>coveringEvidence</code> は同じ Qwen pool を共有しない。
+      <code>findingCandidate</code> と
+      <code>coveringEvidence</code> は同じ Qwen pool を共有しない。
     </li>
     <li>
-      <code>coveringEvidence</code> と <code>finalizeDistille</code> は同じ pool を共有してよい。
+      <code>coveringEvidence</code> と
+      <code>finalizeDistille</code> は同じ pool を共有してよい。
     </li>
-    <li><code>episodeDistiller</code> は Ornith pool へ逃がし、Qwen pool を消費しない。</li>
+    <li>
+      <code>episodeDistiller</code> は Ornith pool へ逃がし、Qwen pool を消費しない。
+    </li>
     <li>
       同じ physical target を複数 pool に入れる場合は global lease
       で二重使用を禁止する。初期実装では、1 target は1 pool所属を推奨する。
@@ -166,9 +182,8 @@
 };
 </code></pre>
   <p>
-    既存の <code>providers[&quot;local-llm&quot;].models[]</code> は Local LLM target
-    として扱える。最初の slice では物理 schema を大きく変えず、UI と routing で Target
-    として見せる。
+    既存の <code>providers[&quot;local-llm&quot;].models[]</code> は Local LLM target として扱える。最初の
+    slice では物理 schema を大きく変えず、UI と routing で Target として見せる。
   </p>
   <h3 id="provider-pool">Provider Pool</h3>
   <p>Provider Pool は実行資源の割当単位である。</p>
@@ -186,7 +201,8 @@
 };
 </code></pre>
   <p>
-    初期実装は <code>priority_order</code> と <code>wait</code> のみでよい。<code
+    初期実装は <code>priority_order</code> と
+    <code>wait</code> のみでよい。<code
       >round_robin_by_queue</code
     >
     は phase 2 以降に回す。
@@ -265,8 +281,8 @@
   <ul>
     <li>source kind is <code>vibe_memory</code></li>
     <li>
-      primary result is <code>no_candidate</code> OR parser diagnostics shows candidate-like output
-      dropped
+      primary result is <code>no_candidate</code> OR parser diagnostics shows
+      candidate-like output dropped
     </li>
     <li>eligibility score &gt;= threshold</li>
     <li>
@@ -278,14 +294,19 @@
         <li>code review / regression / test gate terms</li>
       </ul>
     </li>
-    <li>no existing finding job or candidate with same <code>dedupeKey</code></li>
+    <li>
+      no existing finding job or candidate with same <code>dedupeKey</code>
+    </li>
     <li>no previous Codex escalation for same <code>vibeMemoryId + distillationVersion</code></li>
   </ul>
   <p>Do not escalate:</p>
   <ul>
     <li>boilerplate-heavy content</li>
     <li>progress-only content</li>
-    <li>existing <code>duplicate</code> / <code>near_duplicate</code></li>
+    <li>
+      existing <code>duplicate</code> /
+      <code>near_duplicate</code>
+    </li>
     <li>logs generated by Codex escalation itself</li>
     <li>already terminal <code>knowledge_ready</code> source</li>
   </ul>
@@ -338,12 +359,12 @@
     </li>
     <li>Update agent-log-sync parsing to skip sessions with that marker.</li>
     <li>
-      Add a second guard in <code>vibe-finding-enqueue</code> to reject source metadata with
-      <code>generatedBy=contextStill.codexFindingEscalation</code>.
+      Add a second guard in <code>vibe-finding-enqueue</code> to reject source metadata
+      with <code>generatedBy=contextStill.codexFindingEscalation</code>.
     </li>
     <li>
-      Add a third guard in <code>findingCandidate</code> source loading to reject those memories if
-      they already exist.
+      Add a third guard in <code>findingCandidate</code> source loading to reject
+      those memories if they already exist.
     </li>
   </ul>
   <p>
@@ -358,15 +379,26 @@
       Capture daily counts for:
       <ul>
         <li><code>vibe_memories</code></li>
-        <li><code>finding_candidate_queue</code> by <code>last_outcome_kind</code></li>
+        <li>
+          <code>finding_candidate_queue</code> by
+          <code>last_outcome_kind</code>
+        </li>
         <li><code>found_candidates</code></li>
-        <li><code>covering_evidence_queue</code> by <code>last_outcome_kind</code></li>
+        <li>
+          <code>covering_evidence_queue</code> by
+          <code>last_outcome_kind</code>
+        </li>
         <li><code>finalize_distille_queue</code></li>
         <li><code>knowledge_items</code></li>
       </ul>
     </li>
-    <li>Capture provider target / lease distribution from <code>llm_provider_leases</code>.</li>
-    <li>Capture current <code>settings.v1</code> providerPools and taskRouting.</li>
+    <li>
+      Capture provider target / lease distribution from
+      <code>llm_provider_leases</code>.
+    </li>
+    <li>
+      Capture current <code>settings.v1</code> providerPools and taskRouting.
+    </li>
     <li>Record current <code>queue inspect --json</code>.</li>
     <li>Add a diagnostics note to the implementation PR or change summary.</li>
   </ul>
@@ -392,8 +424,8 @@ target/debug/context-stilld queue inspect --json
   <ul>
     <li>Normalize <code>RuntimeSettingsRoute.providerPoolId</code> as the primary route key.</li>
     <li>
-      Ensure <code>providerPoolIdsForQueue</code> or equivalent scheduler helper resolves queues by
-      route pool, not by provider name alone.
+      Ensure <code>providerPoolIdsForQueue</code> or equivalent scheduler helper resolves
+      queues by route pool, not by provider name alone.
     </li>
     <li>Add validation that all pool targets exist and are enabled.</li>
     <li>
@@ -466,7 +498,9 @@ cargo test -p context-stilld queue_lifecycle
         <li>target appears in multiple pools</li>
         <li>pool has no enabled target</li>
         <li>route points at disabled pool</li>
-        <li>pool target model does not match endpoint <code>/v1/models</code></li>
+        <li>
+          pool target model does not match endpoint <code>/v1/models</code>
+        </li>
       </ul>
     </li>
   </ul>
@@ -480,7 +514,8 @@ bun run typecheck
     <li>UI can save and reload pool definitions.</li>
     <li>Task route can point at a pool.</li>
     <li>
-      Existing settings without explicit pools are migrated to <code>local-llm-default</code>.
+      Existing settings without explicit pools are migrated to
+      <code>local-llm-default</code>.
     </li>
   </ul>
   <h3 id="phase-3-codex-escalation-trace-only">Phase 3: Codex Escalation Trace-Only</h3>
@@ -522,7 +557,9 @@ bunx vitest run test/vibe-finding-enqueue.service.test.ts
     <li>Codex is called only when trigger conditions match.</li>
     <li>Trace-only mode never inserts <code>found_candidates</code>.</li>
     <li>Codex-generated sessions/logs are excluded from Vibe memory ingestion.</li>
-    <li>Existing <code>findingCandidate</code> path behaves unchanged when flag is off.</li>
+    <li>
+      Existing <code>findingCandidate</code> path behaves unchanged when flag is off.
+    </li>
   </ul>
   <p>Stop conditions:</p>
   <ul>
@@ -543,7 +580,10 @@ bunx vitest run test/vibe-finding-enqueue.service.test.ts
   <ul>
     <li>Add <code>FINDING_CODEX_ESCALATION=write</code>.</li>
     <li>Insert accepted Codex candidates into <code>found_candidates</code>.</li>
-    <li>Enqueue <code>covering_evidence_queue</code> only after candidate persistence succeeds.</li>
+    <li>
+      Enqueue <code>covering_evidence_queue</code> only after candidate persistence
+      succeeds.
+    </li>
     <li>
       Mark escalation status:
       <ul>
@@ -598,8 +638,8 @@ target/debug/context-stilld queue inspect --json
   <p>Completion criteria:</p>
   <ul>
     <li>
-      <code>queue inspect --json</code> explains blocked reason as pool full, no eligible target,
-      paused queue, or provider cooldown.
+      <code>queue inspect --json</code> explains blocked reason as pool full, no eligible
+      target, paused queue, or provider cooldown.
     </li>
     <li>Provider busy does not create noisy failed rows.</li>
     <li>Unsupported model is surfaced as settings error.</li>
@@ -615,9 +655,14 @@ episodeDistiller -&gt; episode-ornith-pool
 </code></pre>
   <p>Success metrics:</p>
   <ul>
-    <li><code>findingCandidate</code> no longer consumes covering/finalize target.</li>
+    <li>
+      <code>findingCandidate</code> no longer consumes covering/finalize target.
+    </li>
     <li><code>coveringEvidence</code> no longer consumes finding target.</li>
-    <li><code>no_candidate</code> rate is measured against a stable Qwen finding route.</li>
+    <li>
+      <code>no_candidate</code> rate is measured against a stable Qwen finding
+      route.
+    </li>
     <li><code>knowledge_items/day</code> recovers without Codex.</li>
   </ul>
   <h3 id="slice-b-codex-trace-only">Slice B: Codex Trace-Only</h3>
@@ -639,8 +684,14 @@ maxEscalationsPerSource = 1
 </code></pre>
   <p>Success metrics:</p>
   <ul>
-    <li>Additional <code>found_candidates</code> from Codex pass covering at a useful rate.</li>
-    <li><code>off_topic</code> / <code>insufficient</code> does not spike.</li>
+    <li>
+      Additional <code>found_candidates</code> from Codex pass covering at a useful
+      rate.
+    </li>
+    <li>
+      <code>off_topic</code> /
+      <code>insufficient</code> does not spike.
+    </li>
     <li>No feedback loop appears in Vibe memory.</li>
   </ul>
   <h2 id="metrics">Metrics</h2>
@@ -723,14 +774,17 @@ sqlite3 -header -column data/context-still-core.sqlite \
       it avoids <code>.codex/sessions</code> self-ingestion.
     </li>
     <li>Should Gemma4 12B be restored as the covering pool target if available?</li>
-    <li>Should <code>finalizeDistille</code> share with covering or have its own small pool?</li>
     <li>
-      Do we want <code>round_robin_by_queue</code> in the first pool implementation, or is dedicated
-      pool partition enough?
+      Should <code>finalizeDistille</code> share with covering or have its own small
+      pool?
     </li>
     <li>
-      Should provider target health checks call <code>/v1/models</code> and validate configured
-      model IDs before queue workers start?
+      Do we want <code>round_robin_by_queue</code> in the first pool implementation, or is
+      dedicated pool partition enough?
+    </li>
+    <li>
+      Should provider target health checks call <code>/v1/models</code> and
+      validate configured model IDs before queue workers start?
     </li>
   </ul>
   <h2 id="decision-recommendation">Decision Recommendation</h2>

@@ -7,18 +7,20 @@
   </blockquote>
   <h2 id="purpose">Purpose</h2>
   <p>
-    <code>coveringEvidence</code> と <code>finalizeDistille</code> が同じ LLM provider
-    設定に見える場合、operator の期待どおり、covering の実行余力があるときに finalize
-    も処理される状態へ揃える。
+    <code>coveringEvidence</code> と
+    <code>finalizeDistille</code> が同じ LLM provider 設定に見える場合、operator
+    の期待どおり、covering の実行余力があるときに finalize も処理される状態へ揃える。
   </p>
   <p>
-    2026-06-26 の調査では、問題は LLM provider そのものではなかった。<code>coveringEvidence</code>
-    は <code>local-llm</code> かつ <code>providerPoolId=local-llm-default</code> で、<code
-      >com.context-still.covering-worker</code
+    2026-06-26 の調査では、問題は LLM provider そのものではなかった。<code
+      >coveringEvidence</code
     >
+    は <code>local-llm</code> かつ
+    <code>providerPoolId=local-llm-default</code> で、<code>com.context-still.covering-worker</code>
     が
     <code>src/cli/queue-supervisor.ts --continuous --queue coveringEvidence</code>
-    として常駐していた。一方で <code>finalizeDistille</code> は <code>provider=local-llm</code> だが
+    として常駐していた。一方で <code>finalizeDistille</code> は
+    <code>provider=local-llm</code> だが
     <code>providerPoolId</code> が空で、queue inspect では
     <code>pending=9 / runnablePending=9 / running=0 / lastHeartbeatAt=null</code> だった。
   </p>
@@ -26,8 +28,7 @@
   <ul>
     <li>provider 名は同じでも、provider pool scheduling 上は同じ pool に入っていない。</li>
     <li>
-      covering worker は <code>allowedQueues=[&quot;coveringEvidence&quot;]</code> 固定なので
-      finalize を見ない。
+      covering worker は <code>allowedQueues=[&quot;coveringEvidence&quot;]</code> 固定なので finalize を見ない。
     </li>
     <li>all-queue supervisor LaunchAgent は plist だけ残り、launchd にはロードされていない。</li>
     <li>
@@ -42,30 +43,35 @@
   <h2 id="desired-end-state">Desired End State</h2>
   <ul>
     <li>
-      <code>finalizeDistille</code> が <code>coveringEvidence</code> と同じ provider pool
-      を参照する。
+      <code>finalizeDistille</code> が
+      <code>coveringEvidence</code> と同じ provider pool を参照する。
     </li>
     <li>
       <code>coveringEvidence</code> 用の実行余力が空いたとき、同じ pool 内で
       <code>finalizeDistille</code> が claim 対象になる。
     </li>
     <li>
-      <code>queue inspect --json</code> で <code>finalizeDistille</code> の runnable pending
-      があるのに <code>running=0 / lastHeartbeatAt=null</code> のまま放置されない。
+      <code>queue inspect --json</code> で
+      <code>finalizeDistille</code> の runnable pending があるのに
+      <code>running=0 / lastHeartbeatAt=null</code> のまま放置されない。
     </li>
     <li>
       operator が provider 名だけでなく provider pool / allowed queues / executor ownership
       を確認できる。
     </li>
     <li>
-      <code>coveringEvidence</code> の処理を壊さず、<code>finalizeDistille</code> が pending から
-      completed/skipped/failed のいずれかへ実際に遷移する。
+      <code>coveringEvidence</code> の処理を壊さず、<code
+        >finalizeDistille</code
+      >
+      が pending から completed/skipped/failed のいずれかへ実際に遷移する。
     </li>
     <li>job が完了扱いになるのは downstream mutation が確認済みの場合だけである。</li>
   </ul>
   <h2 id="non-goals">Non-Goals</h2>
   <ul>
-    <li><code>finalizeDistille</code> の business logic や保存形式を再設計しない。</li>
+    <li>
+      <code>finalizeDistille</code> の business logic や保存形式を再設計しない。
+    </li>
     <li>
       <code>coverEvidence</code> の判定プロンプトや
       <code>knowledge_ready</code> 条件をこの計画に混ぜない。
@@ -85,24 +91,28 @@
   <ul>
     <li>
       <code>settings.v1</code> から
-      <code>coverEvidence.sourceSupport</code>、<code>coverEvidence.externalEvidence</code>、<code
-        >finalizeDistille</code
-      >
-      の <code>provider</code>、<code>providerPoolId</code>、<code>model</code> を採取する。
+      <code>coverEvidence.sourceSupport</code
+      >、<code>coverEvidence.externalEvidence</code>、<code>finalizeDistille</code>
+      の
+      <code>provider</code
+      >、<code>providerPoolId</code>、<code>model</code>
+      を採取する。
     </li>
     <li>
-      <code>queue inspect --json</code> で <code>coveringEvidence</code> と
+      <code>queue inspect --json</code> で
+      <code>coveringEvidence</code> と
       <code>finalizeDistille</code> の status counts、runnable pending、running、last
       heartbeat、active leases を採取する。
     </li>
     <li>launchd と process tree で、実際に起動している queue worker を確認する。</li>
     <li>
-      <code>distillation_queue_events</code> で直近の <code>coveringEvidence</code> /
-      <code>finalizeDistille</code> の claimed/completed/failed/retried を確認する。
+      <code>distillation_queue_events</code> で直近の
+      <code>coveringEvidence</code> / <code>finalizeDistille</code> の
+      claimed/completed/failed/retried を確認する。
     </li>
     <li>
-      <code>finalizeDistille</code> の pending row が <code>knowledge_ready</code> evidence
-      に対応していることを確認する。
+      <code>finalizeDistille</code> の pending row が
+      <code>knowledge_ready</code> evidence に対応していることを確認する。
     </li>
   </ul>
   <p>Verification:</p>
@@ -133,15 +143,16 @@ sqlite3 -header -column data/context-still-core.sqlite \
     T1: Normalize Finalize Route To The Shared Provider Pool
   </h3>
   <p>
-    Goal: <code>finalizeDistille</code> が <code>coveringEvidence</code> と同じ provider pool
-    scheduling に参加できるようにする。
+    Goal: <code>finalizeDistille</code> が
+    <code>coveringEvidence</code> と同じ provider pool scheduling
+    に参加できるようにする。
   </p>
   <p>Tasks:</p>
   <ul>
     <li>
       runtime settings normalization で、<code>finalizeDistille.providerPoolId</code>
-      が空で、provider/model が <code>coverEvidence</code> と同じ場合に、明示的な provider pool
-      へ解決されるべきか確認する。
+      が空で、provider/model が <code>coverEvidence</code> と同じ場合に、明示的な
+      provider pool へ解決されるべきか確認する。
     </li>
     <li>
       既存 UI / repository / defaults の責務を確認し、設定保存時に providerPoolId
@@ -155,8 +166,8 @@ sqlite3 -header -column data/context-still-core.sqlite \
           <code>local-llm-default</code> へ保存する。
         </li>
         <li>
-          scheduler の <code>providerPoolIdsForQueue(&quot;finalizeDistille&quot;)</code> が
-          provider/model から既存 pool を解決できるようにする。
+          scheduler の <code>providerPoolIdsForQueue(&quot;finalizeDistille&quot;)</code> が provider/model から既存 pool
+          を解決できるようにする。
         </li>
       </ul>
     </li>
@@ -201,18 +212,20 @@ bunx vitest run test/settings-runtime-cache.test.ts test/components/admin/settin
   <ul>
     <li>
       現在の <code>com.context-still.covering-worker</code> は
-      <code>--queue coveringEvidence</code> 固定であることを前提に、LaunchAgent 生成元または setup
-      script を特定する。
+      <code>--queue coveringEvidence</code> 固定であることを前提に、LaunchAgent 生成元または
+      setup script を特定する。
     </li>
     <li>
       望ましい起動単位を決める。
       <ul>
         <li>
-          Option A: shared provider worker として <code>--queue</code> を指定せず、全 queue の pool
-          scheduler を使う。
+          Option A: shared provider worker として
+          <code>--queue</code> を指定せず、全 queue の pool scheduler
+          を使う。
         </li>
         <li>
-          Option B: <code>queue-supervisor.ts</code> に複数 <code>--queue</code> 指定を追加し、<code
+          Option B: <code>queue-supervisor.ts</code> に複数
+          <code>--queue</code> 指定を追加し、<code
             >coveringEvidence,finalizeDistille</code
           >
           だけを見る shared lane を作る。
@@ -226,7 +239,9 @@ bunx vitest run test/settings-runtime-cache.test.ts test/components/admin/settin
       余力の共有ではなく別 worker になる。
     </li>
     <li>
-      <code>queue-supervisor.ts</code> が複数 queue を受けられない場合、<code>--queue</code>
+      <code>queue-supervisor.ts</code> が複数 queue を受けられない場合、<code
+        >--queue</code
+      >
       を複数回指定できるようにするか、<code>--queues coveringEvidence,finalizeDistille</code>
       を追加する。
     </li>
@@ -253,7 +268,8 @@ bun run src/cli/queue-supervisor.ts --once --queue coveringEvidence --queue fina
     </li>
     <li><code>priorityQueuesForProviderPool</code> に finalize が含まれる。</li>
     <li>
-      <code>finalizeDistille</code> pending が <code>running</code> または terminal state へ進む。
+      <code>finalizeDistille</code> pending が
+      <code>running</code> または terminal state へ進む。
     </li>
   </ul>
   <p>Stop conditions:</p>
@@ -266,8 +282,8 @@ bun run src/cli/queue-supervisor.ts --once --queue coveringEvidence --queue fina
     T3: Preserve Unpooled Finalize Behavior As A Fallback Only
   </h3>
   <p>
-    Goal: <code>finalizeDistille</code> が providerPoolId を持つ場合は pool scheduling
-    に入り、providerPoolId がない設定では既存の unpooled behavior を壊さない。
+    Goal: <code>finalizeDistille</code> が providerPoolId を持つ場合は pool
+    scheduling に入り、providerPoolId がない設定では既存の unpooled behavior を壊さない。
   </p>
   <p>Tasks:</p>
   <ul>
@@ -329,9 +345,13 @@ target/debug/context-stilld queue inspect --json
   <p>Completion criteria:</p>
   <ul>
     <li>shared worker の process args に finalize が含まれる。</li>
-    <li><code>finalizeDistille</code> の <code>lastHeartbeatAt</code> が更新される。</li>
     <li>
-      <code>finalizeDistille</code> pending が減る、または失敗理由付き terminal state へ進む。
+      <code>finalizeDistille</code> の
+      <code>lastHeartbeatAt</code> が更新される。
+    </li>
+    <li>
+      <code>finalizeDistille</code> pending が減る、または失敗理由付き terminal state
+      へ進む。
     </li>
     <li>obsolete all-queue plist が runtime truth と矛盾しない。</li>
   </ul>
@@ -348,9 +368,10 @@ target/debug/context-stilld queue inspect --json
     <li>covering pending/running を確認する。</li>
     <li>finalize pending のうち1件を対象に、shared worker または one-shot で処理する。</li>
     <li>
-      <code>finalize_distille_queue</code> の status、<code>knowledge_items</code> の作成、<code
-        >distillation_queue_events</code
+      <code>finalize_distille_queue</code> の status、<code
+        >knowledge_items</code
       >
+      の作成、<code>distillation_queue_events</code>
       の claimed/completed を確認する。
     </li>
     <li>
@@ -378,8 +399,8 @@ sqlite3 -header -column data/context-still-core.sqlite \
       <code>knowledge_id</code> が入っている。
     </li>
     <li>
-      terminal state が <code>failed</code> / <code>skipped</code> の場合、理由が operator
-      に読める。
+      terminal state が <code>failed</code> /
+      <code>skipped</code> の場合、理由が operator に読める。
     </li>
     <li>covering worker の通常処理に回帰がない。</li>
   </ul>
@@ -387,7 +408,9 @@ sqlite3 -header -column data/context-still-core.sqlite \
   <ul>
     <li>live finalize が DB 書き込み途中で不整合になる。</li>
     <li>provider が不通で、retry/backoff なしに同じ job を再取得し続ける。</li>
-    <li><code>knowledge_ready</code> evidence ではない row を finalize しようとする。</li>
+    <li>
+      <code>knowledge_ready</code> evidence ではない row を finalize しようとする。
+    </li>
   </ul>
   <h2 id="test-gate">Test Gate</h2>
   <p>実装後の最低ゲート:</p>
@@ -399,19 +422,20 @@ git diff --check
   <pre><code class="language-bash">bun run verify
 </code></pre>
   <p>
-    <code>bun run verify</code> は広いので、最初の修正段階では focused tests と live drain smoke
-    を優先し、commit 前または最終確認で実行する。
+    <code>bun run verify</code> は広いので、最初の修正段階では focused tests と
+    live drain smoke を優先し、commit 前または最終確認で実行する。
   </p>
   <h2 id="completion-criteria">Completion Criteria</h2>
   <ul>
     <li><code>finalizeDistille.providerPoolId</code> が covering と同じ pool を指す。</li>
     <li>
-      shared worker の <code>allowedQueues</code> に <code>coveringEvidence</code> と
+      shared worker の <code>allowedQueues</code> に
+      <code>coveringEvidence</code> と
       <code>finalizeDistille</code> が含まれる。
     </li>
     <li>
-      <code>queue inspect --json</code> で finalize pending があるとき、runner/heartbeat/lease
-      の状態が説明可能になる。
+      <code>queue inspect --json</code> で finalize pending
+      があるとき、runner/heartbeat/lease の状態が説明可能になる。
     </li>
     <li>covering が空いたとき、finalize が claim される。</li>
     <li>live DB で pending finalize が少なくとも1件処理される。</li>
@@ -420,12 +444,13 @@ git diff --check
   <h2 id="operational-notes">Operational Notes</h2>
   <ul>
     <li>
-      provider 名一致だけでは不十分である。scheduler は <code>providerPoolId</code> と
+      provider 名一致だけでは不十分である。scheduler は
+      <code>providerPoolId</code> と
       <code>allowedQueues</code> を見る。
     </li>
     <li>
-      <code>--queue coveringEvidence</code> 固定 worker は、covering が idle でも finalize を claim
-      しない。
+      <code>--queue coveringEvidence</code> 固定 worker は、covering が idle でも finalize を
+      claim しない。
     </li>
     <li>
       <code>finalizeDistille</code> が providerPoolId 空のままだと pooled scheduling
@@ -435,7 +460,8 @@ git diff --check
       all-queue supervisor plist が存在しても、launchd にロードされていなければ実行経路ではない。
     </li>
     <li>
-      <code>queue inspect</code> の <code>scheduled</code> 表示は、business executor が finalize
+      <code>queue inspect</code> の
+      <code>scheduled</code> 表示は、business executor が finalize
       を処理している証拠ではない。
     </li>
   </ul>

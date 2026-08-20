@@ -7,17 +7,19 @@
   </blockquote>
   <h2 id="背景">背景</h2>
   <p>
-    <code>covering_evidence_queue</code> の <code>external_parse_failed</code> 調査では、失敗点は
-    Web fetch ではなく <code>cover-evidence:external-final</code> の LLM 出力 parse だった。<code
+    <code>covering_evidence_queue</code> の
+    <code>external_parse_failed</code> 調査では、失敗点は Web fetch ではなく
+    <code>cover-evidence:external-final</code> の LLM 出力 parse だった。<code
       >parse_cover_evidence_result</code
     >
-    の <code>contentPreview</code> は fetch 本文ではなく、parse 不能だった最終 LLM 出力の診断用
-    preview である。
+    の <code>contentPreview</code> は fetch 本文ではなく、parse 不能だった最終 LLM
+    出力の診断用 preview である。
   </p>
   <p>
-    一方で、現在の <code>coverEvidence</code> は source evidence で判断できる candidate でも
-    <code>runExternalEvidence</code> に進みやすく、Web 検索、URL fetch、外部 evidence を含む最終 LLM
-    判定まで実行される。これは token 使用量、parse failure 面積、prompt injection 面積を増やす。
+    一方で、現在の <code>coverEvidence</code> は source evidence で判断できる
+    candidate でも <code>runExternalEvidence</code> に進みやすく、Web 検索、URL
+    fetch、外部 evidence を含む最終 LLM 判定まで実行される。これは token 使用量、parse failure
+    面積、prompt injection 面積を増やす。
   </p>
   <p>
     この計画では、新しい中間要約レイヤーや永続テーブルを増やさず、既存の source
@@ -32,17 +34,19 @@
     <code>/Users/y.noguchi/Code/prompt-shield</code> を確認した。
   </p>
   <p>
-    <code>prompt-shield</code> は TypeScript SDK <code>@prompt-shield/sdk</code> と MCP package
-    を持ち、次の概念を提供している。
+    <code>prompt-shield</code> は TypeScript SDK
+    <code>@prompt-shield/sdk</code> と MCP package を持ち、次の概念を提供している。
   </p>
   <ul>
     <li>
-      <code>scanText</code> / <code>extractHtml</code>: 外部 text / HTML を安全な text と finding
-      付き reference にする。
+      <code>scanText</code> / <code>extractHtml</code>:
+      外部 text / HTML を安全な text と finding 付き reference にする。
     </li>
     <li>
-      <code>decidePolicy</code>: source trust、finding、requested action を合わせて
-      <code>deny</code> / <code>require_approval</code> / <code>allow_with_warning</code> /
+      <code>decidePolicy</code>: source trust、finding、requested action
+      を合わせて <code>deny</code> /
+      <code>require_approval</code> /
+      <code>allow_with_warning</code> /
       <code>allow</code> を返す。
     </li>
     <li>
@@ -50,22 +54,26 @@
       <code>tainted</code> として扱う。
     </li>
     <li>
-      read-only action: <code>summarize</code> / <code>answer_with_citation</code> /
-      <code>extract_facts</code> は tainted source でも citation 付き warning で利用できる。
+      read-only action: <code>summarize</code> /
+      <code>answer_with_citation</code> /
+      <code>extract_facts</code> は tainted source でも citation 付き warning
+      で利用できる。
     </li>
     <li>
       promotion guard: untrusted source からの <code>write_memory</code> /
-      <code>create_procedure</code> / <code>create_skill</code> は approval 対象、policy override は
-      deny 対象。
+      <code>create_procedure</code> /
+      <code>create_skill</code> は approval 対象、policy override は deny 対象。
     </li>
     <li>
-      <code>safeFetch</code>: URL fetch、HTML/text scan、policy decision をまとめる高レベル API。
+      <code>safeFetch</code>: URL fetch、HTML/text scan、policy decision
+      をまとめる高レベル API。
     </li>
   </ul>
   <p>
     この計画では、<code>prompt-shield</code> を直接依存にするかどうかを Phase 3
-    で判断する。直接依存が難しい場合でも、<code>contextStill</code> 側には同じ責務の adapter
-    interface を先に置き、外部由来 evidence を <code>tainted</code> として扱う境界を固定する。
+    で判断する。直接依存が難しい場合でも、<code>contextStill</code>
+    側には同じ責務の adapter interface を先に置き、外部由来 evidence を
+    <code>tainted</code> として扱う境界を固定する。
   </p>
   <h2 id="実装開始可否レビュー">実装開始可否レビュー</h2>
   <p>この文書は、次の条件を満たしたら実装に移れる状態とする。</p>
@@ -90,7 +98,8 @@
         <td>新規中間レイヤーの抑制</td>
         <td>OK</td>
         <td>
-          route decision、guard decision、fetch extraction は既存 <code>tool_events</code> /
+          route decision、guard decision、fetch extraction は既存
+          <code>tool_events</code> /
           <code>metadata</code> に残し、新規永続 table は作らない。
         </td>
       </tr>
@@ -98,7 +107,10 @@
         <td>source-first の境界</td>
         <td>OK</td>
         <td>
-          <code>domain.ts</code> の dedupe 後、<code>runExternalEvidence</code> 前に限定する。
+          <code>domain.ts</code> の dedupe 後、<code
+            >runExternalEvidence</code
+          >
+          前に限定する。
         </td>
       </tr>
       <tr>
@@ -113,7 +125,9 @@
         <td>prompt injection guard</td>
         <td>OK</td>
         <td>
-          <code>ExternalEvidenceGuard</code> adapter を先に定義し、<code>prompt-shield</code>
+          <code>ExternalEvidenceGuard</code> adapter を先に定義し、<code
+            >prompt-shield</code
+          >
           直接依存は adapter の実装候補に留める。
         </td>
       </tr>
@@ -121,8 +135,8 @@
         <td>依存追加</td>
         <td>OK</td>
         <td>
-          Phase 1 / 2 は新規依存なし。Phase 3 で <code>@prompt-shield/sdk</code> が使えない場合は
-          local fallback で進める。
+          Phase 1 / 2 は新規依存なし。Phase 3 で
+          <code>@prompt-shield/sdk</code> が使えない場合は local fallback で進める。
         </td>
       </tr>
       <tr>
@@ -136,7 +150,8 @@
         <td>
           <code>../promptGuard</code> が存在しない点は
           <code>prompt-shield</code> 確認で代替済み。実際の
-          <code>promptGuard</code> が後で提示された場合だけ Phase 3 を再レビューする。
+          <code>promptGuard</code> が後で提示された場合だけ Phase 3
+          を再レビューする。
         </td>
       </tr>
     </tbody>
@@ -150,8 +165,8 @@
     </li>
     <li>
       <code>src/modules/coverEvidence/llm-runner.ts</code> には source-only の
-      <code>runValueAssessment</code> が存在するが、main path の外部 evidence 分岐前 gate
-      としては使われていない。
+      <code>runValueAssessment</code> が存在するが、main path の外部 evidence 分岐前
+      gate としては使われていない。
     </li>
     <li>
       <code>src/modules/coverEvidence/helpers.ts</code> の
@@ -163,24 +178,33 @@
   <h3 id="fetch_content">fetch_content</h3>
   <ul>
     <li>
-      <code>src/modules/distillation/url-fetcher.ts</code> は <code>script</code> /
-      <code>style</code> / <code>noscript</code> / <code>svg</code> / <code>nav</code> /
-      <code>header</code> / <code>footer</code> / <code>aside</code> を regex で落とし、<code
+      <code>src/modules/distillation/url-fetcher.ts</code> は
+      <code>script</code> /
+      <code>style</code> /
+      <code>noscript</code> /
+      <code>svg</code> /
+      <code>nav</code> /
+      <code>header</code> /
+      <code>footer</code> /
+      <code>aside</code> を regex で落とし、<code
         >sanitize-html</code
       >
       で全 tag を剥がして text 化している。
     </li>
     <li>
-      <code>main</code> / <code>article</code> / <code>[role=&quot;main&quot;]</code> /
-      <code>#content</code> / <code>.content</code> のような本文領域優先抽出はない。
+      <code>main</code> /
+      <code>article</code> /
+      <code>[role=&quot;main&quot;]</code> /
+      <code>#content</code> /
+      <code>.content</code> のような本文領域優先抽出はない。
     </li>
     <li>
-      <code>node-html-markdown</code> は readFile の markdown 化にはあるが、Web fetch path
-      では使われていない。
+      <code>node-html-markdown</code> は readFile の markdown 化にはあるが、Web fetch
+      path では使われていない。
     </li>
     <li>
-      tool result は char budget の <code>resultMaxChars</code> で truncate される。per-site token
-      budget ではない。
+      tool result は char budget の <code>resultMaxChars</code> で truncate
+      される。per-site token budget ではない。
     </li>
     <li>
       coverEvidence の外部 final prompt では、複数 fetch 結果の JSON を結合し、<code
@@ -205,20 +229,23 @@
     <tbody>
       <tr>
         <td><code>src/modules/coverEvidence/domain.ts</code></td>
-        <td>dedupe 後、<code>runExternalEvidence</code> 前に source-first route を追加する。</td>
+        <td>
+          dedupe 後、<code>runExternalEvidence</code> 前に source-first route
+          を追加する。
+        </td>
       </tr>
       <tr>
         <td><code>src/modules/coverEvidence/helpers.ts</code></td>
         <td>
-          <code>requiresExternalEvidence(candidate)</code> を route 判定で使い、必要なら route
-          reason helper を追加する。
+          <code>requiresExternalEvidence(candidate)</code> を route 判定で使い、必要なら route reason
+          helper を追加する。
         </td>
       </tr>
       <tr>
         <td><code>src/modules/coverEvidence/llm-runner.ts</code></td>
         <td>
-          <code>combineFetchResults</code>、external final prompt input、fetch 選択上限、guarded
-          excerpt handling を変更する。
+          <code>combineFetchResults</code>、external final prompt input、fetch
+          選択上限、guarded excerpt handling を変更する。
         </td>
       </tr>
       <tr>
@@ -239,13 +266,14 @@
       <tr>
         <td><code>src/modules/distillation/distillation-tools.service.ts</code></td>
         <td>
-          <code>fetch_content</code> 呼び出しに coverEvidence profile / max token option
-          を渡せるようにする。
+          <code>fetch_content</code> 呼び出しに coverEvidence profile / max token
+          option を渡せるようにする。
         </td>
       </tr>
       <tr>
         <td>
-          <code>src/config.ts</code> / <code>src/config.types.ts</code> /
+          <code>src/config.ts</code> /
+          <code>src/config.types.ts</code> /
           <code>src/constants.ts</code>
         </td>
         <td>
@@ -345,7 +373,9 @@
     <li>Web fetch 結果の中間要約を保存する新レイヤーを作らない。</li>
     <li>Web snippet だけを根拠に knowledge を作らない。</li>
     <li>外部 Web evidence だけで internal repo / runtime / queue の事実を上書きしない。</li>
-    <li><code>finalizeDistille</code> や knowledge repository の広範な再設計はしない。</li>
+    <li>
+      <code>finalizeDistille</code> や knowledge repository の広範な再設計はしない。
+    </li>
     <li>
       <code>external_parse_failed</code> の診断用
       <code>contentPreview</code> を本文保存用途に転用しない。
@@ -355,8 +385,8 @@
   <h3 id="section-1-source-first-gate">1. Source-first gate</h3>
   <p>dedupe 後、外部 evidence を呼ぶ前に source-only 判定を入れる。</p>
   <p>
-    分類は永続化しない一時判定に留める。保存するのは既存 <code>tool_events</code> 内の診断 event
-    だけにする。
+    分類は永続化しない一時判定に留める。保存するのは既存
+    <code>tool_events</code> 内の診断 event だけにする。
   </p>
   <pre><code class="language-ts">type CoverEvidenceRoute =
   | {
@@ -378,7 +408,8 @@
   <ul>
     <li>
       既存 <code>runValueAssessment</code> を main path に戻し、source-only で
-      <code>knowledge_ready</code> / <code>insufficient</code> を判定する。
+      <code>knowledge_ready</code> /
+      <code>insufficient</code> を判定する。
     </li>
     <li>
       deterministic pre-check として既存
@@ -403,8 +434,9 @@
       <code>evidence_coverage_results.tool_events</code> に残す。新しい保存先は作らない。
     </li>
     <li>
-      <code>source_result</code> が <code>parse_failed</code> の場合は external fallback
-      しない。parse contract の問題として扱う。
+      <code>source_result</code> が
+      <code>parse_failed</code> の場合は external fallback しない。parse
+      contract の問題として扱う。
     </li>
   </ul>
   <h3 id="section-2-fetch-extractor-を-evidence-excerpt-化する">
@@ -422,9 +454,13 @@
       HTML の場合は本文領域を優先抽出する。
       <ul>
         <li>
-          優先 selector: <code>main</code>, <code>article</code>,
-          <code>[role=&quot;main&quot;]</code>, <code>#content</code>, <code>.content</code>,
-          <code>.post</code>, <code>.entry-content</code>
+          優先 selector: <code>main</code>,
+          <code>article</code>,
+          <code>[role=&quot;main&quot;]</code>,
+          <code>#content</code>,
+          <code>.content</code>,
+          <code>.post</code>,
+          <code>.entry-content</code>
         </li>
         <li>fallback: noise block を削った <code>body</code></li>
       </ul>
@@ -433,9 +469,16 @@
       削除対象:
       <ul>
         <li>
-          <code>script</code>, <code>style</code>, <code>noscript</code>, <code>svg</code>,
-          <code>nav</code>, <code>header</code>, <code>footer</code>, <code>aside</code>,
-          <code>form</code>, <code>button</code>
+          <code>script</code>,
+          <code>style</code>,
+          <code>noscript</code>,
+          <code>svg</code>,
+          <code>nav</code>,
+          <code>header</code>,
+          <code>footer</code>,
+          <code>aside</code>,
+          <code>form</code>,
+          <code>button</code>
         </li>
         <li>HTML comment</li>
         <li>hidden content と疑わしい low-trust attribute</li>
@@ -443,22 +486,28 @@
     </li>
     <li>
       text 化は既存 <code>sanitize-html</code> に加え、可能なら既存依存の
-      <code>node-html-markdown</code> または <code>prompt-shield</code> の
+      <code>node-html-markdown</code> または
+      <code>prompt-shield</code> の
       <code>extractHtml</code> を使う。
     </li>
-    <li>per-site budget は <code>estimateTextTokens</code> ベースで 3000 token にする。</li>
+    <li>
+      per-site budget は <code>estimateTextTokens</code> ベースで 3000 token にする。
+    </li>
     <li>fetch 上限は coverEvidence external branch では最大 5 URL にする。</li>
   </ul>
   <p>
-    Phase 2 では新規依存を追加しない。<code>node-html-markdown</code> は既に dependency
-    にあるため利用可能だが、まずは既存 <code>sanitize-html</code> と selector
-    優先抽出で進める。<code>prompt-shield</code> の <code>extractHtml</code> は Phase 3 adapter
-    内の候補にする。
+    Phase 2 では新規依存を追加しない。<code>node-html-markdown</code> は既に
+    dependency にあるため利用可能だが、まずは既存 <code>sanitize-html</code> と
+    selector 優先抽出で進める。<code>prompt-shield</code> の
+    <code>extractHtml</code> は Phase 3 adapter 内の候補にする。
   </p>
   <p>
-    tool result の shape は既存 <code>DistillationToolResult.content</code> 互換を保ちつつ、content
-    JSON を短くする。<code>content</code> には raw HTML や raw page text を入れず、最大 3000 token
-    の <code>excerpt</code> を入れる。
+    tool result の shape は既存
+    <code>DistillationToolResult.content</code> 互換を保ちつつ、content JSON を短くする。<code
+      >content</code
+    >
+    には raw HTML や raw page text を入れず、最大 3000 token の
+    <code>excerpt</code> を入れる。
   </p>
   <pre><code class="language-json">{
   &quot;url&quot;: &quot;https://example.com/docs&quot;,
@@ -473,7 +522,9 @@
   &quot;truncated&quot;: true
 }
 </code></pre>
-  <p><code>metadata</code> には prompt 用でない operational metadata を残す。</p>
+  <p>
+    <code>metadata</code> には prompt 用でない operational metadata を残す。
+  </p>
   <pre><code class="language-ts">type FetchEvidenceMetadata = {
   url: string;
   finalUrl: string;
@@ -533,30 +584,35 @@ type ExternalEvidenceGuard = {
   <p>requested action は 2 段階で扱う。</p>
   <ul>
     <li>
-      fetch excerpt を読む段階: <code>extract_facts</code> または <code>answer_with_citation</code>
+      fetch excerpt を読む段階: <code>extract_facts</code> または
+      <code>answer_with_citation</code>
     </li>
     <li>
-      knowledge に昇格する段階: <code>write_memory</code> / <code>create_procedure</code> 相当
+      knowledge に昇格する段階: <code>write_memory</code> /
+      <code>create_procedure</code> 相当
     </li>
   </ul>
   <p>制約:</p>
   <ul>
-    <li>外部 Web は finding が 0 でも <code>tainted: true</code> のままにする。</li>
+    <li>
+      外部 Web は finding が 0 でも <code>tainted: true</code> のままにする。
+    </li>
     <li>
       <code>deny</code> は final prompt に渡さず、tool event に
       <code>prompt_injection_blocked</code> として残す。
     </li>
     <li>
-      <code>allow_with_warning</code> は final prompt に渡してよいが、citation required とする。
+      <code>allow_with_warning</code> は final prompt に渡してよいが、citation required
+      とする。
     </li>
     <li>
-      <code>write_memory</code> 相当の昇格は、Web evidence 単独では許可しない。source evidence
-      が主根拠で、Web は補助根拠に限定する。
+      <code>write_memory</code> 相当の昇格は、Web evidence
+      単独では許可しない。source evidence が主根拠で、Web は補助根拠に限定する。
     </li>
     <li>
-      <code>PolicyOverride</code>, <code>HiddenInstruction</code>, <code>ToolInvocation</code>,
-      <code>SourceSuppression</code>, <code>SecretExfiltration</code> は tool event に finding
-      category を残す。
+      <code>PolicyOverride</code>, <code>HiddenInstruction</code>,
+      <code>ToolInvocation</code>, <code>SourceSuppression</code>,
+      <code>SecretExfiltration</code> は tool event に finding category を残す。
     </li>
     <li>
       guard が unavailable のときは fail-open にせず、外部 evidence の信頼度を下げる。external
@@ -565,15 +621,21 @@ type ExternalEvidenceGuard = {
   </ul>
   <p>統合案:</p>
   <ol>
-    <li><code>ExternalEvidenceGuard</code> interface と local fallback scanner を先に実装する。</li>
+    <li>
+      <code>ExternalEvidenceGuard</code> interface と local fallback scanner
+      を先に実装する。
+    </li>
     <li>
       fallback scanner は hidden instruction、tool invocation、source suppression、policy
       override、secret exfiltration 風 pattern を検知する。
     </li>
-    <li><code>@prompt-shield/sdk</code> は adapter 実装として後から差し替え可能にする。</li>
     <li>
-      <code>@prompt-shield/sdk</code> を使う場合は <code>scanText</code> /
-      <code>extractHtml</code> + <code>decidePolicy</code> を adapter 内に閉じ込める。<code
+      <code>@prompt-shield/sdk</code> は adapter 実装として後から差し替え可能にする。
+    </li>
+    <li>
+      <code>@prompt-shield/sdk</code> を使う場合は
+      <code>scanText</code> / <code>extractHtml</code> +
+      <code>decidePolicy</code> を adapter 内に閉じ込める。<code
         >PromptShield.safeFetch</code
       >
       は contextStill 既存の URL safety / cache / r.jina fallback
@@ -586,8 +648,8 @@ type ExternalEvidenceGuard = {
   </ol>
   <h3 id="section-4-external-final-prompt-の縮小">4. External final prompt の縮小</h3>
   <p>
-    <code>external-final</code> には raw page JSON や長い本文を渡さず、source evidence と guarded
-    web evidence excerpts だけを渡す。
+    <code>external-final</code> には raw page JSON や長い本文を渡さず、source
+    evidence と guarded web evidence excerpts だけを渡す。
   </p>
   <p>prompt ルール:</p>
   <ul>
@@ -599,9 +661,9 @@ type ExternalEvidenceGuard = {
     </li>
     <li>Web evidence は source evidence を補助するためにだけ使う。</li>
     <li>
-      Web evidence だけで <code>knowledge_ready</code> にしない。ただし candidate 自体が公開 API /
-      docs / pricing / package の事実で、Web が一次ソースの場合は citation と guard decision
-      を必須にする。
+      Web evidence だけで <code>knowledge_ready</code> にしない。ただし candidate
+      自体が公開 API / docs / pricing / package の事実で、Web が一次ソースの場合は citation と guard
+      decision を必須にする。
     </li>
     <li>search result snippet は evidence ではなく URL selection の材料に限定する。</li>
   </ul>
@@ -621,7 +683,8 @@ type ExternalEvidenceGuard = {
   <p>既定値変更:</p>
   <ul>
     <li>
-      <code>APP_CONSTANTS.distillationCoverEvidenceFetchMaxCalls</code>: <code>8</code> から
+      <code>APP_CONSTANTS.distillationCoverEvidenceFetchMaxCalls</code>:
+      <code>8</code> から
       <code>5</code> に下げる。
     </li>
     <li>
@@ -629,16 +692,18 @@ type ExternalEvidenceGuard = {
       <code>3000</code> を追加する。
     </li>
     <li>
-      <code>WEB_EVIDENCE_PROMPT_TOKEN_BUDGET</code>: 既存 15k を維持するが、config
-      化する場合は既定値 15k のままにする。
+      <code>WEB_EVIDENCE_PROMPT_TOKEN_BUDGET</code>: 既存 15k を維持するが、config 化する場合は既定値
+      15k のままにする。
     </li>
   </ul>
   <h2 id="実装手順">実装手順</h2>
   <h3 id="phase-1-source-first-gate">Phase 1: Source-first gate</h3>
   <ol>
     <li>
-      <code>domain.ts</code> の dedupe 後、<code>runExternalEvidence</code> 前に route
-      判定を追加する。
+      <code>domain.ts</code> の dedupe 後、<code
+        >runExternalEvidence</code
+      >
+      前に route 判定を追加する。
     </li>
     <li><code>requiresExternalEvidence</code> を deterministic signal として使う。</li>
     <li>
@@ -649,14 +714,17 @@ type ExternalEvidenceGuard = {
     </li>
     <li>
       <code>runValueAssessment</code> の parse failure は
-      <code>value_parse_failed</code> のまま扱い、external fallback の理由にしない。parse failure を
-      Web で隠さない。
+      <code>value_parse_failed</code> のまま扱い、external fallback
+      の理由にしない。parse failure を Web で隠さない。
     </li>
     <li>tool event に route decision を残す。</li>
   </ol>
   <p>完了条件:</p>
   <ul>
-    <li><code>runExternalEvidence</code> が呼ばれる条件が code 上で 1 箇所に集約されている。</li>
+    <li>
+      <code>runExternalEvidence</code> が呼ばれる条件が code 上で 1
+      箇所に集約されている。
+    </li>
     <li>
       source-supported test で
       <code>usageSource: &quot;cover-evidence:external-*&quot;</code> が発生しない。
@@ -667,7 +735,10 @@ type ExternalEvidenceGuard = {
     Phase 2: fetch_content の本文抽出と token cap
   </h3>
   <ol>
-    <li><code>url-fetcher.ts</code> に <code>extractReadableEvidence</code> を追加する。</li>
+    <li>
+      <code>url-fetcher.ts</code> に
+      <code>extractReadableEvidence</code> を追加する。
+    </li>
     <li>
       HTML title、extractionMode、selector match、truncated、estimatedTokens を metadata に残す。
     </li>
@@ -675,18 +746,18 @@ type ExternalEvidenceGuard = {
     <li>coverEvidence external branch の fetch URL 選択を最大 5 にする。</li>
     <li>
       既存 distillation path への影響を避けるため、必要なら
-      <code>fetchContent(rawUrl, { profile: &quot;coverEvidence&quot; })</code> のように profile
-      を分ける。
+      <code>fetchContent(rawUrl, { profile: &quot;coverEvidence&quot; })</code> のように profile を分ける。
     </li>
   </ol>
   <p>完了条件:</p>
   <ul>
     <li>
-      <code>fetch_content</code> result の prompt 向け本文が 3000 estimated token 以下になる。
+      <code>fetch_content</code> result の prompt 向け本文が 3000 estimated token
+      以下になる。
     </li>
     <li>
-      <code>metadata.estimatedTokens</code> と <code>metadata.truncated</code> が test
-      で確認される。
+      <code>metadata.estimatedTokens</code> と
+      <code>metadata.truncated</code> が test で確認される。
     </li>
     <li>non-coverEvidence の tool result 互換が壊れていない。</li>
   </ul>
@@ -698,29 +769,34 @@ type ExternalEvidenceGuard = {
       pattern を検知する。
     </li>
     <li>
-      <code>prompt-shield</code> SDK が利用可能なら <code>@prompt-shield/sdk</code> adapter
-      を追加する。直接依存が不安定ならこの step は後続作業に送る。
+      <code>prompt-shield</code> SDK が利用可能なら
+      <code>@prompt-shield/sdk</code> adapter を追加する。直接依存が不安定ならこの step
+      は後続作業に送る。
     </li>
     <li>
       guard decision を <code>DistillationToolResult.metadata</code> と
       <code>toolEvents</code> に残す。
     </li>
-    <li><code>deny</code> された excerpt は final prompt から除外する。</li>
+    <li>
+      <code>deny</code> された excerpt は final prompt から除外する。
+    </li>
   </ol>
   <p>完了条件:</p>
   <ul>
     <li>guard unavailable / deny / allow_with_warning の 3 path が unit test されている。</li>
-    <li><code>deny</code> された Web content は final prompt に入らない。</li>
     <li>
-      <code>allow_with_warning</code> の Web content は quoted evidence として入り、citation
-      required metadata が残る。
+      <code>deny</code> された Web content は final prompt に入らない。
+    </li>
+    <li>
+      <code>allow_with_warning</code> の Web content は quoted evidence
+      として入り、citation required metadata が残る。
     </li>
   </ul>
   <h3 id="phase-4-external-final-prompt-更新">Phase 4: external-final prompt 更新</h3>
   <ol>
     <li>
-      <code>externalEvidenceSystemPrompt</code> / <code>externalEvidenceUserPrompt</code> を guarded
-      web evidence 前提に更新する。
+      <code>externalEvidenceSystemPrompt</code> / <code>externalEvidenceUserPrompt</code> を
+      guarded web evidence 前提に更新する。
     </li>
     <li>
       <code>combineFetchResults</code> を raw content 結合ではなく guarded excerpt list
@@ -734,7 +810,8 @@ type ExternalEvidenceGuard = {
   <p>完了条件:</p>
   <ul>
     <li>
-      prompt 内で Web evidence は <code>UNTRUSTED WEB EVIDENCE</code> のように明示的に隔離される。
+      prompt 内で Web evidence は
+      <code>UNTRUSTED WEB EVIDENCE</code> のように明示的に隔離される。
     </li>
     <li><code>combineFetchResults</code> が raw page JSON を渡さない。</li>
     <li>
@@ -746,8 +823,9 @@ type ExternalEvidenceGuard = {
   <ol>
     <li>
       <code>llm_usage_logs</code> で <code>cover-evidence:external-search-query</code> /
-      <code>external-fetch-selection</code> / <code>external-final</code> の件数と token を before /
-      after 比較する query を用意する。
+      <code>external-fetch-selection</code> /
+      <code>external-final</code> の件数と token を before / after 比較する query
+      を用意する。
     </li>
     <li><code>parse_cover_evidence_result</code> の failure rate を比較する。</li>
     <li>
@@ -774,13 +852,19 @@ type ExternalEvidenceGuard = {
         <li>
           external final prompt に guarded excerpt は入るが、blocked injection excerpt は入らない。
         </li>
-        <li>Web evidence 単独で internal candidate が <code>knowledge_ready</code> にならない。</li>
+        <li>
+          Web evidence 単独で internal candidate が
+          <code>knowledge_ready</code> にならない。
+        </li>
       </ul>
     </li>
     <li>
       <code>test/url-fetcher.test.ts</code>
       <ul>
-        <li><code>main</code> / <code>article</code> 優先抽出。</li>
+        <li>
+          <code>main</code> /
+          <code>article</code> 優先抽出。
+        </li>
         <li>nav/footer/sidebar が混ざらない。</li>
         <li>hidden instruction を metadata/finding として扱う。</li>
         <li>3000 token cap が守られる。</li>
@@ -791,12 +875,13 @@ type ExternalEvidenceGuard = {
       prompt-shield adapter test
       <ul>
         <li>
-          <code>scanText</code> / <code>extractHtml</code> /
+          <code>scanText</code> /
+          <code>extractHtml</code> /
           <code>decidePolicy</code> が利用可能な場合の contract test。
         </li>
         <li>
-          unavailable の場合に fail-closed で <code>insufficient</code> または evidence exclusion
-          に倒れる。
+          unavailable の場合に fail-closed で <code>insufficient</code> または
+          evidence exclusion に倒れる。
         </li>
       </ul>
     </li>
@@ -804,9 +889,13 @@ type ExternalEvidenceGuard = {
       regression
       <ul>
         <li>
-          <code>external_parse_failed</code> 診断 event に <code>contentPreview</code> が残る。
+          <code>external_parse_failed</code> 診断 event に
+          <code>contentPreview</code> が残る。
         </li>
-        <li><code>contentPreview</code> が fetch content と混同されない test 名にする。</li>
+        <li>
+          <code>contentPreview</code> が fetch content と混同されない test
+          名にする。
+        </li>
       </ul>
     </li>
   </ul>
@@ -825,13 +914,16 @@ bun run typecheck
       書き込みの指示として扱われない。
     </li>
     <li>新しい中間要約層、永続 table、Episode 以外の layer を追加していない。</li>
-    <li>既存の evidence traceability は <code>tool_events</code> と references で維持される。</li>
+    <li>
+      既存の evidence traceability は <code>tool_events</code> と references
+      で維持される。
+    </li>
   </ul>
   <h2 id="実装者向けチェックリスト">実装者向けチェックリスト</h2>
   <ul>
     <li>
-      <input disabled="" type="checkbox" /> <code>domain.ts</code> の external branch entrypoint を
-      1 箇所に集約した。
+      <input disabled="" type="checkbox" /> <code>domain.ts</code> の external
+      branch entrypoint を 1 箇所に集約した。
     </li>
     <li>
       <input disabled="" type="checkbox" /> source-only で十分な candidate の test が external LLM
@@ -846,12 +938,13 @@ bun run typecheck
       を prompt に渡していない。
     </li>
     <li>
-      <input disabled="" type="checkbox" /> guard decision が <code>metadata</code> と
+      <input disabled="" type="checkbox" /> guard decision が
+      <code>metadata</code> と
       <code>tool_events</code> に残る。
     </li>
     <li>
-      <input disabled="" type="checkbox" /> <code>deny</code> された external evidence は
-      prompt、reference、knowledge promotion に使われない。
+      <input disabled="" type="checkbox" /> <code>deny</code> された
+      external evidence は prompt、reference、knowledge promotion に使われない。
     </li>
     <li>
       <input disabled="" type="checkbox" /> Web evidence は quoted untrusted evidence として prompt
@@ -873,8 +966,8 @@ bun run typecheck
   <h2 id="stop-conditions">Stop conditions</h2>
   <ul>
     <li>
-      <code>prompt-shield</code> SDK をそのまま導入すると install / build / WASM packaging
-      が不安定になる場合、直接依存は止めて adapter と local fallback だけを先に入れる。
+      <code>prompt-shield</code> SDK をそのまま導入すると install / build / WASM
+      packaging が不安定になる場合、直接依存は止めて adapter と local fallback だけを先に入れる。
     </li>
     <li>
       source-first gate の false positive で Web が必要な candidate を落とす場合、<code
@@ -883,7 +976,9 @@ bun run typecheck
       の signal を広めにして external branch に逃がす。
     </li>
     <li>
-      HTML 本文抽出が SPA や client-rendered page で低 assurance の場合、<code>body-fallback</code>
+      HTML 本文抽出が SPA や client-rendered page で低 assurance の場合、<code
+        >body-fallback</code
+      >
       として扱い、high confidence evidence にはしない。
     </li>
     <li>

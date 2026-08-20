@@ -5,7 +5,8 @@
   <h2 id="status">Status</h2>
   <p>
     Status: completed。実施日: 2026-08-19〜2026-08-20 JST。Positiveとpolarity未設定の
-    <code>coveringEvidence</code>をRust residentへ移植し、live modeを<code>all</code>へ切り替えた。
+    <code>coveringEvidence</code>をRust residentへ移植し、live
+    modeを<code>all</code>へ切り替えた。
     実装前に591件あった対象backlogは全件terminal化し、通常運用の最大2 claimへ復帰した。
   </p>
   <h2 id="implemented-contract">Implemented Contract</h2>
@@ -26,9 +27,8 @@
     <li>
       Finalizeへ渡す前にproject identityを検証する。Candidate metadataだけでなく、trusted agent-log
       sourceの<code>projectIdentity</code>または<code>projectRoot</code>を共通identity
-      contractで正規化し、 本当にidentityがない候補だけを<code
-        >insufficient / project_identity_required</code
-      >として隔離する。
+      contractで正規化し、
+      本当にidentityがない候補だけを<code>insufficient / project_identity_required</code>として隔離する。
     </li>
     <li>
       External経路はquery生成、設定されたDuckDuckGo／Brave／Exaの順序と試行上限に従う検索fallback、
@@ -50,8 +50,8 @@
       laneを止めず、runnableになった次のwave境界で再試行する。
     </li>
     <li>
-      <code>queue executor-tick</code>はwriter lockを取得できるoffline DBだけを1 tick処理し、live
-      resident writerと競合する場合はfail-closedにする。
+      <code>queue executor-tick</code>はwriter lockを取得できるoffline DBだけを1
+      tick処理し、live resident writerと競合する場合はfail-closedにする。
     </li>
   </ul>
   <h2 id="verification">Verification</h2>
@@ -113,51 +113,48 @@
   </table>
   <h2 id="offline-rehearsal">Offline Rehearsal</h2>
   <p>
-    Live DBをSQLite backup
-    APIで<code>/tmp/contextstill-covering-rehearsal.84toxe/rehearsal.sqlite</code>へ
-    複製し、resident MCP portをbindせず実行できる<code>queue executor-tick</code>を使用した。Live
-    DBの row数が変化しないことを別途確認した。
+    Live DBをSQLite backup APIで<code>/tmp/contextstill-covering-rehearsal.84toxe/rehearsal.sqlite</code>へ 複製し、resident MCP
+    portをbindせず実行できる<code>queue executor-tick</code>を使用した。Live DBの
+    row数が変化しないことを別途確認した。
   </p>
   <ul>
     <li>
-      Source-only job 1件: completed / <code>knowledge_ready</code>。Evidence 1、Finalize
-      1、queue/event整合。
+      Source-only job 1件: completed / <code>knowledge_ready</code>。Evidence
+      1、Finalize 1、queue/event整合。
     </li>
     <li>
-      DuckDuckGo external canary 1件: completed / <code>knowledge_ready</code>。検索3
-      URLをguard済みでfetchし、external referencesとtool eventsを保存した。
+      DuckDuckGo external canary 1件: completed /
+      <code>knowledge_ready</code>。検索3 URLをguard済みでfetchし、external
+      referencesとtool eventsを保存した。
     </li>
     <li>
-      Brave external canary 1件: completed / <code>knowledge_ready</code>。Brave検索3
-      URLのうち2件をprompt-injection
+      Brave external canary 1件: completed /
+      <code>knowledge_ready</code>。Brave検索3 URLのうち2件をprompt-injection
       guardで拒否し、許可した1件をcitationとして保存した。対応Finalizeも
       <code>completed</code>となった。
     </li>
-    <li>各rehearsalでlive DBのrow数は変化せず、copy DBの<code>integrity_check=ok</code>だった。</li>
+    <li>
+      各rehearsalでlive DBのrow数は変化せず、copy
+      DBの<code>integrity_check=ok</code>だった。
+    </li>
   </ul>
   <h2 id="backup-and-canary">Backup and Live Canary</h2>
   <p>
     Residentを停止してsingle-writer lockを解放し、live DBの整合backupを
-    <code
-      >/Users/y.noguchi/Library/Application
-      Support/contextStill/backup/core-unix-ms-1787148535610.sqlite</code
-    >
+    <code>/Users/y.noguchi/Library/Application
+      Support/contextStill/backup/core-unix-ms-1787148535610.sqlite</code>
     へ作成した。Backup sizeは1,232,322,560 bytesである。
   </p>
   <p>
     Source identity rollout repairの直前にも
-    <code
-      >/Users/y.noguchi/Library/Application
-      Support/contextStill/backup/core-unix-ms-1787151930565.sqlite</code
-    >
+    <code>/Users/y.noguchi/Library/Application
+      Support/contextStill/backup/core-unix-ms-1787151930565.sqlite</code>
     へ1,234,296,832 bytesの追加backupを作成した。
   </p>
   <p>
     External fetch上限修正前にも
-    <code
-      >/Users/y.noguchi/Library/Application
-      Support/contextStill/backup/core-unix-ms-1787159519705.sqlite</code
-    >へ1,238,048,768 bytesの追加backupを作成した。
+    <code>/Users/y.noguchi/Library/Application
+      Support/contextStill/backup/core-unix-ms-1787159519705.sqlite</code>へ1,238,048,768 bytesの追加backupを作成した。
   </p>
   <p>
     Canary manifestはlive DB pathへbindingし、missing polarity procedure/rule、positive
@@ -166,23 +163,27 @@
   <ul>
     <li>12 completed、0 failed、0 running、合計13 attempts。</li>
     <li>
-      Evidenceは12件かつcandidate 12件、<code>knowledge_ready</code> 11、<code>insufficient</code>
+      Evidenceは12件かつcandidate 12件、<code>knowledge_ready</code> 11、<code
+        >insufficient</code
+      >
       1。
     </li>
     <li>Finalizeはknowledge-readyに対応する11件だけ。</li>
     <li>Evidence duplicate 0、orphan 0、SQLite <code>integrity_check=ok</code>。</li>
     <li>
       External候補はDuckDuckGo検索と3 URLのguard済みfetchを経て
-      <code>knowledge_ready</code>となり、source 1件とexternal 3件のreferenceを保存した。
+      <code>knowledge_ready</code>となり、source 1件とexternal
+      3件のreferenceを保存した。
     </li>
   </ul>
   <h2 id="live-rollout">Live Rollout</h2>
   <p>
-    Canary合格後、LaunchAgentを<code>all</code>、Covering minimum interval 10秒へ更新し、live
-    canary後のdrainに限って最大claimを32へ引き上げた。実processは<code>context-stilld run</code
-    >であり、legacy TypeScript queue ownerは起動していない。
-    <code>queue inspect</code>の<code>unsupportedRunnableCount</code>は0、blocked
-    reasonはnullとなった。
+    Canary合格後、LaunchAgentを<code>all</code>、Covering minimum
+    interval 10秒へ更新し、live
+    canary後のdrainに限って最大claimを32へ引き上げた。実processは<code>context-stilld run</code>であり、legacy
+    TypeScript queue ownerは起動していない。
+    <code>queue inspect</code
+    >の<code>unsupportedRunnableCount</code>は0、blocked reasonはnullとなった。
   </p>
   <p>
     Episodeは2026-07-30から既存のoperator設定でpauseされていたため、本改修ではresumeしていない。
@@ -191,10 +192,11 @@
     connection failureは30秒backoff後に再試行され、terminal failureを残さず完了した。
   </p>
   <p>
-    Provider capacityは各llama.cpp endpointの<code>/slots</code>で1 slotずつ、合計2 slotと確認した。
-    Drain中だけ1 tickあたり最大32 claimとし、2 slotのwaveをcapacity解放後に補充する。simultaneous
-    inferenceは2のままである。Drain完了後はLaunchAgentを<code>all</code>、最大2 claim、minimum
-    interval 10秒へ戻した。
+    Provider capacityは各llama.cpp endpointの<code>/slots</code>で1
+    slotずつ、合計2 slotと確認した。 Drain中だけ1 tickあたり最大32 claimとし、2
+    slotのwaveをcapacity解放後に補充する。simultaneous
+    inferenceは2のままである。Drain完了後はLaunchAgentを<code>all</code>、最大2
+    claim、minimum interval 10秒へ戻した。
   </p>
   <h3 id="source-identity-rollout-repair">Source identity rollout repair</h3>
   <p>
@@ -216,7 +218,8 @@
     <li>
       source metadata loaderとtrusted identity resolverを追加した。修正canaryは
       <code>repoPath=/Users/y.noguchi/Code/nightWorkers</code>をEvidenceへ保存し、
-      <code>knowledge_ready</code>、Finalize <code>completed</code>となった。
+      <code>knowledge_ready</code>、Finalize
+      <code>completed</code>となった。
     </li>
     <li>
       再実行でattempt番号が復元された場合にもterminal event IDが衝突しないよう、event
@@ -224,13 +227,12 @@
     </li>
     <li>
       Preflight導入前に作られた13件の<code>knowledge_ready</code>はFinalizeで
-      <code>PROJECT_IDENTITY_REQUIRED</code>としてfail-closedになっている。いずれもtrusted source
-      identityを持たず、修正後の同種Finalize失敗とtrusted identity誤隔離は0件である。
+      <code>PROJECT_IDENTITY_REQUIRED</code>としてfail-closedになっている。いずれもtrusted
+      source identityを持たず、修正後の同種Finalize失敗とtrusted identity誤隔離は0件である。
     </li>
     <li>
       旧agent-log adapterの1件は<code>rustAgentLogSync</code>を持たず、
-      <code>agent_log_chunk / codex_logs / raw_for_distillation / session provenance</code
-      >を持つ形式だった。この組合せだけをtrusted
+      <code>agent_log_chunk / codex_logs / raw_for_distillation / session provenance</code>を持つ形式だった。この組合せだけをtrusted
       adapterとして追加し、<code>projectRoot</code>単独は信頼しないtestを追加した。再処理後はidentity検査を通り、source内容に基づく
       <code>insufficient / unsupported_by_source</code>となった。
     </li>
@@ -282,24 +284,29 @@
   <ul>
     <li>Missing job 0、non-completed job 0、completed without Evidence 0。</li>
     <li>Evidence duplicate group 0、Finalize duplicate group 0、orphan Evidence 0。</li>
-    <li>Non-ready Evidence with Finalize 0、<code>reprocess_requested</code> marker 0。</li>
     <li>
-      Finalizeは227 <code>completed</code>、13 <code>failed</code>。Failed 13件はpreflight導入前に
-      <code>knowledge_ready</code>となったidentity欠落候補であり、修正後の新規Finalize
-      failureは0件。
+      Non-ready Evidence with Finalize 0、<code>reprocess_requested</code> marker 0。
+    </li>
+    <li>
+      Finalizeは227 <code>completed</code>、13
+      <code>failed</code>。Failed 13件はpreflight導入前に
+      <code>knowledge_ready</code
+      >となったidentity欠落候補であり、修正後の新規Finalize failureは0件。
     </li>
     <li>
       Live Covering全体はpending 0、running 0、completed 12,079、failed
       307。Failed総数はrollout前基準値から 増加していない。
     </li>
     <li>
-      Active provider lease 0、trusted identity誤隔離 0、SQLite <code>integrity_check=ok</code>。
+      Active provider lease 0、trusted identity誤隔離 0、SQLite
+      <code>integrity_check=ok</code>。
     </li>
   </ul>
   <h2 id="implementation-notes">Implementation Notes</h2>
   <ul>
     <li>
-      Promptは別の生成snapshotを増やさず、release build済みの<code>.s11tnext/catalog.json</code>を
+      Promptは別の生成snapshotを増やさず、release
+      build済みの<code>.s11tnext/catalog.json</code>を
       <code>include_str!</code>で直接embedしてja-JP
       segmentをrenderする方式にした。これにより生成物の
       二重正本を避け、<code>system-context:check</code>のdigest gateをそのまま共有する。
@@ -337,14 +344,16 @@
     </li>
     <li>
       Relative
-      <code>wiki_file</code> keyはTypeScriptと同じ<code>pages/</code>rootで解決し、canonical
+      <code>wiki_file</code>
+      keyはTypeScriptと同じ<code>pages/</code>rootで解決し、canonical
       path外、symlink escape、非file、16 MiB超過、非UTF-8を拒否する。Markdown frontmatterと表示用
       markerを正規化し、candidateのtoken rangeを最大8 window・各6,000 tokenで読み、実際に読めた
       rangeをreferenceへ保存する。
     </li>
     <li>
-      <code>web_ingest</code> URLはローカルpathとして扱わず、DNS全解決先検査、接続先pin、redirect
-      再検査、MIME検査、4 MiB上限、prompt-injection guardを通す。
+      <code>web_ingest</code>
+      URLはローカルpathとして扱わず、DNS全解決先検査、接続先pin、redirect 再検査、MIME検査、4
+      MiB上限、prompt-injection guardを通す。
     </li>
     <li>
       SearchとLLM clientはredirectを追従せず、search responseとLLM responseにもbyte上限を適用する。
@@ -356,10 +365,11 @@
       call、memory保存、判定抑制を拒否する。
     </li>
     <li>
-      <code>queue inspect</code>は<code>all</code>でも非default provider
+      <code>queue inspect</code
+      >は<code>all</code>でも非default provider
       policyをunsupportedとして数え、
-      <code>canary</code>manifestが欠落・不正・DB不一致なら全Covering backlogをfail-closedで
-      unsupportedと報告する。
+      <code>canary</code>manifestが欠落・不正・DB不一致なら全Covering
+      backlogをfail-closedで unsupportedと報告する。
     </li>
     <li>
       LaunchAgent rendererは全値をXML escapeし、placeholder置換を1 passに限定する。Source
@@ -367,12 +377,12 @@
     </li>
   </ul>
   <p>
-    Review buildを同日live LaunchAgentへreloadした。PID 8693で<code>all</code>、最大2 claim、minimum
-    interval
-    10秒、<code>CONTEXT_STILL_SOURCE_CONTENT_ROOT=/Users/y.noguchi/Code/contextStill/wiki</code>が有効である。Reload後はCovering
-    open 0、Finalize open 0、active provider lease 0、unsupported runnable 0、blocked
-    reasonなし、SQLite <code>integrity_check=ok</code>を確認した。Episode pending
-    692件は既存operator pauseを維持した。
+    Review buildを同日live LaunchAgentへreloadした。PID
+    8693で<code>all</code>、最大2 claim、minimum interval
+    10秒、<code>CONTEXT_STILL_SOURCE_CONTENT_ROOT=/Users/y.noguchi/Code/contextStill/wiki</code>が有効である。Reload後はCovering open
+    0、Finalize open 0、active provider lease 0、unsupported runnable 0、blocked reasonなし、SQLite
+    <code>integrity_check=ok</code>を確認した。Episode pending 692件は既存operator
+    pauseを維持した。
   </p>
   <h2 id="rollback">Rollback</h2>
   <p>

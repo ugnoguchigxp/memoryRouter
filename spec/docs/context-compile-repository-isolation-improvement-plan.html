@@ -38,8 +38,8 @@
     <li>
       <p>
         live auditには旧<code>PROJECT_IDENTITY_PRODUCER_ACCEPTED</code>が5件あるだけで、durable
-        <code>PERSISTED</code>はまだ0件である。enabled producer manifest、7日、identity-bearing
-        PERSISTED 200件、new unresolved 0のgateが別途残る。
+        <code>PERSISTED</code>はまだ0件である。enabled producer
+        manifest、7日、identity-bearing PERSISTED 200件、new unresolved 0のgateが別途残る。
       </p>
     </li>
     <li>
@@ -103,15 +103,15 @@
   <h3 id="runtime">Runtime</h3>
   <p>
     2026-08-15のread-only調査では、resident daemonはRust-native
-    <code>context-stilld</code>であり、12 MCP toolsを所有し、TypeScript sidecarは0件だった。active
-    Rust
+    <code>context-stilld</code>であり、12 MCP toolsを所有し、TypeScript
+    sidecarは0件だった。active Rust
     <code>context_compile</code
     >はKnowledgeを最大500件、EpisodeCardを最大200件取得してから順位付けし、そのqueryにrequest
     identityを渡していない。
   </p>
   <p>
-    live processはworking treeより古く、公開中の<code>context_compile</code> schemaにもidentity
-    fieldがない。working treeにあるT1実装だけでは、実利用callerのidentity
+    live processはworking treeより古く、公開中の<code>context_compile</code>
+    schemaにもidentity fieldがない。working treeにあるT1実装だけでは、実利用callerのidentity
     adoptionはまだ始まっていない。
   </p>
   <h3 id="live-data">Live Data</h3>
@@ -131,7 +131,8 @@
       <tr>
         <td>Knowledge</td>
         <td>
-          total 7,227、active 7,180。activeの<code>scope=repo</code>は7,171、<code>global</code>は9
+          total 7,227、active
+          7,180。activeの<code>scope=repo</code>は7,171、<code>global</code>は9
         </td>
         <td>
           direct legacy identity 83件。surviving vibe provenance 1,029件、Source provenance
@@ -207,7 +208,10 @@
   <h3 id="required-for-closeout">Required For Closeout</h3>
   <ul>
     <li>Rust-native <code>context_compile</code>。</li>
-    <li>Rust-native public <code>search_knowledge</code>と<code>search_episodes</code>。</li>
+    <li>
+      Rust-native public
+      <code>search_knowledge</code>と<code>search_episodes</code>。
+    </li>
     <li>local workspace MCP、CLI、HTTP/APIのうち実際に利用するcaller。</li>
     <li>active producerと、今後もrepo-scoped dataを書き込めるwrite path。</li>
     <li>Knowledge/EpisodeCardのusage-weighted migration。</li>
@@ -233,11 +237,16 @@
     <li>tenant authorizationやrole-based access control。</li>
     <li>Security Intelligence adapterとassessment revision binding。</li>
     <li>unresolved itemの自動削除または本文からの推測分類。</li>
-    <li><code>repoKey</code>をstable cross-machine identityへ再定義すること。</li>
+    <li>
+      <code>repoKey</code>をstable cross-machine identityへ再定義すること。
+    </li>
   </ul>
   <h2 id="identity-operating-profile">Identity Operating Profile</h2>
   <h3 id="normal-local-workspace">Normal Local Workspace</h3>
-  <p>通常のlocal workspace callerはabsolute <code>repoPath</code>を必須で渡す。</p>
+  <p>
+    通常のlocal workspace callerはabsolute
+    <code>repoPath</code>を必須で渡す。
+  </p>
   <ul>
     <li>callerは自身が開いているworkspace rootをcaptureし、requestごとに同じ値を送る。</li>
     <li>
@@ -258,7 +267,10 @@
     <li>path caseは保持し、root以外のtrailing separatorを除く。</li>
   </ul>
   <h3 id="legacy-compatibility">Legacy Compatibility</h3>
-  <p><code>repoKey</code>は明示的に保存済みのlegacy identityを移行または検索する場合だけ使う。</p>
+  <p>
+    <code>repoKey</code>は明示的に保存済みのlegacy
+    identityを移行または検索する場合だけ使う。
+  </p>
   <ul>
     <li>
       <code>repoPath</code>、project name、basename、Git
@@ -269,12 +281,13 @@
   </ul>
   <h3 id="security-integration">Security Integration</h3>
   <p>
-    <code>projectRef</code>は将来のtrusted Security adapter用に予約する。通常local
-    profileでは必要としない。
+    <code>projectRef</code>は将来のtrusted Security
+    adapter用に予約する。通常local profileでは必要としない。
   </p>
   <ul>
     <li>
-      <code>projectRef</code>はselection identityであり、それだけでauthorization tokenにはならない。
+      <code>projectRef</code>はselection
+      identityであり、それだけでauthorization tokenにはならない。
     </li>
     <li>
       Security adapterはauthenticated project declarationから注入し、model/user supplied
@@ -299,7 +312,9 @@
   <ol>
     <li>request identityは一度だけresolveし、retrievalとtraceで同じobjectを使う。</li>
     <li>
-      <code>scope=global</code>または選択basisで完全一致する<code>scope=repo</code>
+      <code>scope=global</code>または選択basisで完全一致する<code
+        >scope=repo</code
+      >
       itemだけをeligibleにする。
     </li>
     <li><code>classification_status=classified</code>だけをnormal retrievalへ入れる。</li>
@@ -328,7 +343,10 @@
   <p>working treeでは次のadditive foundationが実装済みである。</p>
   <ul>
     <li>Rust/TypeScript shared identity fixtureとresolver。</li>
-    <li>MCP schemaの<code>projectRef</code>、<code>repoKey</code>、<code>repoPath</code>。</li>
+    <li>
+      MCP
+      schemaの<code>projectRef</code>、<code>repoKey</code>、<code>repoPath</code>。
+    </li>
     <li>
       SQLite additive revision 2とPostgreSQL migration 0071のcanonical identity/classification
       fields。
@@ -393,7 +411,8 @@
       syncはcapture時の<code>projectRoot</code>を<code>repoPath</code>として保存する。<code>projectName</code>を<code>repoKey</code>として渡さない。
     </li>
     <li>
-      markdown importerは<code>contentRoot</code>と<code>projectRoot</code>/project
+      markdown
+      importerは<code>contentRoot</code>と<code>projectRoot</code>/project
       identityをAPI上で分離する。docs subdirectoryをrepository rootとみなさない。
     </li>
     <li>compile run由来EpisodeCardはrequest/run snapshot identityだけを使用する。</li>
@@ -419,13 +438,16 @@
   </ul>
   <p>Implemented draft corrections:</p>
   <ul>
-    <li>Rust/TypeScript agent log syncの<code>projectName -&gt; repoKey</code>伝播を除去した。</li>
+    <li>
+      Rust/TypeScript agent log syncの<code>projectName -&gt; repoKey</code>伝播を除去した。
+    </li>
     <li>
       markdown importerのimport directoryとproject rootの同一視を除去し、relative project
       rootを拒否する。
     </li>
     <li>
-      producer observationはdurable <code>PERSISTED</code>だけを数える。identity-bearing件数にはrepo
+      producer observationはdurable
+      <code>PERSISTED</code>だけを数える。identity-bearing件数にはrepo
       scope、exact match basis、producer、既知entity kind、binding status、64桁identity
       fingerprintが整合するeventだけを含め、整合しないPERSISTEDが1件でもあればcompletion
       falseとする。正規なglobal PERSISTEDは別cohortで集計する。enabled producerと開始時刻はversioned
@@ -466,7 +488,9 @@
   <p>Step 2: top-50 Knowledge review</p>
   <ul>
     <li>historical selection上位50 Knowledgeを、本文を外部へ送らずlocal reviewする。</li>
-    <li>repositoryに依存しない原則・手順は<code>global</code>へpromotionする。</li>
+    <li>
+      repositoryに依存しない原則・手順は<code>global</code>へpromotionする。
+    </li>
     <li>
       特定repositoryのarchitecture、path、component、decisionに依存するitemはexact
       identity付き<code>repo</code>へ分類する。
@@ -477,14 +501,18 @@
   <p>Step 3: deterministic backfill</p>
   <p>許可する根拠:</p>
   <ul>
-    <li>既存のexact canonical/legacy <code>repoPath</code>、明示<code>projectRef</code>。</li>
+    <li>
+      既存のexact canonical/legacy
+      <code>repoPath</code
+      >、明示<code>projectRef</code>。
+    </li>
     <li>exact project rootを保持したcapture/import record。</li>
     <li>request identityを保持したcompile run/task trace。</li>
     <li>authoritative alias declaration。</li>
     <li>review済みglobal promotionまたはrepo assignment。</li>
     <li>
-      <code>cover-evidence-result://</code>からauthoritative captureまで切れずに辿れるprovenance
-      chain。
+      <code>cover-evidence-result://</code>からauthoritative
+      captureまで切れずに辿れるprovenance chain。
     </li>
   </ul>
   <p>禁止する根拠:</p>
@@ -574,12 +602,16 @@
   <p>Goal: scoped runを再現するときにidentityを失わず、legacy runを誤比較しない。</p>
   <p>Tasks:</p>
   <ul>
-    <li><code>compileInputFromRun</code>へrun snapshotのnormalized identityとbasisを戻す。</li>
+    <li>
+      <code>compileInputFromRun</code>へrun snapshotのnormalized identityとbasisを戻す。
+    </li>
     <li>
       identity snapshotがないlegacy
       runは<code>legacy_identity_unknown</code>かつ<code>not_comparable</code>として扱う。
     </li>
-    <li>legacy daemon <code>repo_path</code>をrequest identityへ昇格しない。</li>
+    <li>
+      legacy daemon <code>repo_path</code>をrequest identityへ昇格しない。
+    </li>
     <li>snapshot/cacheは本rollout中もdisabledを維持する。</li>
     <li>old semanticsのcache payloadをpurgeまたはstale化し、新contractの結果として返さない。</li>
     <li>replay smokeでRepo A/B/global-onlyを検証する。</li>
@@ -623,7 +655,9 @@
   <ul>
     <li>Repo A requestとRepo B high-importance items。</li>
     <li>identity missing。</li>
-    <li><code>/repo-a</code>と<code>/repo-a-archive</code>。</li>
+    <li>
+      <code>/repo-a</code>と<code>/repo-a-archive</code>。
+    </li>
     <li>path case collision。</li>
     <li>malformed repoPathとmalformed legacy metadata。</li>
     <li>selected basis field missingだがlower basisだけ一致するitem。</li>
@@ -871,8 +905,8 @@ bun run docs:check-links
     <li>authenticated project adapterを稼働させる。</li>
   </ul>
   <p>
-    その計画ではtrusted <code>projectRef</code>、alias binding、authorization、spoof
-    preventionをrelease gateにする。現在これらのlive
+    その計画ではtrusted <code>projectRef</code>、alias
+    binding、authorization、spoof preventionをrelease gateにする。現在これらのlive
     data/adapterは稼働していないため、本計画のcloseout条件にはしない。
   </p>
   <h3 id="deferred">Deferred</h3>
@@ -897,7 +931,8 @@ bun run docs:check-links
     </li>
     <li>
       enabled producer manifestを確定し、7日以上、identity-bearing
-      <code>PERSISTED</code> 200件以上、enabled producer coverage 100%、new unresolved 0を満たす。
+      <code>PERSISTED</code> 200件以上、enabled producer coverage 100%、new
+      unresolved 0を満たす。
     </li>
     <li>Safety Gate hard zero、Availability/Performance Gate pass。</li>
     <li>resident daemonとnormal local profileがenforced contractを使用する。</li>

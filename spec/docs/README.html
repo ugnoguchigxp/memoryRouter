@@ -7,12 +7,15 @@
   <p>
     これらの文書では、unfinished work、implementation constraints、rejected alternatives、local
     operational details を扱ってよい。public user/operator documentation は
-    <code>pub/</code> に置く。実装済み・置換済みの文書は通常探索対象へ戻さない。
+    <code>pub/</code>
+    に置く。実装済み・置換済みの文書は通常探索対象へ戻さない。
   </p>
   <p>
-    内部設計書はSpec HTML fragmentで管理する。<code>bun run spec:view</code>で閲覧し、編集後は
-    <code>bun run spec:fix</code>と<code>bun run spec:check</code
-    >を実行する。実装済み・置換済みの文書はViewerのArchive操作で <code>.archived/</code>へ移す。
+    内部設計書はSpec HTML
+    fragmentで管理する。<code>bun run spec:view</code>で閲覧し、編集後は
+    <code>bun run spec:fix</code
+    >と<code>bun run spec:check</code>を実行する。実装済み・置換済みの文書はViewerのArchive操作で
+    <code>.archived/</code>へ移す。
   </p>
   <table>
     <caption>
@@ -93,7 +96,8 @@
       <tr>
         <td><a href="llm-provider-busy-503-contract.html">LLM Provider busy 503 contract</a></td>
         <td>
-          provider busyを恒久障害や完了として扱わず、<code>Retry-After</code>に従うretryable
+          provider
+          busyを恒久障害や完了として扱わず、<code>Retry-After</code>に従うretryable
           queue状態へ戻す契約
         </td>
       </tr>

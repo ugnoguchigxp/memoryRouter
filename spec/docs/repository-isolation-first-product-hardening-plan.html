@@ -71,7 +71,8 @@
       fieldを公開していなかった。
     </li>
     <li>
-      producer observationは<code>PERSISTED</code>だけを数え、enabled producerと開始時刻をversioned
+      producer observationは<code>PERSISTED</code>だけを数え、enabled
+      producerと開始時刻をversioned
       manifestへ固定する。manifest欠落、draft、開始時刻NULL、未観測を含む場合はcompletion gateをfail
       closedにする。
     </li>
@@ -1274,9 +1275,8 @@ bun run docs:check-links
       auditを行う。
     </li>
     <li>
-      producer coverage、new unresolved、Safety/Availability/Performance Gateと<code
-        >bun run verify</code
-      >を再確認し、closeout evidenceを確定する。
+      producer coverage、new unresolved、Safety/Availability/Performance
+      Gateと<code>bun run verify</code>を再確認し、closeout evidenceを確定する。
     </li>
     <li>
       archive gateをすべて満たしたらcloseout plan、T0 evidence、closeout

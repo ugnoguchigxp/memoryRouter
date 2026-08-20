@@ -7,13 +7,13 @@
   </blockquote>
   <h2 id="purpose">Purpose</h2>
   <p>
-    2026-06-23 の実装課題として、<code>context-stilld</code> の daemon 層から TypeScript / Bun /
-    Node 依存を除去する。
+    2026-06-23 の実装課題として、<code>context-stilld</code> の daemon 層から
+    TypeScript / Bun / Node 依存を除去する。
   </p>
   <p>
     この計画でいう daemon 層は、macOS LaunchAgent / packaged service から常時起動される
-    <code>context-stilld run</code>、その resident runtime が所有する MCP / queue / agent-log-sync /
-    doctor / backup / bootstrap / process supervision の範囲を指す。
+    <code>context-stilld run</code>、その resident runtime が所有する MCP / queue /
+    agent-log-sync / doctor / backup / bootstrap / process supervision の範囲を指す。
   </p>
   <p>
     UI 起動時の Hono API、admin UI、Drizzle を使う API/repository、手動の
@@ -24,11 +24,15 @@
   <h2 id="desired-end-state">Desired End State</h2>
   <ul>
     <li>
-      <code>context-stilld run</code> の process tree に <code>bun</code>, <code>node</code>,
-      <code>tsx</code>, <code>src/cli/*.ts</code>, <code>api/index.ts</code>,
+      <code>context-stilld run</code> の process tree に
+      <code>bun</code>, <code>node</code>,
+      <code>tsx</code>, <code>src/cli/*.ts</code>,
+      <code>api/index.ts</code>,
       <code>src/mcp/http-server.ts</code> が出ない。
     </li>
-    <li><code>com.context-still.daemon</code> の LaunchAgent は Rust binary だけを起動する。</li>
+    <li>
+      <code>com.context-still.daemon</code> の LaunchAgent は Rust binary だけを起動する。
+    </li>
     <li>daemon readiness / status / ownership checks は Bun を必要としない。</li>
     <li>
       MCP endpoint と exposed tool handlers は Rust-native で完結する。未移行 tool は daemon 上で TS
@@ -58,8 +62,8 @@
       <code>crates/context-stilld/src/domains/queue_lifecycle/types.rs</code>
       <ul>
         <li>
-          <code>QUEUE_SUPERVISOR</code> は Rust state/log 用の spec として残る。resident TS executor
-          spec は削除済み。
+          <code>QUEUE_SUPERVISOR</code> は Rust state/log 用の spec
+          として残る。resident TS executor spec は削除済み。
         </li>
       </ul>
     </li>
@@ -144,9 +148,13 @@
   <ul>
     <li><code>context-stilld runtime sidecars --json</code> の現在値を確認する。</li>
     <li><code>context-stilld status --json</code> と LaunchAgent の実 PID を確認する。</li>
-    <li><code>ps</code> で <code>context-stilld run</code> の子に Bun がいるか確認する。</li>
     <li>
-      <code>rg</code> で <code>crates/context-stilld</code> 内の
+      <code>ps</code> で
+      <code>context-stilld run</code> の子に Bun がいるか確認する。
+    </li>
+    <li>
+      <code>rg</code> で
+      <code>crates/context-stilld</code> 内の
       <code>command: &quot;bun&quot;</code> / <code>src/cli/*.ts</code> /
       <code>api/index.ts</code> 参照を棚卸しする。
     </li>
@@ -174,8 +182,8 @@ rg -n &#39;command: &quot;bun&quot;|src/cli/.*\\.ts|api/index\\.ts|mcp-dispatch|
   </ul>
   <h3 id="t1-move-daemon-automation-into-rust">T1: Move Daemon Automation Into Rust</h3>
   <p>
-    Goal: Install/load/unload/status for <code>com.context-still.daemon</code> should not require
-    <code>bun run src/cli/context-stilld-automation.ts</code>.
+    Goal: Install/load/unload/status for <code>com.context-still.daemon</code> should not
+    require <code>bun run src/cli/context-stilld-automation.ts</code>.
   </p>
   <p>Tasks:</p>
   <ul>
@@ -193,7 +201,8 @@ rg -n &#39;command: &quot;bun&quot;|src/cli/.*\\.ts|api/index\\.ts|mcp-dispatch|
       Preserve the LaunchAgent behavior:
       <ul>
         <li>
-          <code>ProgramArguments</code> points at the built <code>context-stilld</code> binary and
+          <code>ProgramArguments</code> points at the built
+          <code>context-stilld</code> binary and
           <code>run</code>.
         </li>
         <li><code>CONTEXT_STILL_DB_BACKEND=sqlite</code></li>
@@ -236,8 +245,8 @@ cargo run -q -p context-stilld -- status --json
   <ul>
     <li>Keep Rust-only resident behavior as the default.</li>
     <li>
-      Keep the resident path from <code>resident_runtime::reconcile_queue</code> disconnected from
-      any TS queue executor.
+      Keep the resident path from <code>resident_runtime::reconcile_queue</code> disconnected from any
+      TS queue executor.
     </li>
     <li>
       Change unsupported queue execution to fail closed:
@@ -256,14 +265,16 @@ cargo run -q -p context-stilld -- status --json
   <p>Completion criteria:</p>
   <ul>
     <li>
-      <code>context-stilld run</code> starts queue scheduling/maintenance but no TS queue worker.
+      <code>context-stilld run</code> starts queue scheduling/maintenance but no TS
+      queue worker.
     </li>
     <li>
-      <code>queue inspect --json</code> explains when runnable jobs are waiting for Rust executor
-      coverage.
+      <code>queue inspect --json</code> explains when runnable jobs are waiting for Rust
+      executor coverage.
     </li>
     <li>
-      The process tree has no <code>queue-supervisor.ts</code> under <code>context-stilld</code>.
+      The process tree has no <code>queue-supervisor.ts</code> under
+      <code>context-stilld</code>.
     </li>
   </ul>
   <p>Verification:</p>
@@ -291,22 +302,25 @@ ps -axo pid,ppid,command | rg &#39;context-stilld|queue-supervisor|bun&#39;
       <code>mcp-tool-dispatch-typescript-one-shot</code> after proving no code path invokes it.
     </li>
     <li>
-      Remove or archive <code>src/cli/mcp-dispatch-once.ts</code> if it is no longer referenced by
-      supported commands.
+      Remove or archive <code>src/cli/mcp-dispatch-once.ts</code> if it is no longer referenced
+      by supported commands.
     </li>
     <li>
       Make unknown/unmigrated MCP tools return a structured unsupported error instead of launching
       TS.
     </li>
     <li>
-      Update <code>mcp smoke --json</code> owner inventory to fail if any daemon tool owner is
-      <code>tsSidecar</code>.
+      Update <code>mcp smoke --json</code> owner inventory to fail if any daemon tool
+      owner is <code>tsSidecar</code>.
     </li>
   </ul>
   <p>Completion criteria:</p>
   <ul>
     <li><code>mcp smoke --json</code> reports zero daemon TS sidecars.</li>
-    <li><code>tools/list</code> does not advertise tools that would need TS dispatch.</li>
+    <li>
+      <code>tools/list</code> does not advertise tools that would need TS
+      dispatch.
+    </li>
     <li>No MCP request can create a Bun child process.</li>
   </ul>
   <p>Verification:</p>
@@ -327,10 +341,13 @@ rg -n &#39;mcp-dispatch-once|tsSidecar|typescript-one-shot&#39; crates/context-s
   <p>Tasks:</p>
   <ul>
     <li>Keep <code>api/index.ts</code> as UI-time/admin surface.</li>
-    <li>Ensure <code>context-stilld run</code> never starts <code>admin-api</code>.</li>
     <li>
-      Decide whether <code>context-stilld admin-api start</code> remains as an explicit UI helper or
-      moves to a UI/runtime command outside daemon readiness.
+      Ensure <code>context-stilld run</code> never starts
+      <code>admin-api</code>.
+    </li>
+    <li>
+      Decide whether <code>context-stilld admin-api start</code> remains as an explicit UI helper
+      or moves to a UI/runtime command outside daemon readiness.
     </li>
     <li>
       Update sidecar classification so Hono is not counted as daemon debt when it is UI-time only.
@@ -359,8 +376,8 @@ ps -axo pid,ppid,command | rg &#39;context-stilld|api/index.ts|bun&#39;
     T5: Replace TypeScript Doctor/Bootstrap Delegation For Daemon Readiness
   </h3>
   <p>
-    Goal: Daemon readiness must be diagnosable without <code>bun run src/cli/doctor.ts</code> or
-    <code>bun run src/cli/startup.ts</code>.
+    Goal: Daemon readiness must be diagnosable without
+    <code>bun run src/cli/doctor.ts</code> or <code>bun run src/cli/startup.ts</code>.
   </p>
   <p>Tasks:</p>
   <ul>
@@ -386,12 +403,11 @@ ps -axo pid,ppid,command | rg &#39;context-stilld|api/index.ts|bun&#39;
   <p>Completion criteria:</p>
   <ul>
     <li>
-      <code>context-stilld doctor summary --json</code> can make a daemon readiness judgment without
-      Bun.
+      <code>context-stilld doctor summary --json</code> can make a daemon readiness judgment without Bun.
     </li>
     <li>
-      <code>context-stilld bootstrap</code> does not instruct daemon users to run TS startup for
-      daemon readiness.
+      <code>context-stilld bootstrap</code> does not instruct daemon users to run TS startup
+      for daemon readiness.
     </li>
     <li>A missing Bun binary does not prevent daemon status/doctor/backup guard.</li>
   </ul>
@@ -412,8 +428,8 @@ cargo run -q -p context-stilld -- backup preflight --require-idle --json
   <ul>
     <li>Add a Rust-only daemon readiness gate that does not run Bun.</li>
     <li>
-      Keep <code>bun run verify:rust-daemon</code> as development coverage, but add one explicit
-      Rust-only command for packaged/runtime readiness.
+      Keep <code>bun run verify:rust-daemon</code> as development coverage, but add one
+      explicit Rust-only command for packaged/runtime readiness.
     </li>
     <li>
       Update <code>spec/docs/pub/architecture.md</code> and operations docs:
@@ -425,11 +441,12 @@ cargo run -q -p context-stilld -- backup preflight --require-idle --json
       </ul>
     </li>
     <li>
-      Update <code>runtime sidecars --json</code> so daemon debt is zero when only UI/manual TS
-      remains.
+      Update <code>runtime sidecars --json</code> so daemon debt is zero when only UI/manual
+      TS remains.
     </li>
     <li>
-      Add a process-tree live check that fails if <code>context-stilld run</code> owns Bun/Node.
+      Add a process-tree live check that fails if <code>context-stilld run</code> owns
+      Bun/Node.
     </li>
   </ul>
   <p>Completion criteria:</p>
@@ -493,20 +510,20 @@ bun run verify:rust-daemon
       <code>context-stilld run</code>.
     </li>
     <li>
-      <input disabled="" type="checkbox" /> <code>ps</code> shows no Bun/Node child under
-      <code>context-stilld run</code>.
+      <input disabled="" type="checkbox" /> <code>ps</code> shows no
+      Bun/Node child under <code>context-stilld run</code>.
     </li>
     <li>
-      <input disabled="" type="checkbox" /> <code>context-stilld status --json</code> is usable with
-      Bun absent.
+      <input disabled="" type="checkbox" /> <code>context-stilld status --json</code> is usable
+      with Bun absent.
     </li>
     <li>
-      <input disabled="" type="checkbox" /> <code>context-stilld doctor summary --json</code> is
-      usable with Bun absent.
+      <input disabled="" type="checkbox" /> <code>context-stilld doctor summary --json</code> is usable
+      with Bun absent.
     </li>
     <li>
-      <input disabled="" type="checkbox" /> <code>context-stilld runtime sidecars --json</code> has
-      zero daemon-owned TS sidecars.
+      <input disabled="" type="checkbox" /> <code>context-stilld runtime sidecars --json</code> has zero
+      daemon-owned TS sidecars.
     </li>
     <li>
       <input disabled="" type="checkbox" /> MCP smoke reaches Rust endpoint and reports zero TS tool

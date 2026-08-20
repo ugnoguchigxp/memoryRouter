@@ -117,14 +117,14 @@
     </tbody>
   </table>
   <p>
-    LaunchAgent は <code>CONTEXT_STILL_SQLITE_CORE_PATH</code> で repository DB を明示しているが、別
-    process から実行した CLI は resident state を参照する command と参照しない command
-    に分かれている。
+    LaunchAgent は <code>CONTEXT_STILL_SQLITE_CORE_PATH</code> で repository DB
+    を明示しているが、別 process から実行した CLI は resident state を参照する command と参照しない
+    command に分かれている。
   </p>
   <p>
-    Application Support 側 DB は <code>user_version=0</code> で、bootstrap は migration target 2
-    に対し <code>outdated</code> と報告した。一方、backup preflight は同 DB を
-    <code>ready</code> と報告している。
+    Application Support 側 DB は <code>user_version=0</code> で、bootstrap は
+    migration target 2 に対し <code>outdated</code> と報告した。一方、backup
+    preflight は同 DB を <code>ready</code> と報告している。
   </p>
   <h3 id="section-43-live-readiness-mismatch">4.3 Live readiness mismatch</h3>
   <ul>
@@ -133,12 +133,16 @@
       <code>migration_state=outdated</code>。
     </li>
     <li>doctor top-level は <code>overallStatus=ok</code>。</li>
-    <li>vector health は extension registration 成功だけで <code>status=ok</code>。</li>
+    <li>
+      vector health は extension registration 成功だけで
+      <code>status=ok</code>。
+    </li>
     <li>同じ vector report では vector tables と metadata が存在しない。</li>
   </ul>
   <p>
-    <code>ok</code> は「その library を process に登録できる」ではなく、「選択された effective
-    database が意図した mode で利用可能」を表す必要がある。
+    <code>ok</code> は「その library を process
+    に登録できる」ではなく、「選択された effective database が意図した mode
+    で利用可能」を表す必要がある。
   </p>
   <h3 id="section-44-live-queue-state">4.4 Live queue state</h3>
   <p>確認時点の effective resident DB では次だった。</p>
@@ -187,9 +191,10 @@
     </tbody>
   </table>
   <p>
-    Rust は sqlite-vec extension registration、in-memory <code>MATCH</code> smoke、read-only health
-    を持つ。一方、production TypeScript read path は sqlite-vec を直接 load できず、Rust vector
-    search / rebuild service への完全移行も終わっていない。
+    Rust は sqlite-vec extension registration、in-memory
+    <code>MATCH</code> smoke、read-only health を持つ。一方、production
+    TypeScript read path は sqlite-vec を直接 load できず、Rust vector search / rebuild service
+    への完全移行も終わっていない。
   </p>
   <h2 id="section-5-target-invariants">5. Target Invariants</h2>
   <h3 id="section-51-database-identity">5.1 Database identity</h3>
@@ -234,8 +239,14 @@ enum DatabaseIdentitySource {
   <h3 id="section-52-readiness">5.2 Readiness</h3>
   <ul>
     <li>top-level status は nested critical state と矛盾しない。</li>
-    <li>schema outdated / missing required tables は <code>ok</code> にならない。</li>
-    <li>queue backlog と executor absence は少なくとも <code>degraded</code> になる。</li>
+    <li>
+      schema outdated / missing required tables は
+      <code>ok</code> にならない。
+    </li>
+    <li>
+      queue backlog と executor absence は少なくとも
+      <code>degraded</code> になる。
+    </li>
     <li>
       optional vector fallback は desktop blocker にしないが、mode と index readiness を明示する。
     </li>
@@ -246,7 +257,9 @@ enum DatabaseIdentitySource {
   </ul>
   <h3 id="section-53-backup">5.3 Backup</h3>
   <ul>
-    <li>backup preflight と create は同じ <code>EffectiveDatabaseIdentity</code> を使用する。</li>
+    <li>
+      backup preflight と create は同じ <code>EffectiveDatabaseIdentity</code> を使用する。
+    </li>
     <li>live resident が別 DB を使用中なら、非 resident DB の backup を暗黙に成功させない。</li>
     <li>
       report は source path、effective path、resident PID、writer lock、refusal reason を返す。
@@ -350,10 +363,13 @@ cargo test -p context-stilld vector_index
     <li>resolve configured and resident paths once;</li>
     <li>validate resident PID liveness;</li>
     <li>return additive diagnostics fields;</li>
-    <li>preserve current <code>sqliteCorePath</code> field as the effective path;</li>
     <li>
-      add <code>configuredSqliteCorePath</code>, <code>residentSqliteCorePath</code>,
-      <code>databaseIdentitySource</code>, and <code>databaseIdentityMismatch</code> where relevant;
+      preserve current <code>sqliteCorePath</code> field as the effective path;
+    </li>
+    <li>
+      add <code>configuredSqliteCorePath</code>,
+      <code>residentSqliteCorePath</code>, <code>databaseIdentitySource</code>,
+      and <code>databaseIdentityMismatch</code> where relevant;
     </li>
     <li>do not change MCP tool schema or database schema.</li>
   </ul>
@@ -436,17 +452,21 @@ cargo test -p context-stilld backup
   <ul>
     <li>split engine availability from DB/index readiness;</li>
     <li>validate table presence, metadata dimension, row counts, and selected mode;</li>
-    <li>report <code>ready_fallback</code> when JSON fallback is intentionally healthy;</li>
     <li>
-      report <code>uninitialized</code> when extension is available but no vector storage exists;
+      report <code>ready_fallback</code> when JSON fallback is intentionally
+      healthy;
+    </li>
+    <li>
+      report <code>uninitialized</code> when extension is available but no vector
+      storage exists;
     </li>
     <li>use the effective DB from T1.</li>
   </ul>
   <p>Completion:</p>
   <ul>
     <li>
-      the observed <code>bootstrap=needs_init</code> / top-level <code>ok</code> contradiction is
-      impossible;
+      the observed <code>bootstrap=needs_init</code> / top-level
+      <code>ok</code> contradiction is impossible;
     </li>
     <li>backup cannot report an unrelated non-resident DB as ready while resident is active;</li>
     <li>vector engine-only success is not index readiness.</li>
@@ -471,14 +491,15 @@ bun run verify:rust-daemon
     <li>running binary/build identifier</li>
   </ul>
   <p>
-    <code>queue inspect</code> must not infer executor absence solely from zero active leases.
-    Active lease means a job is currently executing; it is not the executor liveness record.
+    <code>queue inspect</code> must not infer executor absence solely from zero
+    active leases. Active lease means a job is currently executing; it is not the executor liveness
+    record.
   </p>
   <p>Required tests:</p>
   <ul>
     <li>
-      between-tick idle with runnable jobs is not <code>maintenance_only</code> when executor is
-      healthy;
+      between-tick idle with runnable jobs is not <code>maintenance_only</code> when
+      executor is healthy;
     </li>
     <li>disabled executor is explicit;</li>
     <li>unconfigured provider is explicit;</li>
@@ -654,7 +675,9 @@ git diff --check
   <h2 id="section-8-compatibility-contract">8. Compatibility Contract</h2>
   <ul>
     <li>Existing JSON fields remain present.</li>
-    <li><code>sqliteCorePath</code> becomes consistently defined as effective path.</li>
+    <li>
+      <code>sqliteCorePath</code> becomes consistently defined as effective path.
+    </li>
     <li>New identity/readiness fields are additive.</li>
     <li>Existing exit code 0 remains for healthy or explicitly supported fallback states.</li>
     <li>
@@ -725,7 +748,10 @@ git diff --check
     <li>vector health reports engine, index mode, and readiness separately;</li>
     <li>regression tests pass without live infrastructure;</li>
     <li>total coverage remains at least 80.0% and queue coverage does not regress below 79.50%;</li>
-    <li><code>verify:rust-daemon</code>, repo verification, docs links, and diff checks pass;</li>
+    <li>
+      <code>verify:rust-daemon</code>, repo verification, docs links, and diff checks
+      pass;
+    </li>
     <li>old Rust migration/coverage plans remain historical only;</li>
     <li>
       this plan is moved to the hidden archive after implementation evidence is recorded at the top.

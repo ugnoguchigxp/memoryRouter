@@ -5,8 +5,8 @@
   </blockquote>
   <h2 id="背景">背景</h2>
   <p>
-    現在の Rust <code>episodeDistiller</code> は、source を segment に分割し、各 segment から
-    canonical Episode 候補を生成したあと、job の最後にまとめて
+    現在の Rust <code>episodeDistiller</code> は、source を segment に分割し、各
+    segment から canonical Episode 候補を生成したあと、job の最後にまとめて
     <code>episode_cards</code> へ保存する。
   </p>
   <p>この方式は job 単位の完了整合性は分かりやすいが、次の問題がある。</p>
@@ -29,7 +29,9 @@
   </p>
   <h2 id="目的">目的</h2>
   <ul>
-    <li>保存可能な Episode を job 終了前に <code>episode_cards</code> へ永続化する。</li>
+    <li>
+      保存可能な Episode を job 終了前に <code>episode_cards</code> へ永続化する。
+    </li>
     <li>最新 Episode 出力時刻を、稼働判定の主信号として使えるようにする。</li>
     <li>segment 単位の進捗、失敗、保存済み Episode、再開位置を queue metadata に残す。</li>
     <li>途中失敗後の再実行で、保存済み Episode を壊さず未処理部分から再開できるようにする。</li>
@@ -46,7 +48,8 @@
   <h2 id="現状の重要な制約">現状の重要な制約</h2>
   <ul>
     <li>
-      <code>episode_cards.created_at</code> は <code>2026-...T...Z</code> と
+      <code>episode_cards.created_at</code> は
+      <code>2026-...T...Z</code> と
       <code>2026-... ...</code> の形式が混在している。監視SQLでは
       <code>MAX(datetime(created_at))</code> を使う。
     </li>
@@ -93,7 +96,8 @@
       <tr>
         <td><code>crates/context-stilld/src/domains/queue_lifecycle/inspect.rs</code></td>
         <td>
-          必要なら <code>queue inspect --json</code> に latest output / progress 情報を追加する。
+          必要なら <code>queue inspect --json</code> に latest output / progress
+          情報を追加する。
         </td>
       </tr>
       <tr>
@@ -122,9 +126,7 @@
     </thead>
     <tbody>
       <tr>
-        <td>
-          <code>crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs</code> tests
-        </td>
+        <td><code>crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs</code> tests</td>
         <td>segment ごとの即時保存、再開、重複skip、watchdog metadata を固定する。</td>
       </tr>
       <tr>
@@ -182,12 +184,12 @@
       <code>episode_cards</code> insert or dedupe confirmation.
     </li>
     <li>
-      <code>lastSegmentCompletedAt</code> updates after a segment is fully handled, even if it
-      produced no saved Episode.
+      <code>lastSegmentCompletedAt</code> updates after a segment is fully handled, even if
+      it produced no saved Episode.
     </li>
     <li>
-      <code>currentSegment</code> is the segment currently being attempted or the next segment to
-      resume.
+      <code>currentSegment</code> is the segment currently being attempted or the
+      next segment to resume.
     </li>
     <li>Existing summary fields remain available at job completion.</li>
   </ul>
@@ -196,22 +198,26 @@
   <p>Normal:</p>
   <ul>
     <li>
-      <code
-        >MAX(datetime(episode_cards.created_at)) &gt;= datetime(&#39;now&#39;, &#39;-10
-        minutes&#39;)</code
-      >
+      <code>MAX(datetime(episode_cards.created_at)) &gt;= datetime(&#39;now&#39;, &#39;-10
+        minutes&#39;)</code>
     </li>
   </ul>
   <p>Warning:</p>
   <ul>
-    <li>running <code>episodeDistiller</code> があり、latest Episode output が 10 分より古い。</li>
+    <li>
+      running <code>episodeDistiller</code> があり、latest Episode output が 10
+      分より古い。
+    </li>
   </ul>
   <p>Recovery candidate:</p>
   <ul>
-    <li>running <code>episodeDistiller</code> があり、latest Episode output が 20 分より古い。</li>
     <li>
-      かつ <code>lastSegmentCompletedAt</code> または <code>lastEpisodeCreatedAt</code> が 20
-      分以上進んでいない。
+      running <code>episodeDistiller</code> があり、latest Episode output が 20
+      分より古い。
+    </li>
+    <li>
+      かつ <code>lastSegmentCompletedAt</code> または
+      <code>lastEpisodeCreatedAt</code> が 20 分以上進んでいない。
     </li>
   </ul>
   <p>Do not use as normal signal:</p>
@@ -247,7 +253,8 @@ where status = &#39;running&#39;;
     <li>Rust episode executor tests に、複数 segment の fixture を追加する。</li>
     <li>既存の job-end save 挙動を baseline として記録する。</li>
     <li>
-      <code>datetime(created_at)</code> を使う freshness SQL をテスト/ドキュメントに固定する。
+      <code>datetime(created_at)</code> を使う freshness SQL
+      をテスト/ドキュメントに固定する。
     </li>
     <li>
       <code>create_episode_idempotently()</code> の source key dedupe
@@ -275,7 +282,8 @@ cargo test -p context-stilld queue_lifecycle::episode_executor -- --nocapture
   <ul>
     <li>
       <code>process_episode_distiller_job()</code> の segment loop で
-      <code>currentSegment</code>、<code>segmentCount</code>、<code>lastSegmentStartedAt</code>
+      <code>currentSegment</code
+      >、<code>segmentCount</code>、<code>lastSegmentStartedAt</code>
       を更新する。
     </li>
     <li>
@@ -304,7 +312,10 @@ cargo run -q -p context-stilld -- queue inspect --json
     <li>metadata 更新失敗を無視して job が進む。</li>
   </ul>
   <h2 id="p2-immediate-save-per-segment">P2: Immediate Save Per Segment</h2>
-  <p>Goal: 保存可能な Episode を segment 完了時点で <code>episode_cards</code> へ保存する。</p>
+  <p>
+    Goal: 保存可能な Episode を segment 完了時点で
+    <code>episode_cards</code> へ保存する。
+  </p>
   <p>Tasks:</p>
   <ul>
     <li>
@@ -316,9 +327,9 @@ cargo run -q -p context-stilld -- queue inspect --json
       <code>create_episode_idempotently()</code> へ渡す。
     </li>
     <li>
-      保存成功後すぐに <code>savedEpisodeIds</code>、<code>savedSourceKeys</code>、<code
-        >lastEpisodeCreatedAt</code
-      >
+      保存成功後すぐに
+      <code>savedEpisodeIds</code
+      >、<code>savedSourceKeys</code>、<code>lastEpisodeCreatedAt</code>
       を metadata に反映する。
     </li>
     <li>job 完了時は summary metadata を既存 shape と互換になるよう集計する。</li>
@@ -328,9 +339,15 @@ cargo run -q -p context-stilld -- queue inspect --json
   </ul>
   <p>Completion criteria:</p>
   <ul>
-    <li>job が running のままでも、合格 Episode は <code>episode_cards</code> に存在する。</li>
+    <li>
+      job が running のままでも、合格 Episode は
+      <code>episode_cards</code> に存在する。
+    </li>
     <li>latest Episode output freshness が running job の途中で更新される。</li>
-    <li>job completion metadata の <code>episodeIds</code> は実在 EpisodeCard id と一致する。</li>
+    <li>
+      job completion metadata の <code>episodeIds</code> は実在 EpisodeCard id
+      と一致する。
+    </li>
   </ul>
   <p>Verification:</p>
   <pre><code class="language-bash">cargo test -p context-stilld episode
@@ -355,11 +372,12 @@ limit 5;
   <p>Tasks:</p>
   <ul>
     <li>
-      job load 時に metadata の <code>savedSourceKeys</code> と <code>segmentResults</code> を読む。
+      job load 時に metadata の <code>savedSourceKeys</code> と
+      <code>segmentResults</code> を読む。
     </li>
     <li>
-      既存 <code>episode_cards</code> からも source key を確認し、metadata 欠落時にも dedupe
-      できるようにする。
+      既存 <code>episode_cards</code> からも source key を確認し、metadata
+      欠落時にも dedupe できるようにする。
     </li>
     <li>
       完了済み segment は skip し、skip したことを
@@ -388,9 +406,9 @@ cargo test -p context-stilld queue
   <p>Tasks:</p>
   <ul>
     <li>
-      running job の <code>locked_at</code>、<code>lastEpisodeCreatedAt</code>、<code
-        >lastSegmentCompletedAt</code
-      >
+      running job の
+      <code>locked_at</code
+      >、<code>lastEpisodeCreatedAt</code>、<code>lastSegmentCompletedAt</code>
       を使って freshness を算出する helper を追加する。
     </li>
     <li>
@@ -398,8 +416,8 @@ cargo test -p context-stilld queue
       を追加するか、doctor/operation query で読める形にする。
     </li>
     <li>
-      Recovery candidate は即 kill ではなく、まず <code>stalled_output</code> 状態または diagnostic
-      field として見せる。
+      Recovery candidate は即 kill ではなく、まず
+      <code>stalled_output</code> 状態または diagnostic field として見せる。
     </li>
     <li>
       強制終了する場合の仕様を決める。
@@ -408,10 +426,14 @@ cargo test -p context-stilld queue
           active provider lease を <code>stale_recovered</code> または
           <code>worker_failed</code> 理由で解放する。
         </li>
-        <li>queue row は保存済み progress を残して <code>pending</code> に戻す。</li>
+        <li>
+          queue row は保存済み progress を残して
+          <code>pending</code> に戻す。
+        </li>
         <li><code>next_run_at</code> に短い cooldown を設定する。</li>
         <li>
-          <code>distillation_queue_events</code> に <code>retried</code> または
+          <code>distillation_queue_events</code> に
+          <code>retried</code> または
           <code>failed</code> を記録する。
         </li>
       </ul>
@@ -442,9 +464,8 @@ cargo test -p context-stilld episode
   <ul>
     <li>
       Queue page に
-      <code>latestEpisodeOutputAt</code>、<code>minutesSinceLatestEpisodeOutput</code>、<code
-        >currentSegment/segmentCount</code
-      >
+      <code>latestEpisodeOutputAt</code
+      >、<code>minutesSinceLatestEpisodeOutput</code>、<code>currentSegment/segmentCount</code>
       を表示する。
     </li>
     <li>running job で 10分超の無出力は warning、20分超は recovery candidate として表示する。</li>
@@ -493,8 +514,8 @@ bun run docs:check-links
       <tr>
         <td>segment parse failed</td>
         <td>
-          <code>segmentErrors</code> records segment index and job continues when other segments can
-          proceed
+          <code>segmentErrors</code> records segment index and job continues when
+          other segments can proceed
         </td>
       </tr>
       <tr>
@@ -515,11 +536,14 @@ bun run docs:check-links
   </table>
   <h2 id="final-completion-criteria">Final Completion Criteria</h2>
   <ul>
-    <li><code>episodeDistiller</code> no longer waits until job end to save all EpisodeCards.</li>
+    <li>
+      <code>episodeDistiller</code> no longer waits until job end to save all
+      EpisodeCards.
+    </li>
     <li>A running job can update latest Episode output within the job lifetime.</li>
     <li>
-      <code>episode_distiller_queue.metadata.episodeDistiller</code> contains enough progress to
-      explain current segment, saved Episodes, skipped segments, and failure points.
+      <code>episode_distiller_queue.metadata.episodeDistiller</code> contains enough progress to explain current
+      segment, saved Episodes, skipped segments, and failure points.
     </li>
     <li>Re-running a partially completed job does not duplicate saved Episodes.</li>
     <li>Completed queue rows still reference real EpisodeCard ids.</li>
@@ -548,7 +572,9 @@ select status, queue_name, queue_job_id, heartbeat_at from llm_provider_leases w
   <p>Stop and review if:</p>
   <ul>
     <li>queue completion happens before downstream EpisodeCard persistence is confirmed.</li>
-    <li>immediate save creates EpisodeCards without <code>episode_refs</code>.</li>
+    <li>
+      immediate save creates EpisodeCards without <code>episode_refs</code>.
+    </li>
     <li>partial failure loses saved Episode ids from metadata.</li>
     <li>resume creates duplicate EpisodeCards for the same deterministic source key.</li>
     <li>output freshness cannot be computed from SQLite without ad hoc timestamp parsing.</li>

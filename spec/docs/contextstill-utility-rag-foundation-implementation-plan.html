@@ -57,7 +57,8 @@
   <ol>
     <li>
       作業開始時に
-      <code>git status --short</code> を保存し、既存の変更を自分の変更として上書きしない。
+      <code>git status --short</code>
+      を保存し、既存の変更を自分の変更として上書きしない。
     </li>
     <li>
       F0でscaffold、Foundation code、liveの3つのentry
@@ -110,7 +111,8 @@
   <p>The Foundation release has two outcomes.</p>
   <ol>
     <li>
-      Make the active Rust <code>context_compile</code> pipeline measurable and concurrency-safe.
+      Make the active Rust <code>context_compile</code> pipeline measurable and
+      concurrency-safe.
     </li>
     <li>Correct the current ranking lockout without introducing a new retrieval lane.</li>
   </ol>
@@ -130,8 +132,8 @@
       a schema revision.
     </li>
     <li>
-      Split <code>context_compile</code> into read-only preparation, external composition, and short
-      Writer persistence.
+      Split <code>context_compile</code> into read-only preparation, external
+      composition, and short Writer persistence.
     </li>
     <li>Restore native selection counters and content-version snapshots.</li>
     <li>Introduce query-first ranking with dynamic utility as a bounded tie-breaker.</li>
@@ -225,8 +227,8 @@
     <li>The repository-isolation 24-hour audit has passed.</li>
     <li>
       The repository-isolation final observation has passed: at least 7 days, at least 200
-      identity-bearing <code>PERSISTED</code> events, enabled producer coverage 100%, and new
-      unresolved 0.
+      identity-bearing <code>PERSISTED</code> events, enabled producer
+      coverage 100%, and new unresolved 0.
     </li>
     <li>Rust runtime T1-T3 tests pass.</li>
     <li>
@@ -293,12 +295,17 @@
       </tr>
       <tr>
         <td>Doctor</td>
-        <td>top-level <code>ok</code>, nested bootstrap <code>needs_init</code></td>
+        <td>
+          top-level <code>ok</code>, nested bootstrap
+          <code>needs_init</code>
+        </td>
         <td>Readiness cannot yet be used as a release gate</td>
       </tr>
       <tr>
         <td>Vector health</td>
-        <td><code>ok</code>, vector tables absent on the inspected DB</td>
+        <td>
+          <code>ok</code>, vector tables absent on the inspected DB
+        </td>
         <td>Vector is not a Foundation dependency</td>
       </tr>
       <tr>
@@ -330,8 +337,8 @@
         <td>Enabled producer coverage</td>
         <td>1/3</td>
         <td>
-          <code>episode-distiller.rust</code> and <code>register-candidates.rust</code> are
-          unobserved
+          <code>episode-distiller.rust</code> and
+          <code>register-candidates.rust</code> are unobserved
         </td>
       </tr>
       <tr>
@@ -354,7 +361,8 @@
   <h3 id="section-31-current-active-pipeline">3.1 Current active pipeline</h3>
   <p>
     The active <code>context_compile</code> implementation currently enters
-    <code>with_writer</code> before validation and keeps the Writer job while it performs:
+    <code>with_writer</code> before validation and keeps the Writer job while
+    it performs:
   </p>
   <ul>
     <li>identity and request preparation;</li>
@@ -373,23 +381,25 @@
   <pre><code class="language-text">score = query_text_score + rounded_dynamic_score
 </code></pre>
   <p>
-    It then uses <code>score &gt; 0</code> as candidate eligibility. A high dynamic score can
-    therefore make a query-unmatched item eligible and can lock out query-sensitive candidates.
+    It then uses <code>score &gt; 0</code> as candidate eligibility. A high
+    dynamic score can therefore make a query-unmatched item eligible and can lock out
+    query-sensitive candidates.
   </p>
   <p>
     Episode ranking has a related issue: importance is added before the
-    <code>score &gt; 0</code> filter. Foundation corrects both without introducing a learned ranker.
+    <code>score &gt; 0</code> filter. Foundation corrects both without
+    introducing a learned ranker.
   </p>
   <h3 id="section-33-current-timestamp-defect">3.3 Current timestamp defect</h3>
   <p>
-    Rust-owned writes use <code>unix-ms:&lt;integer&gt;</code>, while other paths and SQLite
-    defaults use ISO or SQLite datetime text. Any report that relies only on
+    Rust-owned writes use <code>unix-ms:&lt;integer&gt;</code>, while other paths and
+    SQLite defaults use ISO or SQLite datetime text. Any report that relies only on
     <code>datetime(column)</code> can silently omit or misorder Rust rows.
   </p>
   <p>
     Foundation standardizes new active Rust compile writes on
-    <code>unix-ms:&lt;integer&gt;</code> and standardizes comparisons on a shared epoch-millisecond
-    projection. It does not rewrite the live history in place.
+    <code>unix-ms:&lt;integer&gt;</code> and standardizes comparisons on a shared
+    epoch-millisecond projection. It does not rewrite the live history in place.
   </p>
   <hr />
   <h2 id="section-4-goal-and-definition-of-done">4. Goal And Definition Of Done</h2>
@@ -432,8 +442,8 @@
       when available.
     </li>
     <li>
-      <code>compile_select_count</code> and EpisodeCard <code>compile_use_count</code> are updated
-      atomically with pack persistence.
+      <code>compile_select_count</code> and EpisodeCard
+      <code>compile_use_count</code> are updated atomically with pack persistence.
     </li>
     <li>Query evidence alone determines candidate eligibility.</li>
     <li>
@@ -546,10 +556,10 @@
   <h2 id="section-7-fixed-design-decisions">7. Fixed Design Decisions</h2>
   <h3 id="section-71-semantic-owner">7.1 Semantic owner</h3>
   <p>
-    Rust is the Foundation semantic owner. <code>native_compile.rs</code> becomes a thin MCP
-    request/response adapter. New compile semantics live in a Rust domain, not in TypeScript. This
-    closes the Foundation portion of the hardening plan&#39;s A0 ownership decision; the later
-    TypeScript caller migration remains A1 and is not pulled into this release.
+    Rust is the Foundation semantic owner. <code>native_compile.rs</code> becomes a
+    thin MCP request/response adapter. New compile semantics live in a Rust domain, not in
+    TypeScript. This closes the Foundation portion of the hardening plan&#39;s A0 ownership
+    decision; the later TypeScript caller migration remains A1 and is not pulled into this release.
   </p>
   <p>
     TypeScript compile surfaces are recorded in the capability matrix but are not given a parallel
@@ -589,8 +599,9 @@ end
   <p>Rules:</p>
   <ul>
     <li>
-      Prefix matching alone is forbidden: <code>unix-ms:1junk</code>, an empty suffix, a signed
-      suffix, overflow, and values outside the ECMAScript <code>Date</code> range are invalid.
+      Prefix matching alone is forbidden: <code>unix-ms:1junk</code>, an empty
+      suffix, a signed suffix, overflow, and values outside the ECMAScript
+      <code>Date</code> range are invalid.
     </li>
     <li>
       Invalid timestamps are counted and excluded from time-window metrics; they are never treated
@@ -601,19 +612,19 @@ end
     <li>No live historical row is rewritten in Foundation.</li>
     <li>
       Rust and TypeScript keep separate implementations but consume one normative fixture:
-      <code>test/fixtures/timestamp-normalization-v1.json</code>. The fixture contains raw input,
-      expected epoch milliseconds or <code>null</code>, and stable-order cases.
+      <code>test/fixtures/timestamp-normalization-v1.json</code>. The fixture contains raw input, expected epoch
+      milliseconds or <code>null</code>, and stable-order cases.
     </li>
     <li>
-      <code>src/modules/context-compiler/context-compiler.repository.utils.ts::normalizeDate</code>,
-      <code>repository-isolation-report.repository.ts::dateFromUnknown</code>, and
-      <code>sqliteTimestampMillis</code> must conform to the fixture. No new permissive parser is
-      allowed.
+      <code>src/modules/context-compiler/context-compiler.repository.utils.ts::normalizeDate</code>, <code>repository-isolation-report.repository.ts::dateFromUnknown</code>,
+      and <code>sqliteTimestampMillis</code> must conform to the fixture. No new
+      permissive parser is allowed.
     </li>
   </ul>
   <h3 id="section-73-schema-strategy">7.3 Schema strategy</h3>
   <p>
-    Foundation v1 adds no SQLite table, column, index, <code>user_version</code>, or
+    Foundation v1 adds no SQLite table, column, index,
+    <code>user_version</code>, or
     <code>schema_migrations</code> revision.
   </p>
   <p>Reasons:</p>
@@ -623,8 +634,9 @@ end
       <code>CURRENT_SCHEMA_REVISION</code> is lower.
     </li>
     <li>
-      Existing <code>pack_snapshot</code>, <code>context_compile_candidate_traces.evidence</code>,
-      and run/task fields can carry the bounded Foundation contract.
+      Existing <code>pack_snapshot</code>,
+      <code>context_compile_candidate_traces.evidence</code>, and run/task fields can carry the bounded
+      Foundation contract.
     </li>
     <li>
       The candidate scale is small enough that JSON extraction is acceptable for Foundation reports.
@@ -655,33 +667,38 @@ order by:
   id asc
 </code></pre>
   <p>
-    <code>dynamic_score</code> is normalized before comparison: non-finite values become 0 and
-    finite values are clamped to <code>[0, 100]</code>. It never changes candidate eligibility and
-    never outranks a higher query score. The trace keeps both the raw value and the normalized
-    tie-break value. No weight tuning is required for Foundation.
+    <code>dynamic_score</code> is normalized before comparison: non-finite values
+    become 0 and finite values are clamped to <code>[0, 100]</code>. It
+    never changes candidate eligibility and never outranks a higher query score. The trace keeps
+    both the raw value and the normalized tie-break value. No weight tuning is required for
+    Foundation.
   </p>
   <p>
-    Because JSON cannot represent non-finite numbers, <code>rawDynamicUtility</code> is
-    <code>null</code> and <code>rawDynamicUtilityNonFinite=true</code> for NaN/infinity; otherwise
-    the raw finite value is stored and the flag is false. <code>boundedDynamicUtility</code> is
-    always a finite number in <code>[0, 100]</code>.
+    Because JSON cannot represent non-finite numbers,
+    <code>rawDynamicUtility</code> is
+    <code>null</code> and
+    <code>rawDynamicUtilityNonFinite=true</code> for NaN/infinity; otherwise the raw finite value
+    is stored and the flag is false. <code>boundedDynamicUtility</code> is always a
+    finite number in <code>[0, 100]</code>.
   </p>
   <p>
-    <code>query_score</code> keeps the current <code>native_common.rs::score_text</code> algorithm
-    byte-for-byte in Foundation. Knowledge input is exactly
-    <code>title + &quot;\n&quot; + body</code>; EpisodeCard input is exactly
-    <code>title + &quot;\n&quot; + situation + &quot;\n&quot; + lesson</code>; the query remains the
-    existing <code>search_text(goal, technologies, changeTypes, domains)</code>. F6 separates
-    features and ordering but does not add stemming, token weighting, exact-match boosts, FTS
-    behavior, or a changed normalization rule. Move <code>score_text</code> into the compile domain
-    and retain a compatibility wrapper only if another native tool still calls it.
+    <code>query_score</code> keeps the current
+    <code>native_common.rs::score_text</code> algorithm byte-for-byte in Foundation. Knowledge
+    input is exactly <code>title + &quot;\n&quot; + body</code>; EpisodeCard input is exactly
+    <code>title + &quot;\n&quot; + situation + &quot;\n&quot; + lesson</code>; the query remains the existing
+    <code>search_text(goal, technologies, changeTypes, domains)</code>. F6 separates features and ordering but does not
+    add stemming, token weighting, exact-match boosts, FTS behavior, or a changed normalization
+    rule. Move <code>score_text</code> into the compile domain and retain a
+    compatibility wrapper only if another native tool still calls it.
   </p>
   <p>
     Implement ordering as explicit tuple comparison, not by combining features into one number.
-    Normalized valid timestamps sort newest first; invalid/<code>None</code> timestamps sort after
-    every valid timestamp; ID ascending is the final total-order key. Use the finite clamped
-    <code>boundedDynamicUtility</code> for float comparison so no partial-order/NaN fallback is
-    needed.
+    Normalized valid timestamps sort newest first; invalid/<code
+      >None</code
+    >
+    timestamps sort after every valid timestamp; ID ascending is the final total-order key. Use the
+    finite clamped <code>boundedDynamicUtility</code> for float comparison so no
+    partial-order/NaN fallback is needed.
   </p>
   <h3 id="section-75-rollout-mode">7.5 Rollout mode</h3>
   <p>Add one startup setting, parsed strictly and captured in the runtime context:</p>
@@ -733,25 +750,30 @@ order by:
   </table>
   <p>
     Invalid values fail resident startup. They do not silently default. The initial code default is
-    <code>legacy</code>; the controlled resident configuration selects later modes.
+    <code>legacy</code>; the controlled resident configuration selects
+    later modes.
   </p>
   <p>
-    An absent variable means <code>legacy</code>. A present value is ASCII-trimmed and must then
-    equal one lowercase token in the table; empty, mixed-case, or unknown values are invalid. Parse
-    once while constructing <code>CompileRuntimeContext</code>. Tests cover absent, every valid
-    token, empty, surrounding whitespace, mixed-case, and unknown values.
+    An absent variable means <code>legacy</code>. A present value is
+    ASCII-trimmed and must then equal one lowercase token in the table; empty, mixed-case, or
+    unknown values are invalid. Parse once while constructing
+    <code>CompileRuntimeContext</code>. Tests cover absent, every valid token, empty,
+    surrounding whitespace, mixed-case, and unknown values.
   </p>
   <h3 id="section-76-composition-routes">7.6 Composition routes</h3>
   <p>Foundation implements an opt-in experiment harness for:</p>
   <ul>
     <li><code>current_two_call</code>: current planner plus Composer route;</li>
-    <li><code>single_compose</code>: one provider call with the same candidate snapshot;</li>
+    <li>
+      <code>single_compose</code>: one provider call with the same candidate
+      snapshot;
+    </li>
     <li><code>deterministic</code>: no provider call.</li>
   </ul>
   <p>
-    The normal online default remains <code>current_two_call</code> until a route passes its own
-    paired quality and non-inferiority gate. Foundation completion requires a recorded decision, not
-    a forced route switch.
+    The normal online default remains <code>current_two_call</code> until a route
+    passes its own paired quality and non-inferiority gate. Foundation completion requires a
+    recorded decision, not a forced route switch.
   </p>
   <p>
     The harness is exposed only through the operator CLI in section 10.3. It prepares each manifest
@@ -811,8 +833,9 @@ crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs
                                -&gt; provider transport
 </code></pre>
   <p>
-    <code>context_compile</code> must not depend on MCP JSON envelopes. Provider transport/parser
-    must not depend on persistence. Ranking must be a pure function over owned candidate snapshots.
+    <code>context_compile</code> must not depend on MCP JSON envelopes. Provider
+    transport/parser must not depend on persistence. Ranking must be a pure function over owned
+    candidate snapshots.
   </p>
   <h3 id="section-83-core-types">8.3 Core types</h3>
   <p>
@@ -870,10 +893,11 @@ pub(crate) struct CompileOutput {
   <p>
     <code>EffectiveDatabaseIdentity</code> is imported from the completed Rust runtime T1
     implementation; Foundation must not define a competing resolver or reconstruct the identity from
-    ambient environment variables. Do not derive <code>Debug</code>, <code>Serialize</code>, or
-    <code>Clone</code> for structures containing provider secrets, full prompt payloads, or response
-    bodies. <code>CompileOutput.run_id</code> remains internal; the MCP adapter returns the existing
-    text contract only.
+    ambient environment variables. Do not derive <code>Debug</code>,
+    <code>Serialize</code>, or
+    <code>Clone</code> for structures containing provider secrets, full
+    prompt payloads, or response bodies. <code>CompileOutput.run_id</code> remains
+    internal; the MCP adapter returns the existing text contract only.
   </p>
   <h3 id="section-84-read-only-connection">8.4 Read-only connection</h3>
   <p>Open one connection per compile request using read-only flags. Configure:</p>
@@ -885,18 +909,20 @@ pub(crate) struct CompileOutput {
   </ul>
   <p>
     Opening the file, setting either PRAGMA, or setting the timeout is fallible and returns
-    <code>CompileError</code>; never retry by opening a default writable connection. A focused test
-    asserts <code>pragma query_only = 1</code>, <code>pragma foreign_keys = 1</code>, and
+    <code>CompileError</code>; never retry by opening a default writable
+    connection. A focused test asserts <code>pragma query_only = 1</code>,
+    <code>pragma foreign_keys = 1</code>, and
     <code>pragma busy_timeout = 100</code>, then proves all DML and DDL attempts fail.
   </p>
   <p>
-    Do not execute <code>journal_mode</code>, migration, checkpoint, temp schema, or any
-    write-capable PRAGMA on the read path. Use the effective path already resolved by Rust runtime
-    T1.
+    Do not execute <code>journal_mode</code>, migration, checkpoint, temp
+    schema, or any write-capable PRAGMA on the read path. Use the effective path already resolved by
+    Rust runtime T1.
   </p>
   <p>
     The read connection is dropped before the first provider call. A concurrency test must prove
-    that no <code>Connection</code> or Writer closure survives into composition.
+    that no <code>Connection</code> or Writer closure survives into
+    composition.
   </p>
   <h3 id="section-85-snapshot-consistency">8.5 Snapshot consistency</h3>
   <p>Each candidate snapshot includes:</p>
@@ -905,7 +931,10 @@ pub(crate) struct CompileOutput {
     <li>title and retrieval/delivery content used for this run;</li>
     <li>source refs;</li>
     <li>scope snapshot and identity basis;</li>
-    <li>item <code>updated_at</code> raw value and normalized epoch milliseconds when valid;</li>
+    <li>
+      item <code>updated_at</code> raw value and normalized epoch milliseconds
+      when valid;
+    </li>
     <li>SHA-256 content hash over the selected fields;</li>
     <li>query score and bounded tie-break features;</li>
     <li>delivered, shadow, suppressed, and use state.</li>
@@ -915,14 +944,18 @@ pub(crate) struct CompileOutput {
     overwrite the current entity. Counter update mismatch is recorded in diagnostics.
   </p>
   <p>
-    Content-version evidence uses <code>sha256-canonical-json-v1</code>. Serialize a JSON object
-    with lexicographically sorted keys and UTF-8 without whitespace. Normalize the existing
-    Knowledge <code>sourceRefs</code> string array by de-duplicating exact strings and sorting them
-    lexicographically. Knowledge hashes exactly <code>entityKind</code>, <code>id</code>,
-    <code>type</code>, <code>polarity</code>, <code>title</code>, <code>body</code>, and normalized
-    <code>sourceRefs</code>. EpisodeCard hashes exactly <code>entityKind</code>, <code>id</code>,
-    <code>title</code>, <code>situation</code>, and <code>lesson</code>. Do not include scores,
-    counters, scope, or timestamps in the hash.
+    Content-version evidence uses <code>sha256-canonical-json-v1</code>. Serialize a JSON
+    object with lexicographically sorted keys and UTF-8 without whitespace. Normalize the existing
+    Knowledge <code>sourceRefs</code> string array by de-duplicating exact
+    strings and sorting them lexicographically. Knowledge hashes exactly
+    <code>entityKind</code>, <code>id</code>,
+    <code>type</code>, <code>polarity</code>,
+    <code>title</code>, <code>body</code>,
+    and normalized <code>sourceRefs</code>. EpisodeCard hashes exactly
+    <code>entityKind</code>, <code>id</code>,
+    <code>title</code>, <code>situation</code>,
+    and <code>lesson</code>. Do not include scores, counters, scope, or
+    timestamps in the hash.
   </p>
   <p>
     For every selected candidate,
@@ -936,10 +969,11 @@ pub(crate) struct CompileOutput {
 }
 </code></pre>
   <p>
-    <code>sourceUpdatedAtEpochMs</code> is <code>null</code> when normalization fails; the raw value
-    is bounded to 128 characters and the invalid count is incremented. Full content is stored only
-    in the existing pack snapshot/items required for replay, never duplicated into Foundation
-    diagnostics or the runtime ledger.
+    <code>sourceUpdatedAtEpochMs</code> is
+    <code>null</code> when normalization fails; the raw value is bounded
+    to 128 characters and the invalid count is incremented. Full content is stored only in the
+    existing pack snapshot/items required for replay, never duplicated into Foundation diagnostics
+    or the runtime ledger.
   </p>
   <h3 id="section-86-fixed-function-boundary">8.6 Fixed function boundary</h3>
   <p>The implementation exposes exactly these domain entry points inside the crate:</p>
@@ -980,17 +1014,21 @@ pub(crate) fn append_writer_record(
 ) -&gt; Result&lt;(), TelemetryLedgerError&gt;;
 </code></pre>
   <p>
-    <code>native_compile.rs::context_compile</code> performs only MCP JSON validation, construction
-    of <code>CompileRequest</code>, the <code>service::compile</code> call, and conversion of
-    <code>CompileError</code>/<code>CompileOutput</code> to the existing MCP envelope. SQL, ranking,
-    provider prompt construction, and pack assembly are forbidden in the adapter after F4.
+    <code>native_compile.rs::context_compile</code> performs only MCP JSON validation, construction of
+    <code>CompileRequest</code>, the
+    <code>service::compile</code> call, and conversion of
+    <code>CompileError</code>/<code>CompileOutput</code> to
+    the existing MCP envelope. SQL, ranking, provider prompt construction, and pack assembly are
+    forbidden in the adapter after F4.
   </p>
   <p>
-    <code>service::compile</code> dispatches by the startup-captured mode. <code>legacy</code> calls
+    <code>service::compile</code> dispatches by the startup-captured mode.
+    <code>legacy</code> calls
     <code>legacy::compile_legacy_on_writer</code> and preserves whole-operation Writer ownership for
-    rollback parity. The three split modes call <code>prepare_compile</code>, drop the read
-    connection, call <code>compose</code>, then call <code>persist</code>. No request re-reads the
-    mode from the environment.
+    rollback parity. The three split modes call <code>prepare_compile</code>, drop
+    the read connection, call <code>compose</code>, then call
+    <code>persist</code>. No request re-reads the mode from the
+    environment.
   </p>
   <h3 id="section-87-exact-integration-touch-points">8.7 Exact integration touch points</h3>
   <table>
@@ -1008,7 +1046,8 @@ pub(crate) fn append_writer_record(
       <tr>
         <td><code>domains/mcp_lifecycle/native_tools.rs</code></td>
         <td>
-          Keep <code>project_root</code> and <code>sqlite_core_path</code>; add
+          Keep <code>project_root</code> and
+          <code>sqlite_core_path</code>; add
           <code>compile_runtime: Arc&lt;CompileRuntimeContext&gt;</code> to
           <code>NativeToolContext</code>
         </td>
@@ -1027,10 +1066,12 @@ pub(crate) fn append_writer_record(
         <td><code>domains/mcp_lifecycle/endpoint_server.rs</code></td>
         <td>
           Change <code>dispatch_config</code> to return
-          <code>Result&lt;DispatchConfig, CliError&gt;</code>; build the context once from T1
-          runtime identity, <code>VERSION</code>, build ID, mode, and
+          <code>Result&lt;DispatchConfig, CliError&gt;</code>; build the context once from T1 runtime
+          identity, <code>VERSION</code>, build ID, mode, and
           <code>resolve_paths(env).logs_dir</code>; propagate failure from
-          <code>start_in_process</code>; clone the <code>Arc</code> in <code>native_context</code>
+          <code>start_in_process</code>; clone the
+          <code>Arc</code> in
+          <code>native_context</code>
         </td>
         <td>Read mode or build ID from MCP arguments</td>
       </tr>
@@ -1063,8 +1104,8 @@ pub(crate) fn append_writer_record(
       <tr>
         <td><code>domains/cli/routing.rs</code></td>
         <td>
-          Add <code>ContextCompileAction</code> and <code>CliCommand::ContextCompile</code>; parse
-          the exact commands in section 10.3
+          Add <code>ContextCompileAction</code> and
+          <code>CliCommand::ContextCompile</code>; parse the exact commands in section 10.3
         </td>
         <td>Put report logic in the parser</td>
       </tr>
@@ -1117,24 +1158,27 @@ pub enum CliCommand {
 </code></pre>
   <p>
     Missing required value, repeated option, unknown option, or positional remainder returns
-    <code>CliError::invalid_arguments</code>. Option order is arbitrary. JSON mode writes one JSON
-    object to stdout; diagnostics go to stderr and must not corrupt stdout.
+    <code>CliError::invalid_arguments</code>. Option order is arbitrary. JSON mode writes one
+    JSON object to stdout; diagnostics go to stderr and must not corrupt stdout.
   </p>
   <p>
     At resident startup, an invalid rollout mode, missing T1 runtime identity/build ID, or inability
-    to create/open the process ledger directory/file returns <code>CliError</code> and prevents MCP
-    endpoint publication. After startup, an individual append/flush failure follows section 9.3 and
-    does not retroactively fail a successfully persisted compile.
+    to create/open the process ledger directory/file returns
+    <code>CliError</code> and prevents MCP endpoint publication. After
+    startup, an individual append/flush failure follows section 9.3 and does not retroactively fail
+    a successfully persisted compile.
   </p>
   <h3 id="section-88-atomic-persistence-order">8.8 Atomic persistence order</h3>
   <p>
-    <code>persistence::persist</code> submits one <code>mcp.context_compile.persist</code> Writer
-    job and starts one SQLite transaction. Within it, execute in this order:
+    <code>persistence::persist</code> submits one
+    <code>mcp.context_compile.persist</code> Writer job and starts one SQLite transaction.
+    Within it, execute in this order:
   </p>
   <ol>
     <li>
-      insert <code>context_compile_runs</code> with <code>snapshotComplete=false</code> and the
-      semantic telemetry known before mutation;
+      insert <code>context_compile_runs</code> with
+      <code>snapshotComplete=false</code> and the semantic telemetry known before
+      mutation;
     </li>
     <li>insert task trace;</li>
     <li>insert pack items;</li>
@@ -1154,12 +1198,13 @@ pub enum CliCommand {
     revision and these tables are required: <code>context_compile_runs</code>,
     <code>context_compile_task_traces</code>, <code>context_pack_items</code>,
     <code>context_compile_candidate_traces</code>, <code>knowledge_items</code>,
-    <code>episode_cards</code>, <code>knowledge_usage_events</code>, and
-    <code>episode_retrieval_feedback</code>. <code>settings</code>/provider configuration may be
-    absent and follows the existing deterministic/degraded composition behavior.
-    <code>legacy</code> preserves the current missing-table degradation contract captured by F1
-    golden cases. There is no post-commit SQLite update for Foundation telemetry. The runtime-ledger
-    append is the sole post-Writer persistence action.
+    <code>episode_cards</code>, <code>knowledge_usage_events</code>,
+    and <code>episode_retrieval_feedback</code>.
+    <code>settings</code>/provider configuration may be absent and follows
+    the existing deterministic/degraded composition behavior.
+    <code>legacy</code> preserves the current missing-table degradation
+    contract captured by F1 golden cases. There is no post-commit SQLite update for Foundation
+    telemetry. The runtime-ledger append is the sole post-Writer persistence action.
   </p>
   <hr />
   <h2 id="section-9-telemetry-contract">9. Telemetry Contract</h2>
@@ -1190,9 +1235,7 @@ pub enum CliCommand {
       </tr>
       <tr>
         <td>
-          <code
-            >&lt;logs_dir&gt;/context-compile-foundation/&lt;ledger-id&gt;.&lt;sequence&gt;.jsonl</code
-          >
+          <code>&lt;logs_dir&gt;/context-compile-foundation/&lt;ledger-id&gt;.&lt;sequence&gt;.jsonl</code>
         </td>
         <td>Once, after observed Writer completion</td>
         <td>exact Writer and pre-ledger service timing/result</td>
@@ -1207,10 +1250,10 @@ pub enum CliCommand {
     </tbody>
   </table>
   <p>
-    The shared key is the existing <code>runId</code>. The SQLite snapshot declares
-    <code>writerTelemetryExpected=true</code>; it never claims that the later ledger append already
-    succeeded. A performance sample is complete only when the report finds exactly one valid
-    matching ledger record.
+    The shared key is the existing <code>runId</code>. The SQLite
+    snapshot declares <code>writerTelemetryExpected=true</code>; it never claims that the later
+    ledger append already succeeded. A performance sample is complete only when the report finds
+    exactly one valid matching ledger record.
   </p>
   <h3 id="section-92-persisted-run-snapshot-contract">9.2 Persisted run-snapshot contract</h3>
   <pre><code class="language-json">{
@@ -1262,31 +1305,34 @@ pub enum CliCommand {
     defines field names and semantics; JSON serialization order is not significant.
   </p>
   <p>
-    Candidate count semantics are fixed: <code>eligible*</code> is the active, classified,
-    scope-safe, facet-matching set before query-score filtering; <code>queryMatched*</code> is the
-    subset with <code>queryScore &gt; 0</code>; <code>delivered*</code> is the unique ordered set
-    supplied to the selected composition route. Shadow-only candidates are never included in
-    <code>delivered*</code>.
+    Candidate count semantics are fixed: <code>eligible*</code> is the
+    active, classified, scope-safe, facet-matching set before query-score filtering;
+    <code>queryMatched*</code> is the subset with
+    <code>queryScore &gt; 0</code>; <code>delivered*</code> is
+    the unique ordered set supplied to the selected composition route. Shadow-only candidates are
+    never included in <code>delivered*</code>.
   </p>
   <p>
     Candidate trace volume is bounded. In modes without shadow comparison, persist only the
-    delivered selection. In <code>split_shadow_rank</code> and <code>foundation</code>, persist the
-    ordered union of legacy and Foundation top-budget selections: at most 16 Knowledge rows and 6
-    EpisodeCard rows per run before de-duplication. <code>selected=1</code> means delivered in the
+    delivered selection. In <code>split_shadow_rank</code> and
+    <code>foundation</code>, persist the ordered union of legacy and
+    Foundation top-budget selections: at most 16 Knowledge rows and 6 EpisodeCard rows per run
+    before de-duplication. <code>selected=1</code> means delivered in the
     active mode. A union member not delivered has <code>suppressed=1</code> and
-    <code>suppression_reason=&#39;shadow_only&#39;</code>. <code>evidence.foundation</code> records
-    entity kind, legacy/foundation rank, query score, raw and normalized tie-break features, content
-    version, and <code>delivered</code>/<code>shadow</code> booleans. Do not persist every eligible
-    row; aggregate counts preserve corpus-size visibility.
+    <code>suppression_reason=&#39;shadow_only&#39;</code>.
+    <code>evidence.foundation</code> records entity kind, legacy/foundation rank, query
+    score, raw and normalized tie-break features, content version, and
+    <code>delivered</code>/<code>shadow</code>
+    booleans. Do not persist every eligible row; aggregate counts preserve corpus-size visibility.
   </p>
   <h3 id="section-93-runtime-writer-ledger-contract">9.3 Runtime Writer-ledger contract</h3>
   <p>
     Each resident process owns one append-only segment series named
     <code>&lt;ledger-id&gt;.&lt;six-digit-sequence&gt;.jsonl</code>. Compute
-    <code>ledger-id</code> as the first 16 lowercase hex characters of SHA-256 over
-    <code>runtimeBuildId + &quot;\n&quot; + pid + &quot;\n&quot; + processStartedAt</code>. The
-    directory comes from <code>resolve_paths(env).logs_dir</code>; neither the absolute log path nor
-    the absolute DB path appears in a record.
+    <code>ledger-id</code> as the first 16 lowercase hex characters of
+    SHA-256 over <code>runtimeBuildId + &quot;\n&quot; + pid + &quot;\n&quot; + processStartedAt</code>. The directory comes from
+    <code>resolve_paths(env).logs_dir</code>; neither the absolute log path nor the absolute DB
+    path appears in a record.
   </p>
   <pre><code class="language-json">{
   &quot;contractVersion&quot;: 1,
@@ -1311,30 +1357,36 @@ pub enum CliCommand {
   <p>Implementation rules:</p>
   <ul>
     <li>
-      <code>writer.operation</code> is exactly <code>mcp.context_compile</code> in
-      <code>legacy</code> and <code>mcp.context_compile.persist</code> in every split mode.
+      <code>writer.operation</code> is exactly
+      <code>mcp.context_compile</code> in
+      <code>legacy</code> and
+      <code>mcp.context_compile.persist</code> in every split mode.
     </li>
     <li>
-      <code>FoundationTelemetryLedger</code> owns one mutex-protected active segment opened with
-      <code>create_new(true)</code>, <code>append(true)</code>, and write-only access. No request
-      opens its own ledger file.
+      <code>FoundationTelemetryLedger</code> owns one mutex-protected active segment opened
+      with <code>create_new(true)</code>,
+      <code>append(true)</code>, and write-only access. No request opens its own
+      ledger file.
     </li>
     <li>
       Serialize to an in-memory byte buffer, reject a record over 16 KiB, append the bytes plus one
-      newline using <code>write_all</code>, then call <code>flush</code>. <code>sync_all</code> is
-      not in the request critical path.
+      newline using <code>write_all</code>, then call
+      <code>flush</code>.
+      <code>sync_all</code> is not in the request critical path.
     </li>
     <li>
       Before an append would make a segment exceed 16 MiB, flush and close it, increment the
-      sequence, and open the next segment with <code>create_new</code>. Retain the active segment
-      plus the seven newest closed segments for that ledger ID; after the new segment opens
-      successfully, remove older closed segments under the same ledger mutex. Never delete another
-      ledger ID&#39;s files.
+      sequence, and open the next segment with <code>create_new</code>. Retain
+      the active segment plus the seven newest closed segments for that ledger ID; after the new
+      segment opens successfully, remove older closed segments under the same ledger mutex. Never
+      delete another ledger ID&#39;s files.
     </li>
     <li>
-      <code>queueWaitUs</code>, <code>workUs</code>, and <code>totalUs</code> are required but may
-      be <code>null</code> only when the outer observed API returns <code>Err</code> before a job
-      can be observed. Such a record has <code>success=false</code> and a bounded
+      <code>queueWaitUs</code>, <code>workUs</code>,
+      and <code>totalUs</code> are required but may be
+      <code>null</code> only when the outer observed API returns
+      <code>Err</code> before a job can be observed. Such a record has
+      <code>success=false</code> and a bounded
       <code>errorCategory</code>.
     </li>
     <li>
@@ -1352,9 +1404,9 @@ pub enum CliCommand {
     </li>
     <li>
       Reports scan every valid segment name in the directory. A file that disappears or changes size
-      while being read is counted as <code>ledger_segment_changed</code> and makes that report
-      promotion-ineligible; retrying the report is safe because it is read-only. Evidence records
-      the retained segment names, sizes, and hashes at capture time.
+      while being read is counted as <code>ledger_segment_changed</code> and makes that
+      report promotion-ineligible; retrying the report is safe because it is read-only. Evidence
+      records the retained segment names, sizes, and hashes at capture time.
     </li>
   </ul>
   <h3 id="section-94-provider-attempt-trace">9.4 Provider-attempt trace</h3>
@@ -1376,8 +1428,8 @@ pub enum CliCommand {
   </p>
   <h3 id="section-95-observed-writer-api">9.5 Observed Writer API</h3>
   <p>
-    Add a non-breaking observed execution API to <code>sqlite_writer</code> with these exact
-    public-within-crate fields:
+    Add a non-breaking observed execution API to <code>sqlite_writer</code> with
+    these exact public-within-crate fields:
   </p>
   <pre><code class="language-rust">pub(crate) struct WriterExecution&lt;T&gt; {
     pub(crate) result: Result&lt;T, String&gt;,
@@ -1407,17 +1459,21 @@ where
     F: FnOnce(&amp;mut Connection) -&gt; Result&lt;T, String&gt; + Send + &#39;static;
 </code></pre>
   <p>
-    The outer <code>Err</code> means the job could not be submitted/observed.
-    <code>WriterExecution.result</code> is the closure result. Existing <code>execute</code> and
-    <code>execute_for_path</code> delegate to the observed primitive and return the old
-    <code>Result&lt;T, String&gt;</code> by flattening these two layers; all existing callers remain
-    source-compatible.
+    The outer <code>Err</code> means the job could not be
+    submitted/observed. <code>WriterExecution.result</code> is the closure result.
+    Existing <code>execute</code> and
+    <code>execute_for_path</code> delegate to the observed primitive and return the
+    old <code>Result&lt;T, String&gt;</code> by flattening these two layers; all existing
+    callers remain source-compatible.
   </p>
-  <p>Timing points use <code>Instant</code>, never wall-clock timestamps:</p>
+  <p>
+    Timing points use <code>Instant</code>, never wall-clock timestamps:
+  </p>
   <ul>
     <li>enqueue: immediately before channel send;</li>
     <li>
-      start: immediately after worker dequeue and before setting <code>active_operation</code>;
+      start: immediately after worker dequeue and before setting
+      <code>active_operation</code>;
     </li>
     <li>
       finish: immediately after the closure returns and before clearing
@@ -1435,22 +1491,23 @@ where
   </p>
   <h3 id="section-96-timing-consistency-and-report-join">9.6 Timing consistency and report join</h3>
   <p>
-    The baseline/compare reader loads valid JSONL records into a <code>runId</code> map, rejects
-    duplicates, and joins them to run snapshots only when <code>pipelineVersion</code>,
-    <code>runtimeBuildId</code>, and <code>databaseIdentityFingerprint</code> also match. Failed
-    persistence records without a run row contribute to availability counts but not latency
-    percentiles.
+    The baseline/compare reader loads valid JSONL records into a
+    <code>runId</code> map, rejects duplicates, and joins them to run
+    snapshots only when <code>pipelineVersion</code>,
+    <code>runtimeBuildId</code>, and
+    <code>databaseIdentityFingerprint</code> also match. Failed persistence records without a
+    run row contribute to availability counts but not latency percentiles.
   </p>
   <p>For complete successful samples:</p>
   <pre><code class="language-text">prepare + retrieval + compose + writer.totalUs &lt;= preLedgerEndToEndUs + tolerance
 writer.queueWaitUs + writer.workUs &lt;= writer.totalUs + tolerance
 </code></pre>
   <p>
-    Tolerance is the greater of 2 ms or 1% of <code>preLedgerEndToEndUs</code>. Violations are
-    reported and excluded; repeated violations stop promotion. The ledger cannot include its own
-    append duration without becoming self-referential. Promotion end-to-end p50/p95 therefore comes
-    from the paired MCP client timer measured immediately before request send through complete
-    response receipt; the report keeps this metric separate as
+    Tolerance is the greater of 2 ms or 1% of <code>preLedgerEndToEndUs</code>.
+    Violations are reported and excluded; repeated violations stop promotion. The ledger cannot
+    include its own append duration without becoming self-referential. Promotion end-to-end p50/p95
+    therefore comes from the paired MCP client timer measured immediately before request send
+    through complete response receipt; the report keeps this metric separate as
     <code>callerObservedEndToEndUs</code>.
   </p>
   <hr />
@@ -1463,17 +1520,17 @@ test/fixtures/context-compile-foundation-v1.json
 </code></pre>
   <p>
     The implementation workflow passes
-    <code>--out .tmp/context-compile-foundation/&lt;manifest-id&gt;/&lt;artifact&gt;.json</code>;
-    generated reports are not treated as source. The command itself accepts another explicit new
-    file path for isolated tests. The evidence document records report SHA-256 hashes and the stable
-    aggregate.
+    <code>--out .tmp/context-compile-foundation/&lt;manifest-id&gt;/&lt;artifact&gt;.json</code>; generated reports are not treated as source. The
+    command itself accepts another explicit new file path for isolated tests. The evidence document
+    records report SHA-256 hashes and the stable aggregate.
   </p>
   <p>
     The source manifest contains thresholds and fixture paths, not a mutable live DB fingerprint or
-    source commit. Every generated report binds the run to <code>sourceCommit</code>,
-    source-tree/build identity, <code>runtimeBuildId</code>, effective DB fingerprint, manifest
-    hash, and every input-fixture hash. This prevents a version-controlled threshold manifest from
-    becoming stale after the next code change.
+    source commit. Every generated report binds the run to
+    <code>sourceCommit</code>, source-tree/build identity,
+    <code>runtimeBuildId</code>, effective DB fingerprint, manifest hash, and
+    every input-fixture hash. This prevents a version-controlled threshold manifest from becoming
+    stale after the next code change.
   </p>
   <h3 id="section-102-manifest-minimum-contract">10.2 Manifest minimum contract</h3>
   <pre><code class="language-json">{
@@ -1551,13 +1608,14 @@ test/fixtures/context-compile-foundation-v1.json
     generated report makes promotion ineligible.
   </p>
   <p>
-    Percentiles use nearest-rank on ascending values: index <code>max(0, ceil(p * n) - 1)</code>.
-    Paired bootstrap resamples paired query indices with replacement. Use the manifest seed as
-    <code>u64</code> and update it for every draw with
-    <code>state = state * 6364136223846793005 + 1442695040888963407</code> using wrapping
-    arithmetic; sample index is <code>state % n</code>. Confidence bounds use the same nearest-rank
-    rule over the sorted bootstrap deltas. Empty cohorts yield <code>null</code>, never zero, and
-    fail the applicable minimum-sample gate.
+    Percentiles use nearest-rank on ascending values: index
+    <code>max(0, ceil(p * n) - 1)</code>. Paired bootstrap resamples paired query indices
+    with replacement. Use the manifest seed as <code>u64</code> and
+    update it for every draw with <code>state = state * 6364136223846793005 + 1442695040888963407</code> using wrapping
+    arithmetic; sample index is <code>state % n</code>. Confidence bounds use
+    the same nearest-rank rule over the sorted bootstrap deltas. Empty cohorts yield
+    <code>null</code>, never zero, and fail the applicable
+    minimum-sample gate.
   </p>
   <h3 id="section-103-baseline-command-surface">10.3 Baseline command surface</h3>
   <p>Add Rust-owned commands with package-script wrappers:</p>
@@ -1574,8 +1632,8 @@ bun run foundation:experiment -- --manifest &lt;path&gt; --out &lt;new-report.js
 bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilities-report.json&gt; --out &lt;new-report.json&gt; --calls 100 --allow-live-writes
 </code></pre>
   <p>
-    Add these exact <code>package.json</code> entries; callers supply all subcommand options after
-    <code>--</code>:
+    Add these exact <code>package.json</code> entries; callers supply all
+    subcommand options after <code>--</code>:
   </p>
   <pre><code class="language-json">{
   &quot;foundation:capabilities&quot;: &quot;cargo run -q -p context-stilld -- context-compile capabilities&quot;,
@@ -1588,68 +1646,78 @@ bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilit
   <p>Rules:</p>
   <ul>
     <li>
-      <code>capabilities</code>, <code>baseline</code>, and <code>compare</code> are read-only.
+      <code>capabilities</code>, <code>baseline</code>,
+      and <code>compare</code> are read-only.
       <code>experiment</code> may call providers but never writes the DB. Only
-      <code>probe</code> performs normal MCP compile calls and their ordinary business writes.
+      <code>probe</code> performs normal MCP compile calls and their
+      ordinary business writes.
     </li>
     <li>They resolve the same effective database identity as status and Doctor.</li>
     <li>They refuse an identity mismatch.</li>
     <li>They never copy the database automatically.</li>
     <li>
-      <code>--out</code> is required for baseline/compare/experiment/probe and optional for
-      capabilities; whenever present it must not already exist. Write to a sibling temporary file,
-      <code>flush</code>, then atomically rename it. Remove only that temporary file on failure.
+      <code>--out</code> is required for
+      baseline/compare/experiment/probe and optional for capabilities; whenever present it must not
+      already exist. Write to a sibling temporary file,
+      <code>flush</code>, then atomically rename it. Remove only that
+      temporary file on failure.
     </li>
     <li>
-      <code>baseline --probe</code> validates and incorporates caller-observed timings from the
-      probe; omitting <code>--probe</code> is allowed for provisional historical/offline analysis
-      but leaves caller-observed performance gates ineligible.
+      <code>baseline --probe</code> validates and incorporates caller-observed
+      timings from the probe; omitting <code>--probe</code> is allowed for
+      provisional historical/offline analysis but leaves caller-observed performance gates
+      ineligible.
     </li>
     <li>
-      <code>compare</code> reads only the two explicit report files. It rejects a report whose
-      manifest hash, pipeline version, build/source identity policy, effective database fingerprint,
-      or fixture hashes are incompatible, and it never selects “latest” artifacts from a directory.
+      <code>compare</code> reads only the two explicit report files. It
+      rejects a report whose manifest hash, pipeline version, build/source identity policy,
+      effective database fingerprint, or fixture hashes are incompatible, and it never selects
+      “latest” artifacts from a directory.
     </li>
     <li>
-      <code>--json</code> prints the exact report object to stdout in addition to writing it to
-      <code>--out</code>; without it, stdout is a bounded human summary. Diagnostics use stderr.
+      <code>--json</code> prints the exact report object to stdout in
+      addition to writing it to <code>--out</code>; without it, stdout is
+      a bounded human summary. Diagnostics use stderr.
     </li>
     <li>
       <code>experiment</code> refuses to run without the exact
-      <code>--allow-provider-calls</code> flag, never writes run/business tables, prepares through a
-      read-only connection, and does not write prompts or composed bodies to its report. It records
-      hashes, IDs, counts, timings, route outcomes, and bounded error categories.
+      <code>--allow-provider-calls</code> flag, never writes run/business tables, prepares
+      through a read-only connection, and does not write prompts or composed bodies to its report.
+      It records hashes, IDs, counts, timings, route outcomes, and bounded error categories.
     </li>
     <li>
-      <code>capabilities --json</code> includes the three entry decisions, their individual
-      predicates, runtime build/mode, effective DB fingerprint, and backup fingerprint. F0 supplies
-      <code>--out</code> to save this exact JSON as the capabilities entry report and records its
-      hash in evidence.
+      <code>capabilities --json</code> includes the three entry decisions, their
+      individual predicates, runtime build/mode, effective DB fingerprint, and backup fingerprint.
+      F0 supplies <code>--out</code> to save this exact JSON as the
+      capabilities entry report and records its hash in evidence.
     </li>
     <li>
-      <code>probe</code> refuses to run without the exact <code>--allow-live-writes</code> flag and
-      an explicit <code>--entry-report</code> whose <code>liveEntryEligible=true</code>, build ID,
-      effective DB fingerprint, and runtime mode still match current runtime truth. The report must
-      be at most 10 minutes old by normalized timestamp. It cycles manifest queries in file order,
-      creates a unique session ID per request, calls the resident MCP endpoint, measures
-      send-through-response latency with <code>Instant</code>, and writes a content-redacted probe
-      report. A probe never changes rollout mode or restarts the resident.
+      <code>probe</code> refuses to run without the exact
+      <code>--allow-live-writes</code> flag and an explicit
+      <code>--entry-report</code> whose
+      <code>liveEntryEligible=true</code>, build ID, effective DB fingerprint, and runtime
+      mode still match current runtime truth. The report must be at most 10 minutes old by
+      normalized timestamp. It cycles manifest queries in file order, creates a unique session ID
+      per request, calls the resident MCP endpoint, measures send-through-response latency with
+      <code>Instant</code>, and writes a content-redacted probe report. A
+      probe never changes rollout mode or restarts the resident.
     </li>
     <li>Fixture benchmarks use a temp DB or read-only snapshot, never the live DB for writes.</li>
     <li>
-      <code>baseline</code> has two explicitly labeled cohorts: <code>historicalReadOnly</code> from
-      the effective DB and <code>fixedFixture</code> from a temp DB built from the versioned
-      fixture. It never mixes their rows or denominators.
+      <code>baseline</code> has two explicitly labeled cohorts:
+      <code>historicalReadOnly</code> from the effective DB and
+      <code>fixedFixture</code> from a temp DB built from the versioned fixture.
+      It never mixes their rows or denominators.
     </li>
     <li>
-      <code>experiment</code> builds candidates from the same fixed-fixture temp DB and reads only
-      provider configuration from the effective DB. This keeps route inputs reproducible without
-      writing live run tables.
+      <code>experiment</code> builds candidates from the same fixed-fixture
+      temp DB and reads only provider configuration from the effective DB. This keeps route inputs
+      reproducible without writing live run tables.
     </li>
     <li>
-      <code>probe</code> uses the query goals/facets against the live cohort for
-      performance/availability only. Fixture-only expected entity IDs are not scored against live
-      rows.
+      <code>probe</code> uses the query goals/facets against the live
+      cohort for performance/availability only. Fixture-only expected entity IDs are not scored
+      against live rows.
     </li>
     <li>
       Reports include command version, manifest hash, commit, build ID, database fingerprint, row
@@ -1694,14 +1762,15 @@ bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilit
 </code></pre>
   <p>
     For a compare report, <code>reportKind=&quot;compare&quot;</code>, and the report additionally
-    requires <code>baselineReportSha256</code>, <code>baselineBinding</code>,
-    <code>candidateBinding</code>, absolute and relative deltas for every gated metric, paired
-    sample count, confidence interval, and a pass/fail result per manifest gate.
-    <code>promotionEligible</code> is computed only; no command changes rollout mode.
+    requires <code>baselineReportSha256</code>,
+    <code>baselineBinding</code>, <code>candidateBinding</code>,
+    absolute and relative deltas for every gated metric, paired sample count, confidence interval,
+    and a pass/fail result per manifest gate. <code>promotionEligible</code> is
+    computed only; no command changes rollout mode.
   </p>
   <p>
-    For an experiment report, <code>reportKind=&quot;composition_experiment&quot;</code>; it
-    requires one result per <code>(queryId, route)</code> with prepared-snapshot hash, output hash,
+    For an experiment report, <code>reportKind=&quot;composition_experiment&quot;</code>; it requires one result
+    per <code>(queryId, route)</code> with prepared-snapshot hash, output hash,
     selected/used IDs, must-include/must-not-include results, token estimate, logical calls,
     provider attempts, failovers, latency, and bounded error/degraded codes. Raw prompts, candidate
     bodies, and composed output are forbidden in the report.
@@ -1709,19 +1778,22 @@ bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilit
   <p>
     A capabilities report uses <code>contractVersion=1</code>,
     <code>reportKind=&quot;capabilities&quot;</code>, <code>generatedAt</code>,
-    <code>ownershipRows[]</code>, all three entry decisions with named predicate results, runtime
-    version/build/mode, effective DB identity source/fingerprint, and backup fingerprint. Every
-    ownership row requires <code>surfaceId</code>, <code>entryPoint</code>,
-    <code>semanticOwner</code>, <code>foundationSemantics</code> (<code>active</code>,
-    <code>adapter</code>, <code>legacy_unmigrated</code>, or <code>not_applicable</code>), and
-    <code>maintained</code>. F0 freezes the discovered row set; later commands must not silently
-    omit a row. The report contains no absolute DB or backup path.
+    <code>ownershipRows[]</code>, all three entry decisions with named predicate
+    results, runtime version/build/mode, effective DB identity source/fingerprint, and backup
+    fingerprint. Every ownership row requires <code>surfaceId</code>,
+    <code>entryPoint</code>, <code>semanticOwner</code>,
+    <code>foundationSemantics</code> (<code>active</code>,
+    <code>adapter</code>, <code>legacy_unmigrated</code>, or
+    <code>not_applicable</code>), and
+    <code>maintained</code>. F0 freezes the discovered row set; later commands
+    must not silently omit a row. The report contains no absolute DB or backup path.
   </p>
   <p>
     A probe report uses the common binding fields with
-    <code>reportKind=&quot;live_probe&quot;</code> and requires <code>requestedCalls</code>,
-    <code>completedCalls</code>, <code>sessionPrefix</code>, one content-redacted observation per
-    call, caller-observed microseconds, result/error category, joined run ID, pipeline mode/build/DB
+    <code>reportKind=&quot;live_probe&quot;</code> and requires
+    <code>requestedCalls</code>, <code>completedCalls</code>,
+    <code>sessionPrefix</code>, one content-redacted observation per call,
+    caller-observed microseconds, result/error category, joined run ID, pipeline mode/build/DB
     fingerprint, and aggregate availability/latency metrics. The session prefix contains only probe
     ID and ordinal, never a goal fragment.
   </p>
@@ -1743,19 +1815,21 @@ bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilit
   </p>
   <h3 id="section-106-input-fixture-contracts">10.6 Input fixture contracts</h3>
   <p>
-    All fixture JSON files set <code>&quot;contractVersion&quot;: 1</code> and reject unknown fields
-    in validation.
+    All fixture JSON files set <code>&quot;contractVersion&quot;: 1</code> and reject unknown
+    fields in validation.
   </p>
   <p>
-    <code>hard-query-set.v1.json</code> contains <code>queries[]</code>. Each query requires
-    <code>id</code>, <code>goal</code>, repository facets, <code>mustIncludeKnowledgeIds</code>,
-    <code>mustIncludeEpisodeIds</code>, <code>mustNotIncludeIds</code>, and
-    <code>exactIdentifierLike</code>. Empty expectation arrays are explicit. IDs refer only to the
-    paired test snapshot, never implicitly to current live rows.
+    <code>hard-query-set.v1.json</code> contains
+    <code>queries[]</code>. Each query requires
+    <code>id</code>, <code>goal</code>,
+    repository facets, <code>mustIncludeKnowledgeIds</code>,
+    <code>mustIncludeEpisodeIds</code>, <code>mustNotIncludeIds</code>,
+    and <code>exactIdentifierLike</code>. Empty expectation arrays are explicit. IDs
+    refer only to the paired test snapshot, never implicitly to current live rows.
   </p>
   <p>
-    <code>context-compile-foundation-v1.json</code> contains <code>cases[]</code>. Each case
-    requires:
+    <code>context-compile-foundation-v1.json</code> contains
+    <code>cases[]</code>. Each case requires:
   </p>
   <ul>
     <li><code>id</code> and one typed MCP request;</li>
@@ -1771,18 +1845,21 @@ bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilit
     <li>expected logical-call, provider-attempt, and failover counts.</li>
   </ul>
   <p>
-    Golden comparison removes only fields listed in <code>ignoredFields</code>, then compares
-    canonical JSON with object keys sorted and arrays kept in semantic order. Adding a field to
-    <code>ignoredFields</code> requires evidence explaining why it is nondeterministic; IDs,
-    ranking, scope, route, counts, and error/degraded codes may never be ignored.
+    Golden comparison removes only fields listed in <code>ignoredFields</code>,
+    then compares canonical JSON with object keys sorted and arrays kept in semantic order. Adding a
+    field to <code>ignoredFields</code> requires evidence explaining why it is
+    nondeterministic; IDs, ranking, scope, route, counts, and error/degraded codes may never be
+    ignored.
   </p>
   <p>
-    <code>timestamp-normalization-v1.json</code> contains <code>cases[]</code> with
-    <code>raw</code>, <code>expectedEpochMs</code>, and <code>valid</code>, plus
-    <code>stableOrderCases[]</code> containing raw timestamp/row-ID pairs and expected ordered IDs.
-    It includes ISO UTC, ISO offset, SQLite datetime, leap day, empty/malformed
-    <code>unix-ms</code>, trailing junk, negative, overflow, ECMAScript maximum, and
-    maximum-plus-one cases.
+    <code>timestamp-normalization-v1.json</code> contains
+    <code>cases[]</code> with
+    <code>raw</code>, <code>expectedEpochMs</code>,
+    and <code>valid</code>, plus
+    <code>stableOrderCases[]</code> containing raw timestamp/row-ID pairs and expected
+    ordered IDs. It includes ISO UTC, ISO offset, SQLite datetime, leap day, empty/malformed
+    <code>unix-ms</code>, trailing junk, negative, overflow, ECMAScript
+    maximum, and maximum-plus-one cases.
   </p>
   <hr />
   <h2 id="section-11-delivery-units">11. Delivery Units</h2>
@@ -1819,7 +1896,10 @@ bun run foundation:probe -- --manifest &lt;path&gt; --entry-report &lt;capabilit
       <tr>
         <td>F1</td>
         <td>F0 golden fixture and T1 production identity/build API</td>
-        <td>new domain, <code>native_compile.rs</code>, <code>domains/mod.rs</code></td>
+        <td>
+          new domain, <code>native_compile.rs</code>,
+          <code>domains/mod.rs</code>
+        </td>
         <td>Before/after golden artifact equality</td>
         <td>Focused Rust tests and golden parity pass</td>
       </tr>
@@ -1903,24 +1983,25 @@ Stop reason, if any:
     <li>Record active compile callers and ownership.</li>
     <li>
       Write three independent booleans to evidence: <code>scaffoldEntryEligible</code>,
-      <code>foundationCodeEntryEligible</code>, and <code>liveEntryEligible</code>, with one
-      predicate result per line. Do not collapse them into a single readiness value.
+      <code>foundationCodeEntryEligible</code>, and
+      <code>liveEntryEligible</code>, with one predicate result per line. Do not
+      collapse them into a single readiness value.
     </li>
   </ul>
   <p>Verification:</p>
   <ul>
     <li>The manifest validates and every input artifact has a SHA-256.</li>
     <li>
-      <code>scaffoldEntryEligible=true</code> requires an isolated temp/read-only test setup and no
-      live mutation.
+      <code>scaffoldEntryEligible=true</code> requires an isolated temp/read-only test setup
+      and no live mutation.
     </li>
     <li>
       <code>foundationCodeEntryEligible=true</code> additionally requires the T1 production
       identity/build API and its focused tests; only this value allows F1-F7 completion.
     </li>
     <li>
-      <code>liveEntryEligible=true</code> requires every section 2.2 predicate, one effective DB
-      across runtime surfaces, and backup source equal to that DB.
+      <code>liveEntryEligible=true</code> requires every section 2.2 predicate, one
+      effective DB across runtime surfaces, and backup source equal to that DB.
     </li>
     <li>Live DB is not modified.</li>
   </ul>
@@ -1930,8 +2011,9 @@ Stop reason, if any:
       Stop all work on manifest/schema ambiguity or inability to isolate tests from the live DB.
     </li>
     <li>
-      Set <code>liveEntryEligible=false</code>, but continue permitted offline work, for path
-      mismatch, false <code>ok</code>, unresolved producer gate, missing backup, or stale binary.
+      Set <code>liveEntryEligible=false</code>, but continue permitted offline work, for
+      path mismatch, false <code>ok</code>, unresolved producer gate,
+      missing backup, or stale binary.
     </li>
   </ul>
   <h3 id="f1-golden-contract-and-rust-compile-domain-seam">
@@ -1976,20 +2058,20 @@ Stop reason, if any:
   <p>Changes:</p>
   <ul>
     <li>
-      Add <code>test/fixtures/timestamp-normalization-v1.json</code> first, then make Rust,
-      TypeScript, and SQL projection conform to it.
+      Add <code>test/fixtures/timestamp-normalization-v1.json</code> first, then make Rust, TypeScript, and SQL
+      projection conform to it.
     </li>
     <li>
       Move timestamp formatting/parsing out of MCP-native helpers into a shared Rust utility
       exposing <code>format_unix_ms(non_negative_ms)</code> and
-      <code>normalized_timestamp_sql(column_sql)</code>; the SQL helper accepts only a trusted
-      column expression supplied by code, never user input.
+      <code>normalized_timestamp_sql(column_sql)</code>; the SQL helper accepts only a trusted column
+      expression supplied by code, never user input.
     </li>
     <li>Preserve canonical <code>unix-ms</code> new writes.</li>
     <li>Add mixed-format normalization for Foundation reports.</li>
     <li>
-      Replace Foundation-relevant raw <code>datetime(created_at)</code> ordering with the normalized
-      projection.
+      Replace Foundation-relevant raw <code>datetime(created_at)</code> ordering with the
+      normalized projection.
     </li>
     <li>Count invalid and out-of-range timestamps.</li>
     <li>Add same-millisecond stable-ID tie-breaking.</li>
@@ -1997,8 +2079,8 @@ Stop reason, if any:
   <p>Verification:</p>
   <ul>
     <li>
-      ISO UTC, ISO offset, SQLite datetime, <code>unix-ms</code>, leap-day, invalid, and boundary
-      fixtures.
+      ISO UTC, ISO offset, SQLite datetime, <code>unix-ms</code>, leap-day,
+      invalid, and boundary fixtures.
     </li>
     <li>
       Same input yields the same epoch ordering in Rust and the continued TypeScript report path.
@@ -2049,8 +2131,8 @@ Stop reason, if any:
   <p>Rollback:</p>
   <ul>
     <li>
-      Existing <code>execute</code> behavior remains intact; Foundation callers can return to
-      unobserved execution.
+      Existing <code>execute</code> behavior remains intact; Foundation
+      callers can return to unobserved execution.
     </li>
   </ul>
   <h3 id="f4-read--compose--persist-split">F4: Read / Compose / Persist Split</h3>
@@ -2067,28 +2149,33 @@ Stop reason, if any:
       Append one runtime-ledger record after the observed Writer result; do not enqueue a
       telemetry-only Writer job.
     </li>
-    <li>Implement <code>legacy</code> and <code>split_legacy_rank</code> modes first.</li>
+    <li>
+      Implement <code>legacy</code> and
+      <code>split_legacy_rank</code> modes first.
+    </li>
     <li>
       Until F6 lands, set
       <code>PreparedCompile.foundation_selection = legacy_selection.clone()</code> and do not accept
-      <code>split_shadow_rank</code> or <code>foundation</code> at startup; those two tokens become
-      operationally valid only in F6. The parser enum may exist earlier, but startup returns a clear
+      <code>split_shadow_rank</code> or
+      <code>foundation</code> at startup; those two tokens become operationally
+      valid only in F6. The parser enum may exist earlier, but startup returns a clear
       <code>mode_not_implemented</code> error.
     </li>
   </ul>
   <p>Verification:</p>
   <ul>
     <li>
-      A deliberately blocked Composer does not set Writer <code>activeOperation</code> to compile
-      persistence.
+      A deliberately blocked Composer does not set Writer
+      <code>activeOperation</code> to compile persistence.
     </li>
     <li>
       While Composer is blocked, an unrelated bounded Writer test job completes within the manifest
       concurrency bound.
     </li>
     <li>
-      The read connection rejects <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, and
-      schema mutation.
+      The read connection rejects <code>INSERT</code>,
+      <code>UPDATE</code>, <code>DELETE</code>,
+      and schema mutation.
     </li>
     <li>
       Injected persistence failure leaves no partial run, pack, usage, feedback, or counter rows.
@@ -2098,8 +2185,9 @@ Stop reason, if any:
       in the report.
     </li>
     <li>
-      <code>legacy</code> and <code>split_legacy_rank</code> have identical delivered IDs and output
-      contract on the golden fixture.
+      <code>legacy</code> and
+      <code>split_legacy_rank</code> have identical delivered IDs and output contract
+      on the golden fixture.
     </li>
   </ul>
   <p>Stop:</p>
@@ -2111,8 +2199,8 @@ Stop reason, if any:
   <p>Rollback:</p>
   <ul>
     <li>
-      Set mode to <code>legacy</code> and restart the resident. Safe repository eligibility remains
-      enforced.
+      Set mode to <code>legacy</code> and restart the resident. Safe
+      repository eligibility remains enforced.
     </li>
   </ul>
   <h3 id="f5-native-counters-and-content-snapshots">F5: Native Counters And Content Snapshots</h3>
@@ -2130,9 +2218,10 @@ Stop reason, if any:
       <code>compile_use_count = compile_use_count + 1</code>.
     </li>
     <li>
-      Do not update Knowledge/Episode content columns, <code>updated_at</code>, Knowledge
-      <code>dynamic_score</code>, or <code>agentic_accept_count</code> in Foundation. Composer-used
-      evidence remains in the existing immutable usage/event rows.
+      Do not update Knowledge/Episode content columns, <code>updated_at</code>,
+      Knowledge <code>dynamic_score</code>, or
+      <code>agentic_accept_count</code> in Foundation. Composer-used evidence remains in
+      the existing immutable usage/event rows.
     </li>
     <li>Persist composer-used events separately from selection counts.</li>
     <li>Record counter update count and missing-current-row diagnostics.</li>
@@ -2159,7 +2248,10 @@ Stop reason, if any:
     <li>Require positive query score before ranking.</li>
     <li>Apply the fixed lexicographic policy.</li>
     <li>Compute legacy and Foundation selections from the same eligible candidate snapshot.</li>
-    <li>Add <code>split_shadow_rank</code> and <code>foundation</code> modes.</li>
+    <li>
+      Add <code>split_shadow_rank</code> and
+      <code>foundation</code> modes.
+    </li>
     <li>Store only shadow IDs, ranks, numeric features, and suppression reasons.</li>
     <li>Preserve top-8 Knowledge and top-3 EpisodeCard budgets.</li>
   </ul>
@@ -2177,8 +2269,8 @@ Stop reason, if any:
   <p>Rollback:</p>
   <ul>
     <li>
-      Set mode to <code>split_legacy_rank</code>; keep the low-contention pipeline while reverting
-      ranking.
+      Set mode to <code>split_legacy_rank</code>; keep the low-contention pipeline
+      while reverting ranking.
     </li>
   </ul>
   <h3 id="f7-composition-experiment-harness">F7: Composition Experiment Harness</h3>
@@ -2189,7 +2281,8 @@ Stop reason, if any:
       <code>foundation:experiment</code> package wrapper defined in section 10.3.
     </li>
     <li>
-      Render a fixed <code>PreparedCompile</code> snapshot through all enabled experiment routes.
+      Render a fixed <code>PreparedCompile</code> snapshot through all enabled
+      experiment routes.
     </li>
     <li>Keep provider, model, candidate snapshot, token budget, and query set paired.</li>
     <li>
@@ -2212,8 +2305,8 @@ Stop reason, if any:
   <p>Decision:</p>
   <ul>
     <li>
-      Keep <code>current_two_call</code> unless another route is non-inferior on quality and
-      improves logical calls or latency.
+      Keep <code>current_two_call</code> unless another route is non-inferior on
+      quality and improves logical calls or latency.
     </li>
     <li>
       A route decision updates the evidence document and a separate rollout configuration; it does
@@ -2241,28 +2334,31 @@ Stop reason, if any:
       smoke calls.
     </li>
     <li>
-      Run a 100-call <code>foundation:probe</code> against the manifest query set and create the
-      <code>split_legacy_rank</code> baseline report with <code>--probe</code>.
+      Run a 100-call <code>foundation:probe</code> against the manifest query set and
+      create the <code>split_legacy_rank</code> baseline report with
+      <code>--probe</code>.
     </li>
     <li>
-      Switch to <code>split_shadow_rank</code>, save a fresh entry report, and collect at least 50
-      identity-present shadow calls.
+      Switch to <code>split_shadow_rank</code>, save a fresh entry report, and collect
+      at least 50 identity-present shadow calls.
     </li>
     <li>Run the fixed replay/hard-query comparison and all shadow hard-zero checks.</li>
     <li>
-      Switch a controlled local cohort to <code>foundation</code> and save a fresh entry report.
+      Switch a controlled local cohort to <code>foundation</code> and save a
+      fresh entry report.
     </li>
     <li>
       Collect at least 100 identity-present Foundation calls across at least 24 hours; calls
       concentrated into a shorter window do not satisfy this observation gate.
     </li>
     <li>
-      Run a 100-call <code>foundation:probe</code> with the same manifest query order and create the
-      Foundation candidate baseline report with <code>--probe</code>.
+      Run a 100-call <code>foundation:probe</code> with the same manifest query order
+      and create the Foundation candidate baseline report with
+      <code>--probe</code>.
     </li>
     <li>
-      Run <code>foundation:compare</code> with the explicit split-legacy baseline and Foundation
-      candidate reports.
+      Run <code>foundation:compare</code> with the explicit split-legacy baseline and
+      Foundation candidate reports.
     </li>
     <li>Re-run safety, availability, quality, performance, telemetry, and rollback gates.</li>
     <li>Record the default/rollback decision and every artifact hash in Foundation evidence.</li>
@@ -2394,16 +2490,15 @@ git diff --check
       <tr>
         <td>MCP schema and adapter output</td>
         <td>
-          existing <code>native_tools_tests.rs</code> plus <code>native_compile.rs</code> adapter
-          tests
+          existing <code>native_tools_tests.rs</code> plus
+          <code>native_compile.rs</code> adapter tests
         </td>
       </tr>
       <tr>
         <td>Timestamp cross-runtime fixture</td>
         <td>
           Rust <code>context_compile</code> tests and new
-          <code>test/context-compile-timestamp-contract.test.ts</code> consuming the same JSON
-          fixture
+          <code>test/context-compile-timestamp-contract.test.ts</code> consuming the same JSON fixture
         </td>
       </tr>
       <tr>
@@ -2420,7 +2515,8 @@ git diff --check
       <tr>
         <td>CLI parse/help/JSON purity</td>
         <td>
-          existing CLI routing/service test modules plus <code>context_compile::routing</code> tests
+          existing CLI routing/service test modules plus
+          <code>context_compile::routing</code> tests
         </td>
       </tr>
     </tbody>
@@ -2494,8 +2590,8 @@ git diff --check
   </ul>
   <h3 id="section-136-promotion-result">13.6 Promotion result</h3>
   <p>
-    Promote only <code>foundation</code> mode when every gate passes. Otherwise choose the narrowest
-    safe mode:
+    Promote only <code>foundation</code> mode when every gate passes. Otherwise
+    choose the narrowest safe mode:
   </p>
   <ul>
     <li>Ranking regression only: <code>split_legacy_rank</code>.</li>
@@ -2631,19 +2727,16 @@ git diff --check
     <li>new <code>spec/context-compile-foundation/*</code></li>
     <li>new <code>test/fixtures/context-compile-foundation-v1.json</code></li>
     <li>new <code>test/fixtures/timestamp-normalization-v1.json</code></li>
-    <li>
-      <code>spec/docs/contextstill-utility-rag-foundation-evidence.html</code> during implementation
-    </li>
+    <li><code>spec/docs/contextstill-utility-rag-foundation-evidence.html</code> during implementation</li>
     <li>
       public operations documentation only when the rollout setting becomes operator-supported
     </li>
   </ul>
   <p>
     Conditionally allowed file:
-    <code>src/modules/context-compiler/context-compiler.repository.sqlite.ts</code> may change only
-    if an existing TypeScript run-detail reader otherwise rejects or hides the additive Foundation
-    diagnostics. Add a failing compatibility test before changing it; do not add ranking behavior
-    there.
+    <code>src/modules/context-compiler/context-compiler.repository.sqlite.ts</code> may change only if an existing TypeScript
+    run-detail reader otherwise rejects or hides the additive Foundation diagnostics. Add a failing
+    compatibility test before changing it; do not add ranking behavior there.
   </p>
   <p>Must not change in Foundation:</p>
   <ul>
@@ -2748,7 +2841,10 @@ git diff --check
   </ul>
   <h3 id="promotion">Promotion</h3>
   <ul>
-    <li><input disabled="" type="checkbox" /> <code>split_legacy_rank</code> smoke passes.</li>
+    <li>
+      <input disabled="" type="checkbox" /> <code>split_legacy_rank</code> smoke
+      passes.
+    </li>
     <li><input disabled="" type="checkbox" /> At least 50 identity-present shadow calls pass.</li>
     <li>
       <input disabled="" type="checkbox" /> At least 100 identity-present Foundation canary calls
@@ -2776,7 +2872,7 @@ git diff --check
   </ol>
   <p>
     When all Foundation evidence is complete, move this implementation plan and its evidence
-    document to <code>spec/docs/.archived/</code> together. Keep the Utility-RAG concept active as
-    the higher-level architecture authority.
+    document to <code>spec/docs/.archived/</code> together. Keep the Utility-RAG concept
+    active as the higher-level architecture authority.
   </p>
 </article>

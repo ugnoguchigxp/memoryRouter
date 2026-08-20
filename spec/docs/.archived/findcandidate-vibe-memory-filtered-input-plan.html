@@ -10,8 +10,11 @@
     <code>agent-log-sync</code> は vibe memory を chunk に分割し、同じ chunk
     <code>vibe_memories.id</code> を <code>finding_candidate_queue</code> と
     <code>episode_distiller_queue</code> の両方へ enqueue している。これは Episode
-    側では長い作業ログを扱うための入力分割として意味があるが、<code>findCandidate</code> 側では
-    chunk 単位の <code>no_candidate</code> が大量に発生し、候補抽出率を下げている。
+    側では長い作業ログを扱うための入力分割として意味があるが、<code
+      >findCandidate</code
+    >
+    側では chunk 単位の
+    <code>no_candidate</code> が大量に発生し、候補抽出率を下げている。
   </p>
   <p>
     この計画は、<code>findCandidate</code> から chunk 化と chunk
@@ -22,12 +25,13 @@
   <ul>
     <li><code>findCandidate</code> から chunk 単位の候補抽出を削除する。</li>
     <li>
-      <code>findCandidate</code> から chunk に依存した要約・まとめ・再構成ロジックを削除する。
+      <code>findCandidate</code> から chunk
+      に依存した要約・まとめ・再構成ロジックを削除する。
     </li>
     <li><code>agent-log-sync</code> の chunk 化は Episode 専用にする。</li>
     <li>
-      <code>findCandidate</code> は vibe memory 全文ではなく、ロジックで不要部分を削った filtered
-      input を読む。
+      <code>findCandidate</code> は vibe memory
+      全文ではなく、ロジックで不要部分を削った filtered input を読む。
     </li>
     <li>
       filtered input は LLM 要約ではなく、既存テキスト・tool call・diff・command
@@ -39,7 +43,8 @@
     <li>EpisodeDistiller の chunk 化を削除しない。</li>
     <li>EpisodeDistiller の semantic chunk / segment generation を変更しない。</li>
     <li>
-      <code>findCandidate</code> で semantic chunk、candidatelet、chunk merge を作り直さない。
+      <code>findCandidate</code> で semantic chunk、candidatelet、chunk merge
+      を作り直さない。
     </li>
     <li>LLM による事前要約、意図推定、分類、編集概念生成を追加しない。</li>
     <li>raw JSON 全体を LLM に渡す方式へ戻さない。</li>
@@ -52,21 +57,22 @@
   <p>削除対象:</p>
   <ul>
     <li>
-      <code>agent-log-sync</code> から <code>finding_candidate_queue</code> への chunk ごとの
-      enqueue。
+      <code>agent-log-sync</code> から
+      <code>finding_candidate_queue</code> への chunk ごとの enqueue。
     </li>
     <li>
-      Rust resident <code>agent_log_sync</code> から <code>finding_candidate_queue</code> への chunk
-      ごとの enqueue。
+      Rust resident <code>agent_log_sync</code> から
+      <code>finding_candidate_queue</code> への chunk ごとの enqueue。
+    </li>
+    <li><code>src/modules/findCandidate/domain.ts</code> の vibe memory 用 semantic chunk planner。</li>
+    <li>
+      <code>find-candidate:semantic-chunk</code> と
+      <code>find-candidate:chunk-generation</code> の LLM call。
     </li>
     <li>
-      <code>src/modules/findCandidate/domain.ts</code> の vibe memory 用 semantic chunk planner。
+      chunk 単位の <code>no_candidate</code> /
+      <code>candidates_found</code> 判定。
     </li>
-    <li>
-      <code>find-candidate:semantic-chunk</code> と <code>find-candidate:chunk-generation</code> の
-      LLM call。
-    </li>
-    <li>chunk 単位の <code>no_candidate</code> / <code>candidates_found</code> 判定。</li>
     <li>chunk 依存 metadata diagnostics。</li>
   </ul>
   <p>残す対象:</p>
@@ -75,14 +81,14 @@
     <li>Episode 用の <code>episode_distiller_queue</code> enqueue。</li>
     <li>wiki / web ingest の findCandidate 経路。</li>
     <li>
-      <code>found_candidates</code> と <code>covering_evidence_queue</code> の既存 downstream
-      mutation。
+      <code>found_candidates</code> と
+      <code>covering_evidence_queue</code> の既存 downstream mutation。
     </li>
   </ul>
   <h3 id="task-2-filtered-input-reader-追加">Task 2: filtered input reader 追加</h3>
   <p>
-    <code>findCandidate</code> は vibe memory 全文を直接読むのではなく、deterministic な filtered
-    input を読む。
+    <code>findCandidate</code> は vibe memory
+    全文を直接読むのではなく、deterministic な filtered input を読む。
   </p>
   <p>filtered input は「素材を薄くする」だけで、知識候補に近づける意味づけはしない。</p>
   <p>含める情報:</p>
@@ -152,17 +158,21 @@
 };
 </code></pre>
   <p>
-    <code>content</code> は LLM にそのまま渡す text block とし、JSON schema を大きくしない。LLM
-    の候補抽出は従来どおり <code>parseStorageCandidatesWithDiagnostics</code> の契約に従う。
+    <code>content</code> は LLM にそのまま渡す text block とし、JSON schema
+    を大きくしない。LLM の候補抽出は従来どおり
+    <code>parseStorageCandidatesWithDiagnostics</code> の契約に従う。
   </p>
   <h2 id="filtering-rules">Filtering Rules</h2>
   <h3 id="message-filtering">Message filtering</h3>
   <p>残す:</p>
   <ul>
     <li><code>USER:</code> の依頼、修正要求、停止条件、設計判断。</li>
-    <li><code>ASSISTANT:</code> の最終報告、エラー説明、検証結果、変更要約。</li>
     <li>
-      <code>TOOL:</code> / tool output のうち、短い error、test failure、重要な command output。
+      <code>ASSISTANT:</code> の最終報告、エラー説明、検証結果、変更要約。
+    </li>
+    <li>
+      <code>TOOL:</code> / tool output のうち、短い error、test
+      failure、重要な command output。
     </li>
   </ul>
   <p>削る:</p>
@@ -179,7 +189,8 @@
     <li><code>exec_command</code> の command。</li>
     <li><code>apply_patch</code> の対象 file と hunk 先頭。</li>
     <li>
-      <code>view_image</code> / <code>read_mcp_resource</code> など、判断に使った入力の識別子。
+      <code>view_image</code> /
+      <code>read_mcp_resource</code> など、判断に使った入力の識別子。
     </li>
   </ul>
   <p>削る:</p>
@@ -193,7 +204,10 @@
   <ul>
     <li><code>agent_diff_entries.file_path</code></li>
     <li><code>change_type</code></li>
-    <li>diff hunk の先頭と、<code>+</code> / <code>-</code> 行の代表部分。</li>
+    <li>
+      diff hunk の先頭と、<code>+</code> /
+      <code>-</code> 行の代表部分。
+    </li>
   </ul>
   <p>削る:</p>
   <ul>
@@ -207,15 +221,18 @@
   <p>Tasks:</p>
   <ul>
     <li>
-      <code>finding_candidate_queue</code> の <code>source_kind=&#39;vibe_memory&#39;</code> を
-      chunkIndex 有無で集計する。
+      <code>finding_candidate_queue</code> の
+      <code>source_kind=&#39;vibe_memory&#39;</code> を chunkIndex 有無で集計する。
     </li>
     <li>
-      <code>distillation_queue_events</code> の <code>findingCandidate</code> completed / no
-      candidate を確認する。
+      <code>distillation_queue_events</code> の
+      <code>findingCandidate</code> completed / no candidate を確認する。
     </li>
     <li><code>src/modules/findCandidate/domain.ts</code> の chunk 関連関数を列挙する。</li>
-    <li><code>agent-log-sync</code> TypeScript / Rust の finding enqueue 箇所を列挙する。</li>
+    <li>
+      <code>agent-log-sync</code> TypeScript / Rust の finding enqueue
+      箇所を列挙する。
+    </li>
   </ul>
   <p>Verification:</p>
   <pre><code class="language-bash">sqlite3 -header -column data/context-still-core.sqlite \
@@ -231,7 +248,10 @@ rg -n &quot;find-candidate:semantic-chunk|find-candidate:chunk-generation|runChu
   <h3 id="t1-agent-log-sync-から-finding-enqueue-を外す">
     T1: agent-log-sync から finding enqueue を外す
   </h3>
-  <p>Goal: 新規 agent log chunk が <code>finding_candidate_queue</code> に入らないようにする。</p>
+  <p>
+    Goal: 新規 agent log chunk が
+    <code>finding_candidate_queue</code> に入らないようにする。
+  </p>
   <p>Tasks:</p>
   <ul>
     <li>
@@ -239,7 +259,8 @@ rg -n &quot;find-candidate:semantic-chunk|find-candidate:chunk-generation|runChu
       <code>findingCandidateQueue</code> insert を削除または無効化する。
     </li>
     <li>
-      同じファイルの <code>enqueuedFindingJobs</code> 集計と sync result metadata を整理する。
+      同じファイルの <code>enqueuedFindingJobs</code> 集計と sync result metadata
+      を整理する。
     </li>
     <li>
       <code>crates/context-stilld/src/domains/agent_log_sync/store.rs</code> で
@@ -262,16 +283,16 @@ rg -n &quot;enqueue_finding_candidate|finding candidate enqueued from Rust agent
   <p>Stop conditions:</p>
   <ul>
     <li>
-      sync result API が <code>enqueuedFindingJobs</code> を外すと UI / API 契約を壊す場合は、0
-      件として残す形にする。
+      sync result API が <code>enqueuedFindingJobs</code> を外すと UI / API
+      契約を壊す場合は、0 件として残す形にする。
     </li>
   </ul>
   <h3 id="t2-findcandidate-の-chunk-pipeline-を削除する">
     T2: findCandidate の chunk pipeline を削除する
   </h3>
   <p>
-    Goal: <code>findCandidate</code> の vibe memory 経路から semantic chunk / chunk generation
-    を完全に外す。
+    Goal: <code>findCandidate</code> の vibe memory 経路から semantic chunk /
+    chunk generation を完全に外す。
   </p>
   <p>Tasks:</p>
   <ul>
@@ -291,8 +312,8 @@ rg -n &quot;enqueue_finding_candidate|finding candidate enqueued from Rust agent
       <code>find-candidate:chunk-generation</code> usageSource を findCandidate から消す。
     </li>
     <li>
-      <code>test/find-candidate.test.ts</code> の chunked findCandidate tests を削除または新方針の
-      tests に置き換える。
+      <code>test/find-candidate.test.ts</code> の chunked findCandidate tests
+      を削除または新方針の tests に置き換える。
     </li>
   </ul>
   <p>Verification:</p>
@@ -360,18 +381,23 @@ bunx vitest run test/sqlite-runtime-support.bun.ts -t &quot;vibe memory&quot;
     T4: findCandidate vibe memory path を filtered input に差し替える
   </h3>
   <p>
-    Goal: <code>memory_reader</code> が raw / compressed 全文 window ではなく filtered content
-    window を返すようにする。
+    Goal: <code>memory_reader</code> が raw / compressed 全文 window ではなく
+    filtered content window を返すようにする。
   </p>
   <p>Tasks:</p>
   <ul>
-    <li><code>runFindCandidate</code> の vibe memory 初回 read で filtered reader を使う。</li>
+    <li>
+      <code>runFindCandidate</code> の vibe memory 初回 read で filtered reader
+      を使う。
+    </li>
     <li>追加 window が必要な場合も filtered content の token range を読む。</li>
     <li>
-      <code>memoryReaderMode</code> は findCandidate vibe path では廃止または無視し、filtered mode
-      に固定する。
+      <code>memoryReaderMode</code> は findCandidate vibe path
+      では廃止または無視し、filtered mode に固定する。
     </li>
-    <li><code>readRanges</code> は filtered content token range として保存する。</li>
+    <li>
+      <code>readRanges</code> は filtered content token range として保存する。
+    </li>
     <li>source trace には元 <code>vibeMemoryId</code> を残す。</li>
     <li>no_candidate diagnostics に filter stats を含める。</li>
   </ul>
@@ -389,12 +415,12 @@ bunx vitest run test/sqlite-runtime-support.bun.ts -t &quot;vibe memory&quot;
   <p>Tasks:</p>
   <ul>
     <li>
-      doctor / queue inspector に必要なら、<code>findingCandidate</code> の agent-log chunk enqueue
-      廃止を反映する。
+      doctor / queue inspector に必要なら、<code>findingCandidate</code> の agent-log
+      chunk enqueue 廃止を反映する。
     </li>
     <li>
-      古い <code>internal-chunked-distillation-implementation-plan.html</code> の findCandidate
-      部分が superseded であることを README か新計画に明記する。
+      古い <code>internal-chunked-distillation-implementation-plan.html</code> の findCandidate 部分が superseded
+      であることを README か新計画に明記する。
     </li>
     <li>
       live DB の既存 chunk finding jobs は自動削除しない。必要なら別計画で archive / skip
@@ -460,7 +486,10 @@ bun run verify
     <li>findCandidate から chunk usageSource が消えない。</li>
     <li>EpisodeDistiller の chunk tests が壊れる。</li>
     <li>Rust resident と TypeScript sync の挙動がずれる。</li>
-    <li><code>source_missing</code> と <code>no_candidate</code> の診断が再び混ざる。</li>
+    <li>
+      <code>source_missing</code> と
+      <code>no_candidate</code> の診断が再び混ざる。
+    </li>
   </ul>
   <h2 id="final-verification-gate">Final Verification Gate</h2>
   <p>最終的に以下を満たすまで完了にしない。</p>
@@ -474,7 +503,9 @@ bun run verify
 </code></pre>
   <p>Expected:</p>
   <ul>
-    <li><code>rg</code> は findCandidate 側の chunk pipeline を返さない。</li>
+    <li>
+      <code>rg</code> は findCandidate 側の chunk pipeline を返さない。
+    </li>
     <li>agent-log-sync は Episode job だけを enqueue する。</li>
     <li>findCandidate vibe memory path は filtered input を使う。</li>
     <li>EpisodeDistiller の chunk behavior は維持される。</li>
