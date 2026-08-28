@@ -1,0 +1,2303 @@
+<article lang="ja">
+  <h1 id="landscape-curation-queue-implementation-specification">
+    LANDSCAPE Curation Queue Implementation Specification
+  </h1>
+  <h2 id="status">Status</h2>
+  <ul>
+    <li>Status: Approved Implementation Specification / GO</li>
+    <li>Version: 1.2</li>
+    <li>Last updated: 2026-08-27</li>
+    <li>Internal queue name: <code>landscapeCuration</code></li>
+    <li>Visible label: Curation</li>
+    <li>
+      Evidence:
+      <a href="./landscape-autonomous-curation-queue-evaluation.html"
+        >LANDSCAPE Autonomous Curation Queue Evaluation</a
+      >
+    </li>
+  </ul>
+  <p>
+    LANDSCAPEの重複候補、到達不能、陳腐化、適用範囲不良を継続的に整理する第6のvisible
+    queueとして、<code>landscapeCuration</code>を実装する。本仕様はプロジェクト開始をGOとし、個々のactionに対する自動実行権限をruntime
+    gateで段階解放する。
+  </p>
+  <h2 id="autonomous-decision-override">0.1 Autonomous decision override</h2>
+  <p>
+    Version 1.2では、人間承認をCurationの処理条件から除外する。LLM評価とdeterministic policy
+    gateが揃った時点で、jobは自動終端、安全な既存下流queueへの委譲、または証拠不足／未対応actionとして終端する。<code>awaiting_human</code>、<code>human_review</code>、<code>request_human</code>、human
+    decision APIおよびhuman action
+    UIは新規jobでは使用しない。本文の旧記述と競合する場合は本節を優先する。
+  </p>
+  <ul>
+    <li>
+      <code>keep_separate / observe</code>は<code>record_only / completed</code>。
+    </li>
+    <li>
+      <code>merge_review / deprecate_duplicate</code
+      >はconfidence、blocker、input参照、status、type、polarity、repository
+      identityのgateをすべて満たし、bodyとnormalized appliesToが完全一致する場合だけ既存Merge
+      Reviewへ自動委譲する。semantic duplicateはV1では自動mutationしない。
+    </li>
+    <li>
+      Merge
+      Reviewの結果が<code>merge_recommended / high</code>、blockerなしで、提案bodyが現在のcanonical
+      bodyと完全一致する場合だけFinalizeへ自動委譲する。条件不足はterminal
+      outcomeとして記録し、ユーザー確認へ送らない。
+    </li>
+    <li>
+      <code>needs_evidence</code>は<code>await_evidence / skipped</code>。
+    </li>
+    <li>
+      V1で安全な自動actionを持たない<code>repair_scope / escalate</code>は<code>blocked / skipped</code>。人間判断待ちにはしない。
+    </li>
+    <li>
+      LANDSCAPE画面は永続queueから<code>pending / running / paused / failed</code>と<code>completed / awaiting_downstream</code>を未処理として表示し、ユーザー操作を要求しない。
+    </li>
+  </ul>
+  <p>
+    LLMはKnowledgeを自由に変更するagentではない。deterministic
+    detectorが固定した候補とevidenceを評価し、typed action
+    planを返すcuratorである。mutationの許可、対象scope、実行順序、完了判定、rollbackはdeterministic
+    codeが所有する。
+  </p>
+  <p>
+    本文のうち、4.1〜4.4節と20節以降を実装時のnormative
+    contractとする。その他の節は目的と設計意図を示し、値、型、状態遷移、ファイル配置、API、実装順がnormative
+    contractと競合する場合はnormative
+    contractを優先する。未確定事項を実装担当へ委ねないため、本仕様に記載のない自動mutationはV1へ追加しない。
+  </p>
+
+  <h2 id="goals">1. Goals</h2>
+  <ul>
+    <li>LANDSCAPEに継続的に発生するreview対象を、人間の常時監視なしでtriageする。</li>
+    <li>重複Knowledgeをscope-awareに発見し、安全なcanonicalization pathへ送る。</li>
+    <li>到達されないKnowledgeを、不要、適用範囲不良、根拠不足、需要未観測に分ける。</li>
+    <li>deterministicに修復できる問題はLLMを使わず、自動maintenanceへ送る。</li>
+    <li>曖昧または高影響なcaseは自動mutationせず、理由付きblocked outcomeとして記録する。</li>
+    <li>すべての判断、mutation、下流job、postcheck、rollbackを追跡可能にする。</li>
+  </ul>
+
+  <h2 id="non-goals">2. Non-goals</h2>
+  <ul>
+    <li>LLMが全Knowledgeを自由探索し、任意のKnowledgeを生成、削除、統合する仕組みにはしない。</li>
+    <li>repository eligibilityをLLMに判断させない。</li>
+    <li>source根拠やusage signalがないことだけを理由に、Knowledgeを自動deprecateしない。</li>
+    <li>cross-repository Knowledgeを自動mergeしない。</li>
+    <li>既存Coveringのingress dedupe、Merge Review、Finalizeを置き換えない。</li>
+    <li>通常のKnowledge生成queueより高いpriorityで実行しない。</li>
+  </ul>
+
+  <h2 id="position">3. System position</h2>
+  <p>
+    Queue DashboardにはFinding、Episodes、Covering、Merge Review、Finalizeに続く6番目のvisible
+    tabとしてCurationを追加する。内部には既にhiddenな<code>mergeActivationFinalize</code>があるため、technical
+    queueとしては7番目になる。
+  </p>
+  <ol>
+    <li>LANDSCAPE snapshotまたは関連eventがcuration findingを生成する。</li>
+    <li><code>landscapeCuration</code>がfindingとevidence snapshotをclaimする。</li>
+    <li>deterministic preflightがeligible scopeとevidence completenessを検証する。</li>
+    <li>必要なcaseだけをLLM curatorが評価する。</li>
+    <li>deterministic policy gateがdispositionを決める。</li>
+    <li>non-destructive actionは記録またはmaintenanceへ送る。</li>
+    <li>mergeは既存Merge ReviewとFinalizeへ送る。</li>
+    <li>mutation後のpostcheckが成功した時点でcuration jobを完了する。</li>
+  </ol>
+
+  <h2 id="finding-types">4. Finding types</h2>
+  <table>
+    <caption>
+      Table: Curation finding types
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Finding</th>
+        <th scope="col">Main evidence</th>
+        <th scope="col">Possible disposition</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>duplicate_candidate</code></td>
+        <td>
+          same eligible repository、scope overlap、lexical / vector similarity、source / usage比較
+        </td>
+        <td>merge review、deprecate duplicate、keep separate、escalate</td>
+      </tr>
+      <tr>
+        <td><code>reachability_gap</code></td>
+        <td>compile candidate trace、selected count、goal cohort、appliesTo、embedding</td>
+        <td>repair scope、needs evidence、observe、escalate</td>
+      </tr>
+      <tr>
+        <td><code>stale_knowledge</code></td>
+        <td>age、last verified、source validity、usage window、canonical candidate</td>
+        <td>verify source、merge review、deprecate duplicate、observe</td>
+      </tr>
+      <tr>
+        <td><code>applicability_issue</code></td>
+        <td>off_topic / wrong / not_used、repo identity、facet mismatch、replay result</td>
+        <td>narrow appliesTo、split proposal、keep current、escalate</td>
+      </tr>
+      <tr>
+        <td><code>contradiction_candidate</code></td>
+        <td>same scope、opposite policy marker、semantic / relation proximity、source freshness</td>
+        <td>blocked、source verification、keep both with explicit conditions</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="finding-materialization">4.1 Finding materialization contract</h2>
+  <h3 id="review-item-mapping">4.1.1 Review item mapping</h3>
+  <p>
+    Producerはstatusが<code>pending</code>または<code>reviewing</code>で、<code>knowledge_id</code>が存在するreview
+    itemだけをqueue候補にする。<code>knowledge_id</code>がnullのcommunity-level
+    itemはCurationへ展開せず、LANDSCAPEの未処理項目として表示する。
+  </p>
+  <table>
+    <caption>
+      Table: Existing review reason to curation finding
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Review reason</th>
+        <th scope="col">Finding type</th>
+        <th scope="col">Candidate source</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>duplicate_candidate</code></td>
+        <td><code>duplicate_candidate</code></td>
+        <td><code>payload.candidateKnowledgeIds</code></td>
+      </tr>
+      <tr>
+        <td><code>dead_zone_reachability_risk</code></td>
+        <td><code>reachability_gap</code></td>
+        <td>same-repository semantic neighbor上位5件</td>
+      </tr>
+      <tr>
+        <td><code>dead_zone_stale</code></td>
+        <td><code>stale_knowledge</code></td>
+        <td>same-repository active semantic neighbor上位5件</td>
+      </tr>
+      <tr>
+        <td>
+          <code>negative_attractor_candidate</code
+          >、<code>wrong_review_required</code>、<code>over_selected_not_used</code>、<code>baseline_off_topic</code>、<code
+            >baseline_wrong</code
+          >
+        </td>
+        <td><code>applicability_issue</code></td>
+        <td>review itemのsuggestedAppliesToとsame-repository neighbor</td>
+      </tr>
+      <tr>
+        <td><code>contradiction_review</code></td>
+        <td><code>contradiction_candidate</code></td>
+        <td><code>payload.rightKnowledgeId</code>の1件だけ</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <code>used_baseline_lost</code
+    >、<code>baseline_missing_after_recompile</code>、<code>semantic_reachable_dead_zone</code>、<code>semantic_split</code>、<code>semantic_merge</code>、<code>relation_orphan</code>、<code>promotion_gate_review</code>はV1
+    producerの対象外とする。これらを自動的にsubjectへ分解する処理は追加しない。
+  </p>
+
+  <h3 id="duplicate-detector">4.1.2 Duplicate detector</h3>
+  <p>
+    既存review itemにduplicate候補がないため、producer実行時にdeterministic
+    detectorを1回実行し、候補ごとに<code>landscape_review_items</code>をidempotentにmaterializeする。
+  </p>
+  <ol>
+    <li>statusがactive、classificationStatusがclassifiedのrule / procedureだけを対象にする。</li>
+    <li>
+      repository
+      identityは<code>projectRef → repoKey → repoPath</code>の既存優先順位で解決する。identityが異なるpairは比較前に除外する。globalとrepoを組み合わせない。
+    </li>
+    <li>
+      exact候補は<code>normalize(title) + "\n" + normalize(body)</code>のSHA-256が一致するpairとする。normalizeはUnicode
+      NFKC、trim、連続whitespaceの1文字化、英字lowercaseだけを行う。
+    </li>
+    <li>
+      semantic候補はcosine similarity 0.92以上、同じtype、同じpolarity、scope overlap
+      0.8以上とする。各subject最大5件に制限する。
+    </li>
+    <li>
+      scope
+      overlapは<code>technologies / changeTypes / domains</code>のJaccard平均とする。両方空のfacetは計算から除外し、全facetが空なら1.0とする。repo
+      identityはscoreへ含めず、事前一致を必須にする。
+    </li>
+    <li>
+      group内のcanonical候補は、status active、source
+      link数、90日used数、compileSelectCount、updatedAtの順に降順、最後にID昇順で決める。
+    </li>
+    <li>
+      canonical以外をsubjectとしたreview
+      itemを作る。reasonは<code>duplicate_candidate</code>、proposedActionは<code>split_or_merge_review</code>、payloadへcanonical
+      ID、candidate IDs、similarity、exact flag、detectorVersionを保存する。
+    </li>
+    <li>review itemのidempotency keyは<code>semantic_relation_comparison:duplicate_candidate:{subjectId}:{canonicalId}:v1</code>とする。</li>
+  </ol>
+
+  <h3 id="subject-candidate-rules">4.1.3 Subject and candidate rules</h3>
+  <ul>
+    <li>
+      subjectはactiveまたはdraftだけを許可する。deprecatedは<code>skipped / not_eligible</code>。
+    </li>
+    <li>
+      candidateはactiveだけを自動action対象にし、draftまたはdeprecatedはevidence表示だけに使う。
+    </li>
+    <li>candidate listはID昇順でdedupeした後、similarity降順、usage降順で最大5件にする。</li>
+    <li>
+      subjectとcandidateのrepository identityが一致しないjobは作らない。worker
+      preflightでも同じ判定を繰り返す。
+    </li>
+    <li>
+      作成から<code>newKnowledgeObservationDays</code>未満のKnowledgeはduplicate exact
+      match以外enqueueしない。
+    </li>
+  </ul>
+
+  <h2 id="shared-contracts">4.2 Shared type and schema contract</h2>
+  <h3 id="curation-enums">4.2.1 Enums</h3>
+  <pre><code>type LandscapeCurationFindingType =
+  | "duplicate_candidate"
+  | "reachability_gap"
+  | "stale_knowledge"
+  | "applicability_issue"
+  | "contradiction_candidate";
+
+type LandscapeCurationDecision =
+  | "merge_review"
+  | "deprecate_duplicate"
+  | "repair_scope"
+  | "keep_separate"
+  | "needs_evidence"
+  | "observe"
+  | "escalate";
+
+type LandscapeCurationPhase =
+  | "evaluate"
+  | "preflight"
+  | "llm_review"
+  | "policy"
+  | "awaiting_downstream"
+  | "mutation"
+  | "postcheck"
+  | "rollback";
+
+type LandscapeCurationDisposition =
+  | "auto_execute"
+  | "enqueue_downstream"
+  | "record_only"
+  | "await_evidence"
+  | "blocked";
+
+type LandscapeCurationReleaseMode =
+  | "disabled"
+  | "shadow"
+  | "auto_non_destructive"
+  | "auto_bounded";</code></pre>
+
+  <h3 id="llm-result-schema">4.2.2 LLM result</h3>
+  <pre><code>type LandscapeCurationResultV1 = {
+  schemaVersion: 1;
+  decision: LandscapeCurationDecision;
+  confidence: "low" | "medium" | "high";
+  canonicalKnowledgeId: string | null;
+  rationale: string[];              // 1..8, each 1..300 chars
+  supportingEvidenceIds: string[];  // 1..20, input evidence IDs only
+  counterEvidence: string[];        // 0..8, each max 300 chars
+  blockers: string[];               // 0..8, each max 300 chars
+  proposedAppliesTo: Record&lt;string, unknown&gt; | null;
+  proposedSummary: string | null;   // max 500 chars
+};</code></pre>
+  <p>
+    Zod parse後に、canonical IDとsupporting evidence IDがinput
+    snapshot内に存在することをserviceで検証する。未知ID、repository
+    identity変更、許可されないappliesTo key、空rationaleはparse
+    failureとしてretryする。LLMが<code>deprecate_duplicate</code>を返してもpolicyは直接mutationへ変換しない。
+  </p>
+
+  <h3 id="policy-result-schema">4.2.3 Policy result</h3>
+  <pre><code>type LandscapeCurationPolicyResultV1 = {
+  schemaVersion: 1;
+  policyVersion: "curation-policy-v1";
+  releaseMode: LandscapeCurationReleaseMode;
+  requestedDecision: LandscapeCurationDecision;
+  disposition: LandscapeCurationDisposition;
+  effectiveAction:
+    | "record"
+    | "repair_scope"
+    | "enqueue_merge_review"
+    | "none";
+  reasonCodes: LandscapeCurationPolicyReasonCode[];
+  evaluatedAt: string;
+  limits: { dailyRemaining: number; repoRemaining: number };
+};</code></pre>
+
+  <h3 id="input-snapshot-schema">4.2.4 Immutable input snapshot</h3>
+  <p>snapshotは次のtop-level keyを必須とし、job作成後は書き換えない。</p>
+  <ul>
+    <li>
+      <code>schemaVersion: 1</code
+      >、<code>capturedAt</code>、<code>finding</code>、<code
+        >versions</code
+      >
+    </li>
+    <li>
+      <code>subject</code>:
+      ID、title、body、bodyHash、status、type、polarity、scope、classificationStatus、projectRef、repoKey、repoPath、appliesTo、appliesToHash、confidence、importance、timestamps
+    </li>
+    <li>
+      <code>candidates</code>:
+      subjectと同じfields、similarity、scopeOverlap。最大5件。
+    </li>
+    <li>
+      <code>evidence</code>:
+      <code>{ id, kind, knowledgeId, value, observedAt, source }</code
+      >のarray。IDは<code>ev:{kind}:{knowledgeId}:{window}</code>形式。
+    </li>
+    <li>
+      <code>usage</code>:
+      subjectとcandidateごとの30日・90日selected、used、notUsed、offTopic、wrong、uniqueUsedRun
+      IDs。
+    </li>
+    <li>
+      <code>lineage</code>: source link ID、origin link
+      ID、件数、最新source timestamp。
+    </li>
+    <li>
+      <code>reviewItem</code>:
+      ID、source、reason、suggestedAppliesTo、evidence、payload。
+    </li>
+    <li>
+      <code>capabilities</code>:
+      backend、vectorAvailable、semanticComparisonAvailable、contradictionAvailable。
+    </li>
+  </ul>
+  <p>
+    workerはmutationまたは下流enqueueの直前にsubjectとcandidateのbodyHash、appliesToHash、status、repository
+    identityをreadbackする。差分が1つでもあれば<code>skipped / stale_input</code>にし、古いresultを適用しない。
+  </p>
+
+  <h3 id="api-job-shape">4.2.5 Job detail response</h3>
+  <p>
+    job detailはqueue rowの全scalar、typed result、policy result、mutation
+    plan、postcheck、rollback、job links、関連review itemを返す。body全文を含むためgeneric
+    <code>/api/queue</code> listには含めず、専用detail endpointだけで返す。
+  </p>
+
+  <h2 id="producer-algorithm">4.3 Producer algorithm</h2>
+  <h3 id="producer-entrypoints">4.3.1 Entrypoints</h3>
+  <ul>
+    <li>
+      CLI
+      <code>bun run queue:curation:enqueue:dry-run</code
+      >はwriteせず、candidate数、budget除外、cooldown除外、作成予定jobをJSON出力する。
+    </li>
+    <li><code>bun run queue:curation:enqueue:write</code>だけがreview itemとqueue jobを作る。</li>
+    <li>
+      continuous queue
+      supervisorは起動時と<code>producerIntervalMinutes</code>経過時にwrite
+      producerを呼ぶ。前回tick実行中なら次tickをskipする。
+    </li>
+    <li>
+      runtime settingの<code>producerEnabled=false</code>ならCLI
+      dry-run以外は何も作らない。
+    </li>
+  </ul>
+
+  <h3 id="producer-steps">4.3.2 Exact steps</h3>
+  <ol>
+    <li>runtime settingsを毎tick再読込し、enabled、budget、cooldownを解決する。</li>
+    <li>duplicate detectorを実行し、review itemをidempotentにmaterializeする。</li>
+    <li>
+      4.1.1節に該当するreview
+      itemをpriority降順、updatedAt昇順で最大<code>scanLimit</code>件読む。
+    </li>
+    <li>
+      subject、candidate、usage、lineage、capabilityをbatch
+      loadする。loop内の1件ずつqueryは禁止する。
+    </li>
+    <li>
+      subject eligibilityとrepository identityを検証し、invalid itemはjobを作らずskip
+      reasonを集計する。
+    </li>
+    <li>snapshot、evidence hash、fingerprint、cooldown bucket、idempotency keyを計算する。</li>
+    <li>active fingerprint、cooldown、daily global、daily repository budgetを順に確認する。</li>
+    <li>transaction内でqueue rowをinsertし、review itemがpendingならreviewingへ変更する。</li>
+    <li>
+      <code>enqueued</code
+      >eventへfindingType、reviewItemId、subjectId、fingerprint、producerVersionを記録する。
+    </li>
+  </ol>
+
+  <h3 id="producer-priority">4.3.3 Priority</h3>
+  <pre><code>base priority:
+  contradiction_candidate = 95
+  applicability_issue      = 85
+  duplicate_candidate      = 75
+  reachability_gap         = 65
+  stale_knowledge          = 45
+
+adjustment:
+  +10 if wrongCount90d &gt; 0
+  +5  if offTopicCount90d &gt; 0
+  +5  if exactDuplicate
+  -10 if evidence count &lt; 2
+final priority = clamp(0, 100, base + adjustment)</code></pre>
+  <p>
+    budget消費順はpriority降順、review item updatedAt昇順、subject
+    ID昇順で固定する。repository別budgetはresolved identity key単位で数え、global
+    Knowledgeは<code>global</code>という1 bucketにまとめる。
+  </p>
+
+  <h2 id="physical-data-model">4.4 Physical data model</h2>
+  <h3 id="curation-queue-table">4.4.1 <code>landscape_curation_queue</code></h3>
+  <table>
+    <caption>
+      Table: landscape_curation_queue columns
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Column</th>
+        <th scope="col">PostgreSQL / SQLite</th>
+        <th scope="col">Constraint and meaning</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>id</code></td>
+        <td>uuid / TEXT</td>
+        <td>primary key。applicationでUUIDを生成する。</td>
+      </tr>
+      <tr>
+        <td><code>review_item_id</code></td>
+        <td>uuid / TEXT</td>
+        <td>nullable、review itemへFK on delete set null。</td>
+      </tr>
+      <tr>
+        <td><code>finding_type</code></td>
+        <td>text / TEXT</td>
+        <td>4.2.1節の5値だけを許可する。</td>
+      </tr>
+      <tr>
+        <td><code>subject_knowledge_id</code></td>
+        <td>uuid / TEXT</td>
+        <td>not null、KnowledgeへFK on delete cascade。</td>
+      </tr>
+      <tr>
+        <td><code>candidate_knowledge_ids</code></td>
+        <td>jsonb / TEXT</td>
+        <td>string array、0〜5件、重複なし、subjectを含めない。</td>
+      </tr>
+      <tr>
+        <td><code>repository_identity</code></td>
+        <td>jsonb / TEXT</td>
+        <td><code>scope / projectRef / repoKey / repoPath / matchBasis</code>のobject。</td>
+      </tr>
+      <tr>
+        <td><code>fingerprint</code></td>
+        <td>text / TEXT</td>
+        <td>stable finding fingerprint。履歴比較のため非unique。</td>
+      </tr>
+      <tr>
+        <td><code>idempotency_key</code></td>
+        <td>text / TEXT</td>
+        <td>not null unique。cooldown bucketを含む。</td>
+      </tr>
+      <tr>
+        <td><code>evidence_hash</code></td>
+        <td>text / TEXT</td>
+        <td>timestampを除いた判断材料のSHA-256。</td>
+      </tr>
+      <tr>
+        <td><code>status</code></td>
+        <td>text / TEXT</td>
+        <td>既存queue status 6値。default <code>pending</code>。</td>
+      </tr>
+      <tr>
+        <td><code>phase</code></td>
+        <td>text / TEXT</td>
+        <td>4.2.1節のphase。default <code>evaluate</code>。</td>
+      </tr>
+      <tr>
+        <td><code>decision</code></td>
+        <td>text / TEXT</td>
+        <td>nullable、LLMまたはdeterministic policyが確定したdecision。</td>
+      </tr>
+      <tr>
+        <td><code>disposition</code></td>
+        <td>text / TEXT</td>
+        <td>nullable、policy gateのdisposition。</td>
+      </tr>
+      <tr>
+        <td><code>priority</code></td>
+        <td>integer / INTEGER</td>
+        <td>0〜100、default 50。降順claim。</td>
+      </tr>
+      <tr>
+        <td><code>attempt_count</code></td>
+        <td>integer / INTEGER</td>
+        <td>default 0。LLMまたはmutation失敗時だけ増やす。</td>
+      </tr>
+      <tr>
+        <td><code>max_attempts</code></td>
+        <td>integer / INTEGER</td>
+        <td>default 3。</td>
+      </tr>
+      <tr>
+        <td><code>next_run_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>pendingの再claim時刻。</td>
+      </tr>
+      <tr>
+        <td><code>locked_by</code></td>
+        <td>text / TEXT</td>
+        <td>既存queue lease owner。</td>
+      </tr>
+      <tr>
+        <td><code>locked_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>claim時刻。</td>
+      </tr>
+      <tr>
+        <td><code>heartbeat_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>worker heartbeat。</td>
+      </tr>
+      <tr>
+        <td><code>last_error</code></td>
+        <td>text / TEXT</td>
+        <td>operator向けの最新error。</td>
+      </tr>
+      <tr>
+        <td><code>last_outcome_kind</code></td>
+        <td>text / TEXT</td>
+        <td>machine-readable terminalまたはretry outcome。</td>
+      </tr>
+      <tr>
+        <td><code>provider</code></td>
+        <td>text / TEXT</td>
+        <td>default <code>local-llm</code>。</td>
+      </tr>
+      <tr>
+        <td><code>model</code></td>
+        <td>text / TEXT</td>
+        <td>nullable。実際に使用したmodelを保存する。</td>
+      </tr>
+      <tr>
+        <td><code>input_snapshot</code></td>
+        <td>jsonb / TEXT</td>
+        <td>4.2.4節のimmutable input。</td>
+      </tr>
+      <tr>
+        <td><code>result</code></td>
+        <td>jsonb / TEXT</td>
+        <td>LLM resultまたはdeterministic result。</td>
+      </tr>
+      <tr>
+        <td><code>policy_result</code></td>
+        <td>jsonb / TEXT</td>
+        <td>policy inputとreason codeを保存する。</td>
+      </tr>
+      <tr>
+        <td><code>mutation_plan</code></td>
+        <td>jsonb / TEXT</td>
+        <td>approved patch、canonical ID、postcheck条件。</td>
+      </tr>
+      <tr>
+        <td><code>postcheck_result</code></td>
+        <td>jsonb / TEXT</td>
+        <td>persisted readbackとreplay結果。</td>
+      </tr>
+      <tr>
+        <td><code>rollback_snapshot</code></td>
+        <td>jsonb / TEXT</td>
+        <td>mutation前のKnowledgeとlineage。未実行時は空object。</td>
+      </tr>
+      <tr>
+        <td><code>rollback_status</code></td>
+        <td>text / TEXT</td>
+        <td><code>not_requested / pending / completed / failed</code>。</td>
+      </tr>
+      <tr>
+        <td><code>schema_version</code></td>
+        <td>integer / INTEGER</td>
+        <td>default 1。</td>
+      </tr>
+      <tr>
+        <td><code>detector_version</code></td>
+        <td>text / TEXT</td>
+        <td>default <code>curation-detector-v1</code>。</td>
+      </tr>
+      <tr>
+        <td><code>policy_version</code></td>
+        <td>text / TEXT</td>
+        <td>default <code>curation-policy-v1</code>。</td>
+      </tr>
+      <tr>
+        <td><code>prompt_version</code></td>
+        <td>text / TEXT</td>
+        <td>default <code>landscape-curation-v1</code>。</td>
+      </tr>
+      <tr>
+        <td><code>created_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>not null。</td>
+      </tr>
+      <tr>
+        <td><code>updated_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>not null。</td>
+      </tr>
+      <tr>
+        <td><code>completed_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>terminal statusだけ値を持つ。</td>
+      </tr>
+      <tr>
+        <td><code>rollback_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>rollback terminal時刻。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="curation-link-table">4.4.2 <code>landscape_curation_job_links</code></h3>
+  <table>
+    <caption>
+      Table: landscape_curation_job_links columns
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Column</th>
+        <th scope="col">Type</th>
+        <th scope="col">Contract</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>id</code></td>
+        <td>uuid / TEXT</td>
+        <td>primary key。</td>
+      </tr>
+      <tr>
+        <td><code>curation_job_id</code></td>
+        <td>uuid / TEXT</td>
+        <td>not null、queue jobへFK on delete cascade。</td>
+      </tr>
+      <tr>
+        <td><code>role</code></td>
+        <td>text / TEXT</td>
+        <td><code>merge_review / merge_finalize / evidence_repair</code>。</td>
+      </tr>
+      <tr>
+        <td><code>queue_name</code></td>
+        <td>text / TEXT</td>
+        <td>既存queue名。V1の自動linkは前2 roleだけ。</td>
+      </tr>
+      <tr>
+        <td><code>queue_job_id</code></td>
+        <td>uuid / TEXT</td>
+        <td>linked job ID。polymorphicのためFKは付けない。</td>
+      </tr>
+      <tr>
+        <td><code>status</code></td>
+        <td>text / TEXT</td>
+        <td>linked jobの最新status snapshot。</td>
+      </tr>
+      <tr>
+        <td><code>outcome_kind</code></td>
+        <td>text / TEXT</td>
+        <td>linked jobの最新outcome。</td>
+      </tr>
+      <tr>
+        <td><code>metadata</code></td>
+        <td>jsonb / TEXT</td>
+        <td>result hash、body hash、poll error。</td>
+      </tr>
+      <tr>
+        <td><code>created_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>not null。</td>
+      </tr>
+      <tr>
+        <td><code>updated_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>not null。</td>
+      </tr>
+      <tr>
+        <td><code>completed_at</code></td>
+        <td>timestamp / TEXT</td>
+        <td>linked job terminal時刻。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="data-constraints">4.4.3 Constraints and indexes</h3>
+  <ul>
+    <li>
+      <code>landscape_curation_queue_idempotency_unique</code
+      >を<code>idempotency_key</code>へ作る。
+    </li>
+    <li>
+      <code>landscape_curation_queue_active_fingerprint_unique</code
+      >を<code>fingerprint</code>へpartial
+      uniqueで作り、statusが<code>pending / running / paused</code>の行だけを対象にする。
+    </li>
+    <li>
+      claim用に<code>(status, next_run_at, priority DESC, created_at)</code>、Knowledge表示用に<code>(subject_knowledge_id, updated_at DESC)</code>、cooldown用に<code>(fingerprint, created_at DESC)</code>をindex化する。
+    </li>
+    <li>
+      link
+      tableは<code>(curation_job_id, role)</code>をunique、<code>(queue_name, queue_job_id)</code>をindex化する。同一roleを再作成せずupsertする。
+    </li>
+    <li>
+      PostgreSQLは全JSON columnへ<code>jsonb_typeof</code> checkを付ける。
+    </li>
+    <li>
+      SQLiteはJSON object columnへ<code>json_valid(column) AND json_type(column) = 'object'</code>、array
+      columnへ<code>json_type(column) = 'array'</code>を付ける。
+    </li>
+    <li>
+      migrationは<code>distillation_queue_events_queue_name_check</code>を全7 technical
+      queue名で再作成する。event type
+      checkには<code>phase_changed / policy_decided / downstream_linked / rollback_started / rollback_completed</code>を追加する。
+    </li>
+  </ul>
+
+  <h3 id="fingerprint-contract">4.4.4 Fingerprint and cooldown</h3>
+  <pre><code>fingerprint = sha256(
+  "curation:v1" + findingType + subjectKnowledgeId
+  + sort(candidateKnowledgeIds).join(",") + evidenceHash
+)
+
+bucket = floor(nowEpochSeconds / (cooldownDays * 86400))
+idempotencyKey = "landscape-curation:" + fingerprint + ":" + bucket</code></pre>
+  <p>
+    <code>evidenceHash</code>はbody hash、appliesTo hash、status、repository
+    identity、usage集計、source count、similarity、review reasonをkey順にcanonical
+    JSON化して計算する。<code>generatedAt</code>、queue
+    status、provider、modelは含めない。同一fingerprintのactive jobがある場合、または最新terminal
+    jobから<code>cooldownDays</code>未満の場合はenqueueしない。
+  </p>
+
+  <h2 id="producer-contract">5. Finding producer contract</h2>
+  <p>
+    Finding producerは、日次snapshot、Knowledge finalize、usage threshold到達、source
+    verification更新から起動できる。大量scanをそのままLLM callへ変換してはならない。
+  </p>
+  <ul>
+    <li>同一findingは<code>findingType + subjectKnowledgeId + candidateIds + evidenceVersion</code>でfingerprint化する。</li>
+    <li>active jobまたはcooldown中の同一fingerprintを再enqueueしない。</li>
+    <li>1日あたりの新規job数、repository別件数、LLM token budgetに上限を持つ。</li>
+    <li>high-impact negative feedback、exact same-scope duplicate、stale retryを優先する。</li>
+    <li>新規Knowledgeには最低観測期間を置き、作成直後の未選出をDeadZone処分候補にしない。</li>
+  </ul>
+  <p>
+    初期defaultはdaily 100 jobs、repositoryごと20 jobs、同一finding cooldown 30日とする。値はruntime
+    settingsで変更可能にする。
+  </p>
+
+  <h2 id="job-input">6. Job input snapshot</h2>
+  <p>各jobは、判断時点の入力をimmutable snapshotとして保存する。</p>
+  <ul>
+    <li>finding ID、type、reason、priority、producer version、snapshot ID</li>
+    <li>subject KnowledgeのID、title、body、body hash、type、status、scope、repository identity</li>
+    <li>subjectのappliesTo、importance、confidence、created / updated / verified timestamps</li>
+    <li>最大5件のcandidate Knowledgeと同じsnapshot fields</li>
+    <li>lexical similarity、vector similarity、relation / semantic community evidence</li>
+    <li>30日・90日のcompile candidate、selected、used、not_used、off_topic、wrong集計</li>
+    <li>source link、origin link、source freshness、embedding capability</li>
+    <li>関連replay caseとbaseline結果</li>
+    <li>detector、policy、prompt、model routeのversion</li>
+  </ul>
+  <p>
+    body hash、status、repository
+    identityのいずれかが実行時に変化していた場合、古いLLM判断を適用せず<code>stale_input</code>として再評価する。
+  </p>
+
+  <h2 id="preflight">7. Deterministic preflight</h2>
+  <ul>
+    <li>subjectが存在し、対象statusであり、他のactive curation mutationに所有されていない。</li>
+    <li>repository-scoped Knowledgeでは、candidateが同じcanonical repository identityに属する。</li>
+    <li>global Knowledgeとrepository Knowledgeを自動merge candidateにしない。</li>
+    <li>必要なembedding、similarity、usage、source capabilityが利用可能である。</li>
+    <li>SQLiteでsemantic retrievalとcontradiction detectionが利用可能である。</li>
+    <li>
+      evidence不足をsemantic
+      verdictへ変換せず、<code>needs_evidence</code>へroutingする。
+    </li>
+  </ul>
+  <p>
+    preflight failureはprovider failureとして数えず、repairable、unsupported、stale、policy
+    blockedに分類する。
+  </p>
+
+  <h2 id="llm-contract">8. LLM curator contract</h2>
+  <p>LLMは次のschemaに適合するJSONだけを返す。</p>
+  <pre><code>{
+  "schemaVersion": 1,
+  "decision": "merge_review | deprecate_duplicate | repair_scope | keep_separate | needs_evidence | observe | escalate",
+  "confidence": "low | medium | high",
+  "canonicalKnowledgeId": "input candidate id or null",
+  "rationale": ["short evidence-based reason"],
+  "supportingEvidenceIds": ["input evidence id"],
+  "counterEvidence": ["reason against the proposed action"],
+  "blockers": ["blocking condition"],
+  "proposedAppliesTo": {},
+  "proposedSummary": "short summary or null"
+}</code></pre>
+  <ul>
+    <li>入力に存在しないKnowledge IDを返してはならない。</li>
+    <li>repository identityを変更するproposalを返してはならない。</li>
+    <li>merge bodyの最終生成は既存Merge Reviewが担当し、curatorはcanonical候補と根拠を選ぶ。</li>
+    <li>supporting evidenceとcounter-evidenceの両方を評価する。</li>
+    <li>blockerが1件でもあればdestructive auto-executionへ進めない。</li>
+    <li>parse failure、provider failure、timeoutはretryable queue failureとして処理する。</li>
+  </ul>
+
+  <h2 id="policy-gate">9. Deterministic policy gate</h2>
+  <p>
+    LLMのdecisionとconfidenceはpolicy inputの一部であり、単独ではmutation権限にならない。policy
+    gateは次のdispositionを返す。
+  </p>
+  <ul>
+    <li><code>auto_execute</code>: 現在解放されているactionを自動実行する。</li>
+    <li>
+      <code>enqueue_downstream</code>: 既存Merge Review、Finalize、maintenanceへ送る。
+    </li>
+    <li>
+      <code>record_only</code>: keep separateまたはobserveをTTL付きで記録する。
+    </li>
+    <li><code>await_evidence</code>: deterministic repair完了後に再評価する。</li>
+    <li>
+      <code>blocked</code>: scopeまたはsafety violationとして実行しない。
+    </li>
+  </ul>
+
+  <h3 id="action-conditions">9.1 Action-specific conditions</h3>
+  <table>
+    <caption>
+      Table: Required conditions for automatic actions
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Action</th>
+        <th scope="col">Required conditions</th>
+        <th scope="col">Fallback</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Keep separate / observe</td>
+        <td>scope差またはunique evidenceが明示され、mutationを伴わない</td>
+        <td>30日TTL後に再評価</td>
+      </tr>
+      <tr>
+        <td>Needs evidence</td>
+        <td>missing embedding、source、usage、semantic capabilityを具体的に特定できる</td>
+        <td>repair jobまたは観測待ち</td>
+      </tr>
+      <tr>
+        <td>Repair scope</td>
+        <td>repository identity不変、scopeを狭める変更、replay非劣化、rollback snapshotあり</td>
+        <td>broaden / splitはblockedとして終端</td>
+      </tr>
+      <tr>
+        <td>Merge review</td>
+        <td>
+          同一eligible repository、高scope overlap、canonical候補active、unique evidence保持可能
+        </td>
+        <td>既存Merge Reviewへenqueue</td>
+      </tr>
+      <tr>
+        <td>Deprecate duplicate</td>
+        <td>
+          同一repositoryとappliesTo、active canonicalが完全包含、90日unique useなし、source
+          lineage移管済み
+        </td>
+        <td>条件不足ならblockedとして終端</td>
+      </tr>
+      <tr>
+        <td>Contradiction resolution</td>
+        <td>自動実行しない</td>
+        <td>常にblockedとして終端</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="execution">10. Execution contracts</h2>
+  <h3 id="merge-flow">10.1 Merge</h3>
+  <ol>
+    <li>curation jobがcanonical候補を確定する。</li>
+    <li>既存<code>deadZoneMergeReview</code>へidempotentにenqueueする。</li>
+    <li>Merge Reviewがmerge bodyとblockerを生成する。</li>
+    <li>policy gateがLLM結果、input hash、scope、source lineageを再確認する。</li>
+    <li>既存Finalizeがcanonical updateとduplicate deprecationを反映する。</li>
+    <li>postcheck後にcuration jobをcompletedにする。</li>
+  </ol>
+
+  <h3 id="scope-repair-flow">10.2 Scope repair</h3>
+  <ol>
+    <li>curatorがrepo identityを除くappliesTo patchを提案する。</li>
+    <li>baseline replayとpatched replayを同一run cohortで比較する。</li>
+    <li>wrong / off_topic非増加、used retention非劣化の場合だけpatchを適用する。</li>
+    <li>
+      bodyを変更しないためembeddingは再生成しない。対象Knowledgeを再読込し、persisted
+      appliesToと既存vectorのcontent hashが不変であることを確認する。
+    </li>
+    <li>postcheck failure時は保存済みsnapshotへrollbackする。</li>
+  </ol>
+
+  <h3 id="deprecate-flow">10.3 Deprecate duplicate</h3>
+  <ol>
+    <li>canonicalへのsource / origin lineage移管計画を作る。</li>
+    <li>canonicalがduplicateの適用scopeとunique assertionを包含することを再確認する。</li>
+    <li>
+      既存Merge Review / Finalizeを通してduplicateを削除せずdeprecatedへ変更し、canonical
+      IDとcuration job IDを記録する。Curation workerから直接statusを変更しない。
+    </li>
+    <li>compile eligibilityとgraph表示から除外されたことを確認する。</li>
+    <li>rollback window中はUIからreactivateできるようにする。</li>
+  </ol>
+
+  <h2 id="state">11. Persistent state model</h2>
+  <p>共通queue statusは既存契約を維持し、詳細な待機理由はphaseで表す。</p>
+  <table>
+    <caption>
+      Table: Queue status and phase
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Status</th>
+        <th scope="col">Phase or outcome examples</th>
+        <th scope="col">Meaning</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>pending</code></td>
+        <td>evaluate、policy、awaiting_downstream</td>
+        <td>再claim可能な待機状態</td>
+      </tr>
+      <tr>
+        <td><code>running</code></td>
+        <td>preflight、llm_review、policy、mutation、postcheck、rollback</td>
+        <td>workerがleaseを保持している</td>
+      </tr>
+      <tr>
+        <td><code>paused</code></td>
+        <td>pause前のphaseを保持</td>
+        <td>laneまたはjobの明示的なresumeを待つ</td>
+      </tr>
+      <tr>
+        <td><code>completed</code></td>
+        <td>outcome: recorded、repaired、merged、deprecated</td>
+        <td>必要なdownstream updateとpostcheckが確認済み</td>
+      </tr>
+      <tr>
+        <td><code>skipped</code></td>
+        <td>outcome: stale_input、superseded、not_eligible、cooldown</td>
+        <td>failureではない非実行終端</td>
+      </tr>
+      <tr>
+        <td><code>failed</code></td>
+        <td>outcome: provider_failed、parse_failed、mutation_failed、postcheck_failed</td>
+        <td>retryまたはrollbackが必要</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Version 1.2では、安全な既存downstream
+    jobの作成とlink永続化をCurationの責務境界とする。link保存後は<code>paused / awaiting_downstream</code>とし、Curationがlinked
+    queueを30秒間隔でpollしてterminal状態へ収束させる。
+  </p>
+
+  <h2 id="data-model">12. Minimum persistent fields</h2>
+  <ul>
+    <li>job ID、finding ID、finding type、fingerprint、snapshot ID</li>
+    <li>subject Knowledge ID、candidate Knowledge IDs、repository identity</li>
+    <li>status、phase、priority、attempt、next run、lease、heartbeat</li>
+    <li>input snapshot、LLM result、policy result、mutation plan</li>
+    <li>downstream queue name / job ID、postcheck result</li>
+    <li>rollback snapshot / rollback status</li>
+    <li>prompt、model、detector、policy、schema version</li>
+    <li>created、updated、completed、reviewed、rollback timestamps</li>
+  </ul>
+
+  <h2 id="ui">13. UI specification</h2>
+  <h3 id="queue-ui">13.1 Queue Dashboard</h3>
+  <ul>
+    <li>6番目のtabとしてCurationを表示する。</li>
+    <li>
+      statusに加えてfinding type、phase、subject、proposed action、policy dispositionを表示する。
+    </li>
+    <li>LLM provider / model、attempt、last error、downstream jobを表示する。</li>
+    <li>lane pause、job pause / resume / retryは既存queue contractを使う。</li>
+  </ul>
+
+  <h3 id="landscape-ui">13.2 LANDSCAPE</h3>
+  <ul>
+    <li>各Knowledgeにcuration statusと最新decisionを表示する。</li>
+    <li>rationale、supporting evidence、counter-evidence、policy blockerを区別して表示する。</li>
+    <li>未処理jobはstatusとerrorを表示するが、判断操作は要求しない。</li>
+    <li>destructive mutationにはbefore / after、downstream result、Undoを表示する。</li>
+    <li>frontend-only stateを真実にせず、表示は永続job stateから取得する。</li>
+  </ul>
+
+  <h2 id="safety">14. Safety invariants</h2>
+  <ul>
+    <li>cross-repository mutationは常にblockedにする。</li>
+    <li>LLMはrepository identity、status、Knowledge IDを直接変更できない。</li>
+    <li>すべてのmutationはbefore snapshot、idempotency key、actor、reasonを持つ。</li>
+    <li>同じsubjectに複数のdestructive curation jobを同時実行しない。</li>
+    <li>curationが生成したfindingを同じfingerprintで再生成するloopを抑止する。</li>
+    <li>mutation後のembedding、scope、status、lineage確認なしにcompletedにしない。</li>
+    <li>rollback不能なactionをauto_executeへ解放しない。</li>
+  </ul>
+
+  <h2 id="release-modes">15. Release modes</h2>
+  <p>release modeはlane全体ではなくaction classごとに設定する。</p>
+  <ul>
+    <li><code>disabled</code>: findingをenqueueしない。</li>
+    <li>
+      <code>shadow</code>: LLMとpolicy
+      resultを保存するがUIとKnowledgeを変更しない。
+    </li>
+    <li>
+      <code>auto_non_destructive</code>: observe、keep separate、needs
+      evidenceを自動処理する。
+    </li>
+    <li>
+      <code>auto_bounded</code>: gateを満たすrepair、merge、deprecateをrate
+      limit付きで実行する。
+    </li>
+  </ul>
+
+  <h2 id="go-conditions">16. GO conditions embedded in delivery</h2>
+  <p>
+    本機能はGOとする。以下はプロジェクト開始の承認条件ではなく、各release
+    modeを解放するためのacceptance gateである。未達の場合も実装を停止せず、到達済みmodeで運用する。
+  </p>
+  <table>
+    <caption>
+      Table: Mode release gates
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Gate</th>
+        <th scope="col">Required evidence</th>
+        <th scope="col">Unlocks</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>G0 Semantic parity</td>
+        <td>
+          SQLiteでnearest neighbor、semantic community、contradiction candidateが動作し、scope
+          fixtureが一致
+        </td>
+        <td>shadow</td>
+      </tr>
+      <tr>
+        <td>G1 Decision quality</td>
+        <td>最低200件、action別label、repository violation 0、destructive precision 98%以上</td>
+        <td>auto_non_destructive</td>
+      </tr>
+      <tr>
+        <td>G2 Persistent workflow</td>
+        <td>state、downstream tracking、retry、postcheck、auditがrestart後も一貫</td>
+        <td>auto_non_destructive</td>
+      </tr>
+      <tr>
+        <td>G3 Recoverability</td>
+        <td>merge、scope repair、deprecateのrollback rehearsal成功</td>
+        <td>destructive canary</td>
+      </tr>
+      <tr>
+        <td>G4 Retrieval non-regression</td>
+        <td>used retention非劣化、wrong / off_topic非増加、scope isolation violation 0</td>
+        <td>repair / merge canary</td>
+      </tr>
+      <tr>
+        <td>G5 Operational budget</td>
+        <td>core queue latency / failure非劣化、daily budget、auto-pause、provider capacity確認</td>
+        <td>auto_bounded</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="rollout">17. Delivery sequence</h2>
+  <ol>
+    <li>SQLite semantic evidence parityとnegative scope fixtureを実装する。</li>
+    <li>
+      <code>landscape_curation_queue</code>、worker、persistent phase、queue
+      eventを実装する。
+    </li>
+    <li>shadow curatorとpolicy gateを実装し、既存review itemsで評価する。</li>
+    <li>Curation tabとLANDSCAPE recommendation UIを実装する。</li>
+    <li>non-destructive actionを自動解放する。</li>
+    <li>scope repairを最大5件/dayでcanaryする。</li>
+    <li>既存Merge Review / Finalize連携を最大5件/dayでcanaryする。</li>
+    <li>
+      既存Merge Review / Finalize経由のduplicate deprecationを最も厳しいsame-scope
+      subsetから解放する。
+    </li>
+  </ol>
+
+  <h2 id="metrics">18. Product and safety metrics</h2>
+  <ul>
+    <li>finding count、LLM reviewed count、auto coverage、blocked rate</li>
+    <li>action別precision、downstream success rate、rollback rate</li>
+    <li>median autonomous handling timeと未処理review backlog</li>
+    <li>used retention、wrong、off_topic、no-match、overlap rate</li>
+    <li>repository eligibility violation、scope loss、unique evidence loss</li>
+    <li>LLM token / cost / latency、provider failure、parse failure</li>
+    <li>core queue latency、failure rate、curation oldest pending age</li>
+  </ul>
+
+  <h2 id="completion">19. Completion criteria</h2>
+  <p>最初の正式releaseは、次をすべて満たした時点で完了とする。</p>
+  <ul>
+    <li>Curationが6番目のvisible queueとして稼働し、pause / retry / auditが使える。</li>
+    <li>SQLiteで全finding typeのcandidate evidenceを生成できる。</li>
+    <li>shadow、auto_non_destructive、auto_boundedをaction別に切り替えられる。</li>
+    <li>既存Merge Review / Finalizeのlinked resultを追跡できる。</li>
+    <li>non-destructive actionが自動処理され、未処理jobだけがLANDSCAPE画面に残る。</li>
+    <li>destructive actionはgate未達ならblockedとして終端し、誤って自動実行されない。</li>
+    <li>restart、stale input、provider failure、postcheck failure、rollbackのtestが通る。</li>
+  </ul>
+
+  <h2 id="fixed-decisions">20. Fixed implementation decisions</h2>
+  <p>V1では次の判断を固定し、実装中に別案へ置き換えない。</p>
+  <ol>
+    <li>
+      <code>landscape_review_items</code>をfindingのsource of
+      truthとして再利用する。Curation専用finding tableは追加しない。
+    </li>
+    <li>
+      新規tableは<code>landscape_curation_queue</code>と<code>landscape_curation_job_links</code>の2つだけとする。
+    </li>
+    <li>
+      queue共通statusは既存の<code>pending / running / completed / skipped / failed / paused</code>を変更せず、細分化は<code>phase</code>で表す。
+    </li>
+    <li>
+      V1の<code>deprecate_duplicate</code>は直接deprecateせず、必ず既存<code>deadZoneMergeReview</code>と<code>mergeActivationFinalize</code>を通す。
+    </li>
+    <li>
+      新規のKnowledge
+      mutationは<code>repair_scope</code>だけとする。body、title、repository
+      identity、type、polarityの変更はV1の対象外とする。
+    </li>
+    <li>
+      <code>contradiction_candidate</code>はrelease modeに関係なく自動mutationしない。
+    </li>
+    <li>
+      PostgreSQLとSQLiteを同じ変更で対応する。片方だけで動く状態ではG0未達としてproducerを有効化しない。
+    </li>
+    <li>
+      provider routingは既存<code>RuntimeSettingsRoute</code>とprovider
+      leaseを使い、新しいLLM client abstractionを作らない。
+    </li>
+  </ol>
+
+  <h2 id="implementation-file-map">21. Implementation file map</h2>
+  <p>次のfileを変更または追加する。記載外の大規模refactorは行わない。</p>
+  <table>
+    <caption>
+      Table: Required implementation files
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Area</th>
+        <th scope="col">File</th>
+        <th scope="col">Required change</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Constants</td>
+        <td><code>src/db/schema.constants.ts</code></td>
+        <td>
+          queue名<code>landscapeCuration</code>、reason<code>duplicate_candidate</code>、curation用queue
+          event typeを追加する。
+        </td>
+      </tr>
+      <tr>
+        <td>PostgreSQL schema</td>
+        <td><code>src/db/schema-landscape.ts</code></td>
+        <td>
+          4.4節の2
+          table、check、index、FKを定義して<code>src/db/schema.ts</code>からexportする。
+        </td>
+      </tr>
+      <tr>
+        <td>Migration</td>
+        <td><code>drizzle/0075_landscape_curation_queue.sql</code></td>
+        <td>
+          2 tableを作成し、review reasonとqueue eventのcheck
+          constraintを置換する。実装開始時に0075が使用済みなら連番だけを次の空き番号へ変更する。
+        </td>
+      </tr>
+      <tr>
+        <td>SQLite schema</td>
+        <td><code>src/db/sqlite/core-schema.ts</code></td>
+        <td>同等のSTRICT table、JSON validation、partial unique indexを追加する。</td>
+      </tr>
+      <tr>
+        <td>Shared contract</td>
+        <td><code>src/shared/schemas/landscape-curation.schema.ts</code></td>
+        <td>
+          4.2節のenum、snapshot、LLM result、policy result、API schemaとexport typeを定義する。
+        </td>
+      </tr>
+      <tr>
+        <td>Evidence parity</td>
+        <td>
+          <code>src/modules/landscape/landscape-deadzone-review.repository.ts</code
+          >、<code>landscape-community-comparison.ts</code>、<code
+            >landscape-contradiction.repository.ts</code
+          >
+        </td>
+        <td>現在のSQLite空結果returnを22節の実装で置換する。</td>
+      </tr>
+      <tr>
+        <td>Producer</td>
+        <td>
+          <code>src/modules/landscape/landscape-curation-producer.service.ts</code>、<code
+            >landscape-curation-fingerprint.ts</code
+          >
+        </td>
+        <td>
+          review item選択、duplicate finding生成、snapshot化、budget、cooldown、idempotent
+          enqueueを実装する。
+        </td>
+      </tr>
+      <tr>
+        <td>Persistence</td>
+        <td><code>src/modules/landscape/landscape-curation-queue.repository.ts</code></td>
+        <td>両backendのinsert、claim後read、phase更新、link更新、detail listを実装する。</td>
+      </tr>
+      <tr>
+        <td>LLM</td>
+        <td>
+          <code>src/modules/landscape/landscape-curation-llm.ts</code>、<code
+            >contexts/landscape/curation.context.toml</code
+          >
+        </td>
+        <td>既存distillation completionを使い、strict JSON parseと入力ID検証を行う。</td>
+      </tr>
+      <tr>
+        <td>Policy</td>
+        <td><code>src/modules/landscape/landscape-curation-policy.ts</code></td>
+        <td>
+          pure functionとして23節のgateとreason codeを実装する。DB、clock、LLMへ直接依存させない。
+        </td>
+      </tr>
+      <tr>
+        <td>Replay</td>
+        <td><code>src/modules/landscape/landscape-curation-replay.service.ts</code></td>
+        <td>scope patchの90日cohortを比較し、used retentionとnegative eligibilityを算出する。</td>
+      </tr>
+      <tr>
+        <td>Mutation</td>
+        <td>
+          <code>src/modules/landscape/landscape-curation-mutation.service.ts</code>、<code
+            >merge-activation-finalize.repository.ts</code
+          >
+        </td>
+        <td>scope repair、rollback、merge finalizeのatomic mutationとpostcheckを実装する。</td>
+      </tr>
+      <tr>
+        <td>Worker</td>
+        <td><code>src/modules/landscape/landscape-curation.worker.ts</code></td>
+        <td>24節のphase machineを実装する。</td>
+      </tr>
+      <tr>
+        <td>Existing merge flow</td>
+        <td>
+          <code>deadzone-merge-review-queue.service.ts</code
+          >、<code>merge-activation-finalize.service.ts</code>、<code
+            >merge-activation-finalize.worker.ts</code
+          >
+        </td>
+        <td>
+          curation job link、再gate、repository identity確認、transaction、rollback
+          snapshotを追加する。
+        </td>
+      </tr>
+      <tr>
+        <td>Queue core</td>
+        <td>
+          <code>src/modules/queue/core/types.ts</code
+          >、<code>claim.ts</code>、<code>state.ts</code>、<code>worker.ts</code>、<code
+            >scheduler.ts</code
+          >
+        </td>
+        <td>
+          queue mapping、claim、retry、worker dispatch、provider pool最下位priorityを追加する。
+        </td>
+      </tr>
+      <tr>
+        <td>CLI</td>
+        <td>
+          <code>src/cli/queue.ts</code
+          >、<code>queue-supervisor.ts</code>、<code>enqueue-landscape-curation.ts</code>、<code
+            >package.json</code
+          >
+        </td>
+        <td>worker選択、定期producer tick、manual dry-run/write commandを追加する。</td>
+      </tr>
+      <tr>
+        <td>Settings</td>
+        <td>
+          <code>settings.types.ts</code
+          >、<code>settings.defaults.ts</code>、<code>settings.service.ts</code>、<code
+            >settings.runtime-cache.ts</code
+          >
+        </td>
+        <td>27節のrouting、mode、budgetを保存・sanitize・runtime解決する。</td>
+      </tr>
+      <tr>
+        <td>API</td>
+        <td>
+          <code>api/modules/graph/graph.routes.ts</code>、<code>api/modules/queue/queue.repository.ts</code>
+        </td>
+        <td>25節のdetail/action APIとgeneric queue list/statsを追加する。</td>
+      </tr>
+      <tr>
+        <td>Web</td>
+        <td>
+          <code>admin.repository.ts</code
+          >、<code>queue.page.tsx</code>、<code>landscape.page.tsx</code>、<code
+            >settings.page.tsx</code
+          >
+        </td>
+        <td>26節のtab、detail panel、Knowledge status、未処理表示、settings editorを追加する。</td>
+      </tr>
+      <tr>
+        <td>Tests</td>
+        <td>29節に列挙するtest files</td>
+        <td>backend parity、state machine、policy、API、UI、rollbackをfixtureで固定する。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="sqlite-parity">22. SQLite evidence parity implementation</h2>
+  <p>G0を満たすまでproducerはdefault disabledとする。空結果を正常結果として扱う実装を残さない。</p>
+  <h3 id="sqlite-neighbors">22.1 Similar Knowledge</h3>
+  <ul>
+    <li>
+      <code>listSimilarKnowledgeRows</code>のSQLite
+      branchは<code>knowledge_items_vec_fallback.embedding_json</code>をbatch
+      loadし、<code>landscape-trajectory.service.ts</code>と同じcosine計算を共有helperへ抽出して使う。
+    </li>
+    <li>subject集合と同じresolved repository identityのrowだけをvector計算前に絞る。</li>
+    <li>各subjectについてsimilarity降順、updatedAt降順、ID昇順でtopKを返す。</li>
+    <li>invalid JSON、次元不一致、zero vectorはそのpairだけ除外し、capability warningを返す。</li>
+  </ul>
+
+  <h3 id="sqlite-semantic-community">22.2 Semantic community</h3>
+  <ul>
+    <li>
+      <code>buildSemanticCommunityAssignments</code>はSQLiteでもfallback vectorからpair
+      similarityを計算し、既存<code>buildCommunityAssignments</code>へ同じnode / edge
+      shapeを渡す。
+    </li>
+    <li>
+      各nodeのedgeはsimilarity降順で<code>semanticTopK</code>件、全体上限は<code>knowledgeIds.length * semanticTopK * 3</code>とする。
+    </li>
+    <li>
+      同じfixtureに対するcommunity comparison
+      kindがPostgreSQL実装と一致することをtestする。community
+      key文字列そのものは比較せず、membership集合を比較する。
+    </li>
+  </ul>
+
+  <h3 id="sqlite-contradiction">22.3 Contradiction evidence</h3>
+  <ul>
+    <li>
+      <code>loadContradictionKnowledgeRows</code
+      >はSQLiteで同じstatus、type、sort、limitを適用する。
+    </li>
+    <li>
+      recent
+      selectionは<code>context_pack_items</code>と<code>context_compile_runs</code>、semantic
+      pairはfallback vectorを使い、PostgreSQL branchと同じpair keyとthresholdを返す。
+    </li>
+    <li>
+      capabilityが不足する場合は空arrayだけでなく<code>capabilities.contradictionAvailable=false</code>をsnapshotへ残し、jobを<code>needs_evidence</code>へ送る。
+    </li>
+  </ul>
+
+  <h3 id="g0-fixture">22.4 G0 fixture</h3>
+  <p>
+    12 Knowledge、3 repository、2 global、exact duplicate 1組、semantic duplicate 2組、contradiction
+    1組、dimension mismatch
+    1件を含むfixtureをPostgreSQLとSQLiteへ投入する。次が一致したときだけG0をpassとする。
+  </p>
+  <ul>
+    <li>same-repository neighbor pair集合とsimilarity差0.0001以内</li>
+    <li>cross-repository pair 0件</li>
+    <li>semantic community membership集合</li>
+    <li>contradiction pair集合、selection count、confidence label</li>
+    <li>dimension mismatchが全体failureではなくcapability warningになること</li>
+  </ul>
+
+  <h2 id="deterministic-policy">23. Deterministic policy implementation</h2>
+  <h3 id="policy-input">23.1 Pure function input</h3>
+  <p>
+    <code>evaluateLandscapeCurationPolicy(input)</code>はLLM result、snapshot、runtime settings、daily
+    counters、scope replay resultを受け取り、4.2.3節のresultだけを返す。DB
+    read、clock取得、event記録はcallerが行い、testでは固定時刻を渡す。
+  </p>
+
+  <h3 id="policy-reason-codes">23.2 Reason codes</h3>
+  <pre><code>type LandscapeCurationPolicyReasonCode =
+  | "MODE_DISABLED"
+  | "SHADOW_ONLY"
+  | "AUTONOMOUS_SAFE_DOWNSTREAM"
+  | "AUTONOMOUS_TERMINAL_DECISION"
+  | "LOW_CONFIDENCE"
+  | "LLM_BLOCKER_PRESENT"
+  | "EVIDENCE_INCOMPLETE"
+  | "STALE_INPUT"
+  | "REPOSITORY_IDENTITY_MISMATCH"
+  | "GLOBAL_REPO_MIX"
+  | "CROSS_REPOSITORY_CANDIDATE"
+  | "CANDIDATE_NOT_ACTIVE"
+  | "CANDIDATE_REFERENCE_INVALID"
+  | "TYPE_MISMATCH"
+  | "POLARITY_MISMATCH"
+  | "AUTONOMOUS_EXACT_DUPLICATE_REQUIRED"
+  | "SIMILARITY_BELOW_THRESHOLD"
+  | "SCOPE_OVERLAP_BELOW_THRESHOLD"
+  | "SCOPE_PATCH_NOT_NARROWING"
+  | "REPLAY_REGRESSION"
+  | "UNIQUE_USAGE_PRESENT"
+  | "LINEAGE_NOT_PRESERVED"
+  | "CONTRADICTION_AUTOMATION_BLOCKED"
+  | "DAILY_BUDGET_EXHAUSTED"
+  | "REPO_BUDGET_EXHAUSTED"
+  | "ACTION_NOT_IMPLEMENTED";</code></pre>
+
+  <h3 id="mode-matrix">23.3 Mode matrix</h3>
+  <table>
+    <caption>
+      Table: Release mode behavior
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Mode</th>
+        <th scope="col">Non-destructive decision</th>
+        <th scope="col">Repair / merge decision</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>disabled</code></td>
+        <td>blocked</td>
+        <td>blocked</td>
+      </tr>
+      <tr>
+        <td><code>shadow</code></td>
+        <td>record_only</td>
+        <td>record_only</td>
+      </tr>
+      <tr>
+        <td><code>auto_non_destructive</code></td>
+        <td>record_only</td>
+        <td>blockedまたはenqueue_downstream</td>
+      </tr>
+      <tr>
+        <td><code>auto_bounded</code></td>
+        <td>record_only</td>
+        <td>条件充足時だけauto_executeまたはenqueue_downstream</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    non-destructive
+    decisionは<code>keep_separate / needs_evidence / observe</code>とする。<code>escalate</code>と<code>contradiction_candidate</code>は常にblockedとして終端し、未処理のfailed
+    jobだけをLANDSCAPE画面へ表示する。
+  </p>
+  <p>
+    Version 1.2では承認によるpolicy解除を提供しない。repository、stale input、scope
+    narrowing、replay、lineage、budgetのdeterministic
+    gateが不合格の場合はblockedとして終端し、reason codeを保存する。
+  </p>
+
+  <h3 id="scope-policy">23.4 Scope repair gate</h3>
+  <p>
+    <code>repair_scope</code
+    >をauto_executeできるのは次をすべて満たす場合だけとする。
+  </p>
+  <ul>
+    <li>confidenceがhigh、blockersが空、supporting evidenceが2件以上。</li>
+    <li>subjectがactive、repo scoped、repository identity不変。</li>
+    <li>
+      現在のappliesToにtechnologies、changeTypes、domainsの少なくとも1つが存在し、generalがtrueではない。
+    </li>
+    <li>
+      proposed appliesToはrepoKey / repoPathを変更せず、既存facet
+      keyを追加しない。各arrayは現在値の非空subset、少なくとも1 facetがstrict
+      subsetである。全facet削除、未知key追加、general変更は拒否する。
+    </li>
+    <li>
+      90日、最大100 runのreplayでused eventのeligibility retentionが100%、off_topic / wrong
+      eligible件数が増加せず、cross-repository eligibilityが0件。
+    </li>
+    <li>rollback snapshotが保存済みで、当日のscope repair実行数がglobal / repo budget内。</li>
+  </ul>
+  <p>
+    replayは<code>knowledge.repository.shared.ts</code>の<code>buildApplicabilityQuery / computeApplicability / hasApplicabilityQuery</code>を使い、SQLite検索と同じmatching
+    semanticsで評価する。別のfacet matcherを再実装しない。
+  </p>
+
+  <h3 id="merge-policy">23.5 Merge and deprecation gate</h3>
+  <p>
+    <code>merge_review</code
+    >または<code>deprecate_duplicate</code>をenqueue_downstreamできるのは次をすべて満たす場合だけとする。
+  </p>
+  <ul>
+    <li>confidenceがhigh、blockersが空、canonical IDがinput candidateに含まれる。</li>
+    <li>subjectとcanonicalがactive、typeとpolarityが一致し、同じresolved repository identity。</li>
+    <li>body hash、status、appliesTo hashがsnapshotから変わっていない。</li>
+    <li>
+      V1はbody hashとnormalized appliesTo hashがともに一致するexact
+      duplicateだけを許可する。similarity 0.92以上かつscope overlap 0.8以上のsemantic
+      duplicateは候補として記録できるが、<code>AUTONOMOUS_EXACT_DUPLICATE_REQUIRED</code>でblockedにする。
+    </li>
+    <li>subjectにcanonicalで説明できないused runが90日内に0件。1件でもあればblocked。</li>
+    <li>
+      source / origin linkをcanonicalへcopyするplanがあり、postcheck
+      countがmutation前のunion以上になる。
+    </li>
+    <li>merge body生成とdeprecationは既存Merge Review / Finalizeへ委譲する。</li>
+  </ul>
+  <p>
+    curatorが<code>deprecate_duplicate</code>を返した場合もeffective
+    actionは<code>enqueue_merge_review</code>とする。直接statusをdeprecatedへ変更するbranchは作らない。
+  </p>
+
+  <h2 id="worker-state-machine">24. Worker state machine</h2>
+  <h3 id="worker-dispatch">24.1 Queue integration</h3>
+  <ul>
+    <li><code>queueTableNameByQueue.landscapeCuration = "landscape_curation_queue"</code>を追加する。</li>
+    <li>
+      <code>providerPoolQueuePriorityOrder</code
+      >では<code>landscapeCuration</code>を最後に置く。
+    </li>
+    <li>generic claim条件、lane pause、heartbeat、provider lease、retry APIをそのまま利用する。</li>
+    <li>
+      CLI validation messageとpackage
+      scriptへ<code>queue:curation:once</code>を追加する。
+    </li>
+  </ul>
+
+  <h3 id="phase-transitions">24.2 Allowed transitions</h3>
+  <table>
+    <caption>
+      Table: Curation phase transitions
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">From</th>
+        <th scope="col">To</th>
+        <th scope="col">Status after transition</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>evaluate</td>
+        <td>preflight</td>
+        <td>running</td>
+      </tr>
+      <tr>
+        <td>preflight</td>
+        <td>llm_review</td>
+        <td>running</td>
+      </tr>
+      <tr>
+        <td>preflight</td>
+        <td>policy</td>
+        <td>running。deterministic resultがある場合。</td>
+      </tr>
+      <tr>
+        <td>llm_review</td>
+        <td>policy</td>
+        <td>running</td>
+      </tr>
+      <tr>
+        <td>policy</td>
+        <td>awaiting_downstream</td>
+        <td>paused。30秒後の自動poll対象として保持する。</td>
+      </tr>
+      <tr>
+        <td>policy</td>
+        <td>mutation</td>
+        <td>running</td>
+      </tr>
+      <tr>
+        <td>policy</td>
+        <td>terminal</td>
+        <td>completedまたはskipped</td>
+      </tr>
+      <tr>
+        <td>mutation</td>
+        <td>postcheck</td>
+        <td>running</td>
+      </tr>
+      <tr>
+        <td>postcheck</td>
+        <td>terminal</td>
+        <td>completed</td>
+      </tr>
+      <tr>
+        <td>mutation / postcheck</td>
+        <td>rollback</td>
+        <td>running</td>
+      </tr>
+      <tr>
+        <td>rollback</td>
+        <td>terminal</td>
+        <td>failed。rollback結果を保持。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="worker-steps">24.3 Processing steps</h3>
+  <ol>
+    <li>jobをreadし、phaseに応じて処理をresumeする。phaseをevaluateへ戻さない。</li>
+    <li>
+      preflightでsnapshot readback、repository identity、capability、active mutation
+      lockを確認する。
+    </li>
+    <li>
+      exact duplicateを含む候補をcuratorへ渡し、LLM評価をtyped
+      resultとして保存する。完全一致の事実はLLMに委ねず、後段policyで再計算する。
+    </li>
+    <li>LLM resultをschema parseし、input ID参照を検証して保存する。</li>
+    <li>policyを評価し、<code>policy_decided</code>eventを記録する。</li>
+    <li>
+      record_onlyはcompleted、await_evidenceとblockedはskipped、enqueue_downstreamはlink永続化後にpaused
+      / awaiting_downstreamへ進める。human_reviewは生成しない。
+    </li>
+    <li>
+      repair_scopeはrollback snapshotを保存してmutationし、readbackとreplay
+      postcheck後にcompletedにする。
+    </li>
+    <li>
+      mergeはmerge review jobをidempotentに作成してlinkし、completed /
+      awaiting_downstreamで責務を委譲する。
+    </li>
+    <li>
+      merge
+      reviewがcompletedかつmerge_recommendedならsnapshotを再gateし、auto_boundedの条件を満たす場合だけFinalize
+      jobを作る。merge_blocked / keep_separate / needs_evidenceは対応するrecord
+      outcomeでcompletedにする。
+    </li>
+    <li>
+      Finalizeがterminalになるまでpollし、completedならKnowledge、lineage、statusをpostcheckする。skipped
+      / failedならcuration jobをcompletedにしない。
+    </li>
+  </ol>
+
+  <h3 id="retry-backoff">24.4 Retry and polling</h3>
+  <ul>
+    <li>
+      Curation curatorのprovider timeout、HTTP retryable、parse
+      failureはattemptを増やし、60秒、300秒、1800秒で最大3回retryする。
+    </li>
+    <li>
+      downstream pollはattemptを増やさず30秒後にpausedへ戻す。24時間超過でfailed /
+      downstream_timeout。
+    </li>
+    <li>
+      Curation由来Merge
+      ReviewとFinalizeの一時失敗は60秒からのbackoffで各queueの<code>max_attempts</code>まで自動retryし、上限到達時だけCurationと下流jobをfailedにする。
+    </li>
+    <li>stale input、not eligible、policy blockedはretryせずskipped。</li>
+    <li>
+      V1 exact duplicate pathはcanonicalを変更せず、duplicate
+      1行のdeprecationだけを行う。mutation後のqueue更新失敗はdeprecation
+      metadataを使って自動収束する。将来の複数行mutationでは自動rollbackを必須とする。
+    </li>
+    <li>
+      lane pauseによるAbortは既存queue contractに従いpausedへ戻し、provider failureへ数えない。
+    </li>
+  </ul>
+
+  <h3 id="atomic-mutations">24.5 Atomic mutation and rollback</h3>
+  <ul>
+    <li>
+      scope repairは単一Knowledge row updateを1 transactionで行い、appliesTo以外のbusiness
+      fieldが変わっていないことをpostcheckする。
+    </li>
+    <li>
+      V1のcuration由来merge
+      finalizeは提案body、現在のcanonical、duplicateのbodyとappliesToが完全一致することを再確認し、canonicalを変更せずduplicate
+      1行だけをdeprecatedへ更新する。mutation後にqueue更新が失敗した場合は、<code>finalizeJobId</code>付きdeprecation
+      metadataを検出してcompletedへ収束させる。
+    </li>
+    <li>
+      既存Finalizeのcuration以外のpathは挙動を維持するが、body/status hash
+      checkとatomicityは共通repositoryへ移す。
+    </li>
+    <li>
+      rollback windowは7日。scope repairは旧appliesTo、mergeは旧canonical
+      body/appliesTo/metadataとduplicate status/metadataを復元する。
+    </li>
+    <li>
+      rollback前に現在値がpost-mutation hashと一致しない場合は上書きせず、rollback_status failed /
+      stale_rollback_targetとしてfailedへ遷移し、未処理一覧へ表示する。
+    </li>
+  </ul>
+
+  <h3 id="module-public-surface">24.6 Required module public surface</h3>
+  <pre><code>// producer
+runLandscapeCurationProducer(input: {
+  dryRun: boolean;
+  limit?: number;
+  reviewItemId?: string;
+  now?: Date;
+}): Promise&lt;LandscapeCurationProducerResult&gt;
+
+// repository
+enqueueLandscapeCurationJob(input: LandscapeCurationJobCreateInput): Promise&lt;LandscapeCurationJob&gt;
+getLandscapeCurationJob(id: string): Promise&lt;LandscapeCurationJobDetail | null&gt;
+listLandscapeCurationJobs(query: LandscapeCurationJobListQuery): Promise&lt;LandscapeCurationJobListResponse&gt;
+transitionLandscapeCurationJob(input: {
+  id: string;
+  expectedStatus: DistillationQueueStatus[];
+  expectedPhase: LandscapeCurationPhase[];
+  next: LandscapeCurationJobTransition;
+}): Promise&lt;LandscapeCurationJob | null&gt;
+upsertLandscapeCurationJobLink(input: LandscapeCurationJobLinkInput): Promise&lt;LandscapeCurationJobLink&gt;
+countLandscapeCurationDailyUsage(input: { since: Date; repositoryKey?: string }): Promise&lt;number&gt;
+
+// LLM and policy
+runLandscapeCurationLlm(input: {
+  inputSnapshot: LandscapeCurationInputSnapshotV1;
+  signal?: AbortSignal;
+}): Promise&lt;LandscapeCurationResultV1&gt;
+evaluateLandscapeCurationPolicy(input: LandscapeCurationPolicyInput): LandscapeCurationPolicyResultV1
+
+// worker and mutation
+processLandscapeCurationJob(jobId: string, signal?: AbortSignal): Promise&lt;void&gt;
+applyLandscapeScopeRepair(input: LandscapeScopeRepairInput): Promise&lt;LandscapeCurationMutationResult&gt;
+rollbackLandscapeCurationMutation(input: LandscapeCurationRollbackInput): Promise&lt;LandscapeCurationRollbackResult&gt;</code></pre>
+  <p>
+    transitionはexpected status / phaseをWHERE条件へ含めるcompare-and-setとし、0
+    row更新を409相当の競合として扱う。PostgreSQLとSQLiteで別名のpublic
+    functionを作らず、repository内部だけをbackend分岐する。
+  </p>
+
+  <h2 id="api-contract">25. API contract</h2>
+  <h3 id="generic-queue-api">25.1 Generic queue API</h3>
+  <ul>
+    <li>
+      既存<code>GET /api/queue</code>、<code>/stats</code>、<code>/active</code>、lane
+      / job
+      controlへ<code>landscapeCuration</code>を追加する。visibleQueueNameも<code>landscapeCuration</code>とする。
+    </li>
+    <li>
+      listの<code>subjectTitle</code>はKnowledge
+      title、<code>subjectDetail</code>は<code>{findingType} | phase={phase} | decision={decision ?? "-"}</code>、<code>metadataSummary</code>はdispositionとoutcomeを表示する。
+    </li>
+    <li>
+      sortBy allowlistへstatus、priority、attemptCount、updatedAt、createdAtを追加し、unknown
+      sortはupdatedAt descへfallbackする。
+    </li>
+  </ul>
+
+  <h3 id="curation-api-endpoints">25.2 Curation endpoints</h3>
+  <table>
+    <caption>
+      Table: Curation API endpoints
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Method and path</th>
+        <th scope="col">Input</th>
+        <th scope="col">Response</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>POST /api/graph/landscape/curation/enqueue</code></td>
+        <td><code>{ dryRun=true, limit=100, reviewItemId? }</code></td>
+        <td><code>{ candidateCount, insertedCount, existingCount, cooldownCount, budgetSkippedCount, items }</code></td>
+      </tr>
+      <tr>
+        <td><code>GET /api/graph/landscape/curation/jobs</code></td>
+        <td><code>knowledgeId?, status=all, findingType=all, limit=50</code></td>
+        <td>bodyを除くtyped job summary list</td>
+      </tr>
+      <tr>
+        <td><code>GET /api/graph/landscape/curation/jobs/:id</code></td>
+        <td>job ID</td>
+        <td>4.2.5節のfull detail。not foundは404。</td>
+      </tr>
+      <tr>
+        <td><code>POST /api/graph/landscape/curation/jobs/:id/rollback</code></td>
+        <td><code>{ note: string }</code></td>
+        <td><code>{ accepted: true, job }</code>。window外またはhash不一致は409。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="autonomous-decision-contract">25.3 Autonomous decision</h3>
+  <p>
+    Curation専用のhuman decision endpointは提供しない。LLM resultはpolicy gateで自動的にrecord、safe
+    downstream、await
+    evidence、blockedのいずれかへ確定する。再評価が必要な場合はproducerが新しいevidence
+    hashを持つjobを生成する。
+  </p>
+
+  <h3 id="api-errors">25.4 Error response</h3>
+  <p>専用endpointはすべて次のerror shapeを返す。</p>
+  <pre><code>{
+  "code": "CURATION_NOT_FOUND | CURATION_INVALID_TRANSITION | CURATION_STALE_INPUT | CURATION_POLICY_BLOCKED | CURATION_ROLLBACK_CONFLICT | CURATION_SCHEMA_NOT_READY",
+  "error": "operator-readable message",
+  "details": {}
+}</code></pre>
+  <p>
+    validationは400、not foundは404、state / stale / rollback
+    conflictは409、schema未適用は503とする。
+  </p>
+
+  <h2 id="web-ui-contract">26. Web UI contract</h2>
+  <h3 id="queue-dashboard-ui">26.1 Queue Dashboard</h3>
+  <ul>
+    <li>
+      <code>QUEUE_TABS</code
+      >のFinalize直後へ<code>{ name: "landscapeCuration", label: "Curation" }</code>を追加する。
+    </li>
+    <li>
+      visualは<code>WandSparkles</code> icon、indigo色を使う。独自CSS
+      tokenは追加せず既存Tailwind classを使う。
+    </li>
+    <li>
+      一覧の共通columnは維持し、Curation選択時だけSubject cellへfinding
+      type、phase、decision、disposition badgeを追加する。
+    </li>
+    <li>
+      row clickまたは<code>Details</code>
+      buttonで右側drawerを開き、専用detail endpointをlazy fetchする。
+    </li>
+    <li>
+      drawerはOverview、Evidence、Decision、Policy、Downstream、Mutation /
+      Rollback、Eventsの順に表示する。rationale、counter-evidence、blockerを同じlistへ混在させない。
+    </li>
+    <li>
+      pause / resume / retryは共通buttonを使う。retryはstale
+      inputを自動force適用せず、新snapshot作成をproducerへ委ねる。
+    </li>
+  </ul>
+
+  <h3 id="unresolved-curation-ui">26.2 Unresolved Curation status</h3>
+  <ul>
+    <li>LANDSCAPE画面には永続queueの非終端jobだけを表示する。</li>
+    <li>表示対象はpending、running、paused、failedとし、completedとskippedは除外する。</li>
+    <li>ユーザーへApprove、Override、Dismiss、Request evidenceを要求しない。</li>
+    <li>status、finding type、phase、subject knowledge ID、last errorを表示する。</li>
+    <li>
+      Undoはrollback可能なcompleted job、7日以内、rollback
+      not_requestedの場合だけ表示する。実行前にbefore / afterを再表示する。
+    </li>
+    <li>
+      mutation成功をoptimisticに表示せず、APIから返ったpersisted statusでquery cacheを更新する。
+    </li>
+  </ul>
+
+  <h3 id="landscape-knowledge-ui">26.3 LANDSCAPE Knowledge integration</h3>
+  <ul>
+    <li>
+      LANDSCAPE取得後、画面に表示中のKnowledge IDsを50件ずつcuration jobs
+      APIへ渡す。Knowledgeごとの個別requestは禁止する。
+    </li>
+    <li>
+      各Knowledgeへ最新jobのstatus、finding type、decision badgeを表示し、clickで同じdetail
+      drawerを開く。
+    </li>
+    <li>active jobが複数存在しないことはDB constraintで保証するが、履歴は最新5件を表示する。</li>
+    <li>
+      review itemの既存manual actionは残し、Curation recommendationがある場合だけ新UIを併記する。
+    </li>
+  </ul>
+
+  <h3 id="accessibility-ui">26.4 Loading, error, and accessibility</h3>
+  <ul>
+    <li>drawer fetch中、schema not ready、404、409、retryable errorを別表示にする。</li>
+    <li>badgeだけで状態を伝えずtext labelを併記する。action buttonへaccessible nameを付ける。</li>
+    <li>
+      modal open時のfocus trap、close後のrow focus復帰、Escape closeを既存UI primitiveで実現する。
+    </li>
+  </ul>
+
+  <h2 id="runtime-settings">27. Runtime settings contract</h2>
+  <h3 id="settings-shape">27.1 Settings shape</h3>
+  <pre><code>type LandscapeCurationSettings = {
+  producerEnabled: boolean;
+  producerIntervalMinutes: number;
+  scanLimit: number;
+  dailyJobLimit: number;
+  perRepositoryDailyJobLimit: number;
+  cooldownDays: number;
+  newKnowledgeObservationDays: number;
+  maxCandidates: number;
+  downstreamPollSeconds: number;
+  downstreamTimeoutHours: number;
+  rollbackWindowDays: number;
+  modeByAction: {
+    triage: LandscapeCurationReleaseMode;
+    scopeRepair: LandscapeCurationReleaseMode;
+    merge: LandscapeCurationReleaseMode;
+    deprecateDuplicate: LandscapeCurationReleaseMode;
+    contradiction: LandscapeCurationReleaseMode;
+  };
+};
+
+taskRouting.landscapeCuration: RuntimeSettingsRoute;</code></pre>
+
+  <h3 id="settings-defaults">27.2 Defaults and validation</h3>
+  <table>
+    <caption>
+      Table: Curation settings defaults
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Setting</th>
+        <th scope="col">Default</th>
+        <th scope="col">Range</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>producerEnabled</td>
+        <td>false</td>
+        <td>boolean</td>
+      </tr>
+      <tr>
+        <td>producerIntervalMinutes</td>
+        <td>360</td>
+        <td>15..1440</td>
+      </tr>
+      <tr>
+        <td>scanLimit</td>
+        <td>500</td>
+        <td>10..5000</td>
+      </tr>
+      <tr>
+        <td>dailyJobLimit</td>
+        <td>100</td>
+        <td>1..1000</td>
+      </tr>
+      <tr>
+        <td>perRepositoryDailyJobLimit</td>
+        <td>20</td>
+        <td>1..200、daily以下</td>
+      </tr>
+      <tr>
+        <td>cooldownDays</td>
+        <td>30</td>
+        <td>1..180</td>
+      </tr>
+      <tr>
+        <td>newKnowledgeObservationDays</td>
+        <td>30</td>
+        <td>0..180</td>
+      </tr>
+      <tr>
+        <td>maxCandidates</td>
+        <td>5</td>
+        <td>1..5</td>
+      </tr>
+      <tr>
+        <td>downstreamPollSeconds</td>
+        <td>30</td>
+        <td>10..300</td>
+      </tr>
+      <tr>
+        <td>downstreamTimeoutHours</td>
+        <td>24</td>
+        <td>1..168</td>
+      </tr>
+      <tr>
+        <td>rollbackWindowDays</td>
+        <td>7</td>
+        <td>1..30</td>
+      </tr>
+      <tr>
+        <td>all modeByAction</td>
+        <td>shadow</td>
+        <td>release mode enum</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    route defaultは<code>deadZoneMergeReview</code>と同じlocal LLM
+    model、fallback空とする。設定migration時、既存settingsにkeyがなければdefaultをmergeする。保存時sanitize、runtime
+    cache、effective target view、provider pool削除時のroute
+    cleanupを既存routeと同じ箇所へ追加する。
+  </p>
+
+  <h3 id="settings-ui">27.3 Settings UI</h3>
+  <ul>
+    <li>
+      Task Routingへ<code>landscapeCuration</code> RouteEditorをMerge
+      Reviewの直後に追加する。
+    </li>
+    <li>Curation controls sectionへproducer enabled、budget、cooldown、modeByActionを表示する。</li>
+    <li>
+      invalid
+      combinationは保存前にclampする。<code>contradiction=auto_bounded</code>を選んでもruntime
+      policyはblockedから変えない旨を説明する。
+    </li>
+    <li>
+      daemonは各producer tickと各job claim前にruntime
+      cacheを参照し、再起動なしでmode変更を反映する。
+    </li>
+  </ul>
+
+  <h2 id="observability">28. Observability and auto-pause</h2>
+  <h3 id="events-and-audit">28.1 Events and audit</h3>
+  <ul>
+    <li>
+      全phase変更で<code>phase_changed</code>
+      eventへfrom、to、status、reasonを保存する。
+    </li>
+    <li>
+      policy eventへdecision、disposition、reasonCodes、releaseMode、policyVersionを保存する。
+    </li>
+    <li>
+      rollbackはqueue eventに加え、既存audit log serviceへactor、job ID、before / after
+      hashを保存する。
+    </li>
+    <li>LLM raw output全文は保存せず、最大1200文字excerptとparse statusをresultへ保存する。</li>
+  </ul>
+
+  <h3 id="metrics-and-health">28.2 Metrics and health</h3>
+  <p>既存Overviewまたはqueue statsから次を集計できるよう、columnとevent metadataを欠かさない。</p>
+  <ul>
+    <li>findingType、decision、disposition、outcome別job count</li>
+    <li>oldest pending、downstream wait age、failure / retry / rollback count</li>
+    <li>provider / model別latency、token usage、parse failure</li>
+    <li>repository violation、stale input、policy blocked、autonomous delegation</li>
+    <li>scope repair後のused retention、negative eligibility delta、merge後のlineage count</li>
+  </ul>
+
+  <h3 id="auto-pause">28.3 Auto-pause</h3>
+  <p>
+    次のいずれかを満たしたらlane controlを使いCurationだけを自動pauseする。core queueはpauseしない。
+  </p>
+  <ul>
+    <li>直近20件でprovider / parse failureが5件以上</li>
+    <li>repository identity violationが1件以上</li>
+    <li>24時間内rollbackが2件以上</li>
+    <li>postcheck failureが連続2件</li>
+    <li>downstream failure率が直近20件で25%以上</li>
+  </ul>
+  <p>
+    auto-pauseは<code>paused</code>eventとaudit logを残し、理由をQueue
+    Dashboardへ表示する。provider cooldown後のretryまたは運用上のlane
+    resumeで再開するが、Knowledge判断をユーザーへ要求しない。
+  </p>
+
+  <h2 id="test-contract">29. Test contract</h2>
+  <table>
+    <caption>
+      Table: Required test files and acceptance cases
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File</th>
+        <th scope="col">Minimum cases</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>test/landscape-curation-schema.test.ts</code></td>
+        <td>全enum、valid result、unknown ID、invalid appliesTo、JSON size limit。</td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-fingerprint.test.ts</code></td>
+        <td>candidate順序非依存、timestamp非依存、evidence変更、cooldown bucket境界。</td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-producer.test.ts</code></td>
+        <td>
+          reason mapping、null subject除外、budget、cooldown、active dedupe、repo isolation、batch
+          insert。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-sqlite-parity.test.ts</code></td>
+        <td>22.4節のfixture全条件。</td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-llm.test.ts</code></td>
+        <td>
+          prompt manifest、strict parse、fenced JSON、parse retry、input外ID拒否、AbortSignal。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-policy.test.ts</code></td>
+        <td>
+          mode matrix全組合せ、scope narrowing、replay regression、cross repo、unique
+          usage、contradiction。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-worker.test.ts</code></td>
+        <td>
+          全phase、restart resume、provider backoff、downstream poll、timeout、stale
+          input、postcheck。
+        </td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation-mutation.test.ts</code></td>
+        <td>
+          scope repair readback、transaction rollback、merge atomicity、lineage union、stale
+          rollback conflict。
+        </td>
+      </tr>
+      <tr>
+        <td>
+          <code>test/queue-state.test.ts</code
+          >、<code>queue-worker.test.ts</code>、<code
+            >queue.routes.test.ts</code
+          >
+        </td>
+        <td>新queueのclaim、pause、resume、retry、stats、active telemetry、provider priority。</td>
+      </tr>
+      <tr>
+        <td><code>test/landscape-curation.routes.test.ts</code></td>
+        <td>enqueue dry-run/write、detail、decision transition、rollback、400/404/409/503。</td>
+      </tr>
+      <tr>
+        <td><code>test/components/admin/queue-page.test.tsx</code></td>
+        <td>6番目tab、badges、drawer、loading/error、persisted result更新。</td>
+      </tr>
+      <tr>
+        <td><code>test/components/admin/landscape-page.test.tsx</code></td>
+        <td>batch status fetch、Knowledge badge、history、既存manual UI非回帰。</td>
+      </tr>
+      <tr>
+        <td>
+          <code>test/components/admin/settings-page.test.tsx</code>、<code>test/settings-runtime-cache.test.ts</code>
+        </td>
+        <td>default merge、sanitize、route editor、runtime再読込、provider pool cleanup。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="verification-commands">29.1 Verification commands</h3>
+  <pre><code>bun run typecheck
+bun run lint
+bun test test/landscape-curation-*.test.ts
+bun test test/queue-state.test.ts test/queue-worker.test.ts test/queue.routes.test.ts
+bun test test/components/admin/queue-page.test.tsx test/components/admin/landscape-page.test.tsx test/components/admin/settings-page.test.tsx
+bun run build:web
+bun run spec:check</code></pre>
+  <p>
+    DB integration
+    testはSQLiteを必須、PostgreSQLは<code>CONTEXT_STILL_RUN_DB_TESTS=1</code>で実行する。migration後に両backendでqueue
+    insert / claim / transition / detail readを1件ずつsmoke testする。
+  </p>
+
+  <h2 id="implementation-work-packages">30. Implementation work packages</h2>
+  <p>次の順で実装し、各packageのexit criteriaを満たしてから次へ進む。</p>
+  <table>
+    <caption>
+      Table: Ordered work packages
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">WP</th>
+        <th scope="col">Scope</th>
+        <th scope="col">Exit criteria</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>WP0</td>
+        <td>shared schema、constants、PostgreSQL migration、SQLite schema、queue core mapping</td>
+        <td>typecheck、schema tests、両backend queue smokeがpass。</td>
+      </tr>
+      <tr>
+        <td>WP1</td>
+        <td>SQLite neighbor / community / contradiction parity</td>
+        <td>25.4 G0 fixtureがpass。空return branchが除去済み。</td>
+      </tr>
+      <tr>
+        <td>WP2</td>
+        <td>producer、fingerprint、repository、CLI、settings default</td>
+        <td>dry-run determinism、write idempotency、budget / cooldown testsがpass。</td>
+      </tr>
+      <tr>
+        <td>WP3</td>
+        <td>LLM curator、policy pure function、shadow worker、supervisor dispatch</td>
+        <td>Knowledge mutation 0のshadow runを最低200件保存できる。</td>
+      </tr>
+      <tr>
+        <td>WP4</td>
+        <td>API、Queue tab、detail drawer、LANDSCAPE badge、settings UI</td>
+        <td>未処理jobがLANDSCAPEに表示され、ユーザー判断操作が存在しない。</td>
+      </tr>
+      <tr>
+        <td>WP5</td>
+        <td>auto_non_destructive、events、audit、auto-pause</td>
+        <td>
+          observe / keep separate / needs evidenceを人手なしでterminal化し、mutation 0を確認。
+        </td>
+      </tr>
+      <tr>
+        <td>WP6</td>
+        <td>scope replay、scope mutation、postcheck、rollback</td>
+        <td>G3 / G4 fixture、最大5件/day canary、rollback rehearsalがpass。</td>
+      </tr>
+      <tr>
+        <td>WP7</td>
+        <td>Merge Review / Finalize link、atomic finalize、lineage、merge rollback</td>
+        <td>下流追跡、stale re-gate、最大5件/day canary、lineage非欠損がpass。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    WP3以降はaction
+    modeをsettingsだけで解放する。実装時にdefaultをautoへ変更しない。各gate未達でもcodeを削除せず、到達済みmodeで運用する。
+  </p>
+
+  <h2 id="definition-of-done">31. Definition of done</h2>
+  <p>Terraによる実装完了は、次をすべて満たした状態とする。</p>
+  <ul>
+    <li>21節のfile mapにある変更が実装され、記載外のmutation pathが追加されていない。</li>
+    <li>
+      PostgreSQLとSQLiteで同じschema、finding、policy、state transition、API shapeが成立する。
+    </li>
+    <li>6番目のCuration tabがgeneric queue controlと専用detailを表示する。</li>
+    <li>LLM resultはschema、input ID、repository identityの3段階で検証される。</li>
+    <li>downstream link、postcheck、rollbackがprocess restart後も続行できる。</li>
+    <li>downstream enqueueとlink永続化が同時に成功した場合だけcuration jobをcompletedにする。</li>
+    <li>
+      cross-repository mutation、contradiction auto mutation、direct duplicate
+      deprecationがcodeとtestの双方で禁止される。
+    </li>
+    <li>29節のtestとverification commandがpassする。</li>
+    <li>shadow 200件のlabel datasetとG1集計を作成できる。</li>
+    <li>運用開始時のdefaultがproducer disabled、全action shadowである。</li>
+  </ul>
+
+  <h2 id="implementation-open-questions">32. Open questions</h2>
+  <p>
+    V1実装を開始するためのopen questionはない。閾値の調整はruntime
+    settingsまたは後続versionで行い、本仕様に定めた安全invariant、状態遷移、API
+    shapeを実装中の判断で変更しない。
+  </p>
+</article>

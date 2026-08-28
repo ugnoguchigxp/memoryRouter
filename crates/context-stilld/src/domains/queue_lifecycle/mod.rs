@@ -8,6 +8,7 @@ mod finalize_executor;
 mod finding_executor;
 mod inspect;
 mod maintenance;
+mod provider_execution;
 mod provider_lease;
 #[cfg(test)]
 mod provider_lease_tests;

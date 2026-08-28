@@ -13,6 +13,7 @@ export const providerPoolQueuePriorityOrder: DistillationQueueName[] = [
   "coveringEvidence",
   "episodeDistiller",
   "deadZoneMergeReview",
+  "landscapeCuration",
   "mergeActivationFinalize",
   "finalizeDistille",
 ];
@@ -121,6 +122,7 @@ function queueRoutes(
   }
   if (queueName === "episodeDistiller") return [settings.taskRouting.episodeDistiller];
   if (queueName === "deadZoneMergeReview") return [settings.taskRouting.deadZoneMergeReview];
+  if (queueName === "landscapeCuration") return [settings.taskRouting.landscapeCuration];
   if (queueName === "mergeActivationFinalize") {
     return [settings.taskRouting.mergeActivationFinalize];
   }

@@ -35,8 +35,12 @@ const {
   buildDeadZoneKnowledgeReviewMock,
   applyDeadZoneKnowledgeReviewActionMock,
   maintainDeadZoneKnowledgeMock,
+  enqueueLandscapeCurationForReviewMock,
+  getLandscapeCurationJobMock,
+  listLandscapeCurationJobsMock,
   LandscapeReviewCandidateLinkErrorMock,
   LandscapeReviewItemsErrorMock,
+  LandscapeCurationErrorMock,
 } = vi.hoisted(() => ({
   buildLandscapeReplayComparisonMock: vi.fn(),
   buildLandscapeReplaySnapshotMock: vi.fn(),
@@ -52,6 +56,9 @@ const {
   buildDeadZoneKnowledgeReviewMock: vi.fn(),
   applyDeadZoneKnowledgeReviewActionMock: vi.fn(),
   maintainDeadZoneKnowledgeMock: vi.fn(),
+  enqueueLandscapeCurationForReviewMock: vi.fn(),
+  getLandscapeCurationJobMock: vi.fn(),
+  listLandscapeCurationJobsMock: vi.fn(),
   LandscapeReviewCandidateLinkErrorMock: class LandscapeReviewCandidateLinkErrorMock extends Error {
     readonly statusCode: number;
 
@@ -67,6 +74,14 @@ const {
     constructor(statusCode: number, message: string) {
       super(message);
       this.name = "LandscapeReviewItemsError";
+      this.statusCode = statusCode;
+    }
+  },
+  LandscapeCurationErrorMock: class LandscapeCurationErrorMock extends Error {
+    readonly statusCode: 400 | 404 | 409;
+
+    constructor(message: string, statusCode: 400 | 404 | 409 = 400) {
+      super(message);
       this.statusCode = statusCode;
     }
   },
@@ -118,6 +133,13 @@ vi.mock("../src/modules/landscape/landscape-review-candidate.service.js", () => 
   createLandscapeReviewCandidates: createLandscapeReviewCandidatesMock,
   updateLandscapeReviewCandidateLink: updateLandscapeReviewCandidateLinkMock,
   LandscapeReviewCandidateLinkError: LandscapeReviewCandidateLinkErrorMock,
+}));
+
+vi.mock("../src/modules/landscape/landscape-curation.service.js", () => ({
+  LandscapeCurationError: LandscapeCurationErrorMock,
+  enqueueLandscapeCurationForReview: enqueueLandscapeCurationForReviewMock,
+  getLandscapeCurationJob: getLandscapeCurationJobMock,
+  listLandscapeCurationJobs: listLandscapeCurationJobsMock,
 }));
 
 vi.mock("../api/modules/graph/graph.repository.js", () => ({
@@ -238,6 +260,7 @@ describe("graph routes landscape", () => {
       deprecatedKnowledgeId: "knowledge-dead-1",
     });
     buildLandscapeTrajectoryMock.mockResolvedValue(validTrajectory());
+    listLandscapeCurationJobsMock.mockResolvedValue([]);
     materializeLandscapeReviewItemsMock.mockResolvedValue({
       dryRun: true,
       generatedAt: "2026-05-24T00:00:00.000Z",
@@ -561,6 +584,47 @@ describe("graph routes landscape", () => {
       currentLimit: 8,
       includeRuns: false,
     });
+  });
+
+  test("GET /api/graph/landscape/curation-jobs delegates unresolved filtering to persistence", async () => {
+    const app = buildApp();
+    const response = await app.request(
+      "/api/graph/landscape/curation-jobs?status=unresolved&findingType=all&limit=100",
+    );
+
+    expect(response.status).toBe(200);
+    expect(listLandscapeCurationJobsMock).toHaveBeenCalledWith({
+      status: "unresolved",
+      findingType: "all",
+      limit: 100,
+    });
+    await expect(response.json()).resolves.toEqual({ items: [] });
+  });
+
+  test("does not expose a human-decision endpoint for Curation jobs", async () => {
+    const app = buildApp();
+    const response = await app.request("/api/graph/landscape/curation-jobs/curation-1/decision", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "approve" }),
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  test("POST /api/graph/landscape/curation-jobs maps missing review items to 404", async () => {
+    enqueueLandscapeCurationForReviewMock.mockRejectedValueOnce(
+      new LandscapeCurationErrorMock("review item not found", 404),
+    );
+    const app = buildApp();
+    const response = await app.request("/api/graph/landscape/curation-jobs", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reviewItemId: "missing-review" }),
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "review item not found" });
   });
 
   test("GET /api/graph/landscape/trajectory/:runId applies defaults", async () => {

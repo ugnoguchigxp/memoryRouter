@@ -19,6 +19,7 @@ pub fn pause_queue_job_for_connection(
             update {table_name}
             set
               status = 'paused',
+              next_run_at = null,
               last_error = ?1,
               locked_by = null,
               locked_at = null,
@@ -261,7 +262,7 @@ mod tests {
               next_run_at, locked_by, locked_at, heartbeat_at
             ) values (
               'job-1', 'running', 1, 2, '2026-06-22 01:00:00', CURRENT_TIMESTAMP,
-              '2026-06-22 01:05:00', null, 'worker-1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+              '2026-06-22 01:05:00', CURRENT_TIMESTAMP, 'worker-1', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             );
             "#,
             )
@@ -278,12 +279,18 @@ mod tests {
         assert_eq!(paused.status, "paused");
         let paused_row = connection
             .query_row(
-                "select last_error, locked_by from finding_candidate_queue where id = 'job-1'",
+                "select last_error, locked_by, next_run_at from finding_candidate_queue where id = 'job-1'",
                 [],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .unwrap();
-        assert_eq!(paused_row, ("manual pause".to_string(), None));
+        assert_eq!(paused_row, ("manual pause".to_string(), None, None));
 
         let resumed = resume_queue_job_for_connection(&connection, "findingCandidate", "job-1")
             .unwrap()

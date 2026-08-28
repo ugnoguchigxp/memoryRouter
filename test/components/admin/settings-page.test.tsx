@@ -136,6 +136,7 @@ function buildSettingsView(): RuntimeSettingsView {
         finalizeDistille: localPoolTarget,
         mergeActivationFinalize: localPoolTarget,
         deadZoneMergeReview: localPoolTarget,
+        landscapeCuration: localPoolTarget,
         agenticCompile: openAiTarget,
       },
     },
@@ -269,6 +270,12 @@ function buildSettingsView(): RuntimeSettingsView {
         fallback: ["azure-openai"],
       },
       deadZoneMergeReview: {
+        provider: "local-llm",
+        model: "gemma-4-e4b-it",
+        providerPoolId: "local-llm-default",
+        fallback: [],
+      },
+      landscapeCuration: {
         provider: "local-llm",
         model: "gemma-4-e4b-it",
         providerPoolId: "local-llm-default",
@@ -492,6 +499,7 @@ describe("SettingsPage", () => {
     expect(screen.getByText("Route Matrix")).toBeInTheDocument();
     expect(getRouteRow("findCandidate")).toBeInTheDocument();
     expect(getRouteRow("coverEvidence")).toBeInTheDocument();
+    expect(getRouteRow("landscapeCuration")).toBeInTheDocument();
     expect(screen.getByText("Shared Distillation Runtime")).toBeInTheDocument();
     expect(screen.getByLabelText("Find Candidate LLM Timeout (seconds)")).toHaveValue(600);
     expect(screen.getByLabelText("Find Candidate Tool Calls")).toBeInTheDocument();
@@ -649,6 +657,37 @@ describe("SettingsPage", () => {
     expect(payload.settings.distillationRuntime.llmInputSafetyMarginTokens).toBe(4096);
     expect(payload.settings.advanced.findingQueueTaskIntervalSeconds).toBe(45);
     expect(payload.settings.advanced.coveringQueueTaskIntervalSeconds).toBe(10);
+    expect(payload.settings.taskRouting.landscapeCuration).toEqual({
+      provider: "local-llm",
+      model: "gemma-4-e4b-it",
+      providerPoolId: "local-llm-default",
+      fallback: [],
+    });
+  });
+
+  it("saves the Landscape Curation task route", async () => {
+    routerState.pathname = "/setting/taskrouting";
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Task Routing" })).toBeInTheDocument();
+
+    const rowScope = within(getRouteRow("landscapeCuration"));
+    fireEvent.change(rowScope.getByLabelText("Routing Target"), {
+      target: { value: "endpoint:azure-openai:1" },
+    });
+    fireEvent.change(rowScope.getByLabelText("Fallback 1 Endpoint"), {
+      target: { value: "local-llm:qwen-3.6-14b-it" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
+
+    await waitFor(() => expect(repositoryMocks.updateRuntimeSettings).toHaveBeenCalledTimes(1));
+    const payload = repositoryMocks.updateRuntimeSettings.mock.calls[0]?.[0];
+    expect(payload.settings.taskRouting.landscapeCuration).toEqual({
+      provider: "azure-openai",
+      model: "gpt-5-4-mini",
+      localLlmModel: "qwen-3.6-14b-it",
+      fallback: ["local-llm"],
+      azureDeploymentSlots: [1],
+    });
   });
 
   it("saves route LLM Pool target selection from Task Routing", async () => {

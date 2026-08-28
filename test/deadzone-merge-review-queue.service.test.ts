@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import {
   DeadZoneMergeReviewQueueError,
@@ -34,6 +35,11 @@ const mockMarkDeadZoneMergeReviewJobCompleted = vi.fn();
 const mockMarkDeadZoneMergeReviewJobFailed = vi.fn();
 const mockMarkDeadZoneMergeReviewJobSkipped = vi.fn();
 const mockUpsertDeadZoneMergeReviewJob = vi.fn();
+const mockFindLandscapeCurationJobLinkByQueueJob = vi.fn();
+const mockGetLandscapeCurationJob = vi.fn();
+const mockUpsertLandscapeCurationJobLink = vi.fn();
+const mockUpdateLandscapeCurationJob = vi.fn();
+const mockCreateMergeActivationFinalizeJob = vi.fn();
 
 vi.mock("../src/modules/landscape/deadzone-merge-review-queue.repository.js", () => ({
   getDeadZoneMergeReviewQueueRow: (...args: any[]) => mockGetDeadZoneMergeReviewQueueRow(...args),
@@ -45,6 +51,19 @@ vi.mock("../src/modules/landscape/deadzone-merge-review-queue.repository.js", ()
   markDeadZoneMergeReviewJobSkipped: (...args: any[]) =>
     mockMarkDeadZoneMergeReviewJobSkipped(...args),
   upsertDeadZoneMergeReviewJob: (...args: any[]) => mockUpsertDeadZoneMergeReviewJob(...args),
+}));
+
+vi.mock("../src/modules/landscape/landscape-curation-queue.repository.js", () => ({
+  findLandscapeCurationJobLinkByQueueJob: (...args: any[]) =>
+    mockFindLandscapeCurationJobLinkByQueueJob(...args),
+  getLandscapeCurationJob: (...args: any[]) => mockGetLandscapeCurationJob(...args),
+  upsertLandscapeCurationJobLink: (...args: any[]) => mockUpsertLandscapeCurationJobLink(...args),
+  updateLandscapeCurationJob: (...args: any[]) => mockUpdateLandscapeCurationJob(...args),
+}));
+
+vi.mock("../src/modules/landscape/merge-activation-finalize.service.js", () => ({
+  createMergeActivationFinalizeJob: (...args: any[]) =>
+    mockCreateMergeActivationFinalizeJob(...args),
 }));
 
 // queue events モック
@@ -88,6 +107,12 @@ describe("deadzone-merge-review-queue.service", () => {
     vi.clearAllMocks();
     mockDbResults = [];
     mockResolveDeadZoneMergeReviewRoute.mockReturnValue({ provider: "openai", model: "gpt-4" });
+    mockFindLandscapeCurationJobLinkByQueueJob.mockResolvedValue(null);
+    mockGetLandscapeCurationJob.mockResolvedValue(null);
+    mockCreateMergeActivationFinalizeJob.mockResolvedValue({
+      id: "finalize-1",
+      status: "pending",
+    });
   });
 
   describe("createDeadZoneMergeReviewJob", () => {
@@ -308,9 +333,218 @@ describe("deadzone-merge-review-queue.service", () => {
       expect(mockAppendQueueEvent).toHaveBeenCalledTimes(2); // claimed, completed
     });
 
-    test("fails the job if LLM execution fails", async () => {
+    test("automatically sends a Curation-linked merge recommendation to Finalize", async () => {
+      const now = "2026-05-24T00:00:00.000Z";
+      const sameBodyHash = createHash("sha256").update("Same Body").digest("hex");
+      const pendingJob = {
+        id: "job-1",
+        deadZoneKnowledgeId: "dz-1",
+        canonicalKnowledgeId: "ca-1",
+        inputSnapshot: {
+          deadZone: { id: "dz-1" },
+          canonical: { id: "ca-1" },
+        },
+      };
+      const mergeResult = {
+        decision: "merge_recommended",
+        confidence: "high",
+        rationale: ["same guidance"],
+        blockers: [],
+        proposedCanonicalBody: "Same Body",
+        proposedSummary: "Merged",
+        rawOutputExcerpt: "{}",
+        parseStatus: "parsed",
+      };
+      mockGetDeadZoneMergeReviewQueueRow.mockResolvedValueOnce(pendingJob).mockResolvedValueOnce({
+        ...pendingJob,
+        status: "completed",
+        result: mergeResult,
+        completedAt: new Date("2026-05-24T00:00:00.000Z"),
+      });
+      mockDbResults = [
+        [
+          { id: "dz-1", status: "active" },
+          { id: "ca-1", status: "active" },
+        ],
+      ];
+      mockRunDeadZoneMergeReviewLlm.mockResolvedValue(mergeResult);
+      mockFindLandscapeCurationJobLinkByQueueJob.mockResolvedValue({
+        id: "link-1",
+        curationJobId: "curation-1",
+        role: "merge_review",
+        queueName: "deadZoneMergeReview",
+        queueJobId: "job-1",
+        status: "pending",
+        outcomeKind: null,
+        metadata: {},
+        createdAt: "2026-05-24T00:00:00.000Z",
+        updatedAt: "2026-05-24T00:00:00.000Z",
+        completedAt: null,
+      });
+      mockGetLandscapeCurationJob.mockResolvedValue({
+        inputSnapshot: {
+          schemaVersion: 1,
+          capturedAt: now,
+          finding: {
+            type: "duplicate_candidate",
+            reviewItemId: "review-1",
+            evidenceHash: "evidence-hash",
+          },
+          subject: {
+            id: "dz-1",
+            title: "Duplicate",
+            body: "Same Body",
+            bodyHash: sameBodyHash,
+            appliesToHash: "same-applies-to-hash",
+            status: "active",
+            type: "rule",
+            polarity: "positive",
+            scope: "global",
+            classificationStatus: "classified",
+            projectRef: null,
+            repoKey: null,
+            repoPath: null,
+            appliesTo: {},
+            confidence: 90,
+            importance: 80,
+            updatedAt: now,
+            createdAt: now,
+            lastVerifiedAt: null,
+          },
+          candidates: [
+            {
+              id: "ca-1",
+              title: "Canonical",
+              body: "Same Body",
+              bodyHash: sameBodyHash,
+              appliesToHash: "same-applies-to-hash",
+              status: "active",
+              type: "rule",
+              polarity: "positive",
+              scope: "global",
+              classificationStatus: "classified",
+              projectRef: null,
+              repoKey: null,
+              repoPath: null,
+              appliesTo: {},
+              confidence: 90,
+              importance: 80,
+              updatedAt: now,
+              createdAt: now,
+              lastVerifiedAt: null,
+            },
+          ],
+          evidence: [],
+          usage: {},
+          lineage: {},
+          reviewItem: null,
+          capabilities: {},
+          versions: { detector: "v1", policy: "v1", prompt: "v1" },
+        },
+        result: {
+          schemaVersion: 1,
+          decision: "deprecate_duplicate",
+          confidence: "high",
+          canonicalKnowledgeId: "ca-1",
+          rationale: ["exact duplicate"],
+          supportingEvidenceIds: [],
+          counterEvidence: [],
+          blockers: [],
+          proposedAppliesTo: null,
+          proposedSummary: null,
+        },
+        policyResult: {
+          schemaVersion: 1,
+          policyVersion: "curation-policy-v1",
+          releaseMode: "auto_bounded",
+          requestedDecision: "deprecate_duplicate",
+          disposition: "enqueue_downstream",
+          effectiveAction: "enqueue_merge_review",
+          reasonCodes: ["AUTONOMOUS_SAFE_DOWNSTREAM"],
+          evaluatedAt: now,
+          limits: { dailyRemaining: 1, repoRemaining: 1 },
+        },
+      });
+
+      await processDeadZoneMergeReviewJob("job-1");
+
+      expect(mockCreateMergeActivationFinalizeJob).toHaveBeenCalledWith("job-1", {
+        curationJobId: "curation-1",
+        autonomousExactDuplicate: true,
+      });
+      expect(mockUpsertLandscapeCurationJobLink).toHaveBeenCalledWith(
+        expect.objectContaining({
+          curationJobId: "curation-1",
+          role: "merge_finalize",
+          queueJobId: "finalize-1",
+          status: "pending",
+          metadata: expect.objectContaining({ exactDuplicate: true }),
+        }),
+      );
+    });
+
+    test("does not auto-finalize a low-confidence Curation-linked recommendation", async () => {
+      const pendingJob = {
+        id: "job-1",
+        inputSnapshot: {
+          deadZone: { id: "dz-1" },
+          canonical: { id: "ca-1" },
+        },
+      };
+      const mergeResult = {
+        decision: "merge_recommended",
+        confidence: "medium",
+        rationale: ["possibly the same guidance"],
+        blockers: [],
+        proposedCanonicalBody: "New Body",
+        proposedSummary: "Merged",
+        rawOutputExcerpt: "{}",
+        parseStatus: "parsed",
+      };
+      mockGetDeadZoneMergeReviewQueueRow.mockResolvedValueOnce(pendingJob).mockResolvedValueOnce({
+        ...pendingJob,
+        status: "completed",
+        result: mergeResult,
+        completedAt: new Date("2026-05-24T00:00:00.000Z"),
+      });
+      mockDbResults = [
+        [
+          { id: "dz-1", status: "active" },
+          { id: "ca-1", status: "active" },
+        ],
+      ];
+      mockRunDeadZoneMergeReviewLlm.mockResolvedValue(mergeResult);
+      mockFindLandscapeCurationJobLinkByQueueJob.mockResolvedValue({
+        id: "link-1",
+        curationJobId: "curation-1",
+        role: "merge_review",
+        queueName: "deadZoneMergeReview",
+        queueJobId: "job-1",
+        status: "pending",
+        outcomeKind: null,
+        metadata: {},
+        createdAt: "2026-05-24T00:00:00.000Z",
+        updatedAt: "2026-05-24T00:00:00.000Z",
+        completedAt: null,
+      });
+
+      await processDeadZoneMergeReviewJob("job-1");
+
+      expect(mockCreateMergeActivationFinalizeJob).not.toHaveBeenCalled();
+      expect(mockUpdateLandscapeCurationJob).toHaveBeenCalledWith(
+        "curation-1",
+        expect.objectContaining({
+          status: "completed",
+          lastOutcomeKind: "downstream_merge_not_auto_eligible",
+        }),
+      );
+    });
+
+    test("automatically retries the job if LLM execution fails", async () => {
       const mockJob = {
         id: "job-1",
+        attemptCount: 0,
+        maxAttempts: 2,
         inputSnapshot: {
           deadZone: { id: "dz-1" },
           canonical: { id: "ca-1" },
@@ -327,12 +561,45 @@ describe("deadzone-merge-review-queue.service", () => {
       const error = new Error("LLM Error");
       mockRunDeadZoneMergeReviewLlm.mockRejectedValue(error);
 
+      await processDeadZoneMergeReviewJob("job-1");
+
+      expect(mockMarkDeadZoneMergeReviewJobFailed).toHaveBeenCalledWith({
+        id: "job-1",
+        error: "LLM Error",
+        outcome: "retry_scheduled",
+        retryAt: expect.any(Date),
+      });
+      expect(mockAppendQueueEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "retried" }),
+      );
+    });
+
+    test("fails the job after LLM retries are exhausted", async () => {
+      const mockJob = {
+        id: "job-1",
+        attemptCount: 1,
+        maxAttempts: 2,
+        inputSnapshot: {
+          deadZone: { id: "dz-1" },
+          canonical: { id: "ca-1" },
+        },
+      };
+      mockGetDeadZoneMergeReviewQueueRow.mockResolvedValue(mockJob);
+      mockDbResults = [
+        [
+          { id: "dz-1", status: "active" },
+          { id: "ca-1", status: "active" },
+        ],
+      ];
+      mockRunDeadZoneMergeReviewLlm.mockRejectedValue(new Error("LLM Error"));
+
       await expect(processDeadZoneMergeReviewJob("job-1")).rejects.toThrow("LLM Error");
 
       expect(mockMarkDeadZoneMergeReviewJobFailed).toHaveBeenCalledWith({
         id: "job-1",
         error: "LLM Error",
         outcome: "provider_failed",
+        retryAt: null,
       });
     });
   });

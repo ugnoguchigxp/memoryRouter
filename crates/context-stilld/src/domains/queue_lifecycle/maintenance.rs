@@ -88,7 +88,17 @@ pub fn run_maintenance_once_report<E: EnvProvider>(
                 .var("CONTEXT_STILL_RUST_COVERING_MODE")
                 .map(|value| value.trim().to_ascii_lowercase())
                 .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "off".to_string())
+                .unwrap_or_else(|| "off".to_string()),
+            "rustFindingExecutionMode":env
+                .var("CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "legacy".to_string()),
+            "rustEpisodeExecutionMode":env
+                .var("CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE")
+                .map(|value| value.trim().to_ascii_lowercase())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "legacy".to_string())
         })),
         ..ProcessState::default()
     };

@@ -493,6 +493,11 @@ export const bootstrap: BootstrapConfig = {
       model: groupedConfig.localLlm.model,
       fallback: [],
     },
+    landscapeCuration: {
+      provider: "local-llm",
+      model: groupedConfig.localLlm.model,
+      fallback: [],
+    },
     finalizeDistille: {
       provider: "local-llm",
       model: groupedConfig.localLlm.model,
@@ -688,6 +693,13 @@ export function cloneDefaultSettings(): RuntimeSettingsEditable {
         fallback: [...bootstrap.taskRouting.deadZoneMergeReview.fallback],
         azureDeploymentSlots: bootstrap.taskRouting.deadZoneMergeReview.azureDeploymentSlots
           ? [...bootstrap.taskRouting.deadZoneMergeReview.azureDeploymentSlots]
+          : undefined,
+      },
+      landscapeCuration: {
+        ...bootstrap.taskRouting.landscapeCuration,
+        fallback: [...bootstrap.taskRouting.landscapeCuration.fallback],
+        azureDeploymentSlots: bootstrap.taskRouting.landscapeCuration.azureDeploymentSlots
+          ? [...bootstrap.taskRouting.landscapeCuration.azureDeploymentSlots]
           : undefined,
       },
       agenticCompile: {
@@ -956,6 +968,10 @@ function mergeRuntimeSettings(
         ...defaults.taskRouting.deadZoneMergeReview,
         ...asRecord(asRecord(input.taskRouting).deadZoneMergeReview),
       },
+      landscapeCuration: {
+        ...defaults.taskRouting.landscapeCuration,
+        ...asRecord(asRecord(input.taskRouting).landscapeCuration),
+      },
       agenticCompile: {
         ...defaults.taskRouting.agenticCompile,
         ...asRecord(asRecord(input.taskRouting).agenticCompile),
@@ -1035,6 +1051,10 @@ function mergeRuntimeSettings(
   merged.taskRouting.deadZoneMergeReview = sanitizeRoute(
     merged,
     merged.taskRouting.deadZoneMergeReview,
+  );
+  merged.taskRouting.landscapeCuration = sanitizeRoute(
+    merged,
+    merged.taskRouting.landscapeCuration,
   );
   merged.taskRouting.agenticCompile.fallback = normalizeProviderList(
     merged.taskRouting.agenticCompile.fallback,

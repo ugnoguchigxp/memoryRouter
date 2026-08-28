@@ -48,7 +48,7 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
             active_target_ids: Vec::new(),
             active_leases: Vec::new(),
             last_heartbeat_at: None,
-            feature_flags: queue_feature_flags(env),
+            feature_flags: queue_feature_flags(env, supervisor),
         });
     }
 
@@ -58,7 +58,7 @@ pub fn inspect_report<E: EnvProvider, S: ProcessSupervisor>(
                 "failed to open SQLite core database read-only: {error}"
             ))
         })?;
-    let feature_flags = queue_feature_flags(env);
+    let feature_flags = queue_feature_flags(env, supervisor);
     let covering_canary_job_ids = inspect_covering_canary_job_ids(env, &sqlite_path);
     let queues = inspect_queue_tables(&connection)?;
     let active_leases = inspect_active_leases(&connection)?;
@@ -183,28 +183,48 @@ fn persisted_rust_executor_pid<E: EnvProvider, S: ProcessSupervisor>(
         .filter(|pid| supervisor.is_alive(*pid))
 }
 
-fn queue_feature_flags<E: EnvProvider>(env: &E) -> QueueFeatureFlagsInspect {
-    let persisted_covering_mode =
+fn queue_feature_flags<E: EnvProvider, S: ProcessSupervisor>(
+    env: &E,
+    supervisor: &S,
+) -> QueueFeatureFlagsInspect {
+    let persisted_metadata =
         repository::read_state(&resolve_paths(env).run_dir, QUEUE_SUPERVISOR.state_name)
             .ok()
             .flatten()
             .and_then(|state| state.metadata)
-            .and_then(|metadata| {
+            .filter(|metadata| {
                 metadata
-                    .get("rustCoveringMode")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
+                    .get("residentPid")
+                    .and_then(Value::as_u64)
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .is_some_and(|pid| supervisor.is_alive(pid))
             });
+    let persisted_mode = |key: &str| {
+        persisted_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get(key))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
     QueueFeatureFlagsInspect {
         internal_chunked_distillation: env_bool(env, "CONTEXT_STILL_INTERNAL_CHUNKED_DISTILLATION")
             .unwrap_or_else(|| env_bool(env, "INTERNAL_CHUNKED_DISTILLATION").unwrap_or(false)),
-        rust_covering_mode: env
-            .var("CONTEXT_STILL_RUST_COVERING_MODE")
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .or(persisted_covering_mode)
+        rust_covering_mode: persisted_mode("rustCoveringMode")
+            .or_else(|| normalized_env(env, "CONTEXT_STILL_RUST_COVERING_MODE"))
             .unwrap_or_else(|| "off".to_string()),
+        rust_finding_execution_mode: persisted_mode("rustFindingExecutionMode")
+            .or_else(|| normalized_env(env, "CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE"))
+            .unwrap_or_else(|| "legacy".to_string()),
+        rust_episode_execution_mode: persisted_mode("rustEpisodeExecutionMode")
+            .or_else(|| normalized_env(env, "CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE"))
+            .unwrap_or_else(|| "legacy".to_string()),
     }
+}
+
+fn normalized_env<E: EnvProvider>(env: &E, key: &str) -> Option<String> {
+    env.var(key)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
 }
 
 fn unsupported_runnable_for_queue(
@@ -226,8 +246,10 @@ fn unsupported_runnable_for_queue(
                 "
                 select count(*)
                 from covering_evidence_queue
-                where status in ('pending', 'paused')
-                  and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+                where (
+                  (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+                  or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+                )
                   and coalesce(provider_policy, 'default') != 'default'
                 ",
                 [],
@@ -270,8 +292,10 @@ fn unsupported_runnable_for_queue(
             select count(*)
             from covering_evidence_queue cq
             left join found_candidates fc on fc.id = cq.found_candidate_id
-            where cq.status in ('pending', 'paused')
-              and (cq.next_run_at is null or datetime(cq.next_run_at) <= CURRENT_TIMESTAMP)
+            where (
+              (cq.status = 'pending' and (cq.next_run_at is null or datetime(cq.next_run_at) <= CURRENT_TIMESTAMP))
+              or (cq.status = 'paused' and cq.next_run_at is not null and datetime(cq.next_run_at) <= CURRENT_TIMESTAMP)
+            )
               and (
                 coalesce(cq.provider_policy, 'default') != 'default'
                 or (
@@ -389,6 +413,11 @@ fn inspect_queue_tables(connection: &Connection) -> Result<Vec<QueueTableInspect
             .find(|count| count.status == "running")
             .map(|count| count.count)
             .unwrap_or(0);
+        let oldest_pending_condition = if table_has_column(connection, table_name, "next_run_at")? {
+            "status = 'pending' or (status = 'paused' and next_run_at is not null)"
+        } else {
+            "status = 'pending'"
+        };
         queues.push(QueueTableInspect {
             queue_name,
             table_name,
@@ -396,7 +425,7 @@ fn inspect_queue_tables(connection: &Connection) -> Result<Vec<QueueTableInspect
             oldest_pending_at: scalar_string(
                 connection,
                 &format!(
-                    "select min(created_at) from {table_name} where status in ('pending', 'paused')"
+                    "select min(created_at) from {table_name} where {oldest_pending_condition}"
                 ),
             )?,
             runnable_pending: runnable_pending(connection, queue_name, table_name)?,
@@ -547,10 +576,10 @@ fn runnable_pending(
     _queue_name: &str,
     table_name: &str,
 ) -> Result<u64, CliError> {
-    let next_run_condition = if !table_has_column(connection, table_name, "next_run_at")? {
-        ""
+    let runnable_condition = if !table_has_column(connection, table_name, "next_run_at")? {
+        "status = 'pending'"
     } else {
-        "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)"
+        "((status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)) or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP))"
     };
     connection
         .query_row(
@@ -558,8 +587,7 @@ fn runnable_pending(
                 "
                 select count(*)
                 from {table_name}
-                where status in ('pending', 'paused')
-                  {next_run_condition}
+                where {runnable_condition}
                 "
             ),
             [],
@@ -660,12 +688,14 @@ impl QueueInspectReport {
 
     pub fn to_text(&self) -> String {
         format!(
-            "queue-supervisor inspect: {} sqlite={} activeLeases={} internalChunkedDistillation={} rustCoveringMode={}",
+            "queue-supervisor inspect: {} sqlite={} activeLeases={} internalChunkedDistillation={} rustCoveringMode={} rustFindingExecutionMode={} rustEpisodeExecutionMode={}",
             self.status,
             self.sqlite_status,
             self.active_lease_count,
             self.feature_flags.internal_chunked_distillation,
-            self.feature_flags.rust_covering_mode
+            self.feature_flags.rust_covering_mode,
+            self.feature_flags.rust_finding_execution_mode,
+            self.feature_flags.rust_episode_execution_mode
         )
     }
 }
@@ -1336,6 +1366,44 @@ mod tests {
         .unwrap();
 
         assert_eq!(persisted_rust_executor_pid(&env, &supervisor), None);
+        std::fs::remove_dir_all(&app_dir).unwrap();
+    }
+
+    #[test]
+    fn feature_flags_prefer_the_live_resident_modes_over_cli_defaults() {
+        let app_dir = temp_app_dir("live_provider_execution_modes");
+        let env = MapEnv::from_pairs(vec![
+            ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+            ("CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE", "legacy"),
+            ("CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE", "legacy"),
+        ]);
+        let supervisor = MockSupervisor::new();
+        let pid = 42_425;
+        supervisor.alive.lock().unwrap().insert(pid, true);
+        repository::write_state(
+            &app_dir.join("run"),
+            QUEUE_SUPERVISOR.state_name,
+            &crate::domains::daemon::repository::ProcessState {
+                status: "idle".to_string(),
+                log_path: String::new(),
+                metadata: Some(serde_json::json!({
+                    "executor":"rust",
+                    "executorEnabled":true,
+                    "residentPid":pid,
+                    "rustCoveringMode":"all",
+                    "rustFindingExecutionMode":"split",
+                    "rustEpisodeExecutionMode":"split"
+                })),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let flags = queue_feature_flags(&env, &supervisor);
+        assert_eq!(flags.rust_covering_mode, "all");
+        assert_eq!(flags.rust_finding_execution_mode, "split");
+        assert_eq!(flags.rust_episode_execution_mode, "split");
+
         std::fs::remove_dir_all(&app_dir).unwrap();
     }
 

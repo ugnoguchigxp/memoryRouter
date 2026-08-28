@@ -248,6 +248,49 @@ fn rust_provider_claim_accepts_iso8601_next_run_at() {
 }
 
 #[test]
+fn rust_provider_claim_never_reclaims_an_indefinitely_paused_job() {
+    let app_dir = temp_app_dir("provider_claim_indefinite_pause");
+    let sqlite_path = app_dir.join("queue.sqlite");
+    let mut connection = Connection::open(&sqlite_path).unwrap();
+    create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+    create_provider_lease_table(&connection);
+    connection
+        .execute_batch(
+            r#"
+            insert into finding_candidate_queue (
+              id, status, priority, created_at, updated_at, next_run_at, source_kind
+            ) values
+              ('job-exhausted', 'paused', 100, '2026-06-22 01:00:00', CURRENT_TIMESTAMP, null, 'source'),
+              ('job-ready', 'pending', 10, '2026-06-22 02:00:00', CURRENT_TIMESTAMP, null, 'source');
+            "#,
+        )
+        .unwrap();
+
+    let claimed = claim_next_job_with_provider_lease_for_connection(
+        &mut connection,
+        &provider_pool(),
+        &[finding_candidate_spec()],
+        "worker-pause",
+        "lease-pause",
+        90,
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(claimed.id, "job-ready");
+    let exhausted_status: String = connection
+        .query_row(
+            "select status from finding_candidate_queue where id = 'job-exhausted'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(exhausted_status, "paused");
+
+    std::fs::remove_dir_all(&app_dir).unwrap();
+}
+
+#[test]
 fn rust_provider_claim_keeps_queue_order_ahead_of_older_higher_priority_episode_jobs() {
     let app_dir = temp_app_dir("provider_claim_queue_order");
     let sqlite_path = app_dir.join("queue.sqlite");

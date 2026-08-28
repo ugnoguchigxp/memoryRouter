@@ -203,6 +203,18 @@ function renderPlist(): string {
       "{{RUST_QUEUE_EXECUTOR_MAX_CLAIMS}}",
       process.env.CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS ?? "2",
     ],
+    [
+      "{{RUST_FINDING_EXECUTION_MODE}}",
+      process.env.CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE ?? "split",
+    ],
+    [
+      "{{RUST_EPISODE_EXECUTION_MODE}}",
+      process.env.CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE ?? "split",
+    ],
+    [
+      "{{COMPILE_FOUNDATION_MODE}}",
+      process.env.CONTEXT_STILL_COMPILE_FOUNDATION_MODE ?? "split_legacy_rank",
+    ],
     ["{{RESIDENT_AGENT_LOG_SYNC}}", process.env.CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC ?? "1"],
     [
       "{{AGENT_LOG_SYNC_INTERVAL_SECONDS}}",

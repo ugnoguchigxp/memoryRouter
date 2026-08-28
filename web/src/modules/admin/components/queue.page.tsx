@@ -52,6 +52,7 @@ const QUEUE_TABS: Array<{ name: VisibleDistillationQueueName; label: string }> =
   { name: "episodeDistiller", label: "Episodes" },
   { name: "coveringEvidence", label: "Covering" },
   { name: "deadZoneMergeReview", label: "Merge Review" },
+  { name: "landscapeCuration", label: "Curation" },
   { name: "finalizeDistille", label: "Finalize" },
 ];
 
@@ -70,6 +71,7 @@ const queueLabel: Record<DistillationQueueName, string> = {
   episodeDistiller: "Episodes",
   coveringEvidence: "Covering",
   deadZoneMergeReview: "Merge Review",
+  landscapeCuration: "Curation",
   finalizeDistille: "Finalize",
   mergeActivationFinalize: "Finalize",
 };
@@ -106,6 +108,12 @@ const queueCardVisuals: Record<
     iconColor: "text-amber-600",
     selectedBorder: "border-amber-300",
     selectedRing: "ring-amber-100",
+  },
+  landscapeCuration: {
+    Icon: Activity,
+    iconColor: "text-rose-600",
+    selectedBorder: "border-rose-300",
+    selectedRing: "ring-rose-100",
   },
   finalizeDistille: {
     Icon: CircleCheck,

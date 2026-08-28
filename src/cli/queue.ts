@@ -14,6 +14,7 @@ type QueueName =
   | "episodeDistiller"
   | "coveringEvidence"
   | "deadZoneMergeReview"
+  | "landscapeCuration"
   | "finalizeDistille"
   | "mergeActivationFinalize";
 
@@ -49,11 +50,12 @@ function parseArgs(args: string[]): CliOptions {
         raw !== "episodeDistiller" &&
         raw !== "coveringEvidence" &&
         raw !== "deadZoneMergeReview" &&
+        raw !== "landscapeCuration" &&
         raw !== "finalizeDistille" &&
         raw !== "mergeActivationFinalize"
       ) {
         throw new Error(
-          "--queue must be findingCandidate|episodeDistiller|coveringEvidence|deadZoneMergeReview|finalizeDistille|mergeActivationFinalize",
+          "--queue must be findingCandidate|episodeDistiller|coveringEvidence|deadZoneMergeReview|landscapeCuration|finalizeDistille|mergeActivationFinalize",
         );
       }
       options.queue = raw;

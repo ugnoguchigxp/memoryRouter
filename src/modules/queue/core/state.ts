@@ -125,6 +125,7 @@ export async function pauseQueueJob(params: {
       queueName: params.queueName,
       setSql: `
         status = 'paused',
+        next_run_at = null,
         last_error = ?,
         locked_by = null,
         locked_at = null,

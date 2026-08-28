@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -23,6 +24,8 @@ use crate::domains::mcp_lifecycle::project_identity::{
 use crate::shared::errors::CliError;
 
 use super::events::append_queue_event_for_connection;
+use super::provider_execution::{open_query_only_connection, owns_provider_execution};
+use super::types::{ClaimedProviderLeaseJob, ProviderLeaseAssignment};
 
 const EPISODE_DISTILLATION_VERSION: &str = "episode-distiller-v1";
 const MIN_EPISODE_VALUE_SCORE: i64 = 60;
@@ -46,6 +49,16 @@ pub(crate) enum EpisodeExecutionStatus {
     Skipped,
     Failed,
     Retrying,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum EpisodeSplitStatus {
+    Completed,
+    Skipped,
+    Failed,
+    Retrying,
+    Paused,
+    Superseded,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +253,17 @@ enum EpisodePersistOutcome {
     NearDuplicateSkipped(NearDuplicateReview),
 }
 
+enum EpisodeStore<'a> {
+    Legacy(&'a Connection),
+    Split {
+        sqlite_path: &'a Path,
+        reader: Box<Connection>,
+        provider_lease: ProviderLeaseAssignment,
+    },
+}
+
+const EPISODE_EXECUTION_SUPERSEDED: &str = "episode_execution_superseded";
+
 pub(crate) fn run_episode_distiller_job_for_connection(
     connection: &Connection,
     job_id: &str,
@@ -250,7 +274,8 @@ pub(crate) fn run_episode_distiller_job_for_connection(
 ) -> Result<EpisodeExecutionStatus, CliError> {
     let job = load_job(connection, job_id)?;
     let _heartbeat = HeartbeatGuard::start(connection, &job.id, worker_id)?;
-    let result = process_episode_distiller_job(connection, &job, target, api_key, timeout_seconds);
+    let store = EpisodeStore::Legacy(connection);
+    let result = process_episode_distiller_job(&store, &job, target, api_key, timeout_seconds);
     match result {
         Ok(status) => Ok(status),
         Err(error) if is_provider_unavailable(&error.to_string()) => {
@@ -296,6 +321,574 @@ pub(crate) fn run_episode_distiller_job_for_connection(
             )?;
             Ok(EpisodeExecutionStatus::Failed)
         }
+    }
+}
+
+pub(crate) fn run_episode_distiller_job_for_path(
+    sqlite_path: &Path,
+    claimed: ClaimedProviderLeaseJob,
+    target: LocalLlmTargetConfig,
+    api_key: Option<String>,
+    timeout_seconds: u64,
+) -> Result<EpisodeSplitStatus, CliError> {
+    let reader = open_query_only_connection(sqlite_path)?;
+    let job = load_job(&reader, &claimed.id)?;
+    let store = EpisodeStore::Split {
+        sqlite_path,
+        reader: Box::new(reader),
+        provider_lease: claimed.provider_lease,
+    };
+    match process_episode_distiller_job(&store, &job, &target, api_key.as_deref(), timeout_seconds)
+    {
+        Ok(EpisodeExecutionStatus::Completed) => Ok(EpisodeSplitStatus::Completed),
+        Ok(EpisodeExecutionStatus::Skipped) => Ok(EpisodeSplitStatus::Skipped),
+        Ok(EpisodeExecutionStatus::Failed) => Ok(EpisodeSplitStatus::Failed),
+        Ok(EpisodeExecutionStatus::Retrying) => Ok(EpisodeSplitStatus::Retrying),
+        Err(error) if error.to_string().contains(EPISODE_EXECUTION_SUPERSEDED) => {
+            store.record_superseded(&job)?;
+            Ok(EpisodeSplitStatus::Superseded)
+        }
+        Err(error) => store.persist_error(&job, &target, &error.to_string()),
+    }
+}
+
+impl EpisodeStore<'_> {
+    fn reader(&self) -> &Connection {
+        match self {
+            Self::Legacy(connection) => connection,
+            Self::Split { reader, .. } => reader,
+        }
+    }
+
+    fn patch_progress(
+        &self,
+        job: &EpisodeDistillerJobRow,
+        metadata: &Value,
+    ) -> Result<(), CliError> {
+        match self {
+            Self::Legacy(connection) => patch_episode_progress(connection, job, metadata),
+            Self::Split {
+                sqlite_path,
+                provider_lease,
+                ..
+            } => {
+                let provider_lease = provider_lease.clone();
+                let job_id = job.id.clone();
+                let metadata = metadata.to_string();
+                crate::domains::sqlite_writer::execute_for_path(
+                    sqlite_path,
+                    "queue.episode_progress",
+                    move |connection| {
+                        let changed = connection
+                            .execute(
+                                "update episode_distiller_queue
+                                 set metadata = json_patch(coalesce(nullif(metadata, ''), '{}'), ?1),
+                                     updated_at = CURRENT_TIMESTAMP
+                                 where id = ?2
+                                   and status = 'running'
+                                   and locked_by = ?3
+                                   and exists (
+                                     select 1 from llm_provider_leases lease
+                                     where lease.id = ?4
+                                       and lease.status = 'active'
+                                       and lease.queue_name = 'episodeDistiller'
+                                       and lease.queue_job_id = ?2
+                                       and lease.worker_id = ?3
+                                   )",
+                                params![
+                                    metadata,
+                                    job_id,
+                                    provider_lease.worker_id,
+                                    provider_lease.id
+                                ],
+                            )
+                            .map_err(|error| {
+                                format!("failed to patch split episode progress: {error}")
+                            })?;
+                        if changed == 1 {
+                            Ok(())
+                        } else {
+                            Err(EPISODE_EXECUTION_SUPERSEDED.to_string())
+                        }
+                    },
+                )
+                .map_err(CliError::io)
+            }
+        }
+    }
+
+    fn record_identity_event(&self, event_type: &str, payload: Value) -> Result<(), CliError> {
+        match self {
+            Self::Legacy(connection) => {
+                record_episode_identity_event(connection, event_type, payload);
+                Ok(())
+            }
+            Self::Split {
+                sqlite_path,
+                provider_lease,
+                ..
+            } => {
+                let provider_lease = provider_lease.clone();
+                let event_type = event_type.to_string();
+                crate::domains::sqlite_writer::execute_for_path(
+                    sqlite_path,
+                    "queue.episode_identity_event",
+                    move |connection| {
+                        if !owns_provider_execution(connection, &provider_lease)
+                            .map_err(|error| error.to_string())?
+                        {
+                            return Err(EPISODE_EXECUTION_SUPERSEDED.to_string());
+                        }
+                        record_episode_identity_event(connection, &event_type, payload);
+                        Ok(())
+                    },
+                )
+                .map_err(CliError::io)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_episode(
+        &self,
+        item: &PendingEpisode,
+        document: &SourceDocument,
+        identity: &EpisodeWriteIdentity,
+        target: &LocalLlmTargetConfig,
+        api_key: Option<&str>,
+        timeout_seconds: u64,
+    ) -> Result<EpisodePersistOutcome, CliError> {
+        match self {
+            Self::Legacy(connection) => create_episode_idempotently(
+                connection,
+                item,
+                document,
+                identity,
+                target,
+                api_key,
+                timeout_seconds,
+            ),
+            Self::Split {
+                sqlite_path,
+                reader,
+                provider_lease,
+            } => {
+                if let Some(existing) = existing_episode_id(reader, &item.source_key)? {
+                    return Ok(EpisodePersistOutcome::SourceDeduped(existing));
+                }
+                let candidates = find_near_duplicate_candidates(reader, item, document, identity)?;
+                if !candidates.is_empty() {
+                    let review = review_near_duplicate_episode(
+                        item,
+                        &candidates,
+                        target,
+                        api_key,
+                        timeout_seconds,
+                    )?;
+                    if !near_duplicate_review_allows_publish(&review, &candidates) {
+                        return Ok(EpisodePersistOutcome::NearDuplicateSkipped(review));
+                    }
+                }
+                let item = item.clone();
+                let document = document.clone();
+                let identity = identity.clone();
+                let provider_lease = provider_lease.clone();
+                crate::domains::sqlite_writer::execute_for_path(
+                    sqlite_path,
+                    "queue.episode_persist_item",
+                    move |connection| {
+                        let tx = connection.transaction().map_err(|error| {
+                            format!("failed to begin split episode item transaction: {error}")
+                        })?;
+                        if !owns_provider_execution(&tx, &provider_lease)
+                            .map_err(|error| error.to_string())?
+                        {
+                            return Err(EPISODE_EXECUTION_SUPERSEDED.to_string());
+                        }
+                        let outcome = create_episode_idempotently_in_transaction(
+                            &tx, &item, &document, &identity,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        tx.commit().map_err(|error| {
+                            format!("failed to commit split episode item: {error}")
+                        })?;
+                        Ok(outcome)
+                    },
+                )
+                .map_err(CliError::io)
+            }
+        }
+    }
+
+    fn persist_completed(
+        &self,
+        job: &EpisodeDistillerJobRow,
+        status: &str,
+        outcome: &str,
+        metadata: &Value,
+        event_metadata: &Value,
+    ) -> Result<(), CliError> {
+        match self {
+            Self::Legacy(connection) => {
+                mark_completed(connection, job, status, outcome, metadata)?;
+                append_queue_event_for_connection(
+                    connection,
+                    &pseudo_uuid(),
+                    "episodeDistiller",
+                    &job.id,
+                    "completed",
+                    Some("episode distiller completed"),
+                    Some(&event_metadata.to_string()),
+                )
+            }
+            Self::Split {
+                sqlite_path,
+                provider_lease,
+                ..
+            } => {
+                let job_id = job.id.clone();
+                let provider_lease = provider_lease.clone();
+                let status = status.to_string();
+                let outcome = outcome.to_string();
+                let metadata = metadata.to_string();
+                let event_metadata = event_metadata.to_string();
+                crate::domains::sqlite_writer::execute_for_path(
+                    sqlite_path,
+                    "queue.episode_persist",
+                    move |connection| {
+                        let tx = connection.transaction().map_err(|error| {
+                            format!("failed to begin split episode completion: {error}")
+                        })?;
+                        if !owns_provider_execution(&tx, &provider_lease)
+                            .map_err(|error| error.to_string())?
+                        {
+                            return Err(EPISODE_EXECUTION_SUPERSEDED.to_string());
+                        }
+                        let queue_changed = tx
+                            .execute(
+                                "update episode_distiller_queue
+                                 set status = ?1,
+                                     locked_by = null,
+                                     locked_at = null,
+                                     heartbeat_at = null,
+                                     next_run_at = null,
+                                     completed_at = CURRENT_TIMESTAMP,
+                                     last_error = null,
+                                     last_outcome_kind = ?2,
+                                     metadata = json_patch(coalesce(nullif(metadata, ''), '{}'), ?3),
+                                     updated_at = CURRENT_TIMESTAMP
+                                 where id = ?4
+                                   and status = 'running'
+                                   and locked_by = ?5",
+                                params![
+                                    status,
+                                    outcome,
+                                    metadata,
+                                    job_id,
+                                    provider_lease.worker_id
+                                ],
+                            )
+                            .map_err(|error| {
+                                format!("failed to complete split episode job: {error}")
+                            })?;
+                        let lease_changed = release_split_episode_lease(
+                            &tx,
+                            &provider_lease,
+                            "worker_finished",
+                        )?;
+                        if queue_changed != 1 || lease_changed != 1 {
+                            return Err(EPISODE_EXECUTION_SUPERSEDED.to_string());
+                        }
+                        append_queue_event_for_connection(
+                            &tx,
+                            &stable_episode_event_id(&job_id, &provider_lease.id, "completed"),
+                            "episodeDistiller",
+                            &job_id,
+                            "completed",
+                            Some("episode distiller completed outside SQLite writer"),
+                            Some(&event_metadata),
+                        )
+                        .map_err(|error| error.to_string())?;
+                        tx.commit().map_err(|error| {
+                            format!("failed to commit split episode completion: {error}")
+                        })
+                    },
+                )
+                .map_err(CliError::io)
+            }
+        }
+    }
+
+    fn persist_error(
+        &self,
+        job: &EpisodeDistillerJobRow,
+        target: &LocalLlmTargetConfig,
+        error: &str,
+    ) -> Result<EpisodeSplitStatus, CliError> {
+        let Self::Split {
+            sqlite_path,
+            provider_lease,
+            ..
+        } = self
+        else {
+            return Err(CliError::io(error));
+        };
+        let job = job.clone();
+        let provider_lease = provider_lease.clone();
+        let target_id = target.target_id.clone();
+        let error = error.to_string();
+        crate::domains::sqlite_writer::execute_for_path(
+            sqlite_path,
+            "queue.episode_error_persist",
+            move |connection| {
+                let tx = connection
+                    .transaction()
+                    .map_err(|cause| format!("failed to begin split episode failure: {cause}"))?;
+                if !owns_provider_execution(&tx, &provider_lease)
+                    .map_err(|cause| cause.to_string())?
+                {
+                    append_episode_superseded_event(&tx, &job.id, &provider_lease)?;
+                    tx.commit().map_err(|cause| {
+                        format!("failed to commit superseded split episode: {cause}")
+                    })?;
+                    return Ok(EpisodeSplitStatus::Superseded);
+                }
+                let next_attempt_count = job.attempt_count + 1;
+                let provider_unavailable = is_provider_unavailable(&error);
+                let exhausted = next_attempt_count >= job.max_attempts.max(1);
+                let (
+                    persist_status,
+                    queue_status,
+                    outcome,
+                    next_run_seconds,
+                    release_reason,
+                    event_type,
+                ) = if provider_unavailable && exhausted {
+                    (
+                        EpisodeSplitStatus::Paused,
+                        "paused",
+                        "provider_unavailable_exhausted",
+                        None,
+                        "provider_unavailable_retry",
+                        "paused",
+                    )
+                } else if provider_unavailable {
+                    (
+                        EpisodeSplitStatus::Retrying,
+                        "pending",
+                        "provider_unavailable_retry",
+                        Some(
+                            provider_retry_after_seconds(&error)
+                                .max(episode_provider_backoff_seconds(job.attempt_count)),
+                        ),
+                        "provider_unavailable_retry",
+                        "retried",
+                    )
+                } else if exhausted {
+                    (
+                        EpisodeSplitStatus::Failed,
+                        "failed",
+                        "failed",
+                        None,
+                        "worker_failed",
+                        "failed",
+                    )
+                } else {
+                    (
+                        EpisodeSplitStatus::Retrying,
+                        "pending",
+                        "failed",
+                        Some(30),
+                        "worker_failed",
+                        "retried",
+                    )
+                };
+                let next_run_at = next_run_seconds
+                    .map(|seconds| format!("datetime(CURRENT_TIMESTAMP, '+{seconds} seconds')"))
+                    .unwrap_or_else(|| "null".to_string());
+                let completed_at = if queue_status == "failed" {
+                    "CURRENT_TIMESTAMP"
+                } else {
+                    "null"
+                };
+                let queue_changed = tx
+                    .execute(
+                        &format!(
+                            "update episode_distiller_queue
+                             set status = ?1,
+                                 attempt_count = ?2,
+                                 next_run_at = {next_run_at},
+                                 locked_by = null,
+                                 locked_at = null,
+                                 heartbeat_at = null,
+                                 completed_at = {completed_at},
+                                 last_error = ?3,
+                                 last_outcome_kind = ?4,
+                                 metadata = json_patch(
+                                   coalesce(nullif(metadata, ''), '{{}}'),
+                                   ?5
+                                 ),
+                                 updated_at = CURRENT_TIMESTAMP
+                             where id = ?6
+                               and status = 'running'
+                               and locked_by = ?7"
+                        ),
+                        params![
+                            queue_status,
+                            next_attempt_count,
+                            truncate(&error, 1000),
+                            outcome,
+                            json!({
+                                "episodeDistiller": {
+                                    "providerUnavailableRetriedAt": now_timestamp(),
+                                    "providerUnavailableError": truncate(&error, 1000),
+                                    "providerRetryAfterSeconds": next_run_seconds,
+                                    "executor": "rust"
+                                }
+                            })
+                            .to_string(),
+                            job.id,
+                            provider_lease.worker_id
+                        ],
+                    )
+                    .map_err(|cause| format!("failed to persist split episode error: {cause}"))?;
+                let lease_changed =
+                    release_split_episode_lease(&tx, &provider_lease, release_reason)?;
+                if queue_changed != 1 || lease_changed != 1 {
+                    return Ok(EpisodeSplitStatus::Superseded);
+                }
+                append_queue_event_for_connection(
+                    &tx,
+                    &stable_episode_event_id(&job.id, &provider_lease.id, event_type),
+                    "episodeDistiller",
+                    &job.id,
+                    event_type,
+                    Some("episode distiller external execution ended"),
+                    Some(
+                        &json!({
+                            "workerId": provider_lease.worker_id,
+                            "executor": "rust",
+                            "targetId": target_id,
+                            "reason": outcome,
+                            "attemptCount": next_attempt_count,
+                            "error": truncate(&error, 500)
+                        })
+                        .to_string(),
+                    ),
+                )
+                .map_err(|cause| cause.to_string())?;
+                tx.commit()
+                    .map_err(|cause| format!("failed to commit split episode error: {cause}"))?;
+                Ok(persist_status)
+            },
+        )
+        .map_err(CliError::io)
+    }
+
+    fn record_superseded(&self, job: &EpisodeDistillerJobRow) -> Result<(), CliError> {
+        let Self::Split {
+            sqlite_path,
+            provider_lease,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        let job_id = job.id.clone();
+        let provider_lease = provider_lease.clone();
+        crate::domains::sqlite_writer::execute_for_path(
+            sqlite_path,
+            "queue.episode_superseded",
+            move |connection| {
+                let tx = connection.transaction().map_err(|error| {
+                    format!("failed to begin superseded episode event: {error}")
+                })?;
+                append_episode_superseded_event(&tx, &job_id, &provider_lease)?;
+                tx.commit()
+                    .map_err(|error| format!("failed to commit superseded episode event: {error}"))
+            },
+        )
+        .map_err(CliError::io)
+    }
+}
+
+fn append_episode_superseded_event(
+    connection: &Connection,
+    job_id: &str,
+    provider_lease: &ProviderLeaseAssignment,
+) -> Result<(), String> {
+    let event_id = stable_episode_event_id(job_id, &provider_lease.id, "superseded");
+    let exists = connection
+        .query_row(
+            "select exists(select 1 from distillation_queue_events where id = ?1)",
+            [&event_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| format!("failed to inspect superseded episode event: {error}"))?
+        != 0;
+    if !exists {
+        append_queue_event_for_connection(
+            connection,
+            &event_id,
+            "episodeDistiller",
+            job_id,
+            "discarded",
+            Some("stale episode result discarded after claim ownership changed"),
+            Some(
+                &json!({
+                    "executor": "rust",
+                    "reason": "claim_ownership_changed",
+                    "workerId": provider_lease.worker_id,
+                    "providerLeaseId": provider_lease.id
+                })
+                .to_string(),
+            ),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn release_split_episode_lease(
+    connection: &Connection,
+    provider_lease: &ProviderLeaseAssignment,
+    reason: &str,
+) -> Result<usize, String> {
+    connection
+        .execute(
+            "update llm_provider_leases
+             set status = 'released',
+                 released_at = CURRENT_TIMESTAMP,
+                 release_reason = ?2,
+                 updated_at = CURRENT_TIMESTAMP
+             where id = ?1
+               and status = 'active'
+               and queue_name = 'episodeDistiller'
+               and queue_job_id = ?3
+               and worker_id = ?4",
+            params![
+                provider_lease.id,
+                reason,
+                provider_lease.queue_job_id,
+                provider_lease.worker_id
+            ],
+        )
+        .map_err(|error| format!("failed to release split episode lease: {error}"))
+}
+
+fn stable_episode_event_id(job_id: &str, lease_id: &str, event_type: &str) -> String {
+    let digest = Sha256::digest(format!("episode-event:{job_id}:{lease_id}:{event_type}"));
+    format!("episode-event-{digest:x}")[..56].to_string()
+}
+
+fn episode_provider_backoff_seconds(attempt_count: i64) -> i64 {
+    match attempt_count.max(0) {
+        0 => 60,
+        1 => 120,
+        2 => 300,
+        3 => 600,
+        4 => 1_200,
+        _ => 3_600,
     }
 }
 
@@ -415,7 +1008,7 @@ fn main_database_path(connection: &Connection) -> Result<Option<String>, CliErro
 }
 
 fn process_episode_distiller_job(
-    connection: &Connection,
+    store: &EpisodeStore<'_>,
     job: &EpisodeDistillerJobRow,
     target: &LocalLlmTargetConfig,
     api_key: Option<&str>,
@@ -427,20 +1020,19 @@ fn process_episode_distiller_job(
             job.source_kind
         )));
     }
-    let document = read_source_document(connection, &job.source_key)?;
+    let document = read_source_document(store.reader(), &job.source_key)?;
     let write_identity = match resolve_episode_write_identity(&document.metadata) {
         Ok(identity) => identity,
         Err(error) => {
             let error_text = error.to_string();
-            record_episode_identity_event(
-                connection,
+            store.record_identity_event(
                 "PROJECT_IDENTITY_PRODUCER_REJECTED",
                 json!({
                     "producer": "episode-distiller.rust",
                     "entityKind": "episode",
                     "rejectionCode": error_text.split(':').next().unwrap_or(&error_text)
                 }),
-            );
+            )?;
             return Err(error);
         }
     };
@@ -467,8 +1059,7 @@ fn process_episode_distiller_job(
     let mut last_episode_created_at =
         metadata_string_at(&job.metadata, "/episodeDistiller/lastEpisodeCreatedAt");
 
-    patch_episode_progress(
-        connection,
+    store.patch_progress(
         job,
         &episode_progress_metadata(
             &counters,
@@ -492,8 +1083,7 @@ fn process_episode_distiller_job(
         }
         current_segment = Some(segment_index);
         last_segment_started_at = Some(now_timestamp());
-        patch_episode_progress(
-            connection,
+        store.patch_progress(
             job,
             &episode_progress_metadata(
                 &counters,
@@ -523,8 +1113,7 @@ fn process_episode_distiller_job(
                     "completedAt": last_segment_completed_at
                 }),
             );
-            patch_episode_progress(
-                connection,
+            store.patch_progress(
                 job,
                 &episode_progress_metadata(
                     &counters,
@@ -568,8 +1157,7 @@ fn process_episode_distiller_job(
                         "completedAt": last_segment_completed_at
                     }),
                 );
-                patch_episode_progress(
-                    connection,
+                store.patch_progress(
                     job,
                     &episode_progress_metadata(
                         &counters,
@@ -608,8 +1196,7 @@ fn process_episode_distiller_job(
                     "completedAt": last_segment_completed_at
                 }),
             );
-            patch_episode_progress(
-                connection,
+            store.patch_progress(
                 job,
                 &episode_progress_metadata(
                     &counters,
@@ -693,8 +1280,7 @@ fn process_episode_distiller_job(
                     "completedAt": last_segment_completed_at
                 }),
             );
-            patch_episode_progress(
-                connection,
+            store.patch_progress(
                 job,
                 &episode_progress_metadata(
                     &counters,
@@ -721,8 +1307,7 @@ fn process_episode_distiller_job(
         let mut segment_deduped = 0;
         let mut segment_near_duplicate_skipped = 0;
         for item in segment_pending.iter() {
-            let persist_outcome = create_episode_idempotently(
-                connection,
+            let persist_outcome = store.create_episode(
                 item,
                 &document,
                 &write_identity,
@@ -764,8 +1349,7 @@ fn process_episode_distiller_job(
                     }));
                 }
             }
-            patch_episode_progress(
-                connection,
+            store.patch_progress(
                 job,
                 &episode_progress_metadata(
                     &counters,
@@ -804,8 +1388,7 @@ fn process_episode_distiller_job(
                 "completedAt": last_segment_completed_at
             }),
         );
-        patch_episode_progress(
-            connection,
+        store.patch_progress(
             job,
             &episode_progress_metadata(
                 &counters,
@@ -901,29 +1484,23 @@ fn process_episode_distiller_job(
         &near_duplicate_reviews,
         Some(completed_at.as_str()),
     );
-    mark_completed(connection, job, status, outcome, &metadata)?;
-    append_queue_event_for_connection(
-        connection,
-        &pseudo_uuid(),
-        "episodeDistiller",
-        &job.id,
-        "completed",
-        Some("episode distiller completed"),
-        Some(
-            &json!({
-                "generated": counters.generated,
-                "deduped": counters.deduped,
-                "skipped": counters.skipped,
-                "valueSkipped": counters.value_skipped,
-                "duplicateGenerationKindSkipped": counters.duplicate_generation_kind_skipped,
-                "nearDuplicateSkipped": counters.near_duplicate_skipped,
-                "failedSegments": counters.failed_segments,
-                "episodeIds": counters.episode_ids,
-                "acceptedCandidateCount": counters.accepted_candidate_count,
-                "executor": "rust"
-            })
-            .to_string(),
-        ),
+    store.persist_completed(
+        job,
+        status,
+        outcome,
+        &metadata,
+        &json!({
+            "generated": counters.generated,
+            "deduped": counters.deduped,
+            "skipped": counters.skipped,
+            "valueSkipped": counters.value_skipped,
+            "duplicateGenerationKindSkipped": counters.duplicate_generation_kind_skipped,
+            "nearDuplicateSkipped": counters.near_duplicate_skipped,
+            "failedSegments": counters.failed_segments,
+            "episodeIds": counters.episode_ids,
+            "acceptedCandidateCount": counters.accepted_candidate_count,
+            "executor": "rust"
+        }),
     )?;
 
     if status == "completed" {
@@ -1238,6 +1815,7 @@ fn distill_segment(
     timeout_seconds: u64,
 ) -> Result<Vec<CanonicalEpisode>, CliError> {
     let client = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(timeout_seconds.max(30)))
         .build()
         .map_err(|error| CliError::io(format!("failed to build local-llm client: {error}")))?;
@@ -1657,6 +2235,7 @@ fn review_near_duplicate_episode(
     timeout_seconds: u64,
 ) -> Result<NearDuplicateReview, CliError> {
     let client = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(timeout_seconds.max(30)))
         .build()
         .map_err(|error| CliError::io(format!("failed to build local-llm client: {error}")))?;
@@ -2190,24 +2769,30 @@ fn mark_provider_unavailable_retry(
     job: &EpisodeDistillerJobRow,
     error: &str,
 ) -> Result<(), CliError> {
-    let retry_after_seconds = provider_retry_after_seconds(error);
+    let attempt_count = job.attempt_count + 1;
+    let exhausted = attempt_count >= job.max_attempts.max(1);
+    let retry_after_seconds = provider_retry_after_seconds(error)
+        .max(episode_provider_backoff_seconds(job.attempt_count));
     connection
         .execute(
             "
             update episode_distiller_queue
-            set status = 'pending',
-                next_run_at = datetime('now', '+' || ?1 || ' seconds'),
+            set status = case when ?1 then 'paused' else 'pending' end,
+                attempt_count = ?2,
+                next_run_at = case when ?1 then null else datetime('now', '+' || ?3 || ' seconds') end,
                 locked_by = null,
                 locked_at = null,
                 heartbeat_at = null,
                 completed_at = null,
-                last_error = ?2,
-                last_outcome_kind = 'provider_unavailable_retry',
-                metadata = json_patch(coalesce(nullif(metadata, ''), '{}'), ?3),
+                last_error = ?4,
+                last_outcome_kind = case when ?1 then 'provider_unavailable_exhausted' else 'provider_unavailable_retry' end,
+                metadata = json_patch(coalesce(nullif(metadata, ''), '{}'), ?5),
                 updated_at = CURRENT_TIMESTAMP
-            where id = ?4
+            where id = ?6
             ",
             params![
+                exhausted,
+                attempt_count,
                 retry_after_seconds,
                 truncate(error, 1000),
                 json!({"episodeDistiller": {"providerUnavailableRetriedAt": now_timestamp(), "providerUnavailableError": truncate(error, 1000), "providerRetryAfterSeconds": retry_after_seconds, "executor": "rust"}}).to_string(),
@@ -2987,7 +3572,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row.0, "pending");
-        assert_eq!(row.1, 0);
+        assert_eq!(row.1, 1);
         assert_eq!(row.2, "provider_unavailable_retry");
         assert_eq!(row.3, 1);
         assert_eq!(row.4, 0);
@@ -3014,7 +3599,7 @@ mod tests {
             .is_some());
         assert_eq!(
             metadata.pointer("/episodeDistiller/providerRetryAfterSeconds"),
-            Some(&json!(30))
+            Some(&json!(60))
         );
         assert!(metadata
             .pointer("/episodeDistiller/lastEpisodeCreatedAt")
@@ -3214,7 +3799,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row.0, "pending");
-        assert_eq!(row.1, 0);
+        assert_eq!(row.1, 1);
         assert_eq!(row.2, "provider_unavailable_retry");
         assert_eq!(row.3, 1);
         assert_eq!(row.4, 0);
@@ -3225,7 +3810,7 @@ mod tests {
             .is_some());
         assert_eq!(
             metadata.pointer("/episodeDistiller/providerRetryAfterSeconds"),
-            Some(&json!(30))
+            Some(&json!(60))
         );
     }
 
@@ -3291,7 +3876,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(row.0, "pending");
-        assert_eq!(row.1, 0);
+        assert_eq!(row.1, 1);
         assert_eq!(row.2, "provider_unavailable_retry");
         assert_eq!(row.3, 1);
         assert_eq!(row.4, 0);
@@ -3416,6 +4001,112 @@ mod tests {
         assert_eq!(card_count, 0);
         assert_eq!(ref_count, 0);
         assert_eq!(persisted_audit_count, 0);
+    }
+
+    #[test]
+    fn split_episode_execution_uses_query_only_reads_and_fenced_writer_persistence() {
+        let path = std::env::temp_dir().join(format!(
+            "context-still-episode-split-{}-{}.sqlite",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let connection = Connection::open(&path).unwrap();
+        create_episode_runtime_tables(&connection);
+        connection
+            .execute(
+                "insert into vibe_memories (id, session_id, content, metadata, created_at)
+                 values ('memory-split', 'session-split', ?1,
+                   '{\"projectIdentity\":{\"contractVersion\":1,\"classificationStatus\":\"classified\",\"scope\":\"repo\",\"scopeMode\":\"project\",\"repoKey\":\"contextstill\",\"repoPath\":\"/repo\"}}',
+                   CURRENT_TIMESTAMP)",
+                ["The split EpisodeDistiller keeps every core SQLite mutation on the resident writer while LocalLLM work runs outside it. This provides enough concrete evidence for one reusable implementation episode."],
+            )
+            .unwrap();
+        connection
+            .execute_batch(
+                "insert into episode_distiller_queue (
+                   id, source_kind, source_key, status, priority, attempt_count, max_attempts,
+                   locked_by, locked_at, heartbeat_at, created_at, updated_at
+                 ) values (
+                   'episode-split-job', 'vibe_memory', 'memory-split', 'running', 10, 0, 2,
+                   'split-worker', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                 );
+                 insert into llm_provider_leases (
+                   id, pool_id, target_id, queue_name, queue_job_id, worker_id, status,
+                   locked_at, heartbeat_at, expires_at, created_at, updated_at
+                 ) values (
+                   'episode-split-lease', 'pool', 'local-a', 'episodeDistiller',
+                   'episode-split-job', 'split-worker', 'active', CURRENT_TIMESTAMP,
+                   CURRENT_TIMESTAMP, datetime(CURRENT_TIMESTAMP, '+120 seconds'),
+                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                 );",
+            )
+            .unwrap();
+        drop(connection);
+
+        let runtime =
+            crate::domains::sqlite_writer::SqliteWriterRuntime::start_existing_for_test(&path, 16)
+                .unwrap();
+        crate::domains::sqlite_writer::install_global_writer(runtime.handle()).unwrap();
+        let server = spawn_single_response_server(
+            200,
+            llm_response_body("Split episode execution", "task_episode"),
+        );
+        let status = run_episode_distiller_job_for_path(
+            &path,
+            ClaimedProviderLeaseJob {
+                queue_name: "episodeDistiller".to_string(),
+                id: "episode-split-job".to_string(),
+                provider_lease: ProviderLeaseAssignment {
+                    id: "episode-split-lease".to_string(),
+                    pool_id: "pool".to_string(),
+                    target_id: "local-a".to_string(),
+                    queue_name: "episodeDistiller".to_string(),
+                    queue_job_id: "episode-split-job".to_string(),
+                    worker_id: "split-worker".to_string(),
+                },
+            },
+            LocalLlmTargetConfig {
+                target_id: "local-a".to_string(),
+                api_base_url: server,
+                api_path: "/v1/chat/completions".to_string(),
+                model: "qwen".to_string(),
+            },
+            Some("test-key".to_string()),
+            30,
+        )
+        .unwrap();
+        assert_eq!(status, EpisodeSplitStatus::Completed);
+
+        let reader = open_query_only_connection(&path).unwrap();
+        let row: (String, i64, String, String) = reader
+            .query_row(
+                "select q.status,
+                        (select count(*) from episode_cards),
+                        l.status,
+                        coalesce(l.release_reason, '')
+                 from episode_distiller_queue q
+                 join llm_provider_leases l on l.queue_job_id = q.id
+                 where q.id = 'episode-split-job'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "completed".to_string(),
+                1,
+                "released".to_string(),
+                "worker_finished".to_string()
+            )
+        );
+        drop(reader);
+        crate::domains::sqlite_writer::clear_global_writer(&path);
+        runtime.shutdown().unwrap();
+        let _ = std::fs::remove_file(path);
     }
 
     fn insert_two_segment_memory(connection: &Connection) {
@@ -3564,6 +4255,23 @@ mod tests {
                   actor text not null,
                   payload text not null default '{}',
                   created_at text not null
+                );
+                create table llm_provider_leases (
+                  id text primary key,
+                  pool_id text not null,
+                  target_id text not null,
+                  queue_name text not null,
+                  queue_job_id text not null,
+                  worker_id text not null,
+                  status text not null,
+                  locked_at text not null,
+                  heartbeat_at text not null,
+                  expires_at text not null,
+                  released_at text,
+                  release_reason text,
+                  metadata text not null default '{}',
+                  created_at text not null,
+                  updated_at text not null
                 );
                 create table agent_diff_entries (
                   id text primary key,

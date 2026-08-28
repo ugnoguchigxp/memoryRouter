@@ -62,8 +62,10 @@ export async function claimNextQueueJob(params: {
           `
           select id
           from ${tableName}
-          where status in ('pending', 'paused')
-            and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+          where (
+            (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+            or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+          )
           order by priority desc, created_at asc, id asc
           limit 1
         `,
@@ -84,6 +86,10 @@ export async function claimNextQueueJob(params: {
             heartbeat_at = CURRENT_TIMESTAMP,
             updated_at = CURRENT_TIMESTAMP
           where id = ?
+            and (
+              (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+              or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+            )
         `,
         )
         .run(params.workerId, picked.id);
@@ -178,8 +184,10 @@ export async function claimNextQueueJob(params: {
             picked as (
               select id
               from ${sql.raw(tableName)}
-              where status in ('pending', 'paused')
-                and (next_run_at is null or next_run_at <= now())
+              where (
+                  (status = 'pending' and (next_run_at is null or next_run_at <= now()))
+                  or (status = 'paused' and next_run_at is not null and next_run_at <= now())
+                )
                 and not exists (select 1 from has_running)
               order by priority desc, created_at asc, id asc
               for update skip locked

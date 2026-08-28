@@ -34,6 +34,7 @@ import {
   getRuntimeSettingsSnapshot,
   resolveCoverEvidenceRoutes,
   resolveDeadZoneMergeReviewRoute,
+  resolveLandscapeCurationRoute,
   resolveEpisodeDistillerRoute,
   resolveFindCandidateRoute,
 } from "../../../src/modules/settings/settings.service.js";
@@ -364,6 +365,17 @@ function resolveQueueRuntimeModel(
     };
   }
 
+  if (queueName === "landscapeCuration") {
+    const route = resolveLandscapeCurationRoute();
+    return {
+      provider: row.provider?.trim() || route.provider,
+      model:
+        row.model?.trim() ||
+        summarizeProviderPoolRoute(route) ||
+        resolveRouteModel(route.provider, route.model, route.localLlmModel),
+    };
+  }
+
   const settings = getRuntimeSettingsSnapshot();
   const finalizeRoute = settings.taskRouting.finalizeDistille;
   const provider = finalizeRoute.provider;
@@ -508,6 +520,8 @@ function buildDynamicOrderBy(
         sortColumn = sql`c.title`;
       } else if (queueName === "deadZoneMergeReview") {
         sortColumn = sql`dz.title`;
+      } else if (queueName === "landscapeCuration") {
+        sortColumn = sql`subject.title`;
       } else if (queueName === "mergeActivationFinalize" || queueName === "finalizeDistille") {
         sortColumn = sql`q.subject_title`;
       } else {
@@ -771,6 +785,20 @@ async function querySqliteQueueRows(
       .all(...sqliteStatusPatternValues(statusFilter, pattern, 3), params.limit, params.offset);
   }
 
+  if (queueName === "landscapeCuration") {
+    return sqlite.db
+      .query<QueueListRow, unknown[]>(`
+      select q.id, q.status, q.priority, q.attempt_count, subject.title as subject_title,
+        q.finding_type || ' | decision=' || coalesce(q.decision, '-') as subject_detail,
+        q.provider, q.model, q.last_error, q.last_outcome_kind, q.locked_by, q.locked_at,
+        q.heartbeat_at, q.created_at, q.updated_at, q.completed_at, q.next_run_at,
+        json_extract(q.result, '$.decision') as metadata_summary, null as source_kind, null as provider_policy
+      from landscape_curation_queue q left join knowledge_items subject on subject.id = q.subject_knowledge_id
+      where (? is null or q.status = ?) and (? is null or lower(coalesce(subject.title,'')) like ? or lower(q.subject_knowledge_id) like ?)
+      order by ${orderBy} limit ? offset ?`)
+      .all(...sqliteStatusPatternValues(statusFilter, pattern, 2), params.limit, params.offset);
+  }
+
   if (queueName === "mergeActivationFinalize") {
     return sqlite.db
       .query<QueueListRow, unknown[]>(
@@ -1012,6 +1040,17 @@ function countSqliteQueueRows(
     );
   }
 
+  if (queueName === "landscapeCuration") {
+    return sqliteCountFromRow(
+      sqlite.db
+        .query<{ count: number }, unknown[]>(`
+      select count(*) as count from landscape_curation_queue q left join knowledge_items subject on subject.id = q.subject_knowledge_id
+      where (? is null or q.status = ?) and (? is null or lower(coalesce(subject.title,'')) like ? or lower(q.subject_knowledge_id) like ?)
+    `)
+        .get(...sqliteStatusPatternValues(statusFilter, pattern, 2)),
+    );
+  }
+
   if (queueName === "mergeActivationFinalize") {
     return sqliteCountFromRow(
       sqlite.db
@@ -1247,6 +1286,20 @@ async function queryQueueRows(
     return result.rows as unknown as QueueListRow[];
   }
 
+  if (queueName === "landscapeCuration") {
+    const result = await db.execute(sql`
+      select q.id, q.status, q.priority, q.attempt_count, subject.title as subject_title,
+        concat(q.finding_type, ' | decision=', coalesce(q.decision, '-')) as subject_detail,
+        q.provider, q.model, q.last_error, q.last_outcome_kind, q.locked_by, q.locked_at, q.heartbeat_at,
+        q.created_at, q.updated_at, q.completed_at, q.next_run_at, q.result->>'decision' as metadata_summary,
+        null::text as source_kind, null::text as provider_policy
+      from landscape_curation_queue q left join knowledge_items subject on subject.id = q.subject_knowledge_id
+      where (${statusFilter}::text is null or q.status = ${statusFilter}) and (${pattern}::text is null or subject.title ilike ${pattern} or q.subject_knowledge_id::text ilike ${pattern})
+      order by ${buildDynamicOrderBy("landscapeCuration", sortBy, sortDir)} limit ${params.limit} offset ${params.offset}
+    `);
+    return result.rows as unknown as QueueListRow[];
+  }
+
   if (queueName === "mergeActivationFinalize") {
     const result = await db.execute(sql`
       select
@@ -1420,7 +1473,9 @@ async function countQueueRows(
         ? sql`coalesce(q.subject_title, q.subject_detail, q.id::text)`
         : queueName === "deadZoneMergeReview"
           ? sql`coalesce(dz.title, q.dead_zone_knowledge_id::text, q.canonical_knowledge_id::text)`
-          : sql`coalesce(c.title, q.found_candidate_id::text)`;
+          : queueName === "landscapeCuration"
+            ? sql`coalesce(subject.title, q.subject_knowledge_id::text)`
+            : sql`coalesce(c.title, q.found_candidate_id::text)`;
 
   const joinSql =
     queueName === "findingCandidate" || queueName === "episodeDistiller"
@@ -1429,7 +1484,9 @@ async function countQueueRows(
         ? sql``
         : queueName === "deadZoneMergeReview"
           ? sql`left join knowledge_items dz on dz.id = q.dead_zone_knowledge_id`
-          : sql`left join found_candidates c on c.id = q.found_candidate_id`;
+          : queueName === "landscapeCuration"
+            ? sql`left join knowledge_items subject on subject.id = q.subject_knowledge_id`
+            : sql`left join found_candidates c on c.id = q.found_candidate_id`;
 
   const fromSql =
     queueName === "finalizeDistille"

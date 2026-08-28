@@ -127,7 +127,10 @@ pub fn claim_next_job_with_provider_lease_for_connection(
                   heartbeat_at = CURRENT_TIMESTAMP,
                   updated_at = CURRENT_TIMESTAMP
                 where id = ?2
-                  and status in ('pending', 'paused')
+                  and (
+                    (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+                    or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+                  )
                 ",
                 picked.table_name
             ),
@@ -489,8 +492,10 @@ fn runnable_provider_sql(
           cast(strftime('%s', created_at) as integer) as created_at_unix_seconds,
           {route_projection}
         from {table_name}
-        where status in ('pending', 'paused')
-          and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+        where (
+          (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+          or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+        )
           {allowed_route_condition}
           {candidate_polarity_condition}
           {allowed_job_condition}

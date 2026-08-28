@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { formatDateTimeShort, useTimezone } from "@/lib/timezone";
@@ -11,6 +12,7 @@ import {
   type DeadZoneRecommendationAction,
   applyDeadZoneKnowledgeReviewAction,
   fetchDeadZoneKnowledgeReview,
+  fetchUnresolvedLandscapeCurationJobs,
   requestDeadZoneMergeReviewJob,
   sendDeadZoneMergeReviewToFinalize,
 } from "../repositories/admin.repository";
@@ -86,6 +88,12 @@ export function LandscapePage() {
         sortDir,
       }),
     staleTime: 60_000,
+  });
+  const unresolvedCuration = useQuery({
+    queryKey: ["landscape-curation-unresolved"],
+    queryFn: fetchUnresolvedLandscapeCurationJobs,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   });
 
   const items = deadZoneKnowledgeReview.data?.items ?? [];
@@ -194,11 +202,60 @@ export function LandscapePage() {
             ? formatDateTimeShort(deadZoneKnowledgeReview.data.generatedAt, timezone)
             : undefined
         }
-        refreshDisabled={deadZoneKnowledgeReview.isFetching}
-        onRefresh={() => void deadZoneKnowledgeReview.refetch()}
-        status={deadZoneKnowledgeReview.error ? "failed" : "ok"}
-        statusLabel={deadZoneKnowledgeReview.error ? "load failed" : "DeadZone review"}
+        refreshDisabled={deadZoneKnowledgeReview.isFetching || unresolvedCuration.isFetching}
+        onRefresh={() => {
+          void deadZoneKnowledgeReview.refetch();
+          void unresolvedCuration.refetch();
+        }}
+        status={deadZoneKnowledgeReview.error || unresolvedCuration.error ? "failed" : "ok"}
+        statusLabel={
+          deadZoneKnowledgeReview.error || unresolvedCuration.error
+            ? "load failed"
+            : "Autonomous curation"
+        }
       />
+
+      <section className="mb-4 rounded-lg border bg-card p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold">Autonomous curation</h2>
+            <p className="text-xs text-muted-foreground">
+              LLM and policy process findings automatically. Items appear here only while they
+              remain unresolved.
+            </p>
+          </div>
+          <Badge variant={unresolvedCuration.data?.length ? "secondary" : "outline"}>
+            {unresolvedCuration.data?.length ?? 0} unresolved
+          </Badge>
+        </div>
+        {unresolvedCuration.isLoading ? (
+          <p className="mt-3 text-sm text-muted-foreground">Loading curation tasks...</p>
+        ) : unresolvedCuration.error ? (
+          <p className="mt-3 text-sm text-destructive">
+            {unresolvedCuration.error instanceof Error
+              ? unresolvedCuration.error.message
+              : "Failed to load curation tasks."}
+          </p>
+        ) : unresolvedCuration.data?.length ? (
+          <ul className="mt-3 grid gap-2">
+            {unresolvedCuration.data.map((job) => (
+              <li key={job.id} className="rounded-md border px-3 py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">{job.status}</Badge>
+                  <span className="font-medium">{job.findingType.replaceAll("_", " ")}</span>
+                  <span className="text-xs text-muted-foreground">phase: {job.phase}</span>
+                </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Knowledge {job.subjectKnowledgeId}
+                  {job.lastError ? ` · ${job.lastError}` : ""}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-muted-foreground">No unresolved curation tasks.</p>
+        )}
+      </section>
 
       <section className="landscape-toolbar">
         <div className="landscape-toolbar-group">

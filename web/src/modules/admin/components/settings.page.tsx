@@ -987,6 +987,7 @@ function settingsViewToEditable(view: RuntimeSettingsView): RuntimeSettingsEdita
       finalizeDistille: cloneRuntimeSettingsRoute(view.taskRouting.finalizeDistille),
       mergeActivationFinalize: cloneRuntimeSettingsRoute(view.taskRouting.mergeActivationFinalize),
       deadZoneMergeReview: cloneRuntimeSettingsRoute(view.taskRouting.deadZoneMergeReview),
+      landscapeCuration: cloneRuntimeSettingsRoute(view.taskRouting.landscapeCuration),
       agenticCompile: {
         enabled: view.taskRouting.agenticCompile.enabled,
         provider: view.taskRouting.agenticCompile.provider,
@@ -1609,6 +1610,12 @@ export function SettingsPage() {
             current.taskRouting.deadZoneMergeReview.providerPoolId === poolId
               ? undefined
               : current.taskRouting.deadZoneMergeReview.providerPoolId,
+          ),
+          landscapeCuration: routeWithProviderPool(
+            current.taskRouting.landscapeCuration,
+            current.taskRouting.landscapeCuration.providerPoolId === poolId
+              ? undefined
+              : current.taskRouting.landscapeCuration.providerPoolId,
           ),
           agenticCompile: current.taskRouting.agenticCompile,
         },
@@ -3191,6 +3198,22 @@ export function SettingsPage() {
                           taskRouting: {
                             ...current.taskRouting,
                             deadZoneMergeReview: next,
+                          },
+                        }))
+                      }
+                    />
+                    <RouteEditor
+                      label="landscapeCuration"
+                      description="Autonomous Landscape evaluation and policy-gated curation."
+                      settings={draft}
+                      route={draft.taskRouting.landscapeCuration}
+                      effectiveTargets={sourceView?.effectiveTargets?.taskRouting.landscapeCuration}
+                      onChange={(next) =>
+                        patchDraft((current) => ({
+                          ...current,
+                          taskRouting: {
+                            ...current.taskRouting,
+                            landscapeCuration: next,
                           },
                         }))
                       }

@@ -15,6 +15,7 @@ export const queueTableNameByQueue: Record<DistillationQueueName, string> = {
   episodeDistiller: "episode_distiller_queue",
   coveringEvidence: "covering_evidence_queue",
   deadZoneMergeReview: "dead_zone_merge_review_queue",
+  landscapeCuration: "landscape_curation_queue",
   finalizeDistille: "finalize_distille_queue",
   mergeActivationFinalize: "merge_activation_finalize_queue",
 };
@@ -26,6 +27,7 @@ export type QueueBackendKind =
   | "episode_distiller_queue"
   | "covering_evidence_queue"
   | "dead_zone_merge_review_queue"
+  | "landscape_curation_queue"
   | "finalize_distille_queue"
   | "merge_activation_finalize_queue";
 

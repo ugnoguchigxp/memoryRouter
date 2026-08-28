@@ -423,30 +423,39 @@ export async function markDeadZoneMergeReviewJobFailed(params: {
   id: string;
   error: string;
   outcome: string;
+  retryAt?: Date | null;
 }): Promise<void> {
   const row = await getDeadZoneMergeReviewQueueRow(params.id);
+  const retryable = Boolean(params.retryAt);
+  const status = retryable ? "paused" : "failed";
+  const now = new Date();
   if (isSqliteBackend()) {
     const sqlite = await getSqliteCoreDatabase();
     sqlite.db
       .query(
         `
         update dead_zone_merge_review_queue
-        set status = 'failed',
+        set status = ?,
             attempt_count = ?,
+            next_run_at = ?,
             last_error = ?,
             last_outcome_kind = ?,
             locked_by = null,
             locked_at = null,
             heartbeat_at = null,
+            completed_at = ?,
             updated_at = ?
         where id = ?
       `,
       )
       .run(
+        status,
         (row?.attemptCount ?? 0) + 1,
+        params.retryAt?.toISOString() ?? null,
         params.error.slice(0, 2000),
         params.outcome,
-        new Date().toISOString(),
+        retryable ? null : now.toISOString(),
+        now.toISOString(),
         params.id,
       );
     return;
@@ -455,14 +464,16 @@ export async function markDeadZoneMergeReviewJobFailed(params: {
   await db
     .update(deadZoneMergeReviewQueue)
     .set({
-      status: "failed",
+      status,
       attemptCount: (row?.attemptCount ?? 0) + 1,
+      nextRunAt: params.retryAt ?? null,
       lastError: params.error.slice(0, 2000),
       lastOutcomeKind: params.outcome,
       lockedBy: null,
       lockedAt: null,
       heartbeatAt: null,
-      updatedAt: new Date(),
+      completedAt: retryable ? null : now,
+      updatedAt: now,
     })
     .where(eq(deadZoneMergeReviewQueue.id, params.id));
 }

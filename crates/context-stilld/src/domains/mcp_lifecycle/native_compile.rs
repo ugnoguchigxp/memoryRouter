@@ -3642,6 +3642,65 @@ mod tests {
     }
 
     #[test]
+    fn split_legacy_rank_preserves_legacy_selected_ids() {
+        let fixture = repository_isolation_fixture();
+        let legacy_path = temp_db_path();
+        let split_path = temp_db_path();
+        for path in [&legacy_path, &split_path] {
+            let connection = Connection::open(path).unwrap();
+            create_minimal_compile_schema(&connection);
+            seed_repository_isolation_knowledge(&connection, &fixture);
+        }
+        let arguments = json!({"arguments": {
+            "goal": fixture.legacy_reproduction.goal,
+            "projectRef": "project-A"
+        }});
+        let legacy_context = NativeToolContext::for_test(std::env::temp_dir(), legacy_path.clone());
+        let mut split_context =
+            NativeToolContext::for_test(std::env::temp_dir(), split_path.clone());
+        split_context.compile_runtime = std::sync::Arc::new(
+            crate::domains::context_compile::runtime::CompileRuntimeContext {
+                mode: CompileFoundationMode::SplitLegacyRank,
+                ..(*split_context.compile_runtime).clone()
+            },
+        );
+
+        let legacy = context_compile(&arguments, &legacy_context);
+        let split = context_compile(&arguments, &split_context);
+        assert!(legacy.get("isError").is_none());
+        assert!(split.get("isError").is_none());
+
+        let selected_ids = |path: &std::path::Path| {
+            let connection = Connection::open(path).unwrap();
+            let ids = connection
+                .prepare("select item_id from context_pack_items order by item_kind, item_id")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .flatten()
+                .collect::<Vec<_>>();
+            ids
+        };
+        assert_eq!(selected_ids(&legacy_path), selected_ids(&split_path));
+        let split_pack: Value = Connection::open(&split_path)
+            .unwrap()
+            .query_row(
+                "select pack_snapshot from context_compile_runs limit 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map(|raw| serde_json::from_str(&raw).unwrap())
+            .unwrap();
+        assert_eq!(
+            split_pack["diagnostics"]["foundation"]["pipelineMode"],
+            "split_legacy_rank"
+        );
+
+        let _ = std::fs::remove_file(legacy_path);
+        let _ = std::fs::remove_file(split_path);
+    }
+
+    #[test]
     fn native_retrieval_applies_scope_and_facets_before_any_candidate_limit() {
         let mut connection = Connection::open_in_memory().unwrap();
         create_minimal_compile_schema(&connection);

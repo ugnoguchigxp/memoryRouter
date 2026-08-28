@@ -8,6 +8,12 @@ import {
   listDeadZoneMergeReviewQueueJobs,
 } from "../../../src/modules/landscape/deadzone-merge-review-queue.service.js";
 import {
+  LandscapeCurationError,
+  enqueueLandscapeCurationForReview,
+  getLandscapeCurationJob,
+  listLandscapeCurationJobs,
+} from "../../../src/modules/landscape/landscape-curation.service.js";
+import {
   DeadZoneKnowledgeMaintenanceError,
   applyDeadZoneKnowledgeReviewAction,
   buildDeadZoneKnowledgeReview,
@@ -113,6 +119,28 @@ const landscapeTrajectoryParamSchema = z.object({
 const deadZoneMergeReviewJobParamSchema = z.object({
   id: z.string().trim().min(1),
 });
+const landscapeCurationJobParamSchema = z.object({ id: z.string().trim().min(1) });
+const landscapeCurationCreateSchema = z.object({
+  reviewItemId: z.string().trim().min(1),
+  candidateKnowledgeIds: z.array(z.string().trim().min(1)).max(5).optional(),
+});
+const landscapeCurationListSchema = z.object({
+  knowledgeId: z.string().trim().min(1).optional(),
+  status: z
+    .enum(["pending", "running", "completed", "skipped", "failed", "paused", "unresolved", "all"])
+    .default("all"),
+  findingType: z
+    .enum([
+      "duplicate_candidate",
+      "reachability_gap",
+      "stale_knowledge",
+      "applicability_issue",
+      "contradiction_candidate",
+      "all",
+    ])
+    .default("all"),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
 
 const communityLabelBodySchema = z.object({
   label: z.string().trim().min(1).max(120),
@@ -210,6 +238,35 @@ export const graphRouter = new Hono()
     const cacheStatus = await getLandscapeSnapshotCacheStatus();
     return c.json(landscapeSnapshotCacheStatusSchema.parse(cacheStatus));
   })
+  .get("/landscape/curation-jobs", zValidator("query", landscapeCurationListSchema), async (c) => {
+    const query = c.req.valid("query");
+    const items = await listLandscapeCurationJobs(query);
+    return c.json({ items });
+  })
+  .post(
+    "/landscape/curation-jobs",
+    zValidator("json", landscapeCurationCreateSchema),
+    async (c) => {
+      try {
+        const id = await enqueueLandscapeCurationForReview(c.req.valid("json"));
+        const job = await getLandscapeCurationJob(id);
+        return c.json(job, 201);
+      } catch (error) {
+        if (error instanceof LandscapeCurationError) {
+          return c.json({ error: error.message }, error.statusCode);
+        }
+        throw error;
+      }
+    },
+  )
+  .get(
+    "/landscape/curation-jobs/:id",
+    zValidator("param", landscapeCurationJobParamSchema),
+    async (c) => {
+      const job = await getLandscapeCurationJob(c.req.valid("param").id);
+      return job ? c.json(job) : c.json({ error: "curation job not found" }, 404);
+    },
+  )
   .get(
     "/landscape/dead-zone-knowledge",
     zValidator("query", deadZoneKnowledgeReviewQuerySchema),

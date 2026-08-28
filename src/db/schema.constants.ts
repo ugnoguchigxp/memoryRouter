@@ -90,6 +90,7 @@ export const distillationQueueNameValues = [
   "episodeDistiller",
   "coveringEvidence",
   "deadZoneMergeReview",
+  "landscapeCuration",
   "finalizeDistille",
   "mergeActivationFinalize",
 ] as const;
@@ -130,6 +131,11 @@ export const distillationQueueEventTypeValues = [
   "enqueued",
   "migration_mapped",
   "migration_failed",
+  "phase_changed",
+  "policy_decided",
+  "downstream_linked",
+  "rollback_started",
+  "rollback_completed",
 ] as const;
 export const distillationQueueMigrationStatusValues = ["migrated", "skipped", "failed"] as const;
 export const distillationTargetStatusValues = [
@@ -224,6 +230,7 @@ export const landscapeReviewItemSourceValues = [
   "contradiction_detection",
 ] as const;
 export const landscapeReviewItemReasonValues = [
+  "duplicate_candidate",
   "used_baseline_lost",
   "baseline_off_topic",
   "baseline_wrong",
@@ -257,6 +264,50 @@ export const landscapeReviewItemProposedActionValues = [
   "review_contradiction",
 ] as const;
 export const landscapeReviewItemConfidenceValues = ["low", "medium", "high"] as const;
+export const landscapeCurationFindingTypeValues = [
+  "duplicate_candidate",
+  "reachability_gap",
+  "stale_knowledge",
+  "applicability_issue",
+  "contradiction_candidate",
+] as const;
+export const landscapeCurationPhaseValues = [
+  "evaluate",
+  "preflight",
+  "llm_review",
+  "policy",
+  "awaiting_downstream",
+  "mutation",
+  "postcheck",
+  "rollback",
+] as const;
+export const landscapeCurationDecisionValues = [
+  "merge_review",
+  "deprecate_duplicate",
+  "repair_scope",
+  "keep_separate",
+  "needs_evidence",
+  "observe",
+  "escalate",
+] as const;
+export const landscapeCurationDispositionValues = [
+  "auto_execute",
+  "enqueue_downstream",
+  "record_only",
+  "await_evidence",
+  "blocked",
+] as const;
+export const landscapeCurationRollbackStatusValues = [
+  "not_requested",
+  "pending",
+  "completed",
+  "failed",
+] as const;
+export const landscapeCurationLinkRoleValues = [
+  "merge_review",
+  "merge_finalize",
+  "evidence_repair",
+] as const;
 export const landscapeReviewItemCandidateLinkStatusValues = [
   "draft_created",
   "review_required",

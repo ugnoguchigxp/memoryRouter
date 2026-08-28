@@ -1742,6 +1742,7 @@ export type LandscapeReviewItemSource =
   | "contradiction_detection";
 
 export type LandscapeReviewItemReason =
+  | "duplicate_candidate"
   | "used_baseline_lost"
   | "baseline_off_topic"
   | "baseline_wrong"
@@ -1856,6 +1857,38 @@ export type LandscapeReviewItemsListResponse = {
   items: LandscapeReviewItem[];
   count: number;
 };
+
+export type LandscapeCurationJobStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "skipped"
+  | "failed"
+  | "paused";
+
+export type LandscapeCurationJob = {
+  id: string;
+  reviewItemId: string | null;
+  findingType:
+    | "duplicate_candidate"
+    | "reachability_gap"
+    | "stale_knowledge"
+    | "applicability_issue"
+    | "contradiction_candidate";
+  subjectKnowledgeId: string;
+  candidateKnowledgeIds: string[];
+  status: LandscapeCurationJobStatus;
+  phase: string;
+  decision: string | null;
+  disposition: string | null;
+  priority: number;
+  lastError: string | null;
+  lastOutcomeKind: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LandscapeCurationJobListResponse = { items: LandscapeCurationJob[] };
 
 export type LandscapeContradictionOverlayItem = {
   reviewItemId: string;
@@ -2356,6 +2389,7 @@ export type RuntimeSettingsEditable = {
       mcpEvidence: RuntimeSettingsRoute;
     };
     deadZoneMergeReview: RuntimeSettingsRoute;
+    landscapeCuration: RuntimeSettingsRoute;
     finalizeDistille: RuntimeSettingsRoute;
     mergeActivationFinalize: RuntimeSettingsRoute;
     agenticCompile: {
@@ -2441,6 +2475,7 @@ export type RuntimeSettingsView = RuntimeSettingsEditable & {
         mcpEvidence: RuntimeEffectiveRouteTargets;
       };
       deadZoneMergeReview: RuntimeEffectiveRouteTargets;
+      landscapeCuration: RuntimeEffectiveRouteTargets;
       finalizeDistille: RuntimeEffectiveRouteTargets;
       mergeActivationFinalize: RuntimeEffectiveRouteTargets;
       agenticCompile: RuntimeEffectiveRouteTargets;
@@ -2991,6 +3026,13 @@ export async function fetchLandscapeSnapshot(input?: {
 
 export async function fetchLandscapeSnapshotCacheStatus(): Promise<LandscapeSnapshotCacheStatus> {
   return getJson<LandscapeSnapshotCacheStatus>("/api/graph/landscape/cache-status");
+}
+
+export async function fetchUnresolvedLandscapeCurationJobs(): Promise<LandscapeCurationJob[]> {
+  const response = await getJson<LandscapeCurationJobListResponse>(
+    "/api/graph/landscape/curation-jobs?status=unresolved&findingType=all&limit=100",
+  );
+  return response.items;
 }
 
 export async function fetchDeadZoneKnowledgeReview(input?: {
@@ -3557,6 +3599,7 @@ export type DistillationQueueName =
   | "episodeDistiller"
   | "coveringEvidence"
   | "deadZoneMergeReview"
+  | "landscapeCuration"
   | "finalizeDistille"
   | "mergeActivationFinalize";
 export type VisibleDistillationQueueName = Exclude<

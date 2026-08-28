@@ -51,6 +51,12 @@
         <string>{{RUST_COVERING_MIN_INTERVAL_SECONDS}}</string>
         <key>CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS</key>
         <string>{{RUST_QUEUE_EXECUTOR_MAX_CLAIMS}}</string>
+        <key>CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE</key>
+        <string>{{RUST_FINDING_EXECUTION_MODE}}</string>
+        <key>CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE</key>
+        <string>{{RUST_EPISODE_EXECUTION_MODE}}</string>
+        <key>CONTEXT_STILL_COMPILE_FOUNDATION_MODE</key>
+        <string>{{COMPILE_FOUNDATION_MODE}}</string>
         <key>CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC</key>
         <string>{{RESIDENT_AGENT_LOG_SYNC}}</string>
         <key>CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS</key>

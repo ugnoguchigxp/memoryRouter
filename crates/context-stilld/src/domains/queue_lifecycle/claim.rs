@@ -59,7 +59,10 @@ pub fn claim_next_queue_job_for_connection(
                   heartbeat_at = CURRENT_TIMESTAMP,
                   updated_at = CURRENT_TIMESTAMP
                 where id = ?2
-                  and status in ('pending', 'paused')
+                  and (
+                    (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+                    or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+                  )
                 "
             ),
             (&worker_id, &id),
@@ -106,8 +109,10 @@ fn pick_next_sql(queue_name: &str, table_name: &str) -> String {
         "
         select id
         from {table_name}
-        where status in ('pending', 'paused')
-          and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+        where (
+          (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+          or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+        )
         order by priority desc, created_at asc, id asc
         limit 1
         "
@@ -192,6 +197,44 @@ mod tests {
 
         assert_eq!(claimed.id, "job-iso-ready");
 
+        std::fs::remove_dir_all(&app_dir).unwrap();
+    }
+
+    #[test]
+    fn rust_claim_does_not_run_an_indefinitely_paused_job() {
+        let app_dir = temp_app_dir("claim_indefinite_pause");
+        let sqlite_path = app_dir.join("queue.sqlite");
+        let mut connection = Connection::open(&sqlite_path).unwrap();
+        create_claim_queue_table(&connection, "finding_candidate_queue");
+        connection
+            .execute_batch(
+                r#"
+                insert into finding_candidate_queue (
+                  id, status, priority, created_at, updated_at, next_run_at
+                ) values (
+                  'job-paused', 'paused', 10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, null
+                );
+                "#,
+            )
+            .unwrap();
+
+        let claimed = claim_next_queue_job_for_connection(
+            &mut connection,
+            "findingCandidate",
+            "worker-paused",
+            90,
+        )
+        .unwrap();
+
+        assert_eq!(claimed, None);
+        let status: String = connection
+            .query_row(
+                "select status from finding_candidate_queue where id = 'job-paused'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "paused");
         std::fs::remove_dir_all(&app_dir).unwrap();
     }
 

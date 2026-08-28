@@ -12,6 +12,11 @@ import {
   type DeadZoneMergeReviewResult,
   deadZoneMergeReviewResultSchema,
 } from "../../shared/schemas/landscape-deadzone-review.schema.js";
+import {
+  landscapeCurationInputSnapshotSchema,
+  landscapeCurationPolicyResultSchema,
+  landscapeCurationResultSchema,
+} from "../../shared/schemas/landscape-curation.schema.js";
 import { appendQueueEvent } from "../queue/core/events.js";
 import { resolveDeadZoneMergeReviewRoute } from "../settings/settings.service.js";
 import {
@@ -27,6 +32,12 @@ import {
   markDeadZoneMergeReviewJobSkipped,
   upsertDeadZoneMergeReviewJob,
 } from "./deadzone-merge-review-queue.repository.js";
+import {
+  findLandscapeCurationJobLinkByQueueJob,
+  getLandscapeCurationJob,
+  updateLandscapeCurationJob,
+  upsertLandscapeCurationJobLink,
+} from "./landscape-curation-queue.repository.js";
 import { recordDeadZoneReviewDecision } from "./landscape-deadzone-review.repository.js";
 
 type KnowledgeSnapshotRow = {
@@ -220,6 +231,182 @@ export async function listDeadZoneMergeReviewQueueJobs(
   return listDeadZoneMergeReviewJobs(query);
 }
 
+export async function reconcileLandscapeCurationMergeReviewJob(jobId: string): Promise<void> {
+  const row = await getDeadZoneMergeReviewQueueRow(jobId);
+  if (!row) return;
+  const curationLink = await findLandscapeCurationJobLinkByQueueJob({
+    queueName: "deadZoneMergeReview",
+    queueJobId: row.id,
+    role: "merge_review",
+  });
+  if (!curationLink) return;
+
+  if (row.status === "failed" || row.status === "skipped") {
+    await upsertLandscapeCurationJobLink({
+      curationJobId: curationLink.curationJobId,
+      role: "merge_review",
+      queueName: "deadZoneMergeReview",
+      queueJobId: row.id,
+      status: row.status,
+      outcomeKind: row.lastOutcomeKind,
+      metadata: { ...curationLink.metadata, autonomous: true },
+      completedAt: row.completedAt,
+    });
+    await updateLandscapeCurationJob(curationLink.curationJobId, {
+      status: "failed",
+      phase: "awaiting_downstream",
+      nextRunAt: null,
+      lastError: row.lastError ?? `merge review ${row.status}`,
+      lastOutcomeKind: `downstream_${row.lastOutcomeKind ?? row.status}`,
+      completedAt: null,
+    });
+    return;
+  }
+  if (row.status !== "completed") return;
+
+  const parsedResult = deadZoneMergeReviewResultSchema.safeParse(row.result);
+  if (!parsedResult.success) {
+    await updateLandscapeCurationJob(curationLink.curationJobId, {
+      status: "failed",
+      phase: "awaiting_downstream",
+      nextRunAt: null,
+      lastError: "merge review completed with an invalid result",
+      lastOutcomeKind: "downstream_invalid_result",
+      completedAt: null,
+    });
+    return;
+  }
+  const result = parsedResult.data;
+  await upsertLandscapeCurationJobLink({
+    curationJobId: curationLink.curationJobId,
+    role: "merge_review",
+    queueName: "deadZoneMergeReview",
+    queueJobId: row.id,
+    status: "completed",
+    outcomeKind: result.decision,
+    metadata: { ...curationLink.metadata, autonomous: true },
+    completedAt: row.completedAt ?? new Date(),
+  });
+
+  const curation = await getLandscapeCurationJob(curationLink.curationJobId);
+  const curationInput = landscapeCurationInputSnapshotSchema.safeParse(curation?.inputSnapshot);
+  const curationResult = landscapeCurationResultSchema.safeParse(curation?.result);
+  const curationPolicy = landscapeCurationPolicyResultSchema.safeParse(curation?.policyResult);
+  const canonicalSnapshot = curationInput.success
+    ? curationInput.data.candidates.find((candidate) => candidate.id === row.canonicalKnowledgeId)
+    : undefined;
+  const autonomousExactDuplicate = Boolean(
+    curationInput.success &&
+      curationResult.success &&
+      curationPolicy.success &&
+      curationPolicy.data.disposition === "enqueue_downstream" &&
+      curationPolicy.data.releaseMode === "auto_bounded" &&
+      curationPolicy.data.reasonCodes.includes("AUTONOMOUS_SAFE_DOWNSTREAM") &&
+      curationResult.data.canonicalKnowledgeId === row.canonicalKnowledgeId &&
+      curationInput.data.subject.id === row.deadZoneKnowledgeId &&
+      canonicalSnapshot &&
+      curationInput.data.subject.bodyHash === canonicalSnapshot.bodyHash &&
+      curationInput.data.subject.appliesToHash === canonicalSnapshot.appliesToHash,
+  );
+  const proposedBodyPreservesCanonical = Boolean(
+    canonicalSnapshot &&
+      result.proposedCanonicalBody?.trim() &&
+      hashBody(result.proposedCanonicalBody.trim()) === canonicalSnapshot.bodyHash,
+  );
+  const autoFinalizeEligible =
+    result.decision === "merge_recommended" &&
+    result.confidence === "high" &&
+    result.blockers.length === 0 &&
+    autonomousExactDuplicate &&
+    proposedBodyPreservesCanonical;
+  if (result.decision === "merge_recommended" && !autoFinalizeEligible) {
+    await updateLandscapeCurationJob(curationLink.curationJobId, {
+      status: "completed",
+      phase: "policy",
+      nextRunAt: null,
+      lastError: null,
+      lastOutcomeKind: "downstream_merge_not_auto_eligible",
+      completedAt: new Date(),
+    });
+    return;
+  }
+  if (!autoFinalizeEligible) {
+    await updateLandscapeCurationJob(curationLink.curationJobId, {
+      status: "completed",
+      phase: "policy",
+      nextRunAt: null,
+      lastError: null,
+      lastOutcomeKind: `downstream_${result.decision}`,
+      completedAt: new Date(),
+    });
+    return;
+  }
+
+  try {
+    const { createMergeActivationFinalizeJob } = await import(
+      "./merge-activation-finalize.service.js"
+    );
+    const finalize = await createMergeActivationFinalizeJob(row.id, {
+      curationJobId: curationLink.curationJobId,
+      autonomousExactDuplicate: true,
+    });
+    await upsertLandscapeCurationJobLink({
+      curationJobId: curationLink.curationJobId,
+      role: "merge_finalize",
+      queueName: "mergeActivationFinalize",
+      queueJobId: finalize.id,
+      status: finalize.status,
+      metadata: {
+        autonomous: true,
+        exactDuplicate: true,
+        mergeReviewJobId: row.id,
+      },
+      completedAt:
+        finalize.status === "completed" || finalize.status === "skipped" ? new Date() : null,
+    });
+    await appendQueueEvent({
+      queueName: "landscapeCuration",
+      queueJobId: curationLink.curationJobId,
+      eventType: "downstream_linked",
+      message: "merge review automatically delegated to finalize",
+      metadata: {
+        downstreamQueue: "mergeActivationFinalize",
+        downstreamJobId: finalize.id,
+      },
+    });
+    if (finalize.status === "completed") {
+      await updateLandscapeCurationJob(curationLink.curationJobId, {
+        status: "completed",
+        phase: "postcheck",
+        nextRunAt: null,
+        lastError: null,
+        lastOutcomeKind: "downstream_completed",
+        completedAt: new Date(),
+      });
+    } else if (finalize.status === "failed" || finalize.status === "skipped") {
+      await updateLandscapeCurationJob(curationLink.curationJobId, {
+        status: "failed",
+        phase: "awaiting_downstream",
+        nextRunAt: null,
+        lastError: `existing finalize job is ${finalize.status}`,
+        lastOutcomeKind: `downstream_finalize_${finalize.status}`,
+        completedAt: null,
+      });
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateLandscapeCurationJob(curationLink.curationJobId, {
+      status: "failed",
+      phase: "awaiting_downstream",
+      nextRunAt: null,
+      lastError: message,
+      lastOutcomeKind: "downstream_finalize_failed",
+      completedAt: null,
+    });
+    throw error;
+  }
+}
+
 export async function processDeadZoneMergeReviewJob(
   jobId: string,
   signal?: AbortSignal,
@@ -260,33 +447,90 @@ export async function processDeadZoneMergeReviewJob(
       reason: "knowledge status changed before review",
       result,
     });
+    const curationLink = await findLandscapeCurationJobLinkByQueueJob({
+      queueName: "deadZoneMergeReview",
+      queueJobId: row.id,
+      role: "merge_review",
+    });
+    if (curationLink) {
+      await updateLandscapeCurationJob(curationLink.curationJobId, {
+        status: "failed",
+        phase: "awaiting_downstream",
+        nextRunAt: null,
+        lastError: "knowledge status changed before merge review",
+        lastOutcomeKind: "downstream_stale_input",
+        completedAt: null,
+      });
+    }
     return;
   }
 
+  let result: DeadZoneMergeReviewResult;
   try {
-    const result = await runDeadZoneMergeReviewLlm({ inputSnapshot, signal });
-    await markDeadZoneMergeReviewJobCompleted({
-      id: row.id,
-      result,
-      outcome: result.decision,
-    });
-    await appendQueueEvent({
-      queueName: "deadZoneMergeReview",
-      queueJobId: row.id,
-      eventType: "completed",
-      message: "dead-zone merge review completed",
-      metadata: { decision: result.decision },
-    });
+    result = await runDeadZoneMergeReviewLlm({ inputSnapshot, signal });
   } catch (error) {
     const outcome =
       error instanceof DeadZoneMergeReviewParseError ? "parse_failed" : "provider_failed";
+    const attemptCount = (row.attemptCount ?? 0) + 1;
+    const retryable = attemptCount < (row.maxAttempts ?? 2);
+    const retryDelayMs = 60_000 * 5 ** Math.max(0, attemptCount - 1);
+    const retryAt = retryable ? new Date(Date.now() + retryDelayMs) : null;
     await markDeadZoneMergeReviewJobFailed({
       id: row.id,
       error: error instanceof Error ? error.message : String(error),
-      outcome,
+      outcome: retryable ? "retry_scheduled" : outcome,
+      retryAt,
     });
+    const curationLink = await findLandscapeCurationJobLinkByQueueJob({
+      queueName: "deadZoneMergeReview",
+      queueJobId: row.id,
+      role: "merge_review",
+    });
+    if (curationLink) {
+      await upsertLandscapeCurationJobLink({
+        curationJobId: curationLink.curationJobId,
+        role: "merge_review",
+        queueName: "deadZoneMergeReview",
+        queueJobId: row.id,
+        status: retryable ? "paused" : "failed",
+        outcomeKind: retryable ? "retry_scheduled" : outcome,
+        metadata: { ...curationLink.metadata, autonomous: true },
+        completedAt: retryable ? null : new Date(),
+      });
+      await updateLandscapeCurationJob(curationLink.curationJobId, {
+        status: retryable ? "paused" : "failed",
+        phase: "awaiting_downstream",
+        nextRunAt: retryable ? new Date(Date.now() + 30_000) : null,
+        lastError: error instanceof Error ? error.message : String(error),
+        lastOutcomeKind: retryable ? "downstream_merge_review_retrying" : `downstream_${outcome}`,
+        completedAt: retryable ? null : new Date(),
+      });
+    }
+    if (retryable) {
+      await appendQueueEvent({
+        queueName: "deadZoneMergeReview",
+        queueJobId: row.id,
+        eventType: "retried",
+        message: "dead-zone merge review scheduled for automatic retry",
+        metadata: { outcome, attemptCount, retryDelayMs },
+      });
+      return;
+    }
     throw error;
   }
+  await markDeadZoneMergeReviewJobCompleted({
+    id: row.id,
+    result,
+    outcome: result.decision,
+  });
+  await appendQueueEvent({
+    queueName: "deadZoneMergeReview",
+    queueJobId: row.id,
+    eventType: "completed",
+    message: "dead-zone merge review completed",
+    metadata: { decision: result.decision },
+  });
+  await reconcileLandscapeCurationMergeReviewJob(row.id);
 }
 
 export async function applyDeadZoneMergeReviewJob(

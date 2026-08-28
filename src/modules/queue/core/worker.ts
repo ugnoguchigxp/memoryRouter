@@ -35,6 +35,13 @@ import {
   normalizeApplicability,
 } from "../../knowledge/applicability.js";
 import { processDeadZoneMergeReviewJob } from "../../landscape/deadzone-merge-review-queue.service.js";
+import {
+  findLandscapeCurationJobLinkByQueueJob,
+  getLandscapeCurationJob,
+  updateLandscapeCurationJob,
+  upsertLandscapeCurationJobLink,
+} from "../../landscape/landscape-curation-queue.repository.js";
+import { processLandscapeCurationJob } from "../../landscape/landscape-curation.service.js";
 import { processMergeActivationFinalizeJob } from "../../landscape/merge-activation-finalize.worker.js";
 import { LlmProviderHttpError } from "../../llm/provider-http-error.js";
 import { runWithProviderLeaseRouteContext } from "../../settings/provider-lease-route-context.js";
@@ -441,53 +448,101 @@ async function markMergeActivationFinalizeFailed(params: {
   jobId: string;
   attemptCount: number;
   error: string;
+  retryable: boolean;
+  nextRunAt: Date | null;
 }): Promise<void> {
+  const status = params.retryable ? "paused" : "failed";
+  const outcome = params.retryable ? "retry_scheduled" : "failed";
   if (isSqliteBackend()) {
     const sqlite = await getSqliteCoreDatabase();
     sqlite.db
       .query(
         `
         update merge_activation_finalize_queue
-        set status = 'failed',
+        set status = ?,
             attempt_count = ?,
+            next_run_at = ?,
             locked_by = null,
             locked_at = null,
             heartbeat_at = null,
             last_error = ?,
-            last_outcome_kind = 'failed',
+            last_outcome_kind = ?,
             updated_at = ?
         where id = ?
       `,
       )
-      .run(params.attemptCount, params.error, new Date().toISOString(), params.jobId);
-    return;
+      .run(
+        status,
+        params.attemptCount,
+        params.nextRunAt?.toISOString() ?? null,
+        params.error,
+        outcome,
+        new Date().toISOString(),
+        params.jobId,
+      );
+  } else {
+    await db
+      .update(mergeActivationFinalizeQueue)
+      .set({
+        status,
+        attemptCount: params.attemptCount,
+        nextRunAt: params.nextRunAt,
+        lockedBy: null,
+        lockedAt: null,
+        heartbeatAt: null,
+        lastError: params.error,
+        lastOutcomeKind: outcome,
+        updatedAt: new Date(),
+      })
+      .where(eq(mergeActivationFinalizeQueue.id, params.jobId));
   }
-  await db
-    .update(mergeActivationFinalizeQueue)
-    .set({
-      status: "failed",
-      attemptCount: params.attemptCount,
-      lockedBy: null,
-      lockedAt: null,
-      heartbeatAt: null,
+  const curationLink = await findLandscapeCurationJobLinkByQueueJob({
+    queueName: "mergeActivationFinalize",
+    queueJobId: params.jobId,
+    role: "merge_finalize",
+  });
+  if (curationLink) {
+    await upsertLandscapeCurationJobLink({
+      curationJobId: curationLink.curationJobId,
+      role: "merge_finalize",
+      queueName: "mergeActivationFinalize",
+      queueJobId: params.jobId,
+      status,
+      outcomeKind: outcome,
+      metadata: curationLink.metadata,
+    });
+    await updateLandscapeCurationJob(curationLink.curationJobId, {
+      status,
+      phase: "awaiting_downstream",
+      nextRunAt: params.retryable ? new Date(Date.now() + 30_000) : null,
       lastError: params.error,
-      lastOutcomeKind: "failed",
-      updatedAt: new Date(),
-    })
-    .where(eq(mergeActivationFinalizeQueue.id, params.jobId));
+      lastOutcomeKind: params.retryable
+        ? "downstream_finalize_retrying"
+        : "downstream_finalize_failed",
+      completedAt: params.retryable ? null : new Date(),
+    });
+  }
 }
 
-async function getMergeActivationFinalizeAttemptCount(jobId: string): Promise<number> {
+async function getMergeActivationFinalizeRetryState(
+  jobId: string,
+): Promise<{ attemptCount: number; maxAttempts: number }> {
   if (isSqliteBackend()) {
     const row = await sqliteGetRow("merge_activation_finalize_queue", jobId);
-    return Number(row?.attempt_count ?? 0);
+    return {
+      attemptCount: Number(row?.attempt_count ?? 0),
+      maxAttempts: Number(row?.max_attempts ?? 2),
+    };
   }
   const [current] = await db
     .select()
     .from(mergeActivationFinalizeQueue)
     .where(eq(mergeActivationFinalizeQueue.id, jobId))
     .limit(1);
-  return current?.attemptCount ?? 0;
+  return {
+    attemptCount: current?.attemptCount ?? 0,
+    maxAttempts: current?.maxAttempts ?? 2,
+  };
 }
 
 async function markFinalizeFailed(params: {
@@ -1939,6 +1994,12 @@ export async function runQueueWorkerOnce(params: {
                   signal: pauseController.signal,
                   run: (signal) => processDeadZoneMergeReviewJob(claimed.id, signal),
                 });
+              } else if (params.queueName === "landscapeCuration") {
+                await runWithTimeout({
+                  timeoutMs: groupedConfig.distillation.coverEvidenceTimeoutMs,
+                  signal: pauseController.signal,
+                  run: (signal) => processLandscapeCurationJob(claimed.id, signal),
+                });
               } else if (params.queueName === "mergeActivationFinalize") {
                 await runWithTimeout({
                   timeoutMs: groupedConfig.distillation.timeoutMs,
@@ -2108,13 +2169,68 @@ export async function runQueueWorkerOnce(params: {
       });
     } else if (params.queueName === "deadZoneMergeReview") {
       // The merge-review service records job failure details so it can classify parse/provider failures.
+    } else if (params.queueName === "landscapeCuration") {
+      const current = await getLandscapeCurationJob(claimed.id);
+      const attemptCount = (current?.attemptCount ?? 0) + 1;
+      const retryable = attemptCount < (current?.maxAttempts ?? 3);
+      const retryDelayMs = [60_000, 300_000, 1_800_000][Math.max(0, attemptCount - 1)] ?? 1_800_000;
+      await updateLandscapeCurationJob(claimed.id, {
+        status: retryable ? "paused" : "failed",
+        attemptCount,
+        nextRunAt: retryable ? new Date(Date.now() + retryDelayMs) : null,
+        lockedBy: null,
+        lockedAt: null,
+        heartbeatAt: null,
+        lastError: message,
+        lastOutcomeKind: retryable ? "retry_scheduled" : "failed",
+        completedAt: retryable ? null : new Date(),
+      });
+      if (retryable) {
+        await appendQueueEvent({
+          queueName: params.queueName,
+          queueJobId: claimed.id,
+          eventType: "retried",
+          message: "curation job scheduled for automatic retry",
+          metadata: { error: message, attemptCount, retryDelayMs },
+        });
+        return {
+          ok: false,
+          queue: params.queueName,
+          worker: params.workerId,
+          idle: false,
+          claimedJobId: claimed.id,
+          message: `curation retry scheduled: ${message}`,
+        };
+      }
     } else if (params.queueName === "mergeActivationFinalize") {
-      const currentAttempt = await getMergeActivationFinalizeAttemptCount(claimed.id);
+      const current = await getMergeActivationFinalizeRetryState(claimed.id);
+      const attemptCount = current.attemptCount + 1;
+      const retryable = attemptCount < current.maxAttempts;
+      const retryDelayMs = 60_000 * 5 ** Math.max(0, attemptCount - 1);
       await markMergeActivationFinalizeFailed({
         jobId: claimed.id,
-        attemptCount: currentAttempt + 1,
+        attemptCount,
         error: message,
+        retryable,
+        nextRunAt: retryable ? new Date(Date.now() + retryDelayMs) : null,
       });
+      if (retryable) {
+        await appendQueueEvent({
+          queueName: params.queueName,
+          queueJobId: claimed.id,
+          eventType: "retried",
+          message: "merge activation finalize scheduled for automatic retry",
+          metadata: { error: message, attemptCount, retryDelayMs },
+        });
+        return {
+          ok: false,
+          queue: params.queueName,
+          worker: params.workerId,
+          idle: false,
+          claimedJobId: claimed.id,
+          message: `merge activation finalize retry scheduled: ${message}`,
+        };
+      }
     } else {
       const current = await getFinalizeJobById(claimed.id);
       const currentAttempt = current?.attemptCount ?? 0;

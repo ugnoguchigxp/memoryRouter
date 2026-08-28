@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -61,6 +62,15 @@ import {
   searchEpisodes,
 } from "../src/modules/episodic-memory/episode-card.service.js";
 import { recordCompileRunKnowledgeFeedback } from "../src/modules/knowledge/knowledge-feedback.service.js";
+import {
+  countLandscapeCurationDailyDownstreamUsage,
+  enqueueLandscapeCurationJob,
+  listLandscapeCurationJobs,
+  updateLandscapeCurationJob,
+  upsertLandscapeCurationJobLink,
+} from "../src/modules/landscape/landscape-curation-queue.repository.js";
+import { processLandscapeCurationJob } from "../src/modules/landscape/landscape-curation.service.js";
+import { processMergeActivationFinalizeJob } from "../src/modules/landscape/merge-activation-finalize.worker.js";
 import { readVibeMemoryByTokenWindow } from "../src/modules/memoryReader/reader.service.js";
 import {
   claimNextJobWithProviderLease,
@@ -70,7 +80,7 @@ import {
   enabledProviderPoolsForQueues,
   priorityQueuesForProviderPool,
 } from "../src/modules/queue/core/scheduler.js";
-import { retryQueueJob } from "../src/modules/queue/core/state.js";
+import { pauseQueueJob, retryQueueJob } from "../src/modules/queue/core/state.js";
 import {
   enqueueFindingJob,
   runQueueWorkerOnce,
@@ -136,6 +146,363 @@ describe("sqlite runtime support repositories", () => {
 
     await deleteSettingsRow("runtime", "sqlite-test");
     expect(await findSettingsRow("runtime", "sqlite-test")).toBeNull();
+  });
+
+  test("processes merge activation finalize jobs with the SQLite backend", async () => {
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const now = "2026-08-27T00:00:00.000Z";
+    const canonicalBody = "Canonical body";
+    const deadZoneBody = "Duplicate body";
+    const bodyHash = (body: string) => createHash("sha256").update(body).digest("hex");
+    const insertKnowledge = sqlite.db.query(
+      `insert into knowledge_items (
+         id, type, status, scope, classification_status, polarity, intent_tags,
+         title, body, applies_to, confidence, importance, metadata, created_at, updated_at
+       ) values (?, 'rule', 'active', 'global', 'classified', 'positive', '[]', ?, ?, '{}', 90, 80, '{}', ?, ?)`,
+    );
+    insertKnowledge.run("canonical-1", "Canonical", canonicalBody, now, now);
+    insertKnowledge.run("duplicate-1", "Duplicate", deadZoneBody, now, now);
+
+    sqlite.db
+      .query(
+        `insert into merge_activation_finalize_queue (
+           id, merge_review_job_id, dead_zone_knowledge_id, canonical_knowledge_id,
+           idempotency_key, status, priority, attempt_count, max_attempts, provider,
+           input_snapshot, payload, metadata, created_at, updated_at
+         ) values (?, ?, ?, ?, ?, 'pending', 70, 0, 2, 'local-llm', ?, '{}', '{}', ?, ?)`,
+      )
+      .run(
+        "finalize-1",
+        "merge-review-1",
+        "duplicate-1",
+        "canonical-1",
+        "merge-activation-finalize:merge-review-1",
+        JSON.stringify({
+          mergeReviewJob: {
+            id: "merge-review-1",
+            proposedCanonicalBody: "Merged canonical body",
+            proposedSummary: "Merged",
+          },
+          deadZone: { id: "duplicate-1", status: "active", bodyHash: bodyHash(deadZoneBody) },
+          canonical: { id: "canonical-1", status: "active", bodyHash: bodyHash(canonicalBody) },
+        }),
+        now,
+        now,
+      );
+
+    await processMergeActivationFinalizeJob("finalize-1");
+
+    expect(
+      sqlite.db
+        .query<{ status: string; last_outcome_kind: string }, []>(
+          "select status, last_outcome_kind from merge_activation_finalize_queue where id = 'finalize-1'",
+        )
+        .get(),
+    ).toEqual({ status: "completed", last_outcome_kind: "scope_refined" });
+    expect(
+      sqlite.db
+        .query<{ body: string }, []>("select body from knowledge_items where id = 'canonical-1'")
+        .get()?.body,
+    ).toBe("Merged canonical body");
+    expect(
+      sqlite.db
+        .query<{ status: string }, []>(
+          "select status from knowledge_items where id = 'duplicate-1'",
+        )
+        .get()?.status,
+    ).toBe("deprecated");
+  });
+
+  test("finalizes autonomous exact duplicates without rewriting the canonical body", async () => {
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const now = "2026-08-27T00:00:00.000Z";
+    const body = "Identical operational guidance";
+    const bodyHash = createHash("sha256").update(body).digest("hex");
+    const insertKnowledge = sqlite.db.query(
+      `insert into knowledge_items (
+         id, type, status, scope, classification_status, polarity, intent_tags,
+         title, body, applies_to, confidence, importance, metadata, created_at, updated_at
+       ) values (?, 'rule', 'active', 'global', 'classified', 'positive', '[]', ?, ?, '{}', 90, 80, '{}', ?, ?)`,
+    );
+    insertKnowledge.run("autonomous-canonical", "Canonical", body, now, now);
+    insertKnowledge.run("autonomous-duplicate", "Duplicate", body, now, now);
+    sqlite.db
+      .query(
+        `insert into landscape_curation_queue (
+           id, finding_type, subject_knowledge_id, fingerprint, idempotency_key,
+           evidence_hash, status, phase, input_snapshot, created_at, updated_at
+         ) values (
+           'autonomous-curation', 'duplicate_candidate', 'autonomous-duplicate',
+           'autonomous-fingerprint', 'autonomous-idempotency', 'evidence',
+           'completed', 'awaiting_downstream', '{}', ?, ?
+         )`,
+      )
+      .run(now, now);
+    sqlite.db
+      .query(
+        `insert into merge_activation_finalize_queue (
+           id, merge_review_job_id, dead_zone_knowledge_id, canonical_knowledge_id,
+           idempotency_key, status, priority, attempt_count, max_attempts, provider,
+           input_snapshot, payload, metadata, created_at, updated_at
+         ) values (?, ?, ?, ?, ?, 'pending', 70, 0, 2, 'local-llm', ?, '{}', '{}', ?, ?)`,
+      )
+      .run(
+        "autonomous-finalize",
+        "autonomous-merge-review",
+        "autonomous-duplicate",
+        "autonomous-canonical",
+        "merge-activation-finalize:autonomous-merge-review",
+        JSON.stringify({
+          mergeReviewJob: {
+            id: "autonomous-merge-review",
+            proposedCanonicalBody: body,
+            proposedSummary: "Duplicate",
+          },
+          deadZone: {
+            id: "autonomous-duplicate",
+            status: "active",
+            bodyHash,
+            appliesTo: {},
+          },
+          canonical: {
+            id: "autonomous-canonical",
+            status: "active",
+            bodyHash,
+            appliesTo: {},
+          },
+        }),
+        now,
+        now,
+      );
+    sqlite.db
+      .query(
+        `insert into landscape_curation_job_links (
+           id, curation_job_id, role, queue_name, queue_job_id, status, metadata,
+           created_at, updated_at
+         ) values (
+           'autonomous-finalize-link', 'autonomous-curation', 'merge_finalize',
+           'mergeActivationFinalize', 'autonomous-finalize', 'pending',
+           '{"autonomous":true,"exactDuplicate":true}', ?, ?
+         )`,
+      )
+      .run(now, now);
+
+    await processMergeActivationFinalizeJob("autonomous-finalize");
+
+    expect(
+      sqlite.db
+        .query<{ body: string }, []>(
+          "select body from knowledge_items where id = 'autonomous-canonical'",
+        )
+        .get()?.body,
+    ).toBe(body);
+    expect(
+      sqlite.db
+        .query<{ status: string }, []>(
+          "select status from knowledge_items where id = 'autonomous-duplicate'",
+        )
+        .get()?.status,
+    ).toBe("deprecated");
+    expect(
+      sqlite.db
+        .query<{ status: string; last_outcome_kind: string }, []>(
+          "select status, last_outcome_kind from merge_activation_finalize_queue where id = 'autonomous-finalize'",
+        )
+        .get(),
+    ).toEqual({ status: "completed", last_outcome_kind: "duplicate_deprecated" });
+    expect(
+      sqlite.db
+        .query<{ status: string; phase: string }, []>(
+          "select status, phase from landscape_curation_queue where id = 'autonomous-curation'",
+        )
+        .get(),
+    ).toEqual({ status: "completed", phase: "postcheck" });
+  });
+
+  test("keeps non-terminal Curation downstream work on automatic polling", async () => {
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const now = new Date().toISOString();
+    sqlite.db
+      .query(
+        `insert into knowledge_items (
+           id, type, status, scope, classification_status, polarity, intent_tags,
+           title, body, applies_to, confidence, importance, metadata, created_at, updated_at
+         ) values (
+           'poll-subject', 'rule', 'active', 'global', 'classified', 'positive', '[]',
+           'Subject', 'Body', '{}', 90, 80, '{}', ?, ?
+         )`,
+      )
+      .run(now, now);
+    const snapshot = {
+      schemaVersion: 1,
+      capturedAt: now,
+      finding: {
+        type: "duplicate_candidate",
+        reviewItemId: null,
+        evidenceHash: "poll-evidence",
+      },
+      subject: {
+        id: "poll-subject",
+        title: "Subject",
+        body: "Body",
+        bodyHash: createHash("sha256").update("Body").digest("hex"),
+        appliesToHash: createHash("sha256").update("{}").digest("hex"),
+        status: "active",
+        type: "rule",
+        polarity: "positive",
+        scope: "global",
+        classificationStatus: "classified",
+        projectRef: null,
+        repoKey: null,
+        repoPath: null,
+        appliesTo: {},
+        confidence: 90,
+        importance: 80,
+        updatedAt: now,
+        createdAt: now,
+        lastVerifiedAt: null,
+      },
+      candidates: [],
+      evidence: [],
+      usage: {},
+      lineage: {},
+      reviewItem: null,
+      capabilities: {},
+      versions: { detector: "v1", policy: "v1", prompt: "v1" },
+    };
+    sqlite.db
+      .query(
+        `insert into landscape_curation_queue (
+           id, finding_type, subject_knowledge_id, fingerprint, idempotency_key,
+           evidence_hash, status, phase, input_snapshot, created_at, updated_at
+         ) values (
+           'poll-curation', 'duplicate_candidate', 'poll-subject', 'poll-fingerprint',
+           'poll-idempotency', 'poll-evidence', 'running', 'awaiting_downstream', ?, ?, ?
+         )`,
+      )
+      .run(JSON.stringify(snapshot), now, now);
+    sqlite.db
+      .query(
+        `insert into dead_zone_merge_review_queue (
+           id, dead_zone_knowledge_id, canonical_knowledge_id, status, input_snapshot,
+           result, metadata, payload, provider, created_at, updated_at
+         ) values (
+           'poll-merge-review', 'poll-subject', 'poll-subject', 'pending', '{}', '{}',
+           '{}', '{}', 'local-llm', ?, ?
+         )`,
+      )
+      .run(now, now);
+    sqlite.db
+      .query(
+        `insert into landscape_curation_job_links (
+           id, curation_job_id, role, queue_name, queue_job_id, status, metadata,
+           created_at, updated_at
+         ) values (
+           'poll-link', 'poll-curation', 'merge_review', 'deadZoneMergeReview',
+           'poll-merge-review', 'pending', '{}', ?, ?
+         )`,
+      )
+      .run(now, now);
+
+    await processLandscapeCurationJob("poll-curation");
+
+    const row = sqlite.db
+      .query<{ status: string; phase: string; next_run_at: string | null }, []>(
+        "select status, phase, next_run_at from landscape_curation_queue where id = 'poll-curation'",
+      )
+      .get();
+    expect(row?.status).toBe("paused");
+    expect(row?.phase).toBe("awaiting_downstream");
+    expect(row?.next_run_at).not.toBeNull();
+  });
+
+  test("deduplicates unresolved SQLite curation jobs before applying the list limit", async () => {
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const now = "2026-08-27T00:00:00.000Z";
+    sqlite.db
+      .query(
+        `insert into knowledge_items (
+           id, type, status, scope, classification_status, polarity, intent_tags,
+           title, body, applies_to, confidence, importance, metadata, created_at, updated_at
+         ) values ('subject-1', 'rule', 'active', 'global', 'classified', 'positive', '[]',
+                   'Subject', 'Body', '{}', 90, 80, '{}', ?, ?)`,
+      )
+      .run(now, now);
+    const snapshot = {
+      schemaVersion: 1 as const,
+      capturedAt: now,
+      finding: { type: "duplicate_candidate" as const, reviewItemId: null, evidenceHash: "hash" },
+      subject: {
+        id: "subject-1",
+        title: "Subject",
+        body: "Body",
+        bodyHash: "body-hash",
+        appliesToHash: "applies-to-hash",
+        status: "active",
+        type: "rule",
+        polarity: "positive",
+        scope: "global",
+        classificationStatus: "classified",
+        projectRef: null,
+        repoKey: null,
+        repoPath: null,
+        appliesTo: {},
+        confidence: 90,
+        importance: 80,
+        updatedAt: now,
+        createdAt: now,
+        lastVerifiedAt: null,
+      },
+      candidates: [],
+      evidence: [],
+      usage: {},
+      lineage: {},
+      reviewItem: null,
+      capabilities: {},
+      versions: { detector: "v1", policy: "v1", prompt: "v1" },
+    };
+    const createInput = (idempotencyKey: string) => ({
+      findingType: "duplicate_candidate" as const,
+      subjectKnowledgeId: "subject-1",
+      candidateKnowledgeIds: [],
+      repositoryIdentity: {},
+      fingerprint: "same-fingerprint",
+      idempotencyKey,
+      evidenceHash: "hash",
+      priority: 50,
+      provider: "local-llm",
+      inputSnapshot: snapshot,
+    });
+
+    const first = await enqueueLandscapeCurationJob(createInput("curation:first"));
+    const duplicate = await enqueueLandscapeCurationJob(createInput("curation:second"));
+    expect(duplicate.id).toBe(first.id);
+
+    await updateLandscapeCurationJob(first.id, { disposition: "enqueue_downstream" });
+    expect(
+      await countLandscapeCurationDailyDownstreamUsage({ since: new Date("2026-08-26") }),
+    ).toBe(0);
+    await upsertLandscapeCurationJobLink({
+      curationJobId: first.id,
+      role: "merge_review",
+      queueName: "deadZoneMergeReview",
+      queueJobId: "budgeted-merge-review",
+      status: "pending",
+    });
+    expect(
+      await countLandscapeCurationDailyDownstreamUsage({ since: new Date("2026-08-26") }),
+    ).toBe(1);
+
+    await updateLandscapeCurationJob(first.id, {
+      status: "completed",
+      phase: "awaiting_downstream",
+      completedAt: new Date(now),
+    });
+    const whileDownstream = await enqueueLandscapeCurationJob(createInput("curation:third"));
+    expect(whileDownstream.id).toBe(first.id);
+    expect(
+      (await listLandscapeCurationJobs({ status: "unresolved", limit: 1 })).map((job) => job.id),
+    ).toEqual([first.id]);
   });
 
   test("preserves legacy sqlite episode cards while adding current score columns", async () => {
@@ -2165,6 +2532,49 @@ describe("sqlite runtime support repositories", () => {
       )
       .all();
     expect(leaseCounts).toEqual([{ status: "active", count: 1 }]);
+  });
+
+  test("does not claim an individually paused provider job with an expired schedule", async () => {
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const recorded = await recordVibeMemoryWithDiffEntries({
+      scope: "global",
+      sessionId: "episode-distiller-manual-pause-session",
+      content: "An individually paused job must wait for an explicit resume.",
+      memoryType: "chat",
+      metadata: { projectName: "contextStill", cwd: "/repo/contextStill" },
+      agentDiffs: [],
+    });
+    const job = await enqueueEpisodeDistillerJob({ sourceKey: recorded.memory.id });
+    sqlite.db
+      .query("update episode_distiller_queue set next_run_at = CURRENT_TIMESTAMP where id = ?")
+      .run(job.id);
+
+    await pauseQueueJob({
+      queueName: "episodeDistiller",
+      id: job.id,
+      reason: "manual pause",
+    });
+
+    const paused = sqlite.db
+      .query<{ status: string; next_run_at: string | null }, [string]>(
+        "select status, next_run_at from episode_distiller_queue where id = ?",
+      )
+      .get(job.id);
+    expect(paused).toEqual({ status: "paused", next_run_at: null });
+    const claimed = await claimNextJobWithProviderLease({
+      pool: {
+        id: "local-llm-default",
+        label: "Local LLM",
+        enabled: true,
+        maxConcurrent: 1,
+        staleLeaseSeconds: 120,
+        lowPriorityAgingSeconds: 1800,
+        targets: [{ provider: "local-llm", localLlmModelId: "local-a" }],
+      },
+      priorityQueues: ["episodeDistiller"],
+      workerId: "sqlite-provider-lease-paused-worker",
+    });
+    expect(claimed).toBeNull();
   });
 
   test("uses provider-pool targets instead of stale route local LLM targets", async () => {

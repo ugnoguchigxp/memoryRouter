@@ -80,6 +80,11 @@ function mapReviewItemRow(row: LandscapeReviewItemRow): LandscapeReviewItem {
   });
 }
 
+export async function getLandscapeReviewItem(id: string): Promise<LandscapeReviewItem | null> {
+  const row = await findLandscapeReviewItemRowById(id);
+  return row ? mapReviewItemRow(row) : null;
+}
+
 export async function materializeLandscapeReviewItems(
   input: MaterializeLandscapeReviewItemsInput,
 ): Promise<LandscapeReviewItemMaterializeResult> {

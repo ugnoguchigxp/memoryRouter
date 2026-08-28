@@ -1,0 +1,399 @@
+<article lang="ja">
+  <h1 id="landscape-autonomous-curation-queue-evaluation">
+    LANDSCAPE Autonomous Curation Queue Evaluation
+  </h1>
+  <h2 id="status">Status</h2>
+  <ul>
+    <li>Status: Findings / GO</li>
+    <li>Version: 0.2</li>
+    <li>Last updated: 2026-08-27</li>
+    <li>Scope: 重複知識、DeadZone、到達性修復をLLMへ委譲する案の妥当性評価</li>
+  </ul>
+  <p>
+    結論は<strong>GO</strong>である。継続的な人手判断をLLMへ移す方向は、現在の件数と既存queue
+    architectureに合っている。自動実行の条件と段階解放は、
+    <a href="./landscape-curation-queue-high-level-spec.html"
+      >LANDSCAPE Curation Queue High-Level Specification</a
+    >に定める。
+  </p>
+  <p>
+    推奨する役割は「知識を自由に整理するagent」ではなく、deterministic
+    detectorが作った候補を評価し、typed action planを返すbounded curatorである。mutationの可否はLLM
+    confidenceではなく、別のdeterministic policy gateが決める。
+  </p>
+  <h2 id="autonomous-runtime-decision">0.1 Autonomous runtime decision</h2>
+  <p>
+    実行時のCuration処理に人間承認を置かない。LLM評価後はdeterministic
+    policyが自動委譲、記録のみ、証拠待ち、blockedのいずれかへ決定し、条件不足caseをユーザー判断待ちにしない。未処理または失敗したjobはLANDSCAPE画面に観測用として表示するが、承認操作は提供しない。
+  </p>
+  <p>
+    以下のshadowと人間labelは、policy精度を測るoffline評価手段であり、production
+    jobの状態遷移や完了条件ではない。この節と競合する旧提案は、
+    <a href="./landscape-curation-queue-high-level-spec.html"
+      >Version 1.2 implementation specification</a
+    >を優先する。
+  </p>
+
+  <h2 id="current-system">1. 現行システムの確認</h2>
+  <p>現行実装は、提案された役割の一部をすでに持っている。</p>
+  <ul>
+    <li>
+      Coveringでは、保存前にlexical / semantic
+      dedupeを行い、duplicateまたはnear-duplicateを新規Knowledgeとして保存しない。
+    </li>
+    <li>
+      LANDSCAPEはDeadZone communityを抽出し、知識ごとにmerge、deprecate、keep
+      separate、promote、needs evidenceをheuristicで推薦する。
+    </li>
+    <li>
+      <code>deadZoneMergeReview</code
+      >は、DeadZoneとcanonical候補をLLMへ渡し、merge可否と統合後bodyをstructured resultとして返す。
+    </li>
+    <li>
+      <code>mergeActivationFinalize</code>は入力body hashとstatusを再確認し、merge
+      body、appliesTo union、旧Knowledgeのdeprecationを反映する。
+    </li>
+    <li>
+      現在のUIでは、人間が「Request merge review」と「Send to
+      Finalize」を押す。deprecateは確認dialog後に即時反映し、keep separate、promote、needs
+      evidenceはdecision記録のみを行う。
+    </li>
+  </ul>
+  <p>
+    Queue Dashboardは5つのvisible
+    tabを持つが、内部型には<code>mergeActivationFinalize</code>を含む6つのqueue名がある。そのため新しい「第6のvisible
+    queue」は、実装上は7番目のtechnical queueになる。番号ではなく責務名で扱うべきである。
+  </p>
+
+  <h2 id="live-evidence">2. Live dataによる問題規模の確認</h2>
+  <p>
+    2026-08-26に、稼働中SQLiteをread-only backupへ複製して計測した。LANDSCAPE
+    snapshotは30日、active、limit 1000、relation
+    axes=session/project/sourceで再計算した。数値は時点値であり、将来の運用値を保証しない。
+  </p>
+  <table>
+    <caption>
+      Table: Live corpus and LANDSCAPE observations
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Observation</th>
+        <th scope="col">Value</th>
+        <th scope="col">Interpretation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Knowledge status</td>
+        <td>active 7,810 / draft 138 / deprecated 47</td>
+        <td>人手で全active Knowledgeを継続監視する規模ではない。</td>
+      </tr>
+      <tr>
+        <td>Never selected</td>
+        <td>5,726 / 7,810、73.3%</td>
+        <td>到達性または需要不足の候補が大きい。ただし未選出だけでは品質不良を示さない。</td>
+      </tr>
+      <tr>
+        <td>No direct usage feedback</td>
+        <td>5,632 / 7,810、72.1%</td>
+        <td>LLMの意味判断を検証するoutcome labelが多くのKnowledgeで不足している。</td>
+      </tr>
+      <tr>
+        <td>No source links</td>
+        <td>7,202 / 7,810、92.2%</td>
+        <td>deprecateやmergeで根拠の強弱を比較しにくい。</td>
+      </tr>
+      <tr>
+        <td>30-day activity</td>
+        <td>compile 1,824 runs / feedback 14,592 events</td>
+        <td>観測量はあるが、Knowledgeとcommunityに広く分散している。</td>
+      </tr>
+      <tr>
+        <td>LANDSCAPE communities</td>
+        <td>609 total / 260 DeadZone reachability risk</td>
+        <td>自動triageの価値はある。</td>
+      </tr>
+      <tr>
+        <td>Feedback confidence</td>
+        <td>609 / 609 communitiesがinsufficient</td>
+        <td>community-level signalだけでdestructive actionを決められない。</td>
+      </tr>
+      <tr>
+        <td>DeadZone review items</td>
+        <td>293 items</td>
+        <td>現在の1000件sliceだけでも手動処理は継続困難。</td>
+      </tr>
+      <tr>
+        <td>Current heuristic recommendation</td>
+        <td>deprecate 131 medium / needs evidence 162 low</td>
+        <td>自動処理候補はあるが、high-confidence destructive候補はなかった。</td>
+      </tr>
+      <tr>
+        <td>Existing LLM merge jobs</td>
+        <td>4 reviewed / 4 finalized</td>
+        <td>mechanismの動作確認にはなるが、accuracy評価にはsampleとnegative caseが不足する。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="duplicate-observation">2.1 「同じ文面」と「同じ知識」は一致しない</h3>
+  <p>
+    active Knowledgeには、titleとbodyが完全一致する8 group、余剰30件があった。しかしrepo
+    identityとappliesToまで同一の余剰は0件だった。完全一致文面のすべてが異なるrepositoryまたは異なる適用scopeに属していた。
+  </p>
+  <p>
+    したがって、semantic
+    similarityやLLMの「内容が同じ」という判断だけでmergeしてはならない。repository
+    eligibilityとscope compatibilityをcandidate
+    generation前とmutation直前の両方でfail-closedに適用する必要がある。
+  </p>
+
+  <h2 id="blocking-findings">3. 自動化前のblocking findings</h2>
+  <h3 id="sqlite-gap">3.1 SQLiteでは主要semantic evidenceが利用されていない</h3>
+  <p>現行のSQLite backendでは、次のrepository pathが明示的に空結果を返す。</p>
+  <ul>
+    <li>DeadZone Knowledgeに対する類似Knowledge候補</li>
+    <li>semantic community assignmentとrelation / semantic comparison</li>
+    <li>contradiction detection用Knowledge、recent selection、semantic neighbor pair</li>
+  </ul>
+  <p>
+    この状態では、UIのBest Candidateが空になり、LLM merge
+    reviewへ自動enqueueするpairを作れない。今回の再計算でもsimilarity threshold
+    0.85と0.90の両方で293件すべてにcanonical候補がなかった。LLM
+    queueを追加しても、入力候補の品質不足は解消しない。
+  </p>
+
+  <h3 id="signal-gap">3.2 DeadZoneはquality verdictではない</h3>
+  <p>
+    現行のreachability riskは、active、未選出、累積選出0、embeddingあり、importance /
+    confidence、source
+    density等から算出される。これは「到達されていない」を示すが、「不要」「重複」「誤り」を示さない。新しい、niche、特定repo専用、まだ該当goalが来ていないKnowledgeも同じbucketへ入る。
+  </p>
+  <p>
+    特に全communityでfeedback
+    confidenceがinsufficientであるため、LLMが自然な説明を返しても、そのactionがretrieval
+    outcomeを改善する証拠にはならない。
+  </p>
+
+  <h3 id="mutation-gap">3.3 現行mutationは自動rollback contractを持たない</h3>
+  <p>
+    merge finalizeはstale inputをbody hashで防ぎ、input
+    snapshotも保存する。一方、product-levelのundo action、merge
+    lineageからの自動restore、再playによるnon-regression gateはない。誤mergeはcanonical
+    body変更と旧Knowledge deprecationを同時に起こすため、自動化前にrecoverable
+    mutationとして定義し直す必要がある。
+  </p>
+
+  <h3 id="capacity-gap">3.4 Core queueとLLM capacityを競合させてはならない</h3>
+  <p>
+    計測時点でEpisode queueはpending 1,083 / failed 256、Covering queueはfailed
+    308だった。新しいcuration laneを同じprovider
+    poolへ無制限投入すると、Knowledge生成と利用のcritical
+    pathを遅らせる可能性がある。low-priority、daily budget、aging、queue
+    pauseを独立して設定する必要がある。
+  </p>
+
+  <h2 id="responsibility-boundary">4. 推奨する責務境界</h2>
+  <table>
+    <caption>
+      Table: Curation responsibility boundary
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Stage</th>
+        <th scope="col">Owner</th>
+        <th scope="col">Contract</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Candidate detection</td>
+        <td>Deterministic retrieval</td>
+        <td>
+          repository
+          eligibility、scope、embedding、similarity、usage、source、ageからbounded候補を作る。
+        </td>
+      </tr>
+      <tr>
+        <td>Semantic judgment</td>
+        <td>LLM curator</td>
+        <td>
+          merge、keep separate、repair scope、needs evidence、escalateと根拠をtyped JSONで返す。
+        </td>
+      </tr>
+      <tr>
+        <td>Mutation admission</td>
+        <td>Deterministic policy gate</td>
+        <td>
+          LLM confidenceだけを使わず、scope、evidence、age、usage、replay、canary budgetを検証する。
+        </td>
+      </tr>
+      <tr>
+        <td>Mutation</td>
+        <td>Existing finalizer</td>
+        <td>
+          input hash、status、idempotency、lineage、audit、rollback snapshotを保持して反映する。
+        </td>
+      </tr>
+      <tr>
+        <td>Ambiguous case</td>
+        <td>Deterministic policy</td>
+        <td>
+          LLM disagreement、scope conflict、contradiction、insufficient
+          evidenceを理由code付きblockedまたはawait_evidenceとして自動終端する。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Missing embedding、source link欠落、stale
+    indexなど、deterministicに修復できるものをLLMへ送らない。LLMはsemantic
+    subsumption、矛盾、canonical body compositionのように意味判断が必要な箇所だけを担当する。
+  </p>
+
+  <h2 id="queue-recommendation">5. Queue案の評価</h2>
+  <p>
+    最終形としては、<code>landscapeCuration</code>という新しいvisible
+    laneを設ける価値がある。ただしこれはmerge executorではなく、LANDSCAPE
+    findingを自動発見・評価・routingするorchestratorとする。
+  </p>
+  <ol>
+    <li>Versioned LANDSCAPE snapshotからreview candidateをmaterializeする。</li>
+    <li>同一findingの重複enqueueをidempotency keyで防ぐ。</li>
+    <li>deterministic evidence bundleを固定してLLM curatorへ渡す。</li>
+    <li>LLMはtyped action planとcounter-evidenceを返す。</li>
+    <li>
+      policy gateがauto-resolve、existing merge review、repair candidate、blocked
+      outcomeへroutingする。
+    </li>
+    <li>mergeは既存<code>deadZoneMergeReview</code>とFinalizeを再利用する。</li>
+  </ol>
+  <p>
+    最初のPoCでは新queue
+    tableを作らず、既存<code>landscape_review_items</code>のcandidateに対してshadow
+    evaluationを実行してもよい。accuracyとaction distributionが分かる前にqueue
+    schema、dashboard、schedulerを増やす必要はない。
+  </p>
+
+  <h2 id="automation-policy">6. 初期automation policy</h2>
+  <table>
+    <caption>
+      Table: Initial action policy
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Action</th>
+        <th scope="col">Initial mode</th>
+        <th scope="col">Reason</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Missing embedding / index repair</td>
+        <td>Automatic</td>
+        <td>deterministicで可逆、LLM不要。</td>
+      </tr>
+      <tr>
+        <td>needs evidence</td>
+        <td>Automatic routing</td>
+        <td>source repairまたはobservation待ちへ送るだけでKnowledgeを破壊しない。</td>
+      </tr>
+      <tr>
+        <td>keep separate</td>
+        <td>Automatic with TTL</td>
+        <td>同じfindingを一定期間抑制し、signal変化後に再評価できる。</td>
+      </tr>
+      <tr>
+        <td>appliesTo / reachability repair</td>
+        <td>Blocked until replay gate</td>
+        <td>replay contractが実装されるまでは自動終端し、実装後にbounded automationへ解放する。</td>
+      </tr>
+      <tr>
+        <td>merge / deprecate</td>
+        <td>Exact duplicate only</td>
+        <td>
+          V1はbodyとnormalized
+          appliesToが完全一致する場合だけ自動deprecateし、それ以外はblockedにする。
+        </td>
+      </tr>
+      <tr>
+        <td>contradiction / cross-repository candidate</td>
+        <td>Automatic block</td>
+        <td>scopeまたはpolicy conflictをmutationせず、理由付きterminal outcomeとして記録する。</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="experiment">7. 検証計画</h2>
+  <h3 id="phase-0">Phase 0: Evidence parity</h3>
+  <ul>
+    <li>
+      SQLiteでscope-aware nearest neighbor、semantic community comparison、contradiction
+      candidateを実装する。
+    </li>
+    <li>
+      PostgreSQLとSQLiteで同一fixtureのcandidate pair、similarity order、scope
+      exclusionを一致させる。
+    </li>
+    <li>同文面・異repo fixtureを必ずnegative caseに含める。</li>
+  </ul>
+
+  <h3 id="phase-1">Phase 1: Shadow evaluation</h3>
+  <ul>
+    <li>既存review itemを変更せず、最低200件のstratified caseでLLM action planだけを保存する。</li>
+    <li>merge、deprecate、repair、keep separate、needs evidence、contradictionを含める。</li>
+    <li>人間labelは初期評価用に限定し、2者labelと不一致adjudicationでreferenceを作る。</li>
+    <li>現行heuristic、LLM curator、heuristic + LLM + policy gateを同一候補で比較する。</li>
+  </ul>
+
+  <h3 id="phase-2">Phase 2: Autonomous observation</h3>
+  <ul>
+    <li>UIに未処理job、LLM recommendation、counter-evidence、policy gate結果を表示する。</li>
+    <li>UI表示は観測専用とし、production jobのaccept、override、dismissを要求しない。</li>
+    <li>既存4件の成功だけを精度根拠に使わない。</li>
+  </ul>
+
+  <h3 id="phase-3">Phase 3: Bounded automation</h3>
+  <ul>
+    <li>最初はnon-destructive actionだけを自動化する。</li>
+    <li>
+      destructive actionはmax 5件/day、同一repository内、rollback可能、replay
+      gate通過を条件にcanaryする。
+    </li>
+    <li>core queueの待ち時間またはfailure rateが悪化したらcuration laneを自動pauseする。</li>
+  </ul>
+
+  <h2 id="success-gates">8. Success / stop gates</h2>
+  <h3 id="success">Success</h3>
+  <ul>
+    <li>repository eligibility violationが0件。</li>
+    <li>
+      destructive action precisionのpoint estimateが98%以上、95% confidence lower boundが95%以上。
+    </li>
+    <li>production jobのうちユーザー判断待ちへ遷移する件数が0件。</li>
+    <li>replay上のused retention、wrong、off_topicがbaselineに対して非劣化。</li>
+    <li>rollback rehearsalでbody、status、scope、embedding、lineageを復元できる。</li>
+    <li>Finding、Covering、Finalizeのqueue latencyとfailure rateを悪化させない。</li>
+  </ul>
+  <h3 id="stop">Immediate stop</h3>
+  <ul>
+    <li>cross-repository mergeまたはscope lossを1件でも検出した。</li>
+    <li>source-supported unique contentをdeprecateした。</li>
+    <li>LLM resultとmutation対象のinput hashが一致しない。</li>
+    <li>rollback不能、audit欠落、同じfindingのmutation loopを検出した。</li>
+    <li>core queueのSLOを超える競合が発生した。</li>
+  </ul>
+
+  <h2 id="decision">9. Decision</h2>
+  <p>
+    第6のvisible queueというproduct
+    ideaを採用する。<code>landscapeCuration</code>を既存<code>deadZoneMergeReview</code>とFinalizeへroutingするorchestration
+    laneとして実装し、SQLite evidence parity、offline shadow、autonomous observation、bounded
+    automationの順にaction権限を解放する。
+  </p>
+  <p>
+    production処理は人間を判断主体から外し、安全条件を満たさないcaseを自動mutationしない。現在のデータでは量的な必要性は確認できたが、semantic
+    duplicateやscope repairのdestructive automation品質は未証明であるため、V1ではblocked
+    outcomeとして残す。
+  </p>
+</article>

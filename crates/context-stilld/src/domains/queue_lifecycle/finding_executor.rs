@@ -1,8 +1,3 @@
-use std::fs::OpenOptions;
-use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::OpenOptionsExt;
-use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::blocking::Client;
@@ -15,6 +10,8 @@ use crate::shared::errors::CliError;
 
 use super::episode_executor::LocalLlmTargetConfig;
 use super::events::append_queue_event_for_connection;
+use super::provider_execution::owns_provider_execution;
+use super::types::{ClaimedProviderLeaseJob, ProviderLeaseAssignment};
 
 const FINDING_VERSION: &str = "finding-candidate-rust-v1";
 const MAX_CANDIDATES_PER_JOB: usize = 20;
@@ -27,7 +24,7 @@ pub(crate) enum FindingExecutionStatus {
     Retrying,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FindingJob {
     id: String,
     input_kind: String,
@@ -36,16 +33,355 @@ struct FindingJob {
     source_uri: String,
     distillation_version: String,
     priority: i64,
+    attempt_count: i64,
     metadata: Value,
 }
 
-#[derive(Debug, Deserialize)]
-struct Candidate {
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Candidate {
     #[serde(rename = "type")]
     kind: String,
     polarity: String,
     title: String,
     content: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FindingExecution {
+    job: FindingJob,
+    source: Option<String>,
+    self_ingestion_blocked: bool,
+    pub(crate) provider_lease: ProviderLeaseAssignment,
+    target: LocalLlmTargetConfig,
+    api_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum FindingWorkerResult {
+    Candidates(Vec<Candidate>),
+    SelfIngestionBlocked,
+    ProviderUnavailable(String),
+    Failed(String),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum FindingPersistStatus {
+    Completed,
+    Skipped,
+    Failed,
+    Retrying,
+    Paused,
+    Superseded,
+}
+
+pub(crate) fn load_claimed_finding_execution(
+    connection: &Connection,
+    claimed: ClaimedProviderLeaseJob,
+    target: LocalLlmTargetConfig,
+    api_key: Option<String>,
+) -> Result<FindingExecution, CliError> {
+    let job = load_job(connection, &claimed.id)?;
+    if job.input_kind != "source_target" || job.source_kind != "vibe_memory" {
+        return Ok(FindingExecution {
+            job: job.clone(),
+            source: None,
+            self_ingestion_blocked: false,
+            provider_lease: claimed.provider_lease,
+            target,
+            api_key,
+        });
+    }
+    let self_ingestion_blocked = is_self_ingestion_blocked(connection, &job.source_key)?;
+    let source = if self_ingestion_blocked {
+        None
+    } else {
+        Some(read_filtered_vibe_source(connection, &job.source_key)?)
+    };
+    Ok(FindingExecution {
+        job,
+        source,
+        self_ingestion_blocked,
+        provider_lease: claimed.provider_lease,
+        target,
+        api_key,
+    })
+}
+
+pub(crate) fn execute_finding(
+    execution: &FindingExecution,
+    timeout_seconds: u64,
+) -> FindingWorkerResult {
+    if execution.job.input_kind != "source_target" || execution.job.source_kind != "vibe_memory" {
+        return FindingWorkerResult::Failed(format!(
+            "unsupported findingCandidate input: {}/{}",
+            execution.job.input_kind, execution.job.source_kind
+        ));
+    }
+    if execution.self_ingestion_blocked {
+        return FindingWorkerResult::SelfIngestionBlocked;
+    }
+    let Some(source) = execution.source.as_deref() else {
+        return FindingWorkerResult::Failed("finding execution source is missing".to_string());
+    };
+    match request_candidates(
+        &execution.target,
+        execution.api_key.as_deref(),
+        timeout_seconds,
+        source,
+    ) {
+        Ok(candidates) => FindingWorkerResult::Candidates(candidates),
+        Err(error) if is_provider_unavailable(&error.to_string()) => {
+            FindingWorkerResult::ProviderUnavailable(error.to_string())
+        }
+        Err(error) => FindingWorkerResult::Failed(error.to_string()),
+    }
+}
+
+pub(crate) fn persist_finding_result(
+    connection: &mut Connection,
+    execution: &FindingExecution,
+    result: &FindingWorkerResult,
+) -> Result<FindingPersistStatus, CliError> {
+    let tx = connection
+        .transaction()
+        .map_err(|error| CliError::io(format!("failed to begin finding persistence: {error}")))?;
+    if !owns_provider_execution(&tx, &execution.provider_lease)? {
+        let event_id = stable_id(
+            "finding-event",
+            &format!(
+                "{}:{}:superseded",
+                execution.job.id, execution.provider_lease.id
+            ),
+            0,
+        );
+        let event_exists = tx
+            .query_row(
+                "select exists(select 1 from distillation_queue_events where id = ?1)",
+                [&event_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|value| value != 0)
+            .map_err(|error| {
+                CliError::io(format!(
+                    "failed to inspect discarded finding event: {error}"
+                ))
+            })?;
+        if !event_exists {
+            append_queue_event_for_connection(
+                &tx,
+                &event_id,
+                "findingCandidate",
+                &execution.job.id,
+                "discarded",
+                Some("stale finding result discarded after claim ownership changed"),
+                Some(
+                    &json!({
+                        "executor": "rust",
+                        "reason": "claim_ownership_changed",
+                        "workerId": execution.provider_lease.worker_id,
+                        "providerLeaseId": execution.provider_lease.id
+                    })
+                    .to_string(),
+                ),
+            )?;
+        }
+        tx.commit().map_err(|error| {
+            CliError::io(format!(
+                "failed to commit discarded finding result: {error}"
+            ))
+        })?;
+        return Ok(FindingPersistStatus::Superseded);
+    }
+
+    let next_attempt_count = execution.job.attempt_count + 1;
+    let (
+        persist_status,
+        queue_status,
+        outcome,
+        error,
+        next_run_seconds,
+        release_reason,
+        event_type,
+    ) = match result {
+        FindingWorkerResult::Candidates(candidates) => {
+            persist_candidates(&tx, &execution.job, candidates)?;
+            if candidates.is_empty() {
+                (
+                    FindingPersistStatus::Skipped,
+                    "skipped",
+                    "no_candidate",
+                    None,
+                    None,
+                    "worker_finished",
+                    "skipped",
+                )
+            } else {
+                (
+                    FindingPersistStatus::Completed,
+                    "completed",
+                    "completed",
+                    None,
+                    None,
+                    "worker_finished",
+                    "completed",
+                )
+            }
+        }
+        FindingWorkerResult::SelfIngestionBlocked => (
+            FindingPersistStatus::Skipped,
+            "skipped",
+            "self_ingestion_blocked",
+            None,
+            None,
+            "worker_finished",
+            "skipped",
+        ),
+        FindingWorkerResult::ProviderUnavailable(error) if next_attempt_count >= 8 => (
+            FindingPersistStatus::Paused,
+            "paused",
+            "provider_unavailable_exhausted",
+            Some(error.as_str()),
+            None,
+            "provider_unavailable_retry",
+            "paused",
+        ),
+        FindingWorkerResult::ProviderUnavailable(error) => (
+            FindingPersistStatus::Retrying,
+            "pending",
+            "provider_unavailable_retry",
+            Some(error.as_str()),
+            Some(provider_unavailable_backoff_seconds(
+                execution.job.attempt_count,
+            )),
+            "provider_unavailable_retry",
+            "retried",
+        ),
+        FindingWorkerResult::Failed(error) => (
+            FindingPersistStatus::Failed,
+            "failed",
+            "failed",
+            Some(error.as_str()),
+            None,
+            "worker_failed",
+            "failed",
+        ),
+    };
+    let completed_at = if matches!(queue_status, "completed" | "skipped" | "failed") {
+        "CURRENT_TIMESTAMP"
+    } else {
+        "null"
+    };
+    let next_run_at = next_run_seconds
+        .map(|seconds| format!("datetime(CURRENT_TIMESTAMP, '+{seconds} seconds')"))
+        .unwrap_or_else(|| "null".to_string());
+    let candidate_count = match result {
+        FindingWorkerResult::Candidates(candidates) => candidates.len(),
+        _ => 0,
+    };
+    let attempt_count = if matches!(
+        result,
+        FindingWorkerResult::ProviderUnavailable(_) | FindingWorkerResult::Failed(_)
+    ) {
+        next_attempt_count
+    } else {
+        execution.job.attempt_count
+    };
+    let queue_changed = tx
+        .execute(
+            &format!(
+                "update finding_candidate_queue
+                 set status = ?1,
+                     attempt_count = ?2,
+                     locked_by = null,
+                     locked_at = null,
+                     heartbeat_at = null,
+                     next_run_at = {next_run_at},
+                     completed_at = {completed_at},
+                     last_error = ?3,
+                     last_outcome_kind = ?4,
+                     metadata = json_set(
+                       case when json_valid(metadata) then metadata else '{{}}' end,
+                       '$.findingCandidate.executor', 'rust',
+                       '$.findingCandidate.candidateCount', ?5,
+                       '$.findingCandidate.version', ?6,
+                       '$.findingCandidate.providerRetryAfterSeconds', ?7
+                     ),
+                     updated_at = CURRENT_TIMESTAMP
+                 where id = ?8
+                   and status = 'running'
+                   and locked_by = ?9"
+            ),
+            params![
+                queue_status,
+                attempt_count,
+                error.map(|value| truncate(value, 1000)),
+                outcome,
+                candidate_count as i64,
+                FINDING_VERSION,
+                next_run_seconds.map(|value| value as i64),
+                execution.job.id,
+                execution.provider_lease.worker_id
+            ],
+        )
+        .map_err(|error| CliError::io(format!("failed to update finding queue job: {error}")))?;
+    if queue_changed != 1 {
+        return Err(CliError::io(
+            "finding claim ownership changed before queue transition",
+        ));
+    }
+    let lease_changed = tx
+        .execute(
+            "update llm_provider_leases
+             set status = 'released',
+                 released_at = CURRENT_TIMESTAMP,
+                 release_reason = ?2,
+                 updated_at = CURRENT_TIMESTAMP
+             where id = ?1
+               and status = 'active'
+               and queue_name = 'findingCandidate'
+               and queue_job_id = ?3
+               and worker_id = ?4",
+            params![
+                execution.provider_lease.id,
+                release_reason,
+                execution.job.id,
+                execution.provider_lease.worker_id
+            ],
+        )
+        .map_err(|error| CliError::io(format!("failed to release finding lease: {error}")))?;
+    if lease_changed != 1 {
+        return Err(CliError::io(
+            "finding claim ownership changed before provider lease release",
+        ));
+    }
+    append_queue_event_for_connection(
+        &tx,
+        &stable_id(
+            "finding-event",
+            &format!(
+                "{}:{}:{}",
+                execution.job.id, execution.provider_lease.id, event_type
+            ),
+            0,
+        ),
+        "findingCandidate",
+        &execution.job.id,
+        event_type,
+        Some("finding candidate processed by Rust resident executor"),
+        Some(
+            &json!({
+                "executor": "rust",
+                "targetId": execution.target.target_id,
+                "status": outcome,
+                "attemptCount": attempt_count,
+                "candidateCount": candidate_count
+            })
+            .to_string(),
+        ),
+    )?;
+    tx.commit()
+        .map_err(|error| CliError::io(format!("failed to commit finding result: {error}")))?;
+    Ok(persist_status)
 }
 
 pub(crate) fn run_finding_candidate_job_for_connection(
@@ -228,12 +564,13 @@ fn is_self_ingestion_blocked(connection: &Connection, source_key: &str) -> Resul
 
 fn load_job(connection: &Connection, job_id: &str) -> Result<FindingJob, CliError> {
     connection.query_row(
-        "select id, input_kind, source_kind, source_key, source_uri, distillation_version, priority, coalesce(metadata, '{}') from finding_candidate_queue where id = ?1 limit 1",
+        "select id, input_kind, source_kind, source_key, source_uri, distillation_version, priority, attempt_count, coalesce(metadata, '{}') from finding_candidate_queue where id = ?1 limit 1",
         [job_id],
         |row| Ok(FindingJob {
             id: row.get(0)?, input_kind: row.get(1)?, source_kind: row.get(2)?, source_key: row.get(3)?,
             source_uri: row.get(4)?, distillation_version: row.get(5)?, priority: row.get(6)?,
-            metadata: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_else(|_| json!({})),
+            attempt_count: row.get(7)?,
+            metadata: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_else(|_| json!({})),
         }),
     ).optional()
      .map_err(|error| CliError::io(format!("failed to load finding candidate job: {error}")))?
@@ -329,6 +666,7 @@ fn request_candidates(
 ) -> Result<Vec<Candidate>, CliError> {
     let system = "あなたは ContextStill の findCandidate executor です。filtered vibe memory と agent diff の明示的な根拠だけから、将来再利用できる知識を抽出してください。進捗報告、未検証の仮説、単発の結果、prompt や schema 自体は候補にしません。1候補は1知識です。type は rule または procedure、polarity は positive または negative。procedure の content には Use when: / Workflow: / Verification: / Avoid: をこの順で含めます。出力は type, polarity, title, content だけを持つ JSON 配列のみ。候補がなければ []。";
     let client = Client::builder()
+        .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(timeout_seconds.max(30)))
         .build()
         .map_err(|error| CliError::io(format!("failed to build local-llm client: {error}")))?;
@@ -343,26 +681,18 @@ fn request_candidates(
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
     }
-    let (status, body) = match request.send() {
-        Ok(response) => {
-            let status = response.status().as_u16();
-            let body = response.text().map_err(|error| {
-                CliError::io(format!("failed to read local-llm response: {error}"))
-            })?;
-            (status, body)
-        }
-        Err(error) if cfg!(target_os = "macos") && error.is_connect() => {
-            request_with_curl(&url, api_key, &request_body.to_string(), timeout_seconds)?
-        }
-        Err(error) => {
-            return Err(CliError::io(format!(
-                "local-llm request failed (connect={}, timeout={}, request={}): {error:?}",
-                error.is_connect(),
-                error.is_timeout(),
-                error.is_request()
-            )))
-        }
-    };
+    let response = request.send().map_err(|error| {
+        CliError::io(format!(
+            "local-llm request failed (connect={}, timeout={}, request={}): {error:?}",
+            error.is_connect(),
+            error.is_timeout(),
+            error.is_request()
+        ))
+    })?;
+    let status = response.status().as_u16();
+    let body = response
+        .text()
+        .map_err(|error| CliError::io(format!("failed to read local-llm response: {error}")))?;
     if !(200..300).contains(&status) {
         return Err(CliError::io(format!(
             "local-llm HTTP {}: {}",
@@ -378,92 +708,6 @@ fn request_candidates(
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::io("local-llm response did not include message content"))?;
     parse_candidates(content)
-}
-
-fn request_with_curl(
-    url: &str,
-    api_key: Option<&str>,
-    request_body: &str,
-    timeout_seconds: u64,
-) -> Result<(u16, String), CliError> {
-    let request_path = std::env::temp_dir().join(format!(
-        "contextstill-llm-request-{}-{}.json",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    let mut file = options.open(&request_path).map_err(|error| {
-        CliError::io(format!("failed to create local-llm request file: {error}"))
-    })?;
-    if let Err(error) = file.write_all(request_body.as_bytes()) {
-        let _ = std::fs::remove_file(&request_path);
-        return Err(CliError::io(format!(
-            "failed to write local-llm request file: {error}"
-        )));
-    }
-    drop(file);
-
-    let timeout = timeout_seconds.max(30).to_string();
-    let data_path = format!("@{}", request_path.to_string_lossy());
-    let result = (|| -> Result<std::process::Output, CliError> {
-        let mut child = Command::new("/usr/bin/curl")
-            .args([
-                "--silent",
-                "--show-error",
-                "--max-time",
-                &timeout,
-                "--request",
-                "POST",
-                "--header",
-                "Content-Type: application/json",
-                "--data-binary",
-                &data_path,
-                "--write-out",
-                "\n%{http_code}",
-                url,
-                "--config",
-                "-",
-            ])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| CliError::io(format!("failed to start curl fallback: {error}")))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
-                let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
-                writeln!(stdin, "header = \"Authorization: Bearer {escaped}\"").map_err(
-                    |error| CliError::io(format!("failed to configure curl fallback: {error}")),
-                )?;
-            }
-        }
-        child
-            .wait_with_output()
-            .map_err(|error| CliError::io(format!("failed to wait for curl fallback: {error}")))
-    })();
-    let _ = std::fs::remove_file(&request_path);
-    let output = result?;
-    if !output.status.success() {
-        return Err(CliError::io(format!(
-            "local-llm curl fallback failed: {}",
-            truncate(&String::from_utf8_lossy(&output.stderr), 1000)
-        )));
-    }
-    let output = String::from_utf8_lossy(&output.stdout);
-    let (body, status) = output
-        .rsplit_once('\n')
-        .ok_or_else(|| CliError::io("local-llm curl fallback omitted HTTP status"))?;
-    let status = status
-        .trim()
-        .parse::<u16>()
-        .map_err(|error| CliError::io(format!("invalid curl fallback HTTP status: {error}")))?;
-    Ok((status, body.to_string()))
 }
 
 fn parse_candidates(content: &str) -> Result<Vec<Candidate>, CliError> {
@@ -579,27 +823,7 @@ fn persist_result(
             "failed to begin finding result transaction: {error}"
         ))
     })?;
-    for (index, candidate) in candidates.iter().enumerate() {
-        let found_id = stable_id("found-candidate", &job.id, index);
-        let cover_id = stable_id("cover-evidence", &job.id, index);
-        let origin = json!({
-            "queueVersion":"v2", "sourceKind":job.source_kind, "sourceKey":job.source_key,
-            "sourceUri":job.source_uri, "findingJobId":job.id, "polarity":candidate.polarity
-        });
-        let metadata = json!({
-            "sourceKind":job.source_kind, "sourceKey":job.source_key, "sourceUri":job.source_uri,
-            "polarity":candidate.polarity, "executor":"rust", "version":FINDING_VERSION,
-            "sourceMetadata":job.metadata
-        });
-        tx.execute(
-            "insert into found_candidates (id, finding_job_id, candidate_index, type, title, content, source_summary, origin, metadata, created_at, updated_at) values (?1, ?2, ?3, ?4, ?5, ?6, null, ?7, ?8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) on conflict(id) do update set type=excluded.type, title=excluded.title, content=excluded.content, origin=excluded.origin, metadata=excluded.metadata, updated_at=CURRENT_TIMESTAMP",
-            params![found_id, job.id, index as i64, candidate.kind, candidate.title, candidate.content, origin.to_string(), metadata.to_string()],
-        ).map_err(|error| CliError::io(format!("failed to persist found candidate: {error}")))?;
-        tx.execute(
-            "insert into covering_evidence_queue (id, found_candidate_id, distillation_version, status, priority, provider_policy, payload, metadata, created_at, updated_at) select ?1, ?2, ?3, 'pending', ?4, 'default', '{}', ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP where not exists (select 1 from covering_evidence_queue where found_candidate_id = ?2)",
-            params![cover_id, found_id, job.distillation_version, job.priority, metadata.to_string()],
-        ).map_err(|error| CliError::io(format!("failed to enqueue covering evidence: {error}")))?;
-    }
+    persist_candidates(&tx, job, candidates)?;
     let outcome = if candidates.is_empty() {
         "no_candidate"
     } else {
@@ -617,10 +841,76 @@ fn persist_result(
     Ok(())
 }
 
+fn persist_candidates(
+    connection: &Connection,
+    job: &FindingJob,
+    candidates: &[Candidate],
+) -> Result<(), CliError> {
+    for (index, candidate) in candidates.iter().enumerate() {
+        let found_id = stable_id("found-candidate", &job.id, index);
+        let cover_id = stable_id("cover-evidence", &job.id, index);
+        let origin = json!({
+            "queueVersion":"v2", "sourceKind":job.source_kind, "sourceKey":job.source_key,
+            "sourceUri":job.source_uri, "findingJobId":job.id, "polarity":candidate.polarity
+        });
+        let metadata = json!({
+            "sourceKind":job.source_kind, "sourceKey":job.source_key, "sourceUri":job.source_uri,
+            "polarity":candidate.polarity, "executor":"rust", "version":FINDING_VERSION,
+            "sourceMetadata":job.metadata
+        });
+        connection.execute(
+            "insert into found_candidates (id, finding_job_id, candidate_index, type, title, content, source_summary, origin, metadata, created_at, updated_at) values (?1, ?2, ?3, ?4, ?5, ?6, null, ?7, ?8, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP) on conflict(id) do update set type=excluded.type, title=excluded.title, content=excluded.content, origin=excluded.origin, metadata=excluded.metadata, updated_at=CURRENT_TIMESTAMP",
+            params![found_id, job.id, index as i64, candidate.kind, candidate.title, candidate.content, origin.to_string(), metadata.to_string()],
+        ).map_err(|error| CliError::io(format!("failed to persist found candidate: {error}")))?;
+        connection.execute(
+            "insert into covering_evidence_queue (id, found_candidate_id, distillation_version, status, priority, provider_policy, payload, metadata, created_at, updated_at) select ?1, ?2, ?3, 'pending', ?4, 'default', '{}', ?5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP where not exists (select 1 from covering_evidence_queue where found_candidate_id = ?2)",
+            params![cover_id, found_id, job.distillation_version, job.priority, metadata.to_string()],
+        ).map_err(|error| CliError::io(format!("failed to enqueue covering evidence: {error}")))?;
+    }
+    Ok(())
+}
+
+fn provider_unavailable_backoff_seconds(attempt_count: i64) -> u64 {
+    match attempt_count.max(0) {
+        0 => 60,
+        1 => 120,
+        2 => 300,
+        3 => 600,
+        4 => 1_200,
+        _ => 3_600,
+    }
+}
+
 fn mark_retrying(connection: &Connection, job_id: &str, error: &str) -> Result<(), CliError> {
+    let attempt_count = connection
+        .query_row(
+            "select attempt_count from finding_candidate_queue where id = ?1",
+            [job_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| CliError::io(format!("failed to read finding attempt count: {error}")))?;
+    let next_attempt_count = attempt_count + 1;
+    let exhausted = next_attempt_count >= 8;
+    let delay = provider_unavailable_backoff_seconds(attempt_count);
     connection.execute(
-        "update finding_candidate_queue set status = 'pending', attempt_count = attempt_count + 1, locked_by = null, locked_at = null, heartbeat_at = null, next_run_at = datetime(CURRENT_TIMESTAMP, '+60 seconds'), last_error = ?2, last_outcome_kind = 'provider_unavailable_retry', updated_at = CURRENT_TIMESTAMP where id = ?1",
-        params![job_id, truncate(error, 1000)],
+        "update finding_candidate_queue
+         set status = case when ?2 then 'paused' else 'pending' end,
+             attempt_count = ?3,
+             locked_by = null,
+             locked_at = null,
+             heartbeat_at = null,
+             next_run_at = case when ?2 then null else datetime(CURRENT_TIMESTAMP, '+' || ?4 || ' seconds') end,
+             last_error = ?5,
+             last_outcome_kind = case when ?2 then 'provider_unavailable_exhausted' else 'provider_unavailable_retry' end,
+             updated_at = CURRENT_TIMESTAMP
+         where id = ?1",
+        params![
+            job_id,
+            exhausted,
+            next_attempt_count,
+            delay as i64,
+            truncate(error, 1000)
+        ],
     ).map_err(|error| CliError::io(format!("failed to retry finding candidate job: {error}")))?;
     Ok(())
 }
@@ -704,7 +994,9 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
+    use std::time::Instant;
 
     #[test]
     fn parses_candidate_array_and_rejects_invalid_enum() {
@@ -743,9 +1035,9 @@ mod tests {
     }
 
     #[test]
-    fn treats_curl_and_server_failures_as_retryable() {
+    fn treats_transport_and_server_failures_as_retryable() {
         assert!(is_provider_unavailable(
-            "local-llm curl fallback failed: No route to host"
+            "local-llm request failed: No route to host"
         ));
         assert!(is_provider_unavailable("local-llm HTTP 500: overloaded"));
         assert!(is_provider_unavailable("local-llm HTTP 429: busy"));
@@ -828,6 +1120,7 @@ mod tests {
             source_uri: "vibe-memory://memory-1".to_string(),
             distillation_version: "v1".to_string(),
             priority: 42,
+            attempt_count: 0,
             metadata: json!({}),
         };
         let candidates = vec![Candidate {
@@ -886,16 +1179,144 @@ mod tests {
     }
 
     #[test]
-    fn curl_fallback_keeps_authorization_out_of_arguments_and_reads_status() {
+    fn provider_unavailable_backoff_matches_queue_contract() {
+        assert_eq!(provider_unavailable_backoff_seconds(0), 60);
+        assert_eq!(provider_unavailable_backoff_seconds(1), 120);
+        assert_eq!(provider_unavailable_backoff_seconds(2), 300);
+        assert_eq!(provider_unavailable_backoff_seconds(3), 600);
+        assert_eq!(provider_unavailable_backoff_seconds(4), 1_200);
+        assert_eq!(provider_unavailable_backoff_seconds(5), 3_600);
+        assert_eq!(provider_unavailable_backoff_seconds(500), 3_600);
+    }
+
+    #[test]
+    fn fenced_finding_persistence_pauses_exhausted_provider_and_discards_replay() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                create table finding_candidate_queue (
+                  id text primary key, status text, attempt_count integer not null default 0,
+                  locked_by text, locked_at text, heartbeat_at text, next_run_at text,
+                  completed_at text, last_error text, last_outcome_kind text,
+                  metadata text not null default '{}', updated_at text
+                );
+                create table llm_provider_leases (
+                  id text primary key, pool_id text, target_id text, queue_name text,
+                  queue_job_id text, worker_id text, status text, locked_at text,
+                  heartbeat_at text, expires_at text, released_at text, release_reason text,
+                  metadata text, created_at text, updated_at text
+                );
+                create table distillation_queue_events (
+                  id text primary key, queue_name text, queue_job_id text, event_type text,
+                  message text, metadata text not null default '{}', created_at text
+                );
+                insert into finding_candidate_queue (
+                  id, status, attempt_count, locked_by, locked_at, heartbeat_at, metadata, updated_at
+                ) values (
+                  'finding-job', 'running', 7, 'finding-worker', CURRENT_TIMESTAMP,
+                  CURRENT_TIMESTAMP, '{}', CURRENT_TIMESTAMP
+                );
+                insert into llm_provider_leases (
+                  id, pool_id, target_id, queue_name, queue_job_id, worker_id, status,
+                  locked_at, heartbeat_at, expires_at, metadata, created_at, updated_at
+                ) values (
+                  'finding-lease', 'pool', 'local-a', 'findingCandidate', 'finding-job',
+                  'finding-worker', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  datetime(CURRENT_TIMESTAMP, '+120 seconds'), '{}', CURRENT_TIMESTAMP,
+                  CURRENT_TIMESTAMP
+                );
+                "#,
+            )
+            .unwrap();
+        let execution = FindingExecution {
+            job: FindingJob {
+                id: "finding-job".to_string(),
+                input_kind: "source_target".to_string(),
+                source_kind: "vibe_memory".to_string(),
+                source_key: "memory".to_string(),
+                source_uri: "vibe-memory://memory".to_string(),
+                distillation_version: "v1".to_string(),
+                priority: 1,
+                attempt_count: 7,
+                metadata: json!({}),
+            },
+            source: Some("source".to_string()),
+            self_ingestion_blocked: false,
+            provider_lease: ProviderLeaseAssignment {
+                id: "finding-lease".to_string(),
+                pool_id: "pool".to_string(),
+                target_id: "local-a".to_string(),
+                queue_name: "findingCandidate".to_string(),
+                queue_job_id: "finding-job".to_string(),
+                worker_id: "finding-worker".to_string(),
+            },
+            target: LocalLlmTargetConfig {
+                target_id: "local-a".to_string(),
+                api_base_url: "http://127.0.0.1:1".to_string(),
+                api_path: "/v1/chat/completions".to_string(),
+                model: "qwen".to_string(),
+            },
+            api_key: None,
+        };
+        let result = FindingWorkerResult::ProviderUnavailable("connection refused".to_string());
+
+        assert_eq!(
+            persist_finding_result(&mut connection, &execution, &result).unwrap(),
+            FindingPersistStatus::Paused
+        );
+        assert_eq!(
+            persist_finding_result(&mut connection, &execution, &result).unwrap(),
+            FindingPersistStatus::Superseded
+        );
+        assert_eq!(
+            persist_finding_result(&mut connection, &execution, &result).unwrap(),
+            FindingPersistStatus::Superseded
+        );
+        let row: (String, i64, String, String, i64) = connection
+            .query_row(
+                "select q.status, q.attempt_count, q.last_outcome_kind,
+                        coalesce(l.release_reason, ''),
+                        (select count(*) from distillation_queue_events)
+                 from finding_candidate_queue q
+                 join llm_provider_leases l on l.queue_job_id = q.id
+                 where q.id = 'finding-job'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "paused".to_string(),
+                8,
+                "provider_unavailable_exhausted".to_string(),
+                "provider_unavailable_retry".to_string(),
+                2
+            )
+        );
+    }
+
+    #[test]
+    fn blocked_finding_provider_does_not_block_single_writer() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut buffer = [0_u8; 8192];
-            let read = stream.read(&mut buffer).unwrap();
-            let request = String::from_utf8_lossy(&buffer[..read]);
-            assert!(request.contains("Authorization: Bearer test-secret"));
-            assert!(request.contains("{\"ping\":true}"));
+            let _ = stream.read(&mut buffer).unwrap();
+            accepted_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
             let body = r#"{"choices":[{"message":{"content":"[]"}}]}"#;
             write!(
                 stream,
@@ -905,17 +1326,78 @@ mod tests {
             )
             .unwrap();
         });
+        let execution = FindingExecution {
+            job: FindingJob {
+                id: "blocked-job".to_string(),
+                input_kind: "source_target".to_string(),
+                source_kind: "vibe_memory".to_string(),
+                source_key: "memory".to_string(),
+                source_uri: "vibe-memory://memory".to_string(),
+                distillation_version: "v1".to_string(),
+                priority: 1,
+                attempt_count: 0,
+                metadata: json!({}),
+            },
+            source: Some("enough source evidence".to_string()),
+            self_ingestion_blocked: false,
+            provider_lease: ProviderLeaseAssignment {
+                id: "blocked-lease".to_string(),
+                pool_id: "pool".to_string(),
+                target_id: "local-a".to_string(),
+                queue_name: "findingCandidate".to_string(),
+                queue_job_id: "blocked-job".to_string(),
+                worker_id: "blocked-worker".to_string(),
+            },
+            target: LocalLlmTargetConfig {
+                target_id: "local-a".to_string(),
+                api_base_url: format!("http://{address}"),
+                api_path: "/v1/chat/completions".to_string(),
+                model: "qwen".to_string(),
+            },
+            api_key: None,
+        };
+        let worker = thread::spawn(move || execute_finding(&execution, 30));
+        accepted_rx.recv().unwrap();
 
-        let (status, body) = request_with_curl(
-            &format!("http://{address}/v1/chat/completions"),
-            Some("test-secret"),
-            "{\"ping\":true}",
-            30,
-        )
-        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "context-still-writer-sentinel-{}-{}.sqlite",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch("create table sentinel (id integer primary key, value text);")
+            .unwrap();
+        drop(connection);
+        let runtime =
+            crate::domains::sqlite_writer::SqliteWriterRuntime::start_existing_for_test(&path, 16)
+                .unwrap();
+        let started = Instant::now();
+        runtime
+            .handle()
+            .execute("test.writer_sentinel", |connection| {
+                connection
+                    .execute("insert into sentinel (value) values ('ok')", [])
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "writer sentinel exceeded 500 ms while provider was blocked: {:?}",
+            started.elapsed()
+        );
 
+        release_tx.send(()).unwrap();
+        assert!(matches!(
+            worker.join().unwrap(),
+            FindingWorkerResult::Candidates(candidates) if candidates.is_empty()
+        ));
         server.join().unwrap();
-        assert_eq!(status, 200);
-        assert!(body.contains("choices"));
+        runtime.shutdown().unwrap();
+        let _ = std::fs::remove_file(path);
     }
 }

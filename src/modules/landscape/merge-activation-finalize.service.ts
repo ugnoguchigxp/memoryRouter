@@ -59,6 +59,7 @@ export type MergeActivationFinalizeJobCreateResult = {
 
 export async function createMergeActivationFinalizeJob(
   mergeReviewJobId: string,
+  options?: { curationJobId?: string; autonomousExactDuplicate?: boolean },
 ): Promise<MergeActivationFinalizeJobCreateResult> {
   const reviewJob = await getDeadZoneMergeReviewQueueRow(mergeReviewJobId);
   if (!reviewJob) throw new DeadZoneMergeReviewQueueError("merge review job not found", 404);
@@ -136,6 +137,13 @@ export async function createMergeActivationFinalizeJob(
   const route = resolveMergeActivationFinalizeRoute();
   const resultHash = createHash("sha256").update(JSON.stringify(parsedResult.data)).digest("hex");
   const nowIso = new Date().toISOString();
+  const queueMetadata = {
+    queueVersion: "v1",
+    visibleQueueName: "finalizeDistille",
+    jobType: "merge_activation_finalize",
+    ...(options?.curationJobId ? { curationJobId: options.curationJobId } : {}),
+    ...(options?.autonomousExactDuplicate ? { autonomous: true, exactDuplicate: true } : {}),
+  };
   const inputSnapshot = {
     mergeReviewJob: {
       id: reviewJob.id,
@@ -183,6 +191,7 @@ export async function createMergeActivationFinalizeJob(
       dead_zone_knowledge_id: string;
       canonical_knowledge_id: string;
       review_item_id: string | null;
+      metadata: string;
     } | null;
     const payload = {
       sourceQueue: "deadZoneMergeReview",
@@ -193,9 +202,14 @@ export async function createMergeActivationFinalizeJob(
     if (existing) {
       sqlite.db
         .query(
-          "update merge_activation_finalize_queue set payload = ?, updated_at = ? where id = ?",
+          "update merge_activation_finalize_queue set payload = ?, metadata = ?, updated_at = ? where id = ?",
         )
-        .run(JSON.stringify(payload), nowIso, jobId);
+        .run(
+          JSON.stringify(payload),
+          JSON.stringify({ ...parseJsonRecord(existing.metadata), ...queueMetadata }),
+          nowIso,
+          jobId,
+        );
     } else {
       sqlite.db
         .query(
@@ -219,11 +233,7 @@ export async function createMergeActivationFinalizeJob(
           route.model ?? null,
           JSON.stringify(inputSnapshot),
           JSON.stringify(payload),
-          JSON.stringify({
-            queueVersion: "v1",
-            visibleQueueName: "finalizeDistille",
-            jobType: "merge_activation_finalize",
-          }),
+          JSON.stringify(queueMetadata),
           nowIso,
           nowIso,
         );
@@ -270,11 +280,7 @@ export async function createMergeActivationFinalizeJob(
         sourceQueueJobId: reviewJob.id,
         requestedAt: nowIso,
       },
-      metadata: {
-        queueVersion: "v1",
-        visibleQueueName: "finalizeDistille",
-        jobType: "merge_activation_finalize",
-      },
+      metadata: queueMetadata,
       updatedAt: new Date(),
     })
     .onConflictDoUpdate({
@@ -285,6 +291,7 @@ export async function createMergeActivationFinalizeJob(
           sourceQueueJobId: reviewJob.id,
           requestedAt: nowIso,
         },
+        metadata: queueMetadata,
         updatedAt: new Date(),
       },
     })

@@ -292,6 +292,10 @@ function buildRuntimeEffectiveTargets(
         settings,
         settings.taskRouting.deadZoneMergeReview,
       ),
+      landscapeCuration: resolveEffectiveRouteTargets(
+        settings,
+        settings.taskRouting.landscapeCuration,
+      ),
       finalizeDistille: resolveEffectiveRouteTargets(
         settings,
         settings.taskRouting.finalizeDistille,
@@ -335,6 +339,7 @@ function routeDiagnosticEntries(settings: RuntimeSettingsEditable): RuntimeRoute
       route: settings.taskRouting.coverEvidence.mcpEvidence,
     },
     { path: "taskRouting.deadZoneMergeReview", route: settings.taskRouting.deadZoneMergeReview },
+    { path: "taskRouting.landscapeCuration", route: settings.taskRouting.landscapeCuration },
     { path: "taskRouting.finalizeDistille", route: settings.taskRouting.finalizeDistille },
     {
       path: "taskRouting.mergeActivationFinalize",

@@ -519,6 +519,13 @@
       "when": 1786806000000,
       "tag": "0074_security_candidate_item_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "7",
+      "when": 1787752961000,
+      "tag": "0075_landscape_curation_queue",
+      "breakpoints": true
     }
   ]
 }

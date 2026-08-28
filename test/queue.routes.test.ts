@@ -32,6 +32,7 @@ describe("queue routes v2", () => {
         episodeDistiller: { paused: false, updatedAt: null, updatedBy: null, reason: null },
         coveringEvidence: { paused: false, updatedAt: null, updatedBy: null, reason: null },
         deadZoneMergeReview: { paused: false, updatedAt: null, updatedBy: null, reason: null },
+        landscapeCuration: { paused: false, updatedAt: null, updatedBy: null, reason: null },
         finalizeDistille: { paused: false, updatedAt: null, updatedBy: null, reason: null },
       },
       queues: {
@@ -60,6 +61,14 @@ describe("queue routes v2", () => {
           nonRegistered: 1,
         },
         deadZoneMergeReview: {
+          counters: { pending: 0, running: 0, completed: 0, skipped: 0, failed: 0, paused: 0 },
+          oldestPendingAt: null,
+          running: 0,
+          failed: 0,
+          offline: 0,
+          nonRegistered: 0,
+        },
+        landscapeCuration: {
           counters: { pending: 0, running: 0, completed: 0, skipped: 0, failed: 0, paused: 0 },
           oldestPendingAt: null,
           running: 0,

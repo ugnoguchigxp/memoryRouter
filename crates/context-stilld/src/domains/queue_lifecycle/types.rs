@@ -56,6 +56,8 @@ pub struct UnsupportedQueueBacklog {
 pub struct QueueFeatureFlagsInspect {
     pub internal_chunked_distillation: bool,
     pub rust_covering_mode: String,
+    pub rust_finding_execution_mode: String,
+    pub rust_episode_execution_mode: String,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]

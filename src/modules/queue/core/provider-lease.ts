@@ -221,8 +221,6 @@ function recoverStaleQueueJobsSql(tableName: string): string {
 }
 
 function runnableSql(queueName: DistillationQueueName, tableName: string): string {
-  const nextRunCondition =
-    "and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)";
   const extraColumns =
     queueName === "findingCandidate"
       ? ", source_kind"
@@ -232,8 +230,10 @@ function runnableSql(queueName: DistillationQueueName, tableName: string): strin
   return `
     select id, priority, created_at${extraColumns}
     from ${tableName}
-    where status in ('pending', 'paused')
-      ${nextRunCondition}
+    where (
+      (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+      or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+    )
     order by priority desc, created_at asc, id asc
     limit 20
   `;
@@ -446,7 +446,10 @@ export async function claimNextJobWithProviderLease(params: {
           heartbeat_at = CURRENT_TIMESTAMP,
           updated_at = CURRENT_TIMESTAMP
         where id = ?
-          and status in ('pending', 'paused')
+          and (
+            (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+            or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+          )
       `,
       )
       .run(params.workerId, picked.id);

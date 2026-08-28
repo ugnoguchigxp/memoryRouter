@@ -325,6 +325,13 @@ export function resolveDeadZoneMergeReviewRoute(): RuntimeSettingsRoute {
   );
 }
 
+export function resolveLandscapeCurationRoute(): RuntimeSettingsRoute {
+  return applyProviderLeaseRouteContext(
+    runtimeSettingsCache.settings,
+    runtimeSettingsCache.settings.taskRouting.landscapeCuration,
+  );
+}
+
 export function resolveFinalizeDistilleRoute(): RuntimeSettingsRoute {
   return applyProviderLeaseRouteContext(
     runtimeSettingsCache.settings,

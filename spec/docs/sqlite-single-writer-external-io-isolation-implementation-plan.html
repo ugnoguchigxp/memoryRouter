@@ -1,0 +1,1176 @@
+<article lang="ja">
+  <h1 id="sqlite-single-writer-external-io-isolation-implementation-plan">
+    SQLite単一writer・外部I/O分離 実装計画
+  </h1>
+
+  <h2 id="status">Status</h2>
+  <p>Status: implemented and initial live rollout completed.</p>
+  <p>Created: 2026-08-29</p>
+  <p>Plan ID: <code>sqlite-single-writer-external-io-isolation-v1</code></p>
+  <p>
+    対象: Rust
+    residentが所有する<code>findingCandidate</code>、<code>episodeDistiller</code>、
+    <code>context_compile</code>のwriter待機時間と外部provider実行境界。
+  </p>
+  <p>
+    本計画はSQLiteへの書込みを複数化しない。resident内の単一writerを唯一のread-write所有者として維持し、
+    複数のquery-only readerを組み合わせる。Findingの外部I/O workerはDB接続を持たず、Episodeは
+    query-only connectionを利用できるがprovider待機をまたぐread transactionは保持しない。
+  </p>
+  <p>
+    <code>context_compile</code
+    >のread／compose／persist分離、snapshot、telemetry、rollout modeは
+    <a href="contextstill-utility-rag-foundation-implementation-plan.html"
+      >ContextStill Utility-RAG Foundation Implementation Plan</a
+    >
+    を権威とする。本計画はその契約を変更せず、queue実行面への安全な展開とlive導入順を定義する。
+  </p>
+
+  <hr />
+
+  <h2 id="section-1-executive-decision">1. Executive Decision</h2>
+  <p>採用する実行境界を次に固定する。</p>
+  <pre><code class="language-text">query-only reader: immutable execution inputを取得
+single writer:      claimとprovider leaseを短いtransactionで確定
+external phase:     FindingはDB-free、Episodeはautocommit query-onlyでLLMを実行
+single writer:      fencing確認後に結果またはsegment checkpointをtransactionでpersist
+</code></pre>
+  <p>
+    変更対象はwriterの個数ではなく、writerへ投入するjobの責務である。writer jobからnetwork
+    request、process wait、sleep、thread joinを除外し、SQLite mutationだけを残す。
+  </p>
+  <p>実装順は次のとおりとする。</p>
+  <ol>
+    <li>現行挙動を固定するfailure testとwriter phase telemetryを追加する。</li>
+    <li>
+      <code>findingCandidate</code>をclaim／read／execute／persistへ分割する。
+    </li>
+    <li>provider unavailableの二重接続待ちとhot retryを止める。</li>
+    <li><code>findingCandidate</code>をcanary後にsplit modeへ昇格する。</li>
+    <li><code>episodeDistiller</code>へ同じ境界を展開する。</li>
+    <li>
+      <code>context_compile</code
+      >は既存<code>split_legacy_rank</code>をcanary導入し、ranking変更を同時に行わない。
+    </li>
+    <li>観測期間とstop conditionを通過後に、split modeを既定化する。</li>
+  </ol>
+
+  <hr />
+
+  <h2 id="section-2-authority-and-precedence">2. Authority And Precedence</h2>
+  <table>
+    <caption>
+      Table: 2. Authority And Precedence
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Concern</th>
+        <th scope="col">Authority</th>
+        <th scope="col">本計画での扱い</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>SQLite writer ownership</td>
+        <td>Rust residentと<code>sqlite_writer</code> runtime</td>
+        <td>単一writerを恒久contractとして維持する</td>
+      </tr>
+      <tr>
+        <td>Compile split pipeline</td>
+        <td>
+          <a href="contextstill-utility-rag-foundation-implementation-plan.html"
+            >Utility-RAG Foundation Plan</a
+          >
+        </td>
+        <td>既存<code>split_legacy_rank</code>を利用し、別実装を作らない</td>
+      </tr>
+      <tr>
+        <td>Queue split execution reference</td>
+        <td><code>covering_executor.rs</code>のclaim／execute／persist実装</td>
+        <td>heartbeat、fencing、Superseded処理を共通patternとして再利用する</td>
+      </tr>
+      <tr>
+        <td>Queue state source of truth</td>
+        <td>SQLite queue rows、provider leases、queue events</td>
+        <td>memory-onlyまたはUI-only stateを権威にしない</td>
+      </tr>
+      <tr>
+        <td>Provider cooldown</td>
+        <td>released provider leaseとqueue <code>next_run_at</code></td>
+        <td>既存signalを拡張し、別のhealth truthを同時導入しない</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>矛盾がある場合は次の順で優先する。</p>
+  <ol>
+    <li>単一writer、transaction atomicity、fencing、idempotency。</li>
+    <li>repository identityとsource snapshotの再現性。</li>
+    <li>既存queue／MCPの公開contract。</li>
+    <li>待機時間とthroughput。</li>
+    <li>実装量と局所的な保守性。</li>
+  </ol>
+
+  <hr />
+
+  <h2 id="section-3-current-problem-and-baseline">3. Current Problem And Baseline</h2>
+  <h3 id="section-31-observed-failure">3.1 Observed failure</h3>
+  <ul>
+    <li>
+      <code>queue.executor_tick</code
+      >が単一writer上で<code>findingCandidate</code>の外部LLM接続を実行する。
+    </li>
+    <li>
+      到達不能なlocal LLM targetで、Rust HTTP clientの接続待ち後にmacOS curl fallbackが追加で待つ。
+    </li>
+    <li>失敗ジョブが短い間隔で再claimされ、writerが連続して長時間占有される。</li>
+    <li>
+      <code>context_compile</code
+      >と軽量な<code>compile_eval</code>も同じwriter queueで待つ。
+    </li>
+    <li>
+      legacy
+      compileの<code>duration_ms</code>はwriter取得後から計測され、callerが見たqueue
+      waitを含まない。
+    </li>
+  </ul>
+
+  <h3 id="section-32-investigation-baseline">3.2 Investigation baseline</h3>
+  <table>
+    <caption>
+      Table: 3.2 Investigation Baseline
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Signal</th>
+        <th scope="col">Observed</th>
+        <th scope="col">Interpretation</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>One queue executor writer hold</td>
+        <td>approximately 150 seconds</td>
+        <td>network availability wait is inside the writer job</td>
+      </tr>
+      <tr>
+        <td>Caller-observed context compile</td>
+        <td>more than 120 seconds in reproduced calls</td>
+        <td>writer queue wait dominates the perceived latency</td>
+      </tr>
+      <tr>
+        <td>Recorded compile duration</td>
+        <td>approximately 13–17 seconds in reproduced calls</td>
+        <td>legacy timing starts after writer acquisition</td>
+      </tr>
+      <tr>
+        <td>Failed finding retries</td>
+        <td>hundreds of attempts on individual jobs</td>
+        <td>provider unavailable handling creates a persistent hot loop</td>
+      </tr>
+      <tr>
+        <td>Compile retrieval-only historical samples</td>
+        <td>tens to low hundreds of milliseconds</td>
+        <td>candidate read is not the primary source of the extreme delay</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    実装開始時に同じ観点のbaselineを再採取する。上記数値を将来の固定性能値として流用してはいけない。
+  </p>
+
+  <hr />
+
+  <h2 id="section-4-goals-and-non-goals">4. Goals And Non-goals</h2>
+  <h3 id="section-41-goals">4.1 Goals</h3>
+  <ul>
+    <li>SQLiteへの全mutationをresident単一writerへ直列化したまま維持する。</li>
+    <li>複数のquery-only readerがwriterと独立して一貫snapshotを取得できるようにする。</li>
+    <li>外部LLM、HTTP、curl、process waitをwriter jobから除外する。</li>
+    <li>stale workerの結果が現在のqueue stateへ書き込まれないようfencingする。</li>
+    <li>claim、heartbeat、persist、lease releaseをcrash-safeかつidempotentにする。</li>
+    <li>provider outageがwriter starvationや毎分hot retryを発生させないようにする。</li>
+    <li>writer queue waitとwriter workを分け、caller-observed latencyとの差を説明可能にする。</li>
+    <li>surfaceごとにcanary、stop、rollbackできるようにする。</li>
+  </ul>
+
+  <h3 id="section-42-non-goals">4.2 Non-goals</h3>
+  <ul>
+    <li>複数writer、複数read-write connection、別processからのSQLite mutation。</li>
+    <li>SQLiteからPostgreSQLなど別databaseへの移行。</li>
+    <li>queue priority、provider pool構成、model quality、prompt内容の同時変更。</li>
+    <li>Foundation rankingの昇格とcompile split activationの同時実施。</li>
+    <li>新しいdurable workflow engineや別queue storeの導入。</li>
+    <li>既存backlogの自動削除、成功扱い、attempt countの無断reset。</li>
+    <li>UI-only progress stateやmemory-only provider healthをsource of truthにすること。</li>
+    <li>この計画だけを根拠にしたresident restart、live flag変更、live queue mutation。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-5-fixed-safety-invariants">5. Fixed Safety Invariants</h2>
+  <p>次のinvariantはrollout modeにかかわらず破ってはいけない。</p>
+  <ol>
+    <li>
+      SQLite core
+      databaseをread-writeで開きmutationを実行できる所有者はresident単一writerだけである。
+    </li>
+    <li>
+      readerはread-only open
+      flagと<code>PRAGMA query_only = ON</code>を使い、schema変更を含むwriteを拒否する。
+    </li>
+    <li>
+      live WAL
+      databaseのreaderに<code>immutable=1</code>を使わない。readerはWALを含む現在の一貫snapshotを読む。
+    </li>
+    <li>
+      Findingのexternal
+      execute関数は<code>rusqlite::Connection</code>を引数、field、globalとして保持しない。
+      Episodeがquery-only connectionを利用する場合もprovider待機をまたぐread
+      transactionを保持しない。
+    </li>
+    <li>
+      writer jobはnetwork request、subprocess wait、sleep、blocking receive、thread
+      joinを実行しない。
+    </li>
+    <li>claimとprovider lease作成は同じwriter transactionでcommitする。</li>
+    <li>
+      persistはqueue ownershipとactive provider leaseの両方を確認してからbusiness rowを変更する。
+    </li>
+    <li>
+      ownership不一致の結果は<code>Superseded</code>として破棄し、現在のqueue
+      jobを変更しない。
+    </li>
+    <li>
+      Findingのbusiness result、queue terminal state、queue event、lease releaseは1
+      transactionでcommitする。 Episodeは各segmentのdedupe済みresultとprogressを短いwriter
+      transactionでcheckpointし、最終queue state、queue event、lease releaseを1
+      transactionでcommitする。
+    </li>
+    <li>persist retryは同じstable result keyを使い、downstream rowを重複作成しない。</li>
+    <li>reader snapshotから現在のsource entity本文を上書きしない。</li>
+    <li>heartbeat失敗をjob成功として扱わない。ownership喪失後の外部結果は必ず破棄する。</li>
+    <li>provider unavailableはsemantic success、no-candidate、business failureと混同しない。</li>
+    <li>split pathが失敗した場合、未persistの結果をcallerへ成功として返さない。</li>
+  </ol>
+
+  <hr />
+
+  <h2 id="section-6-target-runtime-architecture">6. Target Runtime Architecture</h2>
+  <h3 id="section-61-queue-sequence">6.1 Queue sequence</h3>
+  <pre><code class="language-text">Scheduler
+  -> Single Writer: claim pending job + create active provider lease
+  &lt;- ClaimedExecution identity
+  -> Query-only Reader: load source/settings rows without mutation
+  &lt;- PreparedExecution with versions and hashes
+  -> External Phase: call provider; never hold a read transaction while waiting
+  -> Single Writer heartbeat jobs: short fenced updates only
+  &lt;- ExecutionResult
+  -> Single Writer: verify fencing + persist result + release lease in one transaction
+  &lt;- Completed | Retrying | Failed | Superseded
+</code></pre>
+  <p>
+    claimを先に確定するため、同じjobを別workerが同時にprepareしない。reader phaseはclaim
+    ownershipのもとで実行する。Findingはsourceとsettingsをowned valueへコピーしてreaderを閉じる。
+    Episodeはsegment間でquery-only
+    readを行えるが、各statementをautocommitで完了してからproviderを呼ぶ。
+  </p>
+
+  <h3 id="section-62-compile-sequence">6.2 Compile sequence</h3>
+  <pre><code class="language-text">MCP request
+  -> Query-only Reader: identity, candidates, settings, content versions
+  &lt;- PreparedCompile; close reader
+  -> External Composer: planner + composer calls without DB connection
+  &lt;- ComposeResult
+  -> Single Writer: one atomic persist job
+  &lt;- success only after commit
+  -> MCP response
+</code></pre>
+  <p>
+    compileはqueue jobではないためclaim leaseを作らない。read snapshotをrun
+    ledgerへ保存し、persist時に現在のKnowledge本文を
+    古いsnapshotで更新しない。既存<code>split_legacy_rank</code>の契約をそのまま利用する。
+  </p>
+
+  <h3 id="section-63-process-and-connection-ownership">6.3 Process and connection ownership</h3>
+  <table>
+    <caption>
+      Table: 6.3 Process And Connection Ownership
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Component</th>
+        <th scope="col">Connection</th>
+        <th scope="col">Permitted work</th>
+        <th scope="col">Forbidden work</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Resident single writer</td>
+        <td>the only read-write connection</td>
+        <td>claim, heartbeat, state transition, atomic persistence, lease mutation</td>
+        <td>network, provider inference, subprocess wait, sleep</td>
+      </tr>
+      <tr>
+        <td>Query-only reader</td>
+        <td>one of multiple read-only connections</td>
+        <td>consistent read and mapping to owned values; Episode segment間のautocommit read</td>
+        <td>all mutation and schema operations</td>
+      </tr>
+      <tr>
+        <td>External phase</td>
+        <td>Findingはnone、Episodeはquery-only connectionのみ</td>
+        <td>HTTP, LLM inference, parsing, pure transformation</td>
+        <td>direct mutation、read transactionを保持したprovider待機、durable state transition</td>
+      </tr>
+      <tr>
+        <td>Heartbeat guard</td>
+        <td>writer handle only; no direct connection</td>
+        <td>enqueue short fenced heartbeat jobs</td>
+        <td>business result persistence</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <hr />
+
+  <h2 id="section-7-queue-execution-contracts">7. Queue Execution Contracts</h2>
+  <h3 id="section-71-owned-execution-snapshot">7.1 Owned execution snapshot</h3>
+  <p>
+    <code>findingCandidate</code
+    >と<code>episodeDistiller</code>はsurfaceごとのowned execution
+    typeを持つ。型名は実装時に次へ固定する。
+  </p>
+  <pre><code class="language-rust">struct FindingExecution {
+    job_id: String,
+    worker_id: String,
+    provider_lease: ProviderLeaseAssignment,
+    attempt_count: i64,
+    source: FindingSourceSnapshot,
+    source_version: String,
+    settings_revision: Option&lt;String&gt;,
+    claimed_at: String,
+}
+
+struct EpisodeExecution {
+    job_id: String,
+    worker_id: String,
+    provider_lease: ProviderLeaseAssignment,
+    attempt_count: i64,
+    max_attempts: i64,
+    source: EpisodeSourceSnapshot,
+    source_version: String,
+    settings_revision: Option&lt;String&gt;,
+    claimed_at: String,
+}
+</code></pre>
+  <p>
+    API keyなどsecretはtelemetryやqueue metadataへ保存しない。workerへ渡すsecretはprocess
+    memoryだけに存在し、 execution
+    snapshotの<code>Debug</code>出力対象から除外する。
+  </p>
+
+  <h3 id="section-72-claim-contract">7.2 Claim contract</h3>
+  <p>claim writer transactionは次をatomicに行う。</p>
+  <ol>
+    <li>
+      queue priority、pause、<code>next_run_at</code>、provider
+      cooldownを再確認する。
+    </li>
+    <li>
+      対象jobを<code>pending</code>から<code>running</code>へ条件付き更新する。
+    </li>
+    <li>
+      claimごとに一意な<code>worker_id</code>とprovider lease IDを生成する。
+    </li>
+    <li>active provider leaseをinsertする。</li>
+    <li>
+      <code>locked_at</code
+      >と<code>heartbeat_at</code>を同じtimestampで設定する。
+    </li>
+    <li>claim eventをappendする。</li>
+    <li>commit後にだけclaim結果をworkerへ返す。</li>
+  </ol>
+  <p>claim transaction内でprovider request、source本文の大規模変換、prompt buildを行わない。</p>
+
+  <h3 id="section-73-reader-snapshot-contract">7.3 Reader snapshot contract</h3>
+  <ul>
+    <li>claim後にquery-only connectionを開き、必要なrowをmutationなしで取得する。</li>
+    <li>readerはjob ownershipを参照してよいが、ownershipを変更しない。</li>
+    <li>source key、source updated timestamp、content hashをsnapshotへ含める。</li>
+    <li>provider target、model、route、timeoutのeffective valueをsnapshotへ含める。</li>
+    <li>
+      reader errorまたはsource missingは外部LLMを呼ばず、fenced writer jobでretry／skipへ遷移する。
+    </li>
+    <li>
+      Findingはreader connectionをprovider
+      call開始前にdropする。Episodeはconnectionを再利用してよいが、 provider
+      call開始前に実行中のread transactionを必ず終了する。
+    </li>
+  </ul>
+
+  <h3 id="section-74-external-execute-contract">7.4 External execute contract</h3>
+  <ul>
+    <li>
+      Finding execute関数のsignatureから<code>Connection</code>を除去する。
+    </li>
+    <li>Finding execute関数はowned snapshotだけを入力とし、結果をowned resultとして返す。</li>
+    <li>
+      Episodeの外部phaseが参照できるconnectionはquery-onlyに限定し、mutation APIをwriter
+      jobへ分離する。
+    </li>
+    <li>HTTP status、connect failure、timeout、parse failureをtyped outcomeへ分類する。</li>
+    <li>外部処理中のdurable progress更新はheartbeat guardにだけ依頼する。</li>
+    <li>
+      panicはcatchし、<code>tool_failed</code>結果としてfenced persistへ渡す。
+    </li>
+  </ul>
+
+  <h3 id="section-75-heartbeat-contract">7.5 Heartbeat contract</h3>
+  <p>
+    heartbeatは20秒間隔を初期値とし、同じwriterへ短いjobとして投入する。次の条件を全て満たすrowだけを更新する。
+  </p>
+  <pre><code class="language-sql">queue_job.id = expected_job_id
+AND queue_job.status = 'running'
+AND queue_job.locked_by = expected_worker_id
+AND provider_lease.id = expected_lease_id
+AND provider_lease.status = 'active'
+AND provider_lease.worker_id = expected_worker_id
+</code></pre>
+  <p>
+    heartbeat更新件数が0の場合はownership喪失とし、guardへcancel signalを設定する。provider
+    requestを即時中断できない場合でも、
+    最終結果はpersist時に必ず<code>Superseded</code>となる。
+  </p>
+
+  <h3 id="section-76-fenced-persist-contract">7.6 Fenced persist contract</h3>
+  <p>persist writer transactionはbusiness mutation前に次のownership queryを実行する。</p>
+  <pre><code class="language-sql">SELECT EXISTS (
+  SELECT 1
+  FROM queue_table queue_job
+  JOIN llm_provider_leases lease
+    ON lease.id = :lease_id
+   AND lease.queue_name = :queue_name
+   AND lease.queue_job_id = queue_job.id
+   AND lease.worker_id = :worker_id
+  WHERE queue_job.id = :job_id
+    AND queue_job.status = 'running'
+    AND queue_job.locked_by = :worker_id
+    AND lease.status = 'active'
+)
+</code></pre>
+  <p>偽の場合は次だけを行う。</p>
+  <ul>
+    <li>stable IDのdiscard eventが未記録ならappendする。</li>
+    <li>現在のqueue row、active lease、business rowを変更しない。</li>
+    <li><code>Superseded</code>を返す。</li>
+  </ul>
+  <p>真の場合は1 transaction内で次を行う。</p>
+  <ol>
+    <li>source versionがstrict-currentを要求するsurfaceではversionを再確認する。</li>
+    <li>stable result IDまたは既存unique keyでbusiness rowをinsert／upsertする。</li>
+    <li>queue jobをcompleted、retrying、failed、pausedのいずれかへ遷移する。</li>
+    <li>claim fieldとheartbeatをclearする。</li>
+    <li>結果eventをappendする。</li>
+    <li>provider leaseをreleaseし、release reasonを保存する。</li>
+    <li>commitする。</li>
+  </ol>
+
+  <h3 id="section-77-idempotency-contract">7.7 Idempotency contract</h3>
+  <ul>
+    <li>result IDはjob ID、source version、producer versionからdeterministicに生成する。</li>
+    <li>persist responseが失われて再実行されても、同じbusiness rowを重複生成しない。</li>
+    <li>queue event IDもjob ID、lease ID、event typeからstableに生成する。</li>
+    <li>completed jobはclaim predicateから除外する。</li>
+    <li>同じleaseに対するpersistの2回目はno-opまたは同じterminal statusを返す。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-8-provider-failure-and-retry-policy">8. Provider Failure And Retry Policy</h2>
+  <h3 id="section-81-timeout-separation">8.1 Timeout separation</h3>
+  <ul>
+    <li>connect timeoutとrequest／inference timeoutを分離する。</li>
+    <li>connect timeoutの初期値を5秒とする。</li>
+    <li>inference timeoutは既存runtime設定を維持し、writer占有時間とは無関係にする。</li>
+    <li>
+      macOS curl fallbackはconnect refused、host unreachable、route unavailableでは実行しない。
+    </li>
+    <li>
+      curl fallbackを残す場合は明示的なtransport compatibility errorだけを対象とし、
+      <code>--connect-timeout</code
+      >と<code>--max-time</code>の両方を指定する。
+    </li>
+  </ul>
+
+  <h3 id="section-82-job-backoff">8.2 Job backoff</h3>
+  <p>Rust側provider unavailable backoffを既存TypeScript contractへ合わせる。</p>
+  <table>
+    <caption>
+      Table: 8.2 Provider Unavailable Backoff
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Failure count before update</th>
+        <th scope="col">Next delay</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>0</td>
+        <td>60 seconds</td>
+      </tr>
+      <tr>
+        <td>1</td>
+        <td>120 seconds</td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>300 seconds</td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>600 seconds</td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>1,200 seconds</td>
+      </tr>
+      <tr>
+        <td>5 or more</td>
+        <td>3,600 seconds</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <code>findingCandidate</code>はprovider
+    unavailableが8回連続した時点で既存<code>paused</code>へ移し、
+    <code>last_outcome_kind=provider_unavailable_exhausted</code>を保存する。jobは削除もfailed成功扱いもしない。
+    再開はoperatorの明示操作とし、この閾値はv1では固定contractとする。
+  </p>
+
+  <h3 id="section-83-target-cooldown">8.3 Target cooldown</h3>
+  <ul>
+    <li>
+      <code>release_reason=provider_unavailable_retry</code>のrecent leaseを既存cooldown signalとして使う。
+    </li>
+    <li>cooldown中のtargetを新しいclaimで選ばない。</li>
+    <li>同一poolにavailable targetがあればfailoverする。</li>
+    <li>全targetがcooldown中ならjobをclaimせず、writerを即時解放する。</li>
+    <li>同じ秒の後続successがある場合はcooldownを解除する既存契約を維持する。</li>
+  </ul>
+
+  <h3 id="section-84-existing-backlog">8.4 Existing backlog</h3>
+  <p>
+    既に高attempt countとなったjobをmigrationで自動変更しない。split rollout後の次回provider
+    unavailable結果をfenced persistし、既定のmax
+    attempts以上なら<code>paused</code>へ安全に遷移する。 削除、attempt
+    reset、completed化は禁止する。
+  </p>
+
+  <hr />
+
+  <h2 id="section-9-context-compile-plan">9. Context Compile Plan</h2>
+  <h3 id="section-91-use-existing-split-pipeline">9.1 Use existing split pipeline</h3>
+  <p>
+    <code>native_compile.rs</code>の既存<code>context_compile_split</code>、
+    <code>prepare_split_compile</code
+    >、<code>persist_split_compile</code>を利用する。新しいcompile pipelineを追加しない。
+  </p>
+  <ul>
+    <li>prepareはquery-only readerを使う。</li>
+    <li>plannerとcomposerはreaderとwriterのどちらも保持しない。</li>
+    <li>persistは<code>execute_for_path_observed</code>を通す。</li>
+    <li>run、items、traces、usage、feedback、countersを1 transactionで保存する。</li>
+    <li>persist失敗時はMCP success responseを返さない。</li>
+  </ul>
+
+  <h3 id="section-92-rollout-mode">9.2 Rollout mode</h3>
+  <ol>
+    <li>
+      現行<code>legacy</code>の固定fixtureとcaller-observed
+      baselineを採る。
+    </li>
+    <li>
+      <code>split_legacy_rank</code>で同じrequest contractとselected IDsを検証する。
+    </li>
+    <li>blocked composer中にunrelated writer sentinelが完了することを検証する。</li>
+    <li>canary sessionだけを<code>split_legacy_rank</code>で実行する。</li>
+    <li>24時間のavailability、writer wait、output parityを観測する。</li>
+    <li>stop conditionがなければ既定を<code>split_legacy_rank</code>へ変更する。</li>
+  </ol>
+  <p>
+    このrolloutで<code>split_shadow_rank</code>または<code>foundation</code>へ昇格してはいけない。
+    performance boundary変更とranking変更を別restart・別evidenceにする。
+  </p>
+
+  <h3 id="section-93-snapshot-consistency">9.3 Snapshot consistency</h3>
+  <ul>
+    <li>
+      candidate body、source refs、updated timestamp、content versionをowned snapshotへ含める。
+    </li>
+    <li>providerへ渡したcandidateとpack snapshotのcandidateを同一にする。</li>
+    <li>read後にKnowledgeが変更されても、古いsnapshotから現在のKnowledge本文を更新しない。</li>
+    <li>counter更新対象が消失した場合はmissing IDをdiagnosticsへ保存する。</li>
+    <li>historical run replayは現在のKnowledgeではなくrun snapshotを読む。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-10-observability-contract">10. Observability Contract</h2>
+  <h3 id="section-101-phase-timings">10.1 Phase timings</h3>
+  <p>queueとcompileの両方で次を分離して記録する。</p>
+  <ul>
+    <li><code>readerWorkUs</code></li>
+    <li><code>claimQueueWaitUs</code></li>
+    <li><code>claimWriterWorkUs</code></li>
+    <li><code>externalIoUs</code></li>
+    <li><code>persistQueueWaitUs</code></li>
+    <li><code>persistWriterWorkUs</code></li>
+    <li><code>endToEndUs</code></li>
+    <li>
+      <code>heartbeatCount</code>と<code>heartbeatFailureCount</code>
+    </li>
+  </ul>
+  <p>
+    queueはterminal event metadataへbounded timing summaryを保存する。compileは既存Foundation run
+    snapshotとappend-only telemetryを使う。 prompt、response本文、secret、absolute database
+    pathをtelemetryへ保存しない。
+  </p>
+
+  <h3 id="section-102-runtime-health">10.2 Runtime health</h3>
+  <ul>
+    <li>
+      writer
+      statusは<code>activeOperation</code>、<code>queueDepth</code>、commit
+      countを継続表示する。
+    </li>
+    <li>外部LLM実行中に<code>activeOperation=queue.executor_tick</code>が継続しないことを確認する。</li>
+    <li>provider cooldown target数とprovider unavailable pause数をqueue inspectへ追加する。</li>
+    <li>queue detailはpersisted rowとeventをsource of truthとする。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-11-code-change-map">11. Code Change Map</h2>
+  <table>
+    <caption>
+      Table: 11. Code Change Map
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">File or module</th>
+        <th scope="col">Required change</th>
+        <th scope="col">Must not change</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>queue_lifecycle/finding_executor.rs</code></td>
+        <td>prepare、execute、persist、typed outcomeへ分割する</td>
+        <td>prompt semanticsとcandidate schema</td>
+      </tr>
+      <tr>
+        <td><code>queue_lifecycle/episode_executor.rs</code></td>
+        <td>同じ三相境界へ分割し、既存max attemptsを維持する</td>
+        <td>episode生成contractとdedupe key</td>
+      </tr>
+      <tr>
+        <td><code>queue_lifecycle/executor.rs</code></td>
+        <td>surface別split orchestration、thread lifecycle、observed writer jobsを追加する</td>
+        <td>単一writer ownershipとqueue priority order</td>
+      </tr>
+      <tr>
+        <td><code>queue_lifecycle/provider_lease.rs</code></td>
+        <td>既存cooldown helperを共通利用し、全target cooldown時はclaimしない</td>
+        <td>leaseをdurable source of truthとする契約</td>
+      </tr>
+      <tr>
+        <td><code>queue_lifecycle/covering_executor.rs</code></td>
+        <td>共通helper抽出が必要な場合だけ局所変更する</td>
+        <td>稼働済みcovering behaviorとfencing</td>
+      </tr>
+      <tr>
+        <td><code>mcp_lifecycle/native_compile.rs</code></td>
+        <td>不足するparity testとrollout telemetryだけを追加する</td>
+        <td>既存split pipeline、public MCP contract、ranking mode</td>
+      </tr>
+      <tr>
+        <td><code>context_compile/runtime.rs</code></td>
+        <td>明示的なcanary／rollback modeの検証と後続既定変更</td>
+        <td>最初の実装commitでのdefault切替</td>
+      </tr>
+      <tr>
+        <td><code>sqlite_writer/service.rs</code></td>
+        <td>必要ならobserved execution helperを共通利用する</td>
+        <td>writer process数、lock ownership、queue serialization</td>
+      </tr>
+      <tr>
+        <td><code>spec/docs/pub/configuration.md</code></td>
+        <td>operator-supported rollout flagを公開時だけ追記する</td>
+        <td>内部canary段階での未確定flag公開</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    v1はschema migrationを要求しない。既存<code>locked_by</code>、active
+    provider lease、stable IDs、 queue statusをfencing
+    tokenとして使う。実装中に新しいdurable列が必要と判明した場合は本計画を更新し、 live
+    migrationを推測で追加しない。
+  </p>
+
+  <hr />
+
+  <h2 id="section-12-delivery-units">12. Delivery Units</h2>
+  <h3 id="section-p0-baseline-and-regression-harness">P0: Baseline And Regression Harness</h3>
+  <p>Behavior changeは行わない。</p>
+  <ul>
+    <li>blocked provider harnessを追加する。</li>
+    <li>providerを30秒block中にwriter sentinelを投入するtestを追加する。</li>
+    <li>caller wall timeとrun <code>duration_ms</code>をpaired記録する。</li>
+    <li>writer queue wait、writer work、external waitのbaselineを保存する。</li>
+    <li>read-only connectionがwriteを拒否するcontract testを追加する。</li>
+  </ul>
+  <p>Exit: current failureが再現され、testが旧実装で失敗理由を明確に示す。</p>
+
+  <h3 id="section-p1-finding-pure-boundaries">P1: Finding Pure Boundaries</h3>
+  <ul>
+    <li>
+      <code>FindingExecution</code
+      >と<code>FindingExecutionResult</code>を追加する。
+    </li>
+    <li>source readとprompt input buildをprepare helperへ分離する。</li>
+    <li>HTTP／parse処理をConnection-free execute helperへ分離する。</li>
+    <li>現行persist処理をtransaction helperへ分離する。</li>
+    <li>fixtureで旧出力とのcandidate parityを確認する。</li>
+  </ul>
+  <p>Exit: pure execute APIがSQLite型を参照せず、既存focused testsが通る。</p>
+
+  <h3 id="section-p2-finding-split-orchestration">P2: Finding Split Orchestration</h3>
+  <ul>
+    <li>writer claim、query-only prepare、external execute、writer persistを配線する。</li>
+    <li>coveringと同じheartbeat guard、ownership query、Superseded statusを導入する。</li>
+    <li>
+      <code>CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE=legacy|split</code>を追加し、初期defaultは
+      <code>legacy</code>とする。
+    </li>
+    <li>split modeだけに新orchestrationを適用し、同一jobのLLM callを複製しない。</li>
+  </ul>
+  <p>Exit: blocked provider中のwriter sentinelがgateを満たし、fencing／crash testsが通る。</p>
+
+  <h3 id="section-p3-provider-failure-control">P3: Provider Failure Control</h3>
+  <ul>
+    <li>connect timeoutを5秒へ分離する。</li>
+    <li>availability error時のcurl二重待ちを止める。</li>
+    <li>Rust finding backoffを60／120／300／600／1,200／3,600秒へ統一する。</li>
+    <li>8回連続provider unavailableでjobをpausedにする。</li>
+    <li>全target cooldown時はclaimしない。</li>
+  </ul>
+  <p>Exit: 到達不能targetでhot loopがなく、writer workはnetwork timeoutを含まない。</p>
+
+  <h3 id="section-p4-episode-split-orchestration">P4: Episode Split Orchestration</h3>
+  <ul>
+    <li>P1／P2の境界をepisodeへ展開する。</li>
+    <li>
+      既存<code>max_attempts</code>、retry-after、dedupe、source
+      fragment契約を維持する。
+    </li>
+    <li><code>CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE=legacy|split</code>を追加し、別canaryにする。</li>
+    <li>findingとepisodeは独立flagを維持し、一方だけを即時rollbackできるようにする。</li>
+  </ul>
+  <p>Exit: episode focused tests、provider unavailable tests、fencing testsが通る。</p>
+
+  <h3 id="section-p5-compile-split-activation">P5: Compile Split Activation</h3>
+  <ul>
+    <li>
+      Foundation manifestとfixed fixtureで<code>split_legacy_rank</code>を再検証する。
+    </li>
+    <li>legacyとsplitのselected IDs、output contract、persistence rowを比較する。</li>
+    <li>blocked composer concurrency testをpassさせる。</li>
+    <li>明示canary、24時間観測、promotion decisionをevidenceへ保存する。</li>
+  </ul>
+  <p>Exit: rankingを変えずにsplit boundaryだけを既定化できるevidenceが揃う。</p>
+
+  <h3 id="section-p6-closeout">P6: Closeout</h3>
+  <ul>
+    <li>public configurationとoperationsを更新する。</li>
+    <li>legacy rollbackの保持期間を1 release以上とする。</li>
+    <li>live canary evidence、stop decision、final modeを記録する。</li>
+    <li>後続計画が本計画を置換した時点で本書をarchiveする。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-13-verification-plan">13. Verification Plan</h2>
+  <h3 id="section-131-focused-tests">13.1 Focused tests</h3>
+  <pre><code class="language-bash">cargo test -p context-stilld sqlite_writer
+cargo test -p context-stilld provider_lease
+cargo test -p context-stilld finding_executor
+cargo test -p context-stilld episode_executor
+cargo test -p context-stilld covering_executor
+cargo test -p context-stilld native_compile
+</code></pre>
+  <p>
+    test filterが0件の場合はpass扱いにしない。実際のmodule pathまたはtest
+    nameへ修正し、実行件数をevidenceへ記録する。
+  </p>
+
+  <h3 id="section-132-failure-injection-matrix">13.2 Failure injection matrix</h3>
+  <table>
+    <caption>
+      Table: 13.2 Failure Injection Matrix
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Injection</th>
+        <th scope="col">Expected result</th>
+        <th scope="col">Forbidden result</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Provider blocks for 30 seconds</td>
+        <td>heartbeat continues; unrelated writer sentinel completes within gate</td>
+        <td>writer active operation remains the external job</td>
+      </tr>
+      <tr>
+        <td>Process stops after claim commit</td>
+        <td>stale recovery returns job safely; no business result exists</td>
+        <td>partial business rows or completed state</td>
+      </tr>
+      <tr>
+        <td>Process stops after external completion before persist</td>
+        <td>job is retryable; no business result exists</td>
+        <td>unledgered success</td>
+      </tr>
+      <tr>
+        <td>Ownership changes before old result returns</td>
+        <td>old result is Superseded and discarded</td>
+        <td>old result mutates current job or lease</td>
+      </tr>
+      <tr>
+        <td>Persist fails midway</td>
+        <td>transaction rolls back every business and queue mutation</td>
+        <td>completed job with missing result or released lease with running job</td>
+      </tr>
+      <tr>
+        <td>Persist commits but response is lost</td>
+        <td>retry observes terminal／idempotent state without duplicate rows</td>
+        <td>duplicate candidate, episode, event, or counter</td>
+      </tr>
+      <tr>
+        <td>All provider targets unavailable</td>
+        <td>targets cool down; job backs off and later pauses at threshold</td>
+        <td>continuous writer claim or immediate retry loop</td>
+      </tr>
+      <tr>
+        <td>Reader attempts INSERT</td>
+        <td>SQLite rejects the operation</td>
+        <td>mutation succeeds through reader connection</td>
+      </tr>
+      <tr>
+        <td>Source changes after snapshot</td>
+        <td>surface contract stores snapshot or rejects stale result without overwriting source</td>
+        <td>old snapshot overwrites current source content</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3 id="section-133-integration-and-smoke">13.3 Integration and smoke</h3>
+  <pre><code class="language-bash">bun run verify:rust-daemon
+bun run rust:queue:smoke
+bun run rust:mcp:smoke
+bun run mcp:smoke:sqlite
+bun run verify:sqlite-writer-ownership
+bun run spec:check
+</code></pre>
+  <p>
+    temp
+    DBで<code>PRAGMA integrity_check</code>と<code>PRAGMA foreign_key_check</code>を実行する。live
+    DBの全量 integrity check、backup、restart、flag変更は明示的なlive rollout作業でのみ実行する。
+  </p>
+
+  <hr />
+
+  <h2 id="section-14-performance-and-availability-gates">14. Performance And Availability Gates</h2>
+  <table>
+    <caption>
+      Table: 14. Performance And Availability Gates
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Gate</th>
+        <th scope="col">Required threshold</th>
+        <th scope="col">Measurement</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Single writer</td>
+        <td>exactly one read-write owner; zero direct worker mutations</td>
+        <td>writer lock/status and structural tests</td>
+      </tr>
+      <tr>
+        <td>Blocked-provider writer isolation</td>
+        <td>sentinel writer job completes within 500 ms in deterministic harness</td>
+        <td>provider latch plus observed writer execution</td>
+      </tr>
+      <tr>
+        <td>Writer work duration</td>
+        <td>p95 at most 250 ms; no unexplained operation above 5 seconds</td>
+        <td>claim／heartbeat／persist observed timings</td>
+      </tr>
+      <tr>
+        <td>Writer queue wait</td>
+        <td>p95 at most 500 ms in canary without maintenance operation</td>
+        <td>observed writer queue wait</td>
+      </tr>
+      <tr>
+        <td>Provider outage retry</td>
+        <td>no same-job retry earlier than policy; no dual 75-second connect wait</td>
+        <td>queue rows, lease releases, request harness</td>
+      </tr>
+      <tr>
+        <td>Compile call count</td>
+        <td>normal logical LLM calls do not exceed the selected legacy route</td>
+        <td>run snapshot provider-attempt telemetry</td>
+      </tr>
+      <tr>
+        <td>Data integrity</td>
+        <td>zero integrity, foreign-key, duplicate-producer, and fencing violations</td>
+        <td>temp DB checks and failure-injection assertions</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    external LLM latencyそのものは本計画の短縮保証対象ではない。保証するのは、external
+    latencyがwriter occupancyと unrelated request latencyへ伝播しないことである。
+  </p>
+
+  <hr />
+
+  <h2 id="section-15-rollout-and-rollback">15. Rollout And Rollback</h2>
+  <h3 id="section-151-pre-rollout">15.1 Pre-rollout</h3>
+  <ol>
+    <li>
+      git status、binary build ID、effective database fingerprint、runtime settings
+      revisionを保存する。
+    </li>
+    <li>writer status、queue backlog、provider cooldown、失敗jobを記録する。</li>
+    <li>失敗を繰り返すlive finding jobはoperator判断でpauseする。</li>
+    <li>backup preflightを実行する。backup作成はlive rolloutの明示承認がある場合だけ行う。</li>
+    <li>focused tests、smoke、deterministic blocked-provider gateを通す。</li>
+  </ol>
+
+  <h3 id="section-152-promotion-order">15.2 Promotion order</h3>
+  <ol>
+    <li>offline fixture and failure injection only。</li>
+    <li>全target unit testとblocked-provider failure injection。</li>
+    <li>LaunchAgentにfinding／episodeの独立split flagを設定する。</li>
+    <li>compileをranking不変の<code>split_legacy_rank</code>へ設定する。</li>
+    <li>1回のresident restartでbinaryと3つの実行境界を反映し、process重複時間を作らない。</li>
+    <li>restart直後にwriter ownership、queue fencing、MCP compile、provider backoffを確認する。</li>
+    <li>
+      後続観測でstop
+      conditionを検出したsurfaceだけを<code>legacy</code>へ戻す。
+    </li>
+    <li>Foundation rankingの後続判断は別作業で行う。</li>
+  </ol>
+
+  <h3 id="section-153-stop-conditions">15.3 Stop conditions</h3>
+  <p>次のいずれかでrolloutを停止する。</p>
+  <ul>
+    <li>2つ以上のread-write ownerまたはdirect worker mutationが観測された。</li>
+    <li>ownershipを失ったworkerの結果がpersistされた。</li>
+    <li>queue terminal state、business row、provider leaseがtransaction外で不整合になった。</li>
+    <li>duplicate business result、duplicate producer、counter二重加算が発生した。</li>
+    <li>readerからwriteが成功した。</li>
+    <li>external provider待ちがwriter workへ含まれた。</li>
+    <li>blocked-provider sentinel gateまたはwriter queue gateを超えた。</li>
+    <li>compile selected IDs、repository isolation、public MCP output contractが回帰した。</li>
+    <li>integrity checkまたはforeign-key checkが失敗した。</li>
+  </ul>
+
+  <h3 id="section-154-rollback">15.4 Rollback</h3>
+  <ul>
+    <li>
+      対象surfaceだけを<code>legacy</code>
+      modeへ戻し、他surfaceのmodeを同時に変更しない。
+    </li>
+    <li>provider outage中にlegacyへ戻す必要がある場合は、先に対象queueをpauseする。</li>
+    <li>compileは<code>CONTEXT_STILL_COMPILE_FOUNDATION_MODE=legacy</code>へ戻す。</li>
+    <li>schema migrationがないためDB down migrationは行わない。</li>
+    <li>split modeで保存済みのterminal rows、events、run snapshots、leasesを削除しない。</li>
+    <li>Superseded eventとtiming telemetryはrollback後も監査証跡として保持する。</li>
+    <li>rollback原因と再開条件をevidenceへ記録する。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-16-commit-and-review-plan">16. Commit And Review Plan</h2>
+  <p>commitは次の責務単位に分ける。複数unitを1 commitへまとめない。</p>
+  <ol>
+    <li><code>test: capture writer starvation baseline</code></li>
+    <li><code>refactor: split finding preparation execution and persistence</code></li>
+    <li><code>feat: orchestrate fenced finding execution outside writer</code></li>
+    <li><code>fix: bound provider unavailable retries and connect fallback</code></li>
+    <li><code>refactor: split episode execution outside writer</code></li>
+    <li><code>test: prove crash fencing and idempotent persistence</code></li>
+    <li><code>ops: canary split legacy compile boundary</code></li>
+    <li><code>docs: record single writer isolation rollout evidence</code></li>
+  </ol>
+  <p>各reviewでは次を確認する。</p>
+  <ul>
+    <li>外部I/O call graphからwriter closureへ戻る経路がない。</li>
+    <li>execute型がConnectionまたはmutable repositoryを保持しない。</li>
+    <li>全persist pathにownership queryがある。</li>
+    <li>全terminal pathでlease releaseとqueue stateが同一transactionにある。</li>
+    <li>provider unavailableとbusiness failureが別outcomeである。</li>
+    <li>testが実際にblock、crash、stale result、rollbackを注入している。</li>
+    <li>現在のuncommitted user changesを上書きしていない。</li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-17-implementation-evidence">17. Implementation Evidence</h2>
+  <p>2026-08-29に次の実装とoffline検証を完了した。</p>
+  <ul>
+    <li>
+      <code>provider_execution.rs</code>へquery-only open、queue／lease
+      fencing、20秒heartbeat guardを追加した。
+    </li>
+    <li>
+      Findingをprepare／DB-free provider execute／fenced atomic
+      persistへ分割し、接続timeoutを5秒へ制限、
+      curl二重待ちを削除、60〜3,600秒backoffと8回でのpauseを実装した。
+    </li>
+    <li>
+      Episodeをquery-only read／external provider phase／短いwriter checkpointへ分割し、terminal
+      state、 event、lease releaseをfenced transactionで確定するようにした。
+    </li>
+    <li>
+      <code>split_legacy_rank</code>とlegacyのselected
+      IDsを同一fixtureで比較し、ranking不変を確認した。
+    </li>
+    <li>
+      binary
+      defaultはrollback用の<code>legacy</code>を維持し、LaunchAgentだけをfinding／episode
+      <code>split</code>、compile
+      <code>split_legacy_rank</code>に設定した。
+    </li>
+    <li>
+      blocked provider中のwriter sentinel、query-only write拒否、stale result破棄、pauseとreplayの
+      idempotency、Episode end-to-end split persistenceをdeterministic testで確認した。
+    </li>
+    <li><code>cargo test -p context-stilld --no-fail-fast</code>: 335 passed、0 failed。</li>
+    <li><code>cargo clippy -p context-stilld --all-targets -- -D warnings</code>: passed。</li>
+    <li><code>bun run typecheck</code>: passed。</li>
+    <li>TypeScript unit testは2,097 passed、13 skipped、SQLite runtime testは44 passed。</li>
+  </ul>
+  <h3 id="section-171-post-implementation-review">17.1 Post-implementation review</h3>
+  <p>初回rollout後のコードレビューで、次の追加修正とfailure testを完了した。</p>
+  <ul>
+    <li>
+      provider claim確定後にheartbeat threadまたはquery-only readerの初期化が失敗しても、queue
+      jobを<code>pending</code>へ戻し、active
+      leaseを解放するようにした。この2更新は所有権条件付きの同一 transactionで行い、lease
+      fenceが失われている場合はqueue更新もrollbackする。
+    </li>
+    <li>
+      provider target設定はclaim前に検証し、設定不備によって<code
+        >running</code
+      >
+      jobとactive leaseを残さないようにした。
+    </li>
+    <li>
+      heartbeat guardの停止を250 ms pollingからcondition
+      variableの即時通知へ変更した。実writerを使う
+      testでqueueとleaseのheartbeat更新、および60秒interval中でも1秒未満で停止することを確認した。
+    </li>
+    <li>
+      個別の手動pauseは<code>next_run_at = null</code>を必ず保存するよう修正した。claim可能な
+      <code>paused</code>はstale回復またはlane
+      pauseで期限を持つものだけとし、RustとTypeScriptの SQLite実装で同じpredicateを使う。
+    </li>
+    <li>
+      setup failure recoveryの正常系とlease fence喪失時rollback、無期限pauseの非claim、 TypeScript
+      SQLite provider leaseの非claimを回帰testへ追加した。
+    </li>
+  </ul>
+  <p>Live rollout結果は次のとおり。</p>
+  <ul>
+    <li>schema migrationは追加していない。</li>
+    <li>LaunchAgentを再installし、最終residentをPID 8693からPID 35155へ置換した。</li>
+    <li>
+      同時に存在する<code>context-stilld run</code>
+      processは1件だけであることを確認した。
+    </li>
+    <li>
+      queue inspectはlive resident metadataからFinding
+      <code>split</code>、Episode
+      <code>split</code>を報告し、active provider leaseは0件だった。
+    </li>
+    <li>
+      高attemptのFinding 2件はprovider
+      unavailable上限により自動的に<code>paused</code>へ遷移し、
+      backlogの削除、attempt reset、completed化は行っていない。
+    </li>
+    <li>
+      初回rollout観測で無期限<code>paused</code>
+      jobを既存claim条件が再取得する問題を検出した。
+      <code>paused</code
+      >は<code>next_run_at</code>がnon-nullかつ期限到来時だけretry可能とするよう修正し、
+      regression testを追加した。最終restart後20秒間で2件のattempt countが変化しないことを確認した。
+    </li>
+    <li>
+      restart後のlive <code>context_compile</code>はcaller wall time 14,554 ms、run
+      <code>duration_ms=13,956</code>で完了した。再現baselineの120秒超のcaller
+      waitは発生しなかった。
+    </li>
+    <li>
+      保存run diagnosticsの<code>foundation.pipelineMode</code>は
+      <code>split_legacy_rank</code>だった。
+    </li>
+    <li>
+      最終binary restart後の再測定はcaller wall time 10,932 ms、run
+      <code>duration_ms=10,391</code
+      >で、同じく<code>split_legacy_rank</code>だった。
+    </li>
+    <li>live MCP smokeは12 Rust-native tools、0 TypeScript sidecarでpassした。</li>
+    <li>
+      <code>PRAGMA quick_check</code
+      >は<code>ok</code>、<code>foreign_key_check</code>は0件だった。
+    </li>
+    <li><code>verify:sqlite-writer-ownership</code>はrestart前後の両方でpassした。</li>
+    <li>
+      post-implementation review後にbinaryを再buildし、residentをPID 35155からPID 63364へ
+      1回のLaunchAgent restartで置換した。20秒の観測でpaused Finding 27件のattempt合計は1,465の
+      まま、<code>next_run_at</code>保持件数とactive leaseはいずれも0件だった。
+    </li>
+    <li>
+      review後のlive
+      DBで<code>PRAGMA quick_check</code>は<code>ok</code>、
+      <code>foreign_key_check</code>は0件、MCP smokeはRust-native 12 tools、TypeScript
+      sidecar 0件だった。
+    </li>
+  </ul>
+
+  <hr />
+
+  <h2 id="section-18-definition-of-done">18. Definition Of Done</h2>
+  <p>本計画は次を全て満たしたときだけ完了する。</p>
+  <ul>
+    <li>resident単一writer contractがコード、test、runtime statusで証明されている。</li>
+    <li>findingとepisodeのprovider callがwriter job外で実行される。</li>
+    <li>compileが<code>split_legacy_rank</code>でwriter外composeを実行する。</li>
+    <li>複数query-only readerがwriter mutationなしに使用できる。</li>
+    <li>heartbeat、fencing、Superseded、idempotencyのfailure testsが通る。</li>
+    <li>provider outageでhot retryと二重connect待ちが発生しない。</li>
+    <li>blocked provider中のwriter sentinelが500 ms gateを通る。</li>
+    <li>writer queue／work、reader、external、end-to-end timingが分離して観測できる。</li>
+    <li>repository isolation、queue priority、candidate／episode semanticsが回帰していない。</li>
+    <li>temp DBのintegrity／foreign-key checksと全target smokeが通る。</li>
+    <li>surface別mode、restart直後のlive evidence、surface単位のrollback手順が保存されている。</li>
+    <li>live変更が明示承認された範囲だけで実行されている。</li>
+  </ul>
+</article>

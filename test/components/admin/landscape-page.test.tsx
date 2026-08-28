@@ -8,6 +8,7 @@ import {
   type DeadZoneKnowledgeReviewResponse,
   applyDeadZoneKnowledgeReviewAction,
   fetchDeadZoneKnowledgeReview,
+  fetchUnresolvedLandscapeCurationJobs,
   requestDeadZoneMergeReviewJob,
 } from "../../../web/src/modules/admin/repositories/admin.repository";
 
@@ -136,6 +137,7 @@ const deadZoneReview: DeadZoneKnowledgeReviewResponse = {
 
 vi.mock("../../../web/src/modules/admin/repositories/admin.repository", () => ({
   fetchDeadZoneKnowledgeReview: vi.fn(),
+  fetchUnresolvedLandscapeCurationJobs: vi.fn(),
   applyDeadZoneKnowledgeReviewAction: vi.fn(),
   requestDeadZoneMergeReviewJob: vi.fn(),
   applyDeadZoneMergeReviewJob: vi.fn(),
@@ -160,6 +162,7 @@ describe("LandscapePage", () => {
       value: vi.fn(() => true),
     });
     vi.mocked(fetchDeadZoneKnowledgeReview).mockResolvedValue(deadZoneReview);
+    vi.mocked(fetchUnresolvedLandscapeCurationJobs).mockResolvedValue([]);
     vi.mocked(applyDeadZoneKnowledgeReviewAction).mockResolvedValue({
       action: "deprecate_deadzone",
       status: "applied",
@@ -207,6 +210,33 @@ describe("LandscapePage", () => {
       sortBy: "deadZoneScore",
       sortDir: "desc",
     });
+  });
+
+  it("shows unresolved autonomous curation jobs without asking for user approval", async () => {
+    vi.mocked(fetchUnresolvedLandscapeCurationJobs).mockResolvedValue([
+      {
+        id: "curation-1",
+        reviewItemId: "review-1",
+        findingType: "duplicate_candidate",
+        subjectKnowledgeId: "knowledge-1",
+        candidateKnowledgeIds: ["knowledge-2"],
+        status: "failed",
+        phase: "llm_review",
+        decision: null,
+        disposition: null,
+        priority: 70,
+        lastError: "provider unavailable",
+        lastOutcomeKind: "failed",
+        createdAt: "2026-05-24T00:00:00.000Z",
+        updatedAt: "2026-05-24T00:00:00.000Z",
+      },
+    ]);
+
+    renderLandscapePage();
+
+    expect(await screen.findByText("duplicate candidate")).toBeInTheDocument();
+    expect(screen.getByText(/provider unavailable/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /approve/i })).not.toBeInTheDocument();
   });
 
   it("updates the queue filters", async () => {

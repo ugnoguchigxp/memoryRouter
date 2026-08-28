@@ -3,7 +3,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -21,14 +21,19 @@ use super::covering_executor::{
     NegativeCoveringPersistStatus, NegativeCoveringResult,
 };
 use super::episode_executor::{
-    run_episode_distiller_job_for_connection, EpisodeExecutionStatus, LocalLlmTargetConfig,
+    run_episode_distiller_job_for_connection, run_episode_distiller_job_for_path,
+    EpisodeExecutionStatus, EpisodeSplitStatus, LocalLlmTargetConfig,
 };
 use super::events::append_queue_event_for_connection;
 use super::finalize_executor::{
     backfill_finalize_project_identity_for_connection, run_finalize_distille_job_for_connection,
     FinalizeEmbeddingConfig, FinalizeExecutionStatus,
 };
-use super::finding_executor::{run_finding_candidate_job_for_connection, FindingExecutionStatus};
+use super::finding_executor::{
+    execute_finding, load_claimed_finding_execution, persist_finding_result,
+    run_finding_candidate_job_for_connection, FindingExecutionStatus, FindingPersistStatus,
+};
+use super::provider_execution::{open_query_only_connection, ProviderExecutionHeartbeatGuard};
 use super::provider_lease::{
     claim_next_job_with_provider_lease_for_connection, heartbeat_provider_lease_for_connection,
     release_provider_lease_for_connection,
@@ -55,6 +60,36 @@ enum LocalExecutionOutcome {
     Completed,
     Failed,
     Retrying,
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ProviderExecutionMode {
+    Legacy,
+    Split,
+}
+
+impl ProviderExecutionMode {
+    fn parse<E: EnvProvider>(env: &E, key: &str) -> Result<Self, CliError> {
+        let value = env
+            .var(key)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "legacy".to_string());
+        match value.as_str() {
+            "legacy" => Ok(Self::Legacy),
+            "split" => Ok(Self::Split),
+            _ => Err(CliError::invalid_arguments(format!(
+                "unsupported {key}: {value}; expected legacy or split"
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Split => "split",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -111,6 +146,10 @@ pub fn run_executor_tick_report<E: EnvProvider>(
     let sqlite_core_path = process::path_to_string(&paths.sqlite_core_path);
     let (rust_covering_mode, covering_canary_job_ids) =
         rust_covering_config(env, &paths.sqlite_core_path)?;
+    let finding_execution_mode =
+        ProviderExecutionMode::parse(env, "CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE")?;
+    let episode_execution_mode =
+        ProviderExecutionMode::parse(env, "CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE")?;
     if !paths.sqlite_core_path.exists() {
         let report = QueueExecutorTickReport {
             process: QUEUE_SUPERVISOR.state_name,
@@ -130,6 +169,8 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             &report,
             rust_covering_mode.as_str(),
             &covering_canary_job_ids,
+            finding_execution_mode.as_str(),
+            episode_execution_mode.as_str(),
         )?;
         return Ok(report);
     }
@@ -172,6 +213,8 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             .var("EMBEDDING_ACCESS_TOKEN")
             .or_else(|| env.var("LOCAL_LLM_ACCESS_TOKEN")),
         azure_openai_api_key: env.var("AZURE_OPENAI_API_KEY"),
+        finding_execution_mode,
+        episode_execution_mode,
         rust_covering_mode,
         covering_canary_job_ids,
     };
@@ -185,13 +228,24 @@ pub fn run_executor_tick_report<E: EnvProvider>(
             {
                 return Ok(false);
             }
+            let runnable_condition = if table_has_column(
+                connection,
+                "finalize_distille_queue",
+                "next_run_at",
+            )
+            .map_err(|error| error.to_string())?
+            {
+                "((status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)) or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP))"
+            } else {
+                "status = 'pending'"
+            };
             connection
                 .query_row(
-                    "select exists(
+                    &format!("select exists(
                        select 1
                        from finalize_distille_queue
-                       where status in ('pending', 'paused')
-                     )",
+                       where {runnable_condition}
+                     )"),
                     [],
                     |row| row.get::<_, i64>(0),
                 )
@@ -345,12 +399,23 @@ pub fn run_executor_tick_report<E: EnvProvider>(
                 &report,
                 config.rust_covering_mode.as_str(),
                 &config.covering_canary_job_ids,
+                config.finding_execution_mode.as_str(),
+                config.episode_execution_mode.as_str(),
             )?;
             return Ok(report);
         }
     }
     if let Some(report) = prior_generic_report {
         Ok(report)
+    } else if config.finding_execution_mode == ProviderExecutionMode::Split
+        || config.episode_execution_mode == ProviderExecutionMode::Split
+    {
+        run_split_provider_executor_tick_for_path(
+            &paths.sqlite_core_path,
+            sqlite_core_path,
+            run_dir,
+            config,
+        )
     } else {
         run_generic_executor_tick_for_path(
             &paths.sqlite_core_path,
@@ -390,6 +455,438 @@ fn run_generic_executor_tick_for_path(
     .map_err(|error| CliError::io(format!("SQLite writer executor tick failed: {error}")))
 }
 
+#[derive(Debug, Clone)]
+struct PreparedProviderClaim {
+    job: super::types::ClaimedProviderLeaseJob,
+    target: LocalLlmTargetConfig,
+    api_key: Option<String>,
+}
+
+fn run_split_provider_executor_tick_for_path(
+    sqlite_path: &std::path::Path,
+    sqlite_core_path: String,
+    run_dir: std::path::PathBuf,
+    config: ExecutorTickConfig,
+) -> Result<QueueExecutorTickReport, CliError> {
+    let mut claimed = 0;
+    let mut completed = 0;
+    let mut failed = 0;
+    let mut retried = 0;
+    let mut unsupported = 0;
+
+    while claimed < config.max_claims {
+        let claim_config = config.clone();
+        let setup = sqlite_writer::execute_for_path(
+            sqlite_path,
+            "queue.provider_claim",
+            move |connection| {
+                claim_provider_execution_for_connection(connection, &claim_config)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| CliError::io(format!("SQLite writer provider claim failed: {error}")))?;
+        let Some(setup) = setup else {
+            break;
+        };
+        claimed += 1;
+
+        if setup.job.queue_name == "findingCandidate"
+            && config.finding_execution_mode == ProviderExecutionMode::Split
+        {
+            let _heartbeat = match ProviderExecutionHeartbeatGuard::start(
+                sqlite_path,
+                &setup.job.provider_lease,
+            ) {
+                Ok(heartbeat) => heartbeat,
+                Err(error) => {
+                    return_provider_setup_failure(sqlite_path, &setup, &error.to_string())?;
+                    retried += 1;
+                    continue;
+                }
+            };
+            let prepared = (|| {
+                let reader = open_query_only_connection(sqlite_path)?;
+                load_claimed_finding_execution(
+                    &reader,
+                    setup.job.clone(),
+                    setup.target.clone(),
+                    setup.api_key.clone(),
+                )
+            })();
+            let execution = match prepared {
+                Ok(execution) => execution,
+                Err(error) => {
+                    return_provider_setup_failure(sqlite_path, &setup, &error.to_string())?;
+                    retried += 1;
+                    continue;
+                }
+            };
+            let result = execute_finding(&execution, config.llm_timeout_seconds);
+            let persisted = sqlite_writer::execute_for_path(
+                sqlite_path,
+                "queue.finding_persist",
+                move |connection| {
+                    persist_finding_result(connection, &execution, &result)
+                        .map_err(|error| error.to_string())
+                },
+            )
+            .map_err(|error| {
+                CliError::io(format!("SQLite writer finding persistence failed: {error}"))
+            })?;
+            match persisted {
+                FindingPersistStatus::Completed | FindingPersistStatus::Skipped => completed += 1,
+                FindingPersistStatus::Failed => failed += 1,
+                FindingPersistStatus::Retrying
+                | FindingPersistStatus::Paused
+                | FindingPersistStatus::Superseded => retried += 1,
+            }
+            continue;
+        }
+
+        if setup.job.queue_name == "episodeDistiller"
+            && config.episode_execution_mode == ProviderExecutionMode::Split
+        {
+            let _heartbeat = match ProviderExecutionHeartbeatGuard::start(
+                sqlite_path,
+                &setup.job.provider_lease,
+            ) {
+                Ok(heartbeat) => heartbeat,
+                Err(error) => {
+                    return_provider_setup_failure(sqlite_path, &setup, &error.to_string())?;
+                    retried += 1;
+                    continue;
+                }
+            };
+            let outcome = run_episode_distiller_job_for_path(
+                sqlite_path,
+                setup.job.clone(),
+                setup.target.clone(),
+                setup.api_key.clone(),
+                config.llm_timeout_seconds,
+            );
+            let outcome = match outcome {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    return_provider_setup_failure(sqlite_path, &setup, &error.to_string())?;
+                    retried += 1;
+                    continue;
+                }
+            };
+            match outcome {
+                EpisodeSplitStatus::Completed | EpisodeSplitStatus::Skipped => completed += 1,
+                EpisodeSplitStatus::Failed => failed += 1,
+                EpisodeSplitStatus::Retrying
+                | EpisodeSplitStatus::Paused
+                | EpisodeSplitStatus::Superseded => retried += 1,
+            }
+            continue;
+        }
+
+        let legacy_setup = setup.clone();
+        let timeout_seconds = config.llm_timeout_seconds;
+        let outcome = sqlite_writer::execute_for_path(
+            sqlite_path,
+            "queue.provider_legacy_execute",
+            move |connection| {
+                run_claimed_legacy_provider_execution(connection, &legacy_setup, timeout_seconds)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .map_err(|error| {
+            CliError::io(format!(
+                "SQLite writer legacy provider execution failed: {error}"
+            ))
+        })?;
+        match outcome {
+            Some(LocalExecutionOutcome::Completed) => completed += 1,
+            Some(LocalExecutionOutcome::Failed) => failed += 1,
+            Some(LocalExecutionOutcome::Retrying) => retried += 1,
+            None => unsupported += 1,
+        }
+    }
+
+    let status = if claimed == 0 {
+        "idle"
+    } else if unsupported > 0 {
+        "unsupported"
+    } else if failed > 0 || retried > 0 {
+        "degraded"
+    } else {
+        "executed"
+    };
+    let report = QueueExecutorTickReport {
+        process: QUEUE_SUPERVISOR.state_name,
+        action: "executor_tick",
+        status: status.to_string(),
+        sqlite_status: "ok",
+        sqlite_core_path,
+        claimed,
+        completed,
+        failed,
+        retried,
+        unsupported,
+        message: format!(
+            "queue split executor tick completed; claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported={unsupported}"
+        ),
+    };
+    write_executor_state(
+        &run_dir,
+        &report,
+        config.rust_covering_mode.as_str(),
+        &config.covering_canary_job_ids,
+        config.finding_execution_mode.as_str(),
+        config.episode_execution_mode.as_str(),
+    )?;
+    Ok(report)
+}
+
+fn claim_provider_execution_for_connection(
+    connection: &mut Connection,
+    config: &ExecutorTickConfig,
+) -> Result<Option<PreparedProviderClaim>, CliError> {
+    let Some(settings) = load_settings_document(connection)? else {
+        return Ok(None);
+    };
+    let paused_queues = load_paused_queues(connection)?;
+    for pool in provider_pools(&settings) {
+        let priority_queues =
+            executor_priority_queues_for_pool(&settings, &pool.pool_id, &paused_queues);
+        if priority_queues.is_empty() {
+            continue;
+        }
+        // Resolve every target before committing a queue claim. A malformed target
+        // must not leave a running job and active lease behind while setup unwinds.
+        let mut prepared_targets = BTreeMap::new();
+        for target_id in &pool.targets {
+            prepared_targets.insert(
+                target_id.clone(),
+                (
+                    local_llm_target_config(&settings, target_id)?,
+                    local_llm_target_secret_key(&settings, target_id)?,
+                ),
+            );
+        }
+        let worker_id = format!(
+            "context-stilld-rust-executor:{}:{}",
+            pool.pool_id,
+            unique_suffix()
+        );
+        let lease_id = format!("rust-lease-{}", unique_suffix());
+        let Some(job) = claim_next_job_with_provider_lease_for_connection(
+            connection,
+            &pool,
+            &priority_queues,
+            &worker_id,
+            &lease_id,
+            config.queue_stale_seconds,
+        )?
+        else {
+            continue;
+        };
+        append_queue_event_best_effort(
+            connection,
+            &format!("rust-queue-event-{}", unique_suffix()),
+            &job.queue_name,
+            &job.id,
+            "claimed",
+            Some("job claimed for split Rust resident execution"),
+            Some(
+                &json!({
+                    "workerId": worker_id,
+                    "executor": "rust",
+                    "executionBoundary": "split"
+                })
+                .to_string(),
+            ),
+        );
+        heartbeat_claim_best_effort(connection, &job);
+        let Some((target, secret_key)) = prepared_targets.remove(&job.provider_lease.target_id)
+        else {
+            let error = format!(
+                "claimed provider target {} was not prepared for pool {}",
+                job.provider_lease.target_id, job.provider_lease.pool_id
+            );
+            return_provider_setup_failure_for_connection(connection, &job, &error)?;
+            return Err(CliError::io(error));
+        };
+        let api_key = load_secret_value(connection, &secret_key).or_else(|| {
+            if secret_key == "localLlmApiKey" {
+                config.local_llm_api_key.clone()
+            } else {
+                None
+            }
+        });
+        return Ok(Some(PreparedProviderClaim {
+            job,
+            target,
+            api_key,
+        }));
+    }
+    Ok(None)
+}
+
+fn return_provider_setup_failure(
+    sqlite_path: &std::path::Path,
+    setup: &PreparedProviderClaim,
+    error: &str,
+) -> Result<(), CliError> {
+    let job = setup.job.clone();
+    let error = error.to_string();
+    sqlite_writer::execute_for_path(
+        sqlite_path,
+        "queue.provider_setup_failed",
+        move |connection| {
+            return_provider_setup_failure_for_connection(connection, &job, &error)
+                .map_err(|error| error.to_string())
+        },
+    )
+    .map_err(|error| {
+        CliError::io(format!(
+            "SQLite writer provider setup recovery failed: {error}"
+        ))
+    })
+}
+
+fn return_provider_setup_failure_for_connection(
+    connection: &mut Connection,
+    job: &super::types::ClaimedProviderLeaseJob,
+    error: &str,
+) -> Result<(), CliError> {
+    let table_name = super::common::queue_table_name(&job.queue_name)?;
+    let error = error.chars().take(1000).collect::<String>();
+    let tx = connection.transaction().map_err(|error| {
+        CliError::io(format!(
+            "failed to begin provider setup failure transition: {error}"
+        ))
+    })?;
+    let changed = tx
+        .execute(
+            &format!(
+                "update {table_name}
+                 set status = 'pending',
+                     next_run_at = datetime(CURRENT_TIMESTAMP, '+60 seconds'),
+                     locked_by = null,
+                     locked_at = null,
+                     heartbeat_at = null,
+                     last_error = ?1,
+                     last_outcome_kind = 'worker_setup_failed',
+                     updated_at = CURRENT_TIMESTAMP
+                 where id = ?2
+                   and status = 'running'
+                   and locked_by = ?3"
+            ),
+            params![error, job.id, job.provider_lease.worker_id],
+        )
+        .map_err(|error| CliError::io(format!("failed to return provider setup job: {error}")))?;
+    let lease_changed = tx
+        .execute(
+            "update llm_provider_leases
+             set status = 'released', released_at = CURRENT_TIMESTAMP,
+                 release_reason = 'worker_setup_failed', updated_at = CURRENT_TIMESTAMP
+             where id = ?1
+               and status = 'active'
+               and queue_name = ?2
+               and queue_job_id = ?3
+               and worker_id = ?4",
+            params![
+                job.provider_lease.id,
+                job.queue_name,
+                job.id,
+                job.provider_lease.worker_id
+            ],
+        )
+        .map_err(|error| {
+            CliError::io(format!("failed to release provider setup lease: {error}"))
+        })?;
+    if changed != 1 || lease_changed != 1 {
+        return Err(CliError::io(
+            "provider setup ownership changed before recovery",
+        ));
+    }
+    append_queue_event_best_effort(
+        &tx,
+        &format!("rust-queue-event-{}", unique_suffix()),
+        &job.queue_name,
+        &job.id,
+        "retried",
+        Some("job returned because split executor setup failed"),
+        Some(
+            &json!({
+                "workerId": job.provider_lease.worker_id,
+                "executor": "rust",
+                "executionBoundary": "split",
+                "reason": "worker_setup_failed",
+                "error": error
+            })
+            .to_string(),
+        ),
+    );
+    tx.commit()
+        .map_err(|error| CliError::io(format!("failed to commit provider setup recovery: {error}")))
+}
+
+fn run_claimed_legacy_provider_execution(
+    connection: &mut Connection,
+    setup: &PreparedProviderClaim,
+    timeout_seconds: u64,
+) -> Result<Option<LocalExecutionOutcome>, CliError> {
+    let execution_status = if setup.job.queue_name == "findingCandidate" {
+        match run_finding_candidate_job_for_connection(
+            connection,
+            &setup.job.id,
+            &setup.job.provider_lease.worker_id,
+            &setup.target,
+            setup.api_key.as_deref(),
+            timeout_seconds,
+        )? {
+            FindingExecutionStatus::Completed | FindingExecutionStatus::Skipped => {
+                LocalExecutionOutcome::Completed
+            }
+            FindingExecutionStatus::Failed => LocalExecutionOutcome::Failed,
+            FindingExecutionStatus::Retrying => LocalExecutionOutcome::Retrying,
+        }
+    } else if setup.job.queue_name == "episodeDistiller" {
+        match run_episode_distiller_job_for_connection(
+            connection,
+            &setup.job.id,
+            &setup.job.provider_lease.worker_id,
+            &setup.target,
+            setup.api_key.as_deref(),
+            timeout_seconds,
+        )? {
+            EpisodeExecutionStatus::Completed | EpisodeExecutionStatus::Skipped => {
+                LocalExecutionOutcome::Completed
+            }
+            EpisodeExecutionStatus::Failed => LocalExecutionOutcome::Failed,
+            EpisodeExecutionStatus::Retrying => LocalExecutionOutcome::Retrying,
+        }
+    } else {
+        keep_queue_job_waiting_for_worker_for_connection(
+            connection,
+            &setup.job.queue_name,
+            &setup.job.id,
+            "unsupported split provider executor",
+        )?;
+        release_provider_lease_for_connection(
+            connection,
+            &setup.job.provider_lease.id,
+            "unsupported_executor",
+        )?;
+        return Ok(None);
+    };
+    let release_reason = match execution_status {
+        LocalExecutionOutcome::Completed => "worker_finished",
+        LocalExecutionOutcome::Failed => "worker_failed",
+        LocalExecutionOutcome::Retrying => "provider_unavailable_retry",
+    };
+    release_provider_lease_for_connection(
+        connection,
+        &setup.job.provider_lease.id,
+        release_reason,
+    )?;
+    Ok(Some(execution_status))
+}
+
 #[derive(Clone)]
 struct ExecutorTickConfig {
     max_claims: u64,
@@ -402,6 +899,8 @@ struct ExecutorTickConfig {
     source_read_root: std::path::PathBuf,
     embedding_access_token: Option<String>,
     azure_openai_api_key: Option<String>,
+    finding_execution_mode: ProviderExecutionMode,
+    episode_execution_mode: ProviderExecutionMode,
     rust_covering_mode: RustCoveringMode,
     covering_canary_job_ids: Vec<String>,
 }
@@ -719,9 +1218,11 @@ fn has_runnable_other_provider_work(
             select exists(
               select 1
               from finding_candidate_queue
-              where status in ('pending', 'paused')
+              where (
+                (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+                or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+              )
                 and source_kind = 'vibe_memory'
-                and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
             )
             ",
                 [],
@@ -748,8 +1249,10 @@ fn has_runnable_other_provider_work(
             select exists(
               select 1
               from episode_distiller_queue
-              where status in ('pending', 'paused')
-                and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP)
+              where (
+                (status = 'pending' and (next_run_at is null or datetime(next_run_at) <= CURRENT_TIMESTAMP))
+                or (status = 'paused' and next_run_at is not null and datetime(next_run_at) <= CURRENT_TIMESTAMP)
+              )
             )
             ",
             [],
@@ -780,6 +1283,8 @@ fn run_executor_tick_with_connection(
             &report,
             config.rust_covering_mode.as_str(),
             &config.covering_canary_job_ids,
+            config.finding_execution_mode.as_str(),
+            config.episode_execution_mode.as_str(),
         )?;
         return Ok(report);
     };
@@ -846,6 +1351,8 @@ fn run_executor_tick_with_connection(
             &report,
             config.rust_covering_mode.as_str(),
             &config.covering_canary_job_ids,
+            config.finding_execution_mode.as_str(),
+            config.episode_execution_mode.as_str(),
         )?;
         return Ok(report);
     }
@@ -1023,6 +1530,8 @@ fn run_executor_tick_with_connection(
         &report,
         config.rust_covering_mode.as_str(),
         &config.covering_canary_job_ids,
+        config.finding_execution_mode.as_str(),
+        config.episode_execution_mode.as_str(),
     )?;
     Ok(report)
 }
@@ -1685,6 +2194,23 @@ fn table_exists(connection: &Connection, table_name: &str) -> Result<bool, CliEr
         })
 }
 
+fn table_has_column(
+    connection: &Connection,
+    table_name: &str,
+    column_name: &str,
+) -> Result<bool, CliError> {
+    let mut statement = connection
+        .prepare(&format!("pragma table_info({table_name})"))
+        .map_err(|error| CliError::io(format!("failed to inspect table columns: {error}")))?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| CliError::io(format!("failed to query table columns: {error}")))?;
+    let columns = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CliError::io(format!("failed to read table columns: {error}")))?;
+    Ok(columns.iter().any(|column| column == column_name))
+}
+
 fn env_u64_default<E: EnvProvider>(env: &E, key: &str, default: u64) -> u64 {
     env.var(key)
         .and_then(|value| value.parse::<u64>().ok())
@@ -1705,6 +2231,8 @@ fn write_executor_state(
     report: &QueueExecutorTickReport,
     rust_covering_mode: &str,
     covering_canary_job_ids: &[String],
+    rust_finding_execution_mode: &str,
+    rust_episode_execution_mode: &str,
 ) -> Result<(), CliError> {
     let state = ProcessState {
         pid: None,
@@ -1726,7 +2254,9 @@ fn write_executor_state(
             "residentPid":std::process::id(),
             "executionLanes":["local_finalize","provider_pool"],
             "rustCoveringMode":rust_covering_mode,
-            "rustCoveringCanaryJobIds":covering_canary_job_ids
+            "rustCoveringCanaryJobIds":covering_canary_job_ids,
+            "rustFindingExecutionMode":rust_finding_execution_mode,
+            "rustEpisodeExecutionMode":rust_episode_execution_mode
         })),
         ..ProcessState::default()
     };
@@ -1997,6 +2527,165 @@ mod tests {
     }
 
     #[test]
+    fn provider_setup_failure_returns_job_and_lease_atomically() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+        create_provider_lease_table(&connection);
+        create_queue_events_table(&connection);
+        connection
+            .execute_batch(
+                r#"
+                insert into finding_candidate_queue (
+                  id, status, priority, attempt_count, created_at, updated_at,
+                  locked_by, locked_at, heartbeat_at
+                ) values (
+                  'job-setup', 'running', 10, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  'worker-setup', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                );
+                insert into llm_provider_leases (
+                  id, pool_id, target_id, queue_name, queue_job_id, worker_id,
+                  status, expires_at
+                ) values (
+                  'lease-setup', 'pool-1', 'target-1', 'findingCandidate',
+                  'job-setup', 'worker-setup', 'active',
+                  datetime(CURRENT_TIMESTAMP, '+2 minutes')
+                );
+                "#,
+            )
+            .unwrap();
+        let job = super::super::types::ClaimedProviderLeaseJob {
+            queue_name: "findingCandidate".to_string(),
+            id: "job-setup".to_string(),
+            provider_lease: super::super::types::ProviderLeaseAssignment {
+                id: "lease-setup".to_string(),
+                pool_id: "pool-1".to_string(),
+                target_id: "target-1".to_string(),
+                queue_name: "findingCandidate".to_string(),
+                queue_job_id: "job-setup".to_string(),
+                worker_id: "worker-setup".to_string(),
+            },
+        };
+
+        return_provider_setup_failure_for_connection(
+            &mut connection,
+            &job,
+            "heartbeat writer unavailable",
+        )
+        .unwrap();
+
+        let queue = connection
+            .query_row(
+                "select status, locked_by, next_run_at is not null, last_outcome_kind, last_error from finding_candidate_queue where id = 'job-setup'",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            queue,
+            (
+                "pending".to_string(),
+                None,
+                1,
+                "worker_setup_failed".to_string(),
+                "heartbeat writer unavailable".to_string(),
+            )
+        );
+        let lease = connection
+            .query_row(
+                "select status, release_reason from llm_provider_leases where id = 'lease-setup'",
+                [],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            lease,
+            ("released".to_string(), "worker_setup_failed".to_string())
+        );
+        let retried_events: i64 = connection
+            .query_row(
+                "select count(*) from distillation_queue_events where queue_name = 'findingCandidate' and queue_job_id = 'job-setup' and event_type = 'retried'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retried_events, 1);
+    }
+
+    #[test]
+    fn provider_setup_failure_rolls_back_when_lease_fence_is_lost() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        create_provider_claim_queue_table(&connection, "finding_candidate_queue");
+        create_provider_lease_table(&connection);
+        create_queue_events_table(&connection);
+        connection
+            .execute_batch(
+                r#"
+                insert into finding_candidate_queue (
+                  id, status, priority, attempt_count, created_at, updated_at,
+                  locked_by, locked_at, heartbeat_at
+                ) values (
+                  'job-fenced', 'running', 10, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  'worker-old', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                );
+                insert into llm_provider_leases (
+                  id, pool_id, target_id, queue_name, queue_job_id, worker_id,
+                  status, expires_at
+                ) values (
+                  'lease-fenced', 'pool-1', 'target-1', 'findingCandidate',
+                  'job-fenced', 'worker-new', 'active',
+                  datetime(CURRENT_TIMESTAMP, '+2 minutes')
+                );
+                "#,
+            )
+            .unwrap();
+        let job = super::super::types::ClaimedProviderLeaseJob {
+            queue_name: "findingCandidate".to_string(),
+            id: "job-fenced".to_string(),
+            provider_lease: super::super::types::ProviderLeaseAssignment {
+                id: "lease-fenced".to_string(),
+                pool_id: "pool-1".to_string(),
+                target_id: "target-1".to_string(),
+                queue_name: "findingCandidate".to_string(),
+                queue_job_id: "job-fenced".to_string(),
+                worker_id: "worker-old".to_string(),
+            },
+        };
+
+        let error = return_provider_setup_failure_for_connection(
+            &mut connection,
+            &job,
+            "heartbeat writer unavailable",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("ownership changed"));
+        let queue_status: String = connection
+            .query_row(
+                "select status from finding_candidate_queue where id = 'job-fenced'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let lease_status: String = connection
+            .query_row(
+                "select status from llm_provider_leases where id = 'lease-fenced'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(queue_status, "running");
+        assert_eq!(lease_status, "active");
+    }
+
+    #[test]
     fn rust_finalize_local_lane_preempts_covering_and_finding_provider_backlog() {
         let app_dir = temp_app_dir("finalize_local_lane");
         let sqlite_path = app_dir.join("queue.sqlite");
@@ -2063,8 +2752,8 @@ mod tests {
               '[]','[]','[]',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP
             );
             insert into finalize_distille_queue (
-              id,evidence_result_id,distillation_version,status,priority,attempt_count,max_attempts,metadata,created_at,updated_at
-            ) values ('finalize-local','evidence-finalize','v1','paused',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
+              id,evidence_result_id,distillation_version,status,priority,attempt_count,max_attempts,metadata,next_run_at,created_at,updated_at
+            ) values ('finalize-local','evidence-finalize','v1','paused',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
         "#).unwrap();
         drop(connection);
         let env = MapEnv::from_pairs(vec![

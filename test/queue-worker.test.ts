@@ -25,6 +25,11 @@ const mocks = vi.hoisted(() => ({
   heartbeatProviderLease: vi.fn(),
   releaseProviderLease: vi.fn(),
   processMergeActivationFinalizeJob: vi.fn(),
+  processLandscapeCurationJob: vi.fn(),
+  findLandscapeCurationJobLinkByQueueJob: vi.fn(),
+  getLandscapeCurationJob: vi.fn(),
+  updateLandscapeCurationJob: vi.fn(),
+  upsertLandscapeCurationJobLink: vi.fn(),
   researchWebSourceToMarkdown: vi.fn(),
   isQueuePaused: vi.fn(),
   setQueuePaused: vi.fn(),
@@ -79,6 +84,17 @@ vi.mock("../src/modules/landscape/merge-activation-finalize.worker.js", () => ({
   processMergeActivationFinalizeJob: mocks.processMergeActivationFinalizeJob,
 }));
 
+vi.mock("../src/modules/landscape/landscape-curation.service.js", () => ({
+  processLandscapeCurationJob: mocks.processLandscapeCurationJob,
+}));
+
+vi.mock("../src/modules/landscape/landscape-curation-queue.repository.js", () => ({
+  findLandscapeCurationJobLinkByQueueJob: mocks.findLandscapeCurationJobLinkByQueueJob,
+  getLandscapeCurationJob: mocks.getLandscapeCurationJob,
+  updateLandscapeCurationJob: mocks.updateLandscapeCurationJob,
+  upsertLandscapeCurationJobLink: mocks.upsertLandscapeCurationJobLink,
+}));
+
 vi.mock("../src/modules/sources/web/source-research.service.js", () => ({
   researchWebSourceToMarkdown: mocks.researchWebSourceToMarkdown,
 }));
@@ -131,6 +147,9 @@ describe("runQueueWorkerOnce", () => {
     mocks.updateCalls = [];
     mocks.claimNextQueueJob.mockResolvedValue({ id: "cover-job-1" });
     mocks.isQueuePaused.mockResolvedValue(false);
+    mocks.findLandscapeCurationJobLinkByQueueJob.mockResolvedValue(null);
+    mocks.processMergeActivationFinalizeJob.mockResolvedValue(undefined);
+    mocks.processLandscapeCurationJob.mockResolvedValue(undefined);
     mocks.setQueuePaused.mockResolvedValue({});
     mocks.isVibeMemorySelfIngestionBlocked.mockResolvedValue(false);
     mocks.maybeRunFindingCodexEscalation.mockResolvedValue({
@@ -640,6 +659,90 @@ describe("runQueueWorkerOnce", () => {
     expect(mocks.processMergeActivationFinalizeJob).toHaveBeenCalledWith(
       "merge-finalize-job-1",
       expect.any(AbortSignal),
+    );
+  });
+
+  test("automatically retries failed Curation jobs without requesting user action", async () => {
+    mocks.claimNextQueueJob.mockResolvedValue({ id: "curation-job-1" });
+    mocks.processLandscapeCurationJob.mockRejectedValue(new Error("invalid LLM JSON"));
+    mocks.getLandscapeCurationJob.mockResolvedValue({ attemptCount: 0, maxAttempts: 3 });
+
+    const result = await runQueueWorkerOnce({
+      queueName: "landscapeCuration",
+      workerId: "worker-1",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("retry scheduled");
+    expect(mocks.updateLandscapeCurationJob).toHaveBeenCalledWith(
+      "curation-job-1",
+      expect.objectContaining({
+        status: "paused",
+        attemptCount: 1,
+        lockedBy: null,
+        completedAt: null,
+      }),
+    );
+    expect(mocks.appendQueueEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "retried" }),
+    );
+  });
+
+  test("automatically retries Finalize failures without requesting user action", async () => {
+    mocks.claimNextQueueJob.mockResolvedValue({ id: "merge-finalize-job-1" });
+    mocks.processMergeActivationFinalizeJob.mockRejectedValue(new Error("canonical update failed"));
+    mocks.selectRows = [[{ attemptCount: 0, maxAttempts: 2 }]];
+    mocks.findLandscapeCurationJobLinkByQueueJob.mockResolvedValue({
+      curationJobId: "curation-job-1",
+      metadata: { autonomous: true },
+    });
+
+    const result = await runQueueWorkerOnce({
+      queueName: "mergeActivationFinalize",
+      workerId: "worker-1",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(mocks.upsertLandscapeCurationJobLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        curationJobId: "curation-job-1",
+        queueJobId: "merge-finalize-job-1",
+        status: "paused",
+      }),
+    );
+    expect(mocks.updateLandscapeCurationJob).toHaveBeenCalledWith(
+      "curation-job-1",
+      expect.objectContaining({
+        status: "paused",
+        lastOutcomeKind: "downstream_finalize_retrying",
+      }),
+    );
+    expect(result.message).toContain("retry scheduled");
+  });
+
+  test("leaves a terminal unresolved Curation task after Finalize exhausts retries", async () => {
+    mocks.claimNextQueueJob.mockResolvedValue({ id: "merge-finalize-job-1" });
+    mocks.processMergeActivationFinalizeJob.mockRejectedValue(new Error("canonical update failed"));
+    mocks.selectRows = [[{ attemptCount: 1, maxAttempts: 2 }]];
+    mocks.findLandscapeCurationJobLinkByQueueJob.mockResolvedValue({
+      curationJobId: "curation-job-1",
+      metadata: { autonomous: true },
+    });
+
+    await runQueueWorkerOnce({
+      queueName: "mergeActivationFinalize",
+      workerId: "worker-1",
+    });
+
+    expect(mocks.upsertLandscapeCurationJobLink).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(mocks.updateLandscapeCurationJob).toHaveBeenCalledWith(
+      "curation-job-1",
+      expect.objectContaining({
+        status: "failed",
+        lastOutcomeKind: "downstream_finalize_failed",
+      }),
     );
   });
 

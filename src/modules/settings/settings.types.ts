@@ -138,6 +138,7 @@ export type RuntimeSettingsEffectiveTargets = {
       mcpEvidence: RuntimeEffectiveRouteTargets;
     };
     deadZoneMergeReview: RuntimeEffectiveRouteTargets;
+    landscapeCuration: RuntimeEffectiveRouteTargets;
     finalizeDistille: RuntimeEffectiveRouteTargets;
     mergeActivationFinalize: RuntimeEffectiveRouteTargets;
     agenticCompile: RuntimeEffectiveRouteTargets;
@@ -218,6 +219,7 @@ export type RuntimeSettingsEditable = {
       mcpEvidence: RuntimeSettingsRoute;
     };
     deadZoneMergeReview: RuntimeSettingsRoute;
+    landscapeCuration: RuntimeSettingsRoute;
     finalizeDistille: RuntimeSettingsRoute;
     mergeActivationFinalize: RuntimeSettingsRoute;
     agenticCompile: {
@@ -439,6 +441,7 @@ export const runtimeSettingsEditableSchema = z
         mcpEvidence: runtimeRouteSchema,
       }),
       deadZoneMergeReview: runtimeRouteSchema,
+      landscapeCuration: runtimeRouteSchema,
       finalizeDistille: runtimeRouteSchema,
       mergeActivationFinalize: runtimeRouteSchema,
       agenticCompile: z.object({
@@ -559,6 +562,9 @@ function backfillRuntimeSettingsUpdateInput(value: unknown): unknown {
   }
   if (!objectRecord(nextTaskRouting.mergeActivationFinalize)) {
     nextTaskRouting.mergeActivationFinalize = cloneRouteInput(nextTaskRouting.finalizeDistille);
+  }
+  if (!objectRecord(nextTaskRouting.landscapeCuration)) {
+    nextTaskRouting.landscapeCuration = cloneRouteInput(nextTaskRouting.deadZoneMergeReview);
   }
 
   return {

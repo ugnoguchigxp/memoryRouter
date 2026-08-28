@@ -11,6 +11,7 @@ export const landscapeReviewItemSourceSchema = z.enum([
 ]);
 
 export const landscapeReviewItemReasonSchema = z.enum([
+  "duplicate_candidate",
   "used_baseline_lost",
   "baseline_off_topic",
   "baseline_wrong",
