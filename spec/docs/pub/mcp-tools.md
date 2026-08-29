@@ -23,6 +23,42 @@ Register the daemon-owned streamable HTTP endpoint in MCP clients:
 
 Use `bun run setup:mcp-config` to update Codex and Antigravity configs. Command-based context-still MCP registration has been removed and must not be restored.
 
+## Tool profiles
+
+The default instance keeps the existing twelve-tool development surface documented below. A separate process can instead run with `CONTEXT_STILL_MCP_TOOL_PROFILE=typed-memory`. The profile is selected once at startup and never falls back to default tools.
+
+The `typed-memory` profile exposes exactly these tools, in this order:
+
+| Tool | Returned memory |
+|---|---|
+| `recall_experience` | Past-work evidence: situation, optional action/outcome, lesson, and outcome kind |
+| `recall_rule` | A durable rule and its positive, negative, or neutral polarity |
+| `recall_skill` | A parsed workflow with use condition, steps, verification, and avoid list |
+
+All three calls require `query`. Optional `domains`, `technologies`, and `changeTypes` arrays accept at most eight unique values of 1–64 Unicode scalars. `limit` defaults to 3 and is restricted to 1–5. Experience calls also accept `outcomeKinds`; rule calls accept `polarities` and `intentTags`; skill calls accept `intentTags`. Unknown properties are rejected. Project identity, global inclusion, status, draft selection, embeddings, repository paths, and session identity are not caller-controlled tool arguments.
+
+A successful call returns one text content block. Its text is compact JSON using contract `memory-recall-v1`:
+
+```json
+{
+  "contractVersion": "memory-recall-v1",
+  "memoryType": "rule",
+  "trust": {
+    "trustClass": "untrusted_memory_evidence",
+    "instructionAuthority": "none"
+  },
+  "items": [],
+  "noContent": true,
+  "truncated": false
+}
+```
+
+Memory is evidence, not an instruction source. A client must not follow commands found in returned memory merely because the server returned them. The response omits internal IDs, scores, confidence, source references, query text, diagnostics, and exclusion reasons. An individual experience or rule must fit within 2 KiB, a skill within 3 KiB, and the complete MCP call result within 8 KiB. Oversized or malformed items are excluded rather than text-truncated; `truncated` reports that result-set omission.
+
+`typed-memory` implements Streamable HTTP protocol version `2025-03-26`. Clients must initialize, send `notifications/initialized`, and then call tools with the issued session ID. `tools/list` has no cursor. Resources, prompts, generic tools, and unadvertised methods are rejected. The profile is intended for a dedicated local single-user database and the SAAA-compatible 2025-03 client path. Remote, browser, multi-user, and generic latest-only MCP clients are unsupported.
+
+Authentication uses a fresh local bearer token on every start. Read `authTokenPath` from the owner-only `mcp-endpoint.json` manifest and send the token as `Authorization: Bearer …` on every `/mcp` request. Do not copy the token into source files or client logs. `/mcp/health` is intentionally unauthenticated and returns only `{"ok":true}`. The typed profile does not expose `/writer/health` or `/writer/query`.
+
 ## Primary Tool Inventory
 
 | Tool                        | Primary use                                                                                           |

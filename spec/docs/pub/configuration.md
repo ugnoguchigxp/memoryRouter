@@ -91,6 +91,10 @@ Embedding improves semantic search and distillation quality, but it does not blo
 | `CONTEXT_STILL_SQLITE_CORE_PATH` | `appDataDir/context-still-core.sqlite` | Overrides the SQLite core database path reported by Rust preflight/backup checks |
 | `CONTEXT_STILL_PROJECT_ROOT` | current working directory | Project root used when Rust delegates TypeScript child processes |
 | `CONTEXT_STILL_MCP_HOST` / `CONTEXT_STILL_MCP_PORT` | `127.0.0.1` / `39172` | Managed MCP endpoint host and port; host must be `127.0.0.1` or `::1` |
+| `CONTEXT_STILL_MCP_TOOL_PROFILE` | `default` | `default` or the isolated `typed-memory` MCP surface |
+| `CONTEXT_STILL_MCP_MEMORY_PROJECT_REF` | none | Required opaque, case-sensitive project scope for `typed-memory`; 1–256 Unicode scalars |
+| `CONTEXT_STILL_MCP_MEMORY_INCLUDE_GLOBAL` | `false` | Whether the typed instance may also recall classified, active global memory |
+| `CONTEXT_STILL_MCP_MEMORY_CONTRACT` | `memory-recall-v1` | Optional contract pin; other values fail startup |
 | `CONTEXT_STILL_ADMIN_API_READY_URL` | derived from `PORT` or `39170` | Admin API readiness URL used by `context-stilld admin-api start` |
 | `CONTEXT_STILL_DAEMON_MANAGED_MCP` | unset | Status-only flag indicating MCP is a Rust-default candidate |
 | `CONTEXT_STILL_DAEMON_MANAGED_QUEUE` | unset | Status-only flag indicating queue is a Rust-default candidate |
@@ -98,6 +102,29 @@ Embedding improves semantic search and distillation quality, but it does not blo
 | `CONTEXT_STILL_DAEMON_MANAGED_ADMIN_API` | unset | Status-only flag indicating admin API is a Rust-default candidate |
 
 These variables are for development, packaging, and advanced runtime integration. `context-stilld run` is the resident owner when launched through the daemon automation, but the `CONTEXT_STILL_DAEMON_MANAGED_*` flags are status markers rather than hidden package-script switches. Use `context-stilld runtime sidecars --json` to see which surfaces are still TypeScript/Bun sidecars.
+
+### Typed-memory MCP instance
+
+Run typed memory as a dedicated local process and database scope. Its SQLite path must be an existing absolute regular file, not a symlink, and must be owned by the current user. The immediate parent directory must also be owned by that user, must not be a symlink, and must have no group or world permission bits (mode `0700` or stricter on Unix).
+
+```bash
+CONTEXT_STILL_MCP_TOOL_PROFILE=typed-memory \
+CONTEXT_STILL_MCP_MEMORY_PROJECT_REF='project-opaque-id' \
+CONTEXT_STILL_SQLITE_CORE_PATH='/absolute/path/context-still-core.sqlite' \
+CONTEXT_STILL_MCP_PORT=39173 \
+context-stilld mcp serve
+```
+
+On startup, the run directory receives two owner-only files:
+
+- `mcp-endpoint.json` contains only server, URL, transport, protocol version, auth mode, bearer-token path, tool profile, contract version, and start time.
+- `mcp-memory-bearer.token` contains a new 256-bit bearer token and is deleted when the in-process endpoint stops normally.
+
+The manifest never contains the token, project reference, database path, writer route, session path, PID, or tool inventory. The typed process never generates a SQLite writer token and opens the database read-only with `query_only` enabled. Requests are restricted to loopback, exact Host, no Origin header, 32 KiB headers/body, four concurrent requests, eight active sessions, a 60-second idle session TTL, and a 60-per-minute token bucket with burst 10. Recall work has a one-second SQLite deadline.
+
+Run `context-stilld mcp smoke --json` with the same environment to verify health, bearer authentication, protocol initialization, and the exact three-tool catalog. The smoke check closes its temporary MCP session before returning.
+
+This protects against network and browser-origin access and accidental overexposure to an MCP client. It does not protect the database or token from another malicious process running as the same OS user, or from root. Content retained by a cloud model or downstream client is outside the server boundary. Use a dedicated OS account or stronger process isolation when those threats are in scope.
 
 ## Agent Log Sync
 

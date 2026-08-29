@@ -16,6 +16,7 @@ use crate::domains::{
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 
 use super::endpoint_server::{configured_endpoint_url, RunningEndpoint};
+use super::memory_profile::ToolProfile;
 
 const MCP_ENDPOINT: ManagedProcessSpec = ManagedProcessSpec {
     state_name: "mcp-server",
@@ -52,8 +53,11 @@ pub struct McpSession {
     pub last_activity_unix_seconds: Option<u64>,
     pub in_flight_request_count: u32,
     pub worker_id: Option<String>,
+    #[serde(default)]
     pub route: String,
     pub close_reason: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub initialized: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
@@ -250,27 +254,42 @@ fn resident_managed_stop_report<E: EnvProvider>(
 
 pub fn endpoint_report<E: EnvProvider>(env: &E) -> EndpointReport {
     let paths = resolve_paths(env);
-    let (url, configuration_error) = match configured_endpoint_url(env) {
-        Ok(url) => (url, None),
-        Err(error) => ("unavailable".to_string(), Some(error.to_string())),
+    let mut configuration_errors = Vec::new();
+    let mut url = match configured_endpoint_url(env) {
+        Ok(url) => url,
+        Err(error) => {
+            configuration_errors.push(error.to_string());
+            "unavailable".to_string()
+        }
+    };
+    let typed_memory = match ToolProfile::from_env(env) {
+        Ok(profile) => profile == ToolProfile::TypedMemory,
+        Err(error) => {
+            configuration_errors.push(error.to_string());
+            false
+        }
     };
     let metadata_path = paths.run_dir.join("mcp-endpoint.json");
+    if configuration_errors.is_empty() {
+        url = bound_dynamic_endpoint_url(&url, &metadata_path).unwrap_or(url);
+    }
     let session_state_path = paths.run_dir.join("mcp-sessions.json");
     let sessions = read_sessions_file(&session_state_path).unwrap_or_default();
     let active_session_count = sessions
         .iter()
         .filter(|session| session.close_reason.is_none())
         .count();
-    let health = if configuration_error.is_none() {
+    let health = if configuration_errors.is_empty() {
         read_health(&url).ok()
     } else {
         None
     };
     let mut warnings = Vec::new();
 
-    if let Some(error) = configuration_error {
+    for error in configuration_errors {
         warnings.push(format!("Invalid MCP endpoint configuration: {error}"));
-    } else if health.as_ref().is_none_or(|health| !health.ok) {
+    }
+    if warnings.is_empty() && health.as_ref().is_none_or(|health| !health.ok) {
         warnings.push("MCP endpoint is not reachable; start context-stilld managed endpoint before registering clients.".to_string());
     }
 
@@ -279,12 +298,31 @@ pub fn endpoint_report<E: EnvProvider>(env: &E) -> EndpointReport {
         url,
         transport: "streamable-http",
         ready: health.is_some_and(|health| health.ok),
-        auth: "none",
+        auth: if typed_memory {
+            "bearer-token-file"
+        } else {
+            "none"
+        },
         active_session_count,
         metadata_path: path_to_string(&metadata_path),
         session_state_path: path_to_string(&session_state_path),
         warnings,
     }
+}
+
+fn bound_dynamic_endpoint_url(configured_url: &str, metadata_path: &Path) -> Option<String> {
+    let (configured_host, configured_port) = parse_http_endpoint(configured_url).ok()?;
+    if configured_port != 0 {
+        return None;
+    }
+    let metadata: Value =
+        serde_json::from_str(&std::fs::read_to_string(metadata_path).ok()?).ok()?;
+    let runtime_url = metadata.get("url")?.as_str()?;
+    if !runtime_url.ends_with("/mcp") {
+        return None;
+    }
+    let (runtime_host, runtime_port) = parse_http_endpoint(runtime_url).ok()?;
+    (runtime_host == configured_host && runtime_port != 0).then(|| runtime_url.to_string())
 }
 
 pub fn sessions_report<E: EnvProvider>(env: &E) -> Result<SessionsReport, CliError> {
@@ -305,7 +343,46 @@ pub fn sessions_report<E: EnvProvider>(env: &E) -> Result<SessionsReport, CliErr
 
 pub fn smoke_report<E: EnvProvider>(env: &E) -> SmokeReport {
     let endpoint = endpoint_report(env);
+    let typed_memory = endpoint.auth == "bearer-token-file";
     let health = read_health(&endpoint.url);
+    if typed_memory {
+        return match health {
+            Ok(health) if health.ok => {
+                let token_path = resolve_paths(env).run_dir.join("mcp-memory-bearer.token");
+                match read_typed_memory_tools(&endpoint.url, &token_path) {
+                    Ok(tool_owners) => SmokeReport {
+                        ok: true,
+                        endpoint,
+                        tool_count: 3,
+                        tool_owners,
+                        message: "Typed-memory MCP endpoint authenticated, initialized, and returned the fixed three-tool catalog."
+                            .to_string(),
+                    },
+                    Err(error) => SmokeReport {
+                        ok: false,
+                        endpoint,
+                        tool_count: 0,
+                        tool_owners: default_tool_owners(),
+                        message: format!("Typed-memory MCP tool-list smoke check failed: {error}"),
+                    },
+                }
+            }
+            Ok(_) => SmokeReport {
+                ok: false,
+                endpoint,
+                tool_count: 0,
+                tool_owners: default_tool_owners(),
+                message: "MCP endpoint responded but is not ready.".to_string(),
+            },
+            Err(error) => SmokeReport {
+                ok: false,
+                endpoint,
+                tool_count: 0,
+                tool_owners: default_tool_owners(),
+                message: format!("MCP endpoint is not reachable: {error}"),
+            },
+        };
+    }
     match health {
         Ok(health) if health.ok => SmokeReport {
             ok: true,
@@ -328,6 +405,126 @@ pub fn smoke_report<E: EnvProvider>(env: &E) -> SmokeReport {
             tool_owners: default_tool_owners(),
             message: format!("MCP endpoint is not reachable: {error}"),
         },
+    }
+}
+
+fn read_typed_memory_tools(endpoint_url: &str, token_path: &Path) -> Result<Value, String> {
+    let token = std::fs::read_to_string(token_path)
+        .map_err(|error| format!("failed to read bearer token: {error}"))?;
+    let token = token.trim_end_matches(['\r', '\n']);
+    if token.is_empty() {
+        return Err("bearer token file is empty".to_string());
+    }
+    let endpoint = endpoint_url.trim_end_matches('/');
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| error.to_string())?;
+
+    let initialize = client
+        .post(endpoint)
+        .bearer_auth(token)
+        .header("Accept", "application/json, text/event-stream")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "context-still-smoke", "version": "1"}
+            }
+        }))
+        .send()
+        .map_err(|error| error.to_string())?;
+    if !initialize.status().is_success() {
+        return Err(format!("initialize returned HTTP {}", initialize.status()));
+    }
+    let session_id = initialize
+        .headers()
+        .get("Mcp-Session-Id")
+        .ok_or_else(|| "initialize response omitted Mcp-Session-Id".to_string())?
+        .to_str()
+        .map_err(|error| error.to_string())?
+        .to_string();
+    let result = (|| {
+        let initialize_body: Value = initialize.json().map_err(|error| error.to_string())?;
+        if initialize_body["result"]["protocolVersion"] != "2025-03-26" {
+            return Err("initialize negotiated an unexpected protocol version".to_string());
+        }
+
+        let initialized = client
+            .post(endpoint)
+            .bearer_auth(token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {}
+            }))
+            .send()
+            .map_err(|error| error.to_string())?;
+        if initialized.status() != reqwest::StatusCode::ACCEPTED {
+            return Err(format!(
+                "initialized notification returned HTTP {}",
+                initialized.status()
+            ));
+        }
+
+        let tool_list = client
+            .post(endpoint)
+            .bearer_auth(token)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .json(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}))
+            .send()
+            .map_err(|error| error.to_string())?;
+        if !tool_list.status().is_success() {
+            return Err(format!("tools/list returned HTTP {}", tool_list.status()));
+        }
+        let body: Value = tool_list.json().map_err(|error| error.to_string())?;
+        let names = body["result"]["tools"]
+            .as_array()
+            .ok_or_else(|| "tools/list response omitted result.tools".to_string())?
+            .iter()
+            .map(|tool| {
+                tool["name"]
+                    .as_str()
+                    .ok_or_else(|| "tools/list returned a tool without a name".to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let expected = ["recall_experience", "recall_rule", "recall_skill"];
+        if names != expected {
+            return Err(format!("unexpected tool catalog: {}", names.join(", ")));
+        }
+        Ok(json!({
+            "rustNative": expected,
+            "tsSidecar": [],
+            "disabled": [],
+            "counts": {
+                "rustNative": expected.len(),
+                "tsSidecar": 0,
+                "disabled": 0
+            }
+        }))
+    })();
+    let close_result = client
+        .delete(endpoint)
+        .bearer_auth(token)
+        .header("Mcp-Session-Id", session_id)
+        .send()
+        .map_err(|error| error.to_string())
+        .and_then(|response| {
+            if response.status().is_success() {
+                Ok(())
+            } else {
+                Err(format!("session close returned HTTP {}", response.status()))
+            }
+        });
+    match (result, close_result) {
+        (Ok(tool_owners), Ok(())) => Ok(tool_owners),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
     }
 }
 

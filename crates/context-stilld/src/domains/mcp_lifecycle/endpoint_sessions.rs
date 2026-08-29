@@ -1,9 +1,6 @@
 use std::{
     path::PathBuf,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex, MutexGuard},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -13,9 +10,20 @@ use crate::shared::{config::EnvProvider, errors::CliError};
 
 use super::service::McpSession;
 
-static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(0);
-
 pub(crate) type SharedServerState = Arc<Mutex<ServerState>>;
+
+fn lock_state(state: &SharedServerState) -> MutexGuard<'_, ServerState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[derive(Debug)]
+pub(crate) enum CreateSessionError {
+    Capacity,
+    Entropy,
+    Persistence,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct SessionPruneConfig {
@@ -44,6 +52,14 @@ impl SessionPruneConfig {
             ),
         }
     }
+
+    pub(crate) fn typed_memory() -> Self {
+        Self {
+            idle_ttl_seconds: 60,
+            closed_ttl_seconds: 0,
+            prune_interval_seconds: 10,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -52,39 +68,71 @@ pub(crate) struct ServerState {
     sessions_path: PathBuf,
     prune_config: SessionPruneConfig,
     last_pruned_unix_seconds: u64,
+    minimal_ledger: bool,
 }
 
 pub(crate) fn new_state(
     sessions_path: PathBuf,
     prune_config: SessionPruneConfig,
+    minimal_ledger: bool,
 ) -> SharedServerState {
     Arc::new(Mutex::new(ServerState {
         sessions: Vec::new(),
         sessions_path,
         prune_config,
         last_pruned_unix_seconds: 0,
+        minimal_ledger,
     }))
 }
 
 pub(crate) fn persist_sessions(state: &SharedServerState) -> Result<(), CliError> {
-    let state = state.lock().unwrap();
-    let content = serde_json::to_string_pretty(&state.sessions)
-        .map_err(|error| CliError::io(format!("failed to serialize MCP sessions: {error}")))?;
-    std::fs::write(&state.sessions_path, format!("{content}\n"))
-        .map_err(|error| CliError::io(format!("failed to write MCP sessions: {error}")))
+    let state = lock_state(state);
+    let content = if state.minimal_ledger {
+        let sessions = state
+            .sessions
+            .iter()
+            .map(|session| {
+                json!({
+                    "sessionId":session.session_id,
+                    "createdAt":session.created_at,
+                    "lastActivityAt":session.last_activity_at,
+                    "lastActivityUnixSeconds":session.last_activity_unix_seconds,
+                    "inFlightRequestCount":session.in_flight_request_count,
+                    "closeReason":session.close_reason
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string_pretty(&sessions)
+    } else {
+        serde_json::to_string_pretty(&state.sessions)
+    }
+    .map_err(|error| CliError::io(format!("failed to serialize MCP sessions: {error}")))?;
+    if state.minimal_ledger {
+        super::memory_profile_auth::write_owner_only(
+            &state.sessions_path,
+            &format!("{content}\n"),
+            "typed-memory sessions",
+        )?;
+    } else {
+        std::fs::write(&state.sessions_path, format!("{content}\n"))
+            .map_err(|error| CliError::io(format!("failed to write MCP sessions: {error}")))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn create_session(
     state: &SharedServerState,
     body: &Value,
     remote: Option<String>,
-) -> String {
-    prune_sessions(state, false);
-    let session_id = format!(
-        "rust-mcp-{}-{}",
-        std::process::id(),
-        NEXT_SESSION_ID.fetch_add(1, Ordering::SeqCst)
-    );
+    max_active: Option<usize>,
+) -> Result<String, CreateSessionError> {
+    prune_sessions(state, true);
+    let mut entropy = [0_u8; 16];
+    getrandom::fill(&mut entropy).map_err(|_| CreateSessionError::Entropy)?;
+    let session_id = entropy
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let now = now_timestamp();
     let now_unix = now_unix_seconds();
     let client_info = body
@@ -110,16 +158,53 @@ pub(crate) fn create_session(
         worker_id: Some(format!("rust-mcp-worker-{}", std::process::id())),
         route: "rust-mcp-server".to_string(),
         close_reason: None,
+        initialized: false,
     };
-    state.lock().unwrap().sessions.push(session);
-    let _ = persist_sessions(state);
-    session_id
+    let mut state_guard = lock_state(state);
+    if max_active.is_some_and(|max| {
+        state_guard
+            .sessions
+            .iter()
+            .filter(|session| session.close_reason.is_none())
+            .count()
+            >= max
+    }) {
+        return Err(CreateSessionError::Capacity);
+    }
+    state_guard.sessions.push(session);
+    drop(state_guard);
+    if persist_sessions(state).is_err() {
+        lock_state(state)
+            .sessions
+            .retain(|session| session.session_id != session_id);
+        return Err(CreateSessionError::Persistence);
+    }
+    Ok(session_id)
+}
+
+pub(crate) fn is_initialized(state: &SharedServerState, session_id: &str) -> bool {
+    lock_state(state)
+        .sessions
+        .iter()
+        .find(|session| session.session_id == session_id && session.close_reason.is_none())
+        .is_some_and(|session| session.initialized)
+}
+
+pub(crate) fn mark_initialized(state: &SharedServerState, session_id: &str) -> bool {
+    let mut state = lock_state(state);
+    let Some(session) = state
+        .sessions
+        .iter_mut()
+        .find(|session| session.session_id == session_id && session.close_reason.is_none())
+    else {
+        return false;
+    };
+    session.initialized = true;
+    true
 }
 
 pub(crate) fn active_session_count(state: &SharedServerState) -> usize {
-    state
-        .lock()
-        .unwrap()
+    lock_state(state)
         .sessions
         .iter()
         .filter(|session| session.close_reason.is_none())
@@ -127,10 +212,8 @@ pub(crate) fn active_session_count(state: &SharedServerState) -> usize {
 }
 
 pub(crate) fn is_active_session(state: &SharedServerState, session_id: &str) -> bool {
-    prune_sessions(state, false);
-    state
-        .lock()
-        .unwrap()
+    prune_sessions(state, true);
+    lock_state(state)
         .sessions
         .iter()
         .any(|session| session.session_id == session_id && session.close_reason.is_none())
@@ -139,9 +222,7 @@ pub(crate) fn is_active_session(state: &SharedServerState, session_id: &str) -> 
 pub(crate) fn touch_session(state: &SharedServerState, session_id: &str, delta: i32) {
     let now = now_timestamp();
     let now_unix = now_unix_seconds();
-    if let Some(session) = state
-        .lock()
-        .unwrap()
+    if let Some(session) = lock_state(state)
         .sessions
         .iter_mut()
         .find(|session| session.session_id == session_id)
@@ -157,7 +238,7 @@ pub(crate) fn touch_session(state: &SharedServerState, session_id: &str, delta: 
 pub(crate) fn close_session(state: &SharedServerState, session_id: &str) -> bool {
     let now = now_timestamp();
     let now_unix = now_unix_seconds();
-    let mut state_guard = state.lock().unwrap();
+    let mut state_guard = lock_state(state);
     let Some(session) = state_guard
         .sessions
         .iter_mut()
@@ -176,7 +257,7 @@ pub(crate) fn close_session(state: &SharedServerState, session_id: &str) -> bool
 
 pub(crate) fn prune_sessions(state: &SharedServerState, force: bool) {
     let now = now_unix_seconds();
-    let mut state_guard = state.lock().unwrap();
+    let mut state_guard = lock_state(state);
     if !force
         && state_guard.last_pruned_unix_seconds > 0
         && now.saturating_sub(state_guard.last_pruned_unix_seconds)
@@ -251,8 +332,8 @@ mod tests {
     #[test]
     fn closed_sessions_are_pruned_immediately_by_default() {
         let sessions_path = temp_sessions_path();
-        let state = new_state(sessions_path.clone(), prune_config());
-        let session_id = create_session(&state, &json!({}), None);
+        let state = new_state(sessions_path.clone(), prune_config(), false);
+        let session_id = create_session(&state, &json!({}), None, None).unwrap();
 
         assert!(close_session(&state, &session_id));
         prune_sessions(&state, true);
@@ -265,8 +346,8 @@ mod tests {
     #[test]
     fn idle_sessions_are_pruned_after_ttl() {
         let sessions_path = temp_sessions_path();
-        let state = new_state(sessions_path.clone(), prune_config());
-        let session_id = create_session(&state, &json!({}), None);
+        let state = new_state(sessions_path.clone(), prune_config(), false);
+        let session_id = create_session(&state, &json!({}), None, None).unwrap();
         {
             let mut state_guard = state.lock().unwrap();
             let session = state_guard
@@ -280,6 +361,22 @@ mod tests {
         prune_sessions(&state, true);
 
         assert_eq!(active_session_count(&state), 0);
+        assert!(state.lock().unwrap().sessions.is_empty());
+        let _ = std::fs::remove_file(sessions_path);
+    }
+
+    #[test]
+    fn active_session_check_enforces_ttl_even_inside_prune_interval() {
+        let sessions_path = temp_sessions_path();
+        let state = new_state(sessions_path.clone(), prune_config(), false);
+        let session_id = create_session(&state, &json!({}), None, None).unwrap();
+        {
+            let mut state_guard = state.lock().unwrap();
+            state_guard.last_pruned_unix_seconds = now_unix_seconds();
+            state_guard.sessions[0].last_activity_unix_seconds = Some(1);
+        }
+
+        assert!(!is_active_session(&state, &session_id));
         assert!(state.lock().unwrap().sessions.is_empty());
         let _ = std::fs::remove_file(sessions_path);
     }

@@ -88,6 +88,40 @@ fn endpoint_report_brackets_ipv6_loopback_url() {
 }
 
 #[test]
+fn endpoint_report_describes_typed_memory_auth() {
+    let app_dir = temp_app_dir();
+    let env = MapEnv::from_pairs(vec![
+        ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+        ("CONTEXT_STILL_MCP_TOOL_PROFILE", "typed-memory"),
+        ("CONTEXT_STILL_MCP_PORT", "45678"),
+    ]);
+
+    let report = endpoint_report(&env);
+
+    assert_eq!(report.auth, "bearer-token-file");
+    cleanup_temp_app_dir(&app_dir);
+}
+
+#[test]
+fn endpoint_report_surfaces_invalid_tool_profile() {
+    let app_dir = temp_app_dir();
+    let env = MapEnv::from_pairs(vec![
+        ("CONTEXT_STILL_APP_DATA_DIR", app_dir.to_str().unwrap()),
+        ("CONTEXT_STILL_MCP_TOOL_PROFILE", " typed-memory"),
+        ("CONTEXT_STILL_MCP_PORT", "45678"),
+    ]);
+
+    let report = endpoint_report(&env);
+
+    assert!(!report.ready);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("must be default or typed-memory")));
+    cleanup_temp_app_dir(&app_dir);
+}
+
+#[test]
 fn endpoint_report_does_not_probe_non_loopback_configuration() {
     let app_dir = temp_app_dir();
     let env = MapEnv::from_pairs(vec![

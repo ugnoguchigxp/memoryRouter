@@ -91,7 +91,7 @@ pub(crate) fn query_params(values: &[String]) -> impl rusqlite::Params + '_ {
     params_from_iter(values.iter())
 }
 
-fn normalize_facet_value(value: &str) -> String {
+pub(crate) fn normalize_facet_value(value: &str) -> String {
     let mut normalized = String::new();
     for character in value.trim().chars().flat_map(char::to_lowercase) {
         let mapped = if character.is_whitespace() || character == '_' {

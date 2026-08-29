@@ -164,19 +164,26 @@ pub(super) fn score_text(value: &str, query: &str) -> i64 {
     }
     let text = value.to_lowercase();
     let mut score = if text.contains(&query) { 4 } else { 0 };
-    for token in query
+    for token in normalized_query_tokens(&query) {
+        if text.contains(&token) {
+            score += 1;
+        }
+    }
+    score
+}
+
+pub(super) fn normalized_query_tokens(query: &str) -> Vec<String> {
+    query
+        .trim()
+        .to_lowercase()
         .split(|character: char| {
             !character.is_alphanumeric() && character != '_' && character != '-'
         })
         .map(str::trim)
         .filter(|token| token.chars().count() >= 2)
         .take(12)
-    {
-        if text.contains(token) {
-            score += 1;
-        }
-    }
-    score
+        .map(ToString::to_string)
+        .collect()
 }
 
 pub(super) fn parse_json_or_empty(value: &str) -> Value {
