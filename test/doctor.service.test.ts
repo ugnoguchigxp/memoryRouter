@@ -75,7 +75,6 @@ describe("Doctor Service", () => {
         status: "external_ready",
         managedBy: "external",
       },
-      cli: { python: "python3", root: "/tmp", modelDir: "/tmp/models", usable: true },
       openai: { configured: false, model: "" },
     });
     vi.mocked(getExposedToolEntries).mockReturnValue([
@@ -522,7 +521,7 @@ describe("Doctor Service", () => {
     expect(report.agentLogSync.states[0]?.lastCheckedAgeMinutes).toBeLessThan(30);
   });
 
-  test("detects embedding provider unavailable when daemon unreachable and cli unusable", async () => {
+  test("detects embedding provider unavailable when the external endpoint is unreachable", async () => {
     vi.mocked(embeddingHealth).mockResolvedValue({
       configured: true,
       provider: "daemon",
@@ -533,7 +532,6 @@ describe("Doctor Service", () => {
         status: "offline",
         managedBy: "none",
       },
-      cli: { python: "python3", root: "/tmp", modelDir: "/tmp/models", usable: false },
       openai: { configured: false, model: "" },
     });
 
@@ -557,7 +555,6 @@ describe("Doctor Service", () => {
         status: "not_required",
         managedBy: "none",
       },
-      cli: { python: "python3", root: "/tmp", modelDir: "/tmp/models", usable: false },
       openai: { configured: false, model: "", error: "API key is empty" },
     });
     vi.mocked(getDb).mockReturnValue({

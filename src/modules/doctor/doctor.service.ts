@@ -158,7 +158,7 @@ function isEmbeddingReady(embedding: DoctorReport["embedding"]): boolean {
     if (embedding.effectiveMode === "openai") return embedding.openai?.configured === true;
     return true;
   }
-  return !embedding.configured || embedding.daemon.reachable || embedding.cli.usable;
+  return !embedding.configured || embedding.daemon.reachable;
 }
 
 function buildDesktopReadiness(input: {

@@ -1099,6 +1099,10 @@ export function normalizeRuntimeSettingsEditable(
 ): RuntimeSettingsEditable {
   const defaults = cloneDefaultSettings();
   const merged = mergeRuntimeSettings(defaults, input as Record<string, unknown>);
+  const allowedEmbeddingProviders = new Set(["auto", "daemon", "openai", "disabled"]);
+  if (!allowedEmbeddingProviders.has(String(merged.embedding.provider))) {
+    merged.embedding.provider = defaults.embedding.provider;
+  }
   const parsed = runtimeSettingsEditableSchema.safeParse(merged);
   if (!parsed.success) return defaults;
   return parsed.data;

@@ -11,7 +11,7 @@ use crate::domains::{
     agent_log_sync,
     bootstrap::service::resolve_paths,
     daemon::repository::{self, ProcessState},
-    embedding_lifecycle, mcp_lifecycle, queue_lifecycle, sqlite_writer,
+    mcp_lifecycle, queue_lifecycle, sqlite_writer,
 };
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 
@@ -39,7 +39,6 @@ pub struct ManagedSurfaceReport {
 
 #[derive(Debug, Default, Clone, Eq, PartialEq)]
 struct SurfaceOwnership {
-    embedding: bool,
     queue: bool,
 }
 
@@ -47,8 +46,6 @@ struct ResidentRuntimeState {
     owned_surfaces: SurfaceOwnership,
     sqlite_writer: Option<sqlite_writer::SqliteWriterRuntime>,
     mcp_endpoint: Option<mcp_lifecycle::service::InProcessMcpEndpoint>,
-    embedding_retry_after: Option<Instant>,
-    embedding_failure_count: u32,
     queue_last_checked_at: Option<Instant>,
     agent_log_sync_last_checked_at: Option<Instant>,
 }
@@ -73,8 +70,6 @@ impl ResidentRuntimeState {
             owned_surfaces: SurfaceOwnership::default(),
             sqlite_writer: Some(writer),
             mcp_endpoint: None,
-            embedding_retry_after: None,
-            embedding_failure_count: 0,
             queue_last_checked_at: if env_flag_default(env, "CONTEXT_STILL_QUEUE_RUN_AT_LOAD", true)
             {
                 None
@@ -211,7 +206,6 @@ fn ensure_surfaces<E: EnvProvider, S: ProcessSupervisor>(
     state: &mut ResidentRuntimeState,
 ) -> Result<Vec<ManagedSurfaceReport>, CliError> {
     let mut reports = vec![state.writer_report()];
-    reports.push(reconcile_embedding(env, supervisor, state)?);
     if !env_flag_default(env, "CONTEXT_STILL_RESIDENT_MCP", true) {
         reports.push(disabled_surface("mcp-server"));
     } else if state
@@ -250,10 +244,6 @@ fn stop_owned_surfaces<E: EnvProvider, S: ProcessSupervisor>(
     state: &mut ResidentRuntimeState,
 ) -> Result<Vec<ManagedSurfaceReport>, CliError> {
     let mut reports = Vec::new();
-    if state.owned_surfaces.embedding {
-        let report = embedding_lifecycle::service::stop_report(env, supervisor)?;
-        reports.push(surface_report("embedding-daemon", true, report));
-    }
     if state.owned_surfaces.queue && env_flag_default(env, "CONTEXT_STILL_RESIDENT_QUEUE", true) {
         let report = queue_lifecycle::service::stop_report(env, supervisor)?;
         reports.push(surface_report("queue-supervisor", true, report));
@@ -287,32 +277,6 @@ fn disabled_surface(name: &'static str) -> ManagedSurfaceReport {
         pid: None,
         message: format!("{name} disabled by resident runtime env"),
     }
-}
-
-fn reconcile_embedding<E: EnvProvider, S: ProcessSupervisor>(
-    env: &E,
-    supervisor: &S,
-    state: &mut ResidentRuntimeState,
-) -> Result<ManagedSurfaceReport, CliError> {
-    if state
-        .embedding_retry_after
-        .is_some_and(|retry_after| Instant::now() < retry_after)
-    {
-        let report = embedding_lifecycle::service::status_report(env, supervisor)?;
-        return Ok(surface_report("embedding-daemon", true, report));
-    }
-
-    let report = embedding_lifecycle::service::reconcile_report(env, supervisor)?;
-    if matches!(report.status.as_str(), "failed" | "unavailable") {
-        state.embedding_failure_count = state.embedding_failure_count.saturating_add(1);
-        let exponent = state.embedding_failure_count.saturating_sub(1).min(6);
-        let retry_seconds = 5_u64.saturating_mul(1_u64 << exponent).min(300);
-        state.embedding_retry_after = Some(Instant::now() + Duration::from_secs(retry_seconds));
-    } else {
-        state.embedding_failure_count = 0;
-        state.embedding_retry_after = None;
-    }
-    Ok(surface_report("embedding-daemon", true, report))
 }
 
 fn reconcile_queue<E: EnvProvider, S: ProcessSupervisor>(
@@ -493,12 +457,6 @@ fn env_u64_default<E: EnvProvider>(env: &E, key: &str, default: u64) -> u64 {
 impl SurfaceOwnership {
     fn merge_started(&mut self, reports: &[ManagedSurfaceReport]) {
         for report in reports {
-            if report.name == "embedding-daemon"
-                && report.pid.is_some()
-                && matches!(report.status.as_str(), "managed_ready" | "starting")
-            {
-                self.embedding = true;
-            }
             if report.status != "started" {
                 continue;
             }

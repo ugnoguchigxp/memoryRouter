@@ -207,7 +207,6 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         )
         .clamp(10, 3_600),
         local_llm_api_key: env.var("LOCAL_LLM_API_KEY"),
-        project_root,
         source_read_root,
         embedding_access_token: env
             .var("EMBEDDING_ACCESS_TOKEN")
@@ -895,7 +894,6 @@ struct ExecutorTickConfig {
     llm_timeout_seconds: u64,
     covering_min_interval_seconds: u64,
     local_llm_api_key: Option<String>,
-    project_root: std::path::PathBuf,
     source_read_root: std::path::PathBuf,
     embedding_access_token: Option<String>,
     azure_openai_api_key: Option<String>,
@@ -1624,12 +1622,6 @@ fn finalize_embedding_config(
     settings: &Value,
     config: &ExecutorTickConfig,
 ) -> FinalizeEmbeddingConfig {
-    let embedding_root = config
-        .project_root
-        .parent()
-        .unwrap_or(&config.project_root)
-        .join("local-llm")
-        .join("embedding");
     let timeout_ms = settings
         .pointer("/embedding/timeoutMs")
         .and_then(Value::as_u64)
@@ -1647,6 +1639,7 @@ fn finalize_embedding_config(
         provider: settings
             .pointer("/embedding/provider")
             .and_then(Value::as_str)
+            .filter(|provider| matches!(*provider, "auto" | "daemon" | "openai" | "disabled"))
             .unwrap_or("auto")
             .to_string(),
         daemon_url: settings
@@ -1671,9 +1664,6 @@ fn finalize_embedding_config(
             .map(str::to_string),
         openai_api_key: load_secret_value(connection, "azureOpenAiApiKey")
             .or_else(|| config.azure_openai_api_key.clone()),
-        cli_python: embedding_root.join(".venv/bin/python"),
-        cli_model_dir: embedding_root.join("models/multilingual-e5-small"),
-        cli_root: embedding_root,
     }
 }
 

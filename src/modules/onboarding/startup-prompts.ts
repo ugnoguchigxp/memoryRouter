@@ -59,7 +59,7 @@ export const onboardingPromptsText = {
     distillProvider:
       "Distillation プロバイダを選択してください (openai, local-llm, azure-openai, bedrock)",
     embeddingSelect: "Embedding プロバイダを選択してください (auto, daemon, cli, openai, disabled)",
-    embeddingDaemonUrl: "Embedding デーモン URL",
+    embeddingDaemonUrl: "外部 Embedding Provider URL",
     wikiRoot: "Wiki ページのディレクトリパス",
     importSeed: "初期サンプルシードデータをインポートしますか？",
     mcpSelect:
@@ -87,7 +87,7 @@ export const onboardingPromptsText = {
     distillSame: "Use the same LLM provider for Distillation?",
     distillProvider: "Select Distillation Provider (openai, local-llm, azure-openai, bedrock)",
     embeddingSelect: "Select Embedding Provider (auto, daemon, cli, openai, disabled)",
-    embeddingDaemonUrl: "Embedding Daemon URL",
+    embeddingDaemonUrl: "External Embedding Provider URL",
     wikiRoot: "Wiki pages directory root path",
     importSeed: "Import initial sample seed data?",
     mcpSelect:
@@ -214,12 +214,16 @@ export async function promptStartupPlan(
   }
 
   // 5. Embedding
-  const defaultEmbed = (readProjectEnvFrom(env, "EMBEDDING_PROVIDER") ||
-    "auto") as EmbeddingProvider;
+  const validEmbedProviders: EmbeddingProvider[] = ["auto", "daemon", "openai", "disabled"];
+  const configuredEmbedProvider = (
+    readProjectEnvFrom(env, "EMBEDDING_PROVIDER") || "auto"
+  ).trim() as EmbeddingProvider;
+  const defaultEmbed = validEmbedProviders.includes(configuredEmbedProvider)
+    ? configuredEmbedProvider
+    : "auto";
   const embedProviderInput = await ask(t.embeddingSelect, defaultEmbed);
   let embeddingProvider = embedProviderInput.trim().toLowerCase() as EmbeddingProvider;
 
-  const validEmbedProviders = ["auto", "daemon", "cli", "openai", "disabled"];
   if (!validEmbedProviders.includes(embeddingProvider)) {
     console.log(
       `\n⚠️ Invalid provider [${embedProviderInput}]. Falling back to default [${defaultEmbed}].`,

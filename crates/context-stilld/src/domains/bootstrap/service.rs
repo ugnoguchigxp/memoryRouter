@@ -122,8 +122,9 @@ fn preflight_with_paths(paths: PathReport) -> BootstrapPreflightReport {
     checks.push(BootstrapCheck {
         key: "optional_embedding",
         status: "info",
-        message: "Embedding is optional; the resident runtime manages an available local provider and preserves CLI fallback."
-            .to_string(),
+        message:
+            "Embedding is optional; ContextStill only calls externally managed HTTP providers."
+                .to_string(),
     });
 
     let overall_status = if checks

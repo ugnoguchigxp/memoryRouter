@@ -183,7 +183,6 @@ function renderPlist(): string {
     ["{{DB_BACKEND}}", process.env.CONTEXT_STILL_DB_BACKEND ?? "sqlite"],
     ["{{SQLITE_CORE_PATH}}", sqliteCorePath],
     ["{{RESIDENT_MCP}}", resolveResidentMcpFlag()],
-    ["{{RESIDENT_EMBEDDING}}", process.env.CONTEXT_STILL_RESIDENT_EMBEDDING ?? "1"],
     ["{{RESIDENT_QUEUE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE ?? "1"],
     ["{{RESIDENT_QUEUE_MODE}}", process.env.CONTEXT_STILL_RESIDENT_QUEUE_MODE ?? "continuous"],
     [

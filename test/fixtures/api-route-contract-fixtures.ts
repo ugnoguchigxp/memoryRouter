@@ -110,12 +110,6 @@ export const validDoctorReport: DoctorReport = {
     configured: true,
     provider: "daemon",
     daemon: { url: "http://127.0.0.1:44512", reachable: true },
-    cli: {
-      python: "/usr/bin/python3",
-      root: "/tmp/embedding",
-      modelDir: "/tmp/model",
-      usable: true,
-    },
   },
   agenticLlm: {
     providerSetting: "azure-openai",

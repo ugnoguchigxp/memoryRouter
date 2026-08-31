@@ -206,24 +206,12 @@ export const doctorReportSchema = z.object({
   embedding: z.object({
     configured: z.boolean(),
     provider: z.string(),
-    effectiveMode: z
-      .enum(["daemon", "cli_fallback", "openai", "disabled", "unavailable"])
-      .optional(),
+    effectiveMode: z.enum(["daemon", "openai", "disabled", "unavailable"]).optional(),
     daemon: z.object({
       url: z.string(),
       reachable: z.boolean(),
-      status: z
-        .enum(["managed_ready", "external_ready", "starting", "offline", "not_required"])
-        .optional(),
-      managedBy: z.enum(["rust-resident", "external", "none"]).optional(),
-      pid: z.number().int().positive().optional(),
-      error: z.string().optional(),
-    }),
-    cli: z.object({
-      python: z.string(),
-      root: z.string(),
-      modelDir: z.string(),
-      usable: z.boolean(),
+      status: z.enum(["external_ready", "offline", "not_required"]).optional(),
+      managedBy: z.enum(["external", "none"]).optional(),
       error: z.string().optional(),
     }),
     openai: z

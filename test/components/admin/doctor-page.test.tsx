@@ -42,14 +42,8 @@ const baseReport = {
     daemon: {
       url: "http://127.0.0.1:44512",
       reachable: true,
-      status: "managed_ready",
-      managedBy: "rust-resident",
-    },
-    cli: {
-      python: "/tmp/.venv/bin/python",
-      root: "/tmp/root",
-      modelDir: "/tmp/model",
-      usable: true,
+      status: "external_ready",
+      managedBy: "external",
     },
   },
   agenticLlm: {
@@ -435,7 +429,7 @@ describe("DoctorPage", () => {
     expect(screen.getByText("Doctor")).toBeInTheDocument();
     expect(screen.getAllByText("degraded").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("Core Infrastructure")).toBeInTheDocument();
-    expect(screen.getByText("Managed / Ready")).toBeInTheDocument();
+    expect(screen.getByText("External / Ready")).toBeInTheDocument();
     expect(screen.getByText("Desktop Readiness")).toBeInTheDocument();
     expect(screen.getByText("SQLite local database")).toBeInTheDocument();
     expect(screen.queryByText("pgvector")).not.toBeInTheDocument();
@@ -536,12 +530,12 @@ describe("DoctorPage", () => {
     expect(screen.getByText("6000ms")).toHaveClass("text-amber-600");
   });
 
-  it("shows CLI fallback instead of Offline when the daemon is down but CLI is usable", () => {
+  it("shows Offline when the external embedding provider is down", () => {
     const core = {
       ...coreInfrastructureDomain,
       embedding: {
         ...baseReport.embedding,
-        effectiveMode: "cli_fallback",
+        effectiveMode: "unavailable",
         daemon: {
           ...baseReport.embedding.daemon,
           reachable: false,
@@ -559,8 +553,7 @@ describe("DoctorPage", () => {
       </QueryClientProvider>,
     );
 
-    expect(screen.getByText("CLI Fallback")).toBeInTheDocument();
-    expect(screen.getByText("Embedding Daemon").parentElement).toHaveTextContent("CLI Fallback");
+    expect(screen.getByText("Embedding Provider").parentElement).toHaveTextContent("Offline");
   });
 
   it("renders error card when doctor query fails", () => {

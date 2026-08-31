@@ -1,4 +1,4 @@
-export type EmbeddingProvider = "auto" | "daemon" | "cli" | "openai" | "disabled";
+export type EmbeddingProvider = "auto" | "daemon" | "openai" | "disabled";
 export type AgenticCompileProvider =
   | "openai"
   | "azure-openai"
@@ -31,9 +31,6 @@ export type GroupedConfig = {
     openaiModel: string;
   };
   localLlm: {
-    embeddingRoot: string;
-    embeddingPython: string;
-    embeddingModelDir: string;
     apiBaseUrl: string;
     apiPath: string;
     apiKey: string;

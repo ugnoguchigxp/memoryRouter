@@ -53,6 +53,19 @@ const parseDistillationProvider = (
   return fallback;
 };
 
+const parseEmbeddingProvider = (value: string | undefined): EmbeddingProvider => {
+  const normalized = value?.trim().toLowerCase();
+  if (
+    normalized === "auto" ||
+    normalized === "daemon" ||
+    normalized === "openai" ||
+    normalized === "disabled"
+  ) {
+    return normalized;
+  }
+  return "auto";
+};
+
 const parseCsvValues = (value: string | undefined): string[] => {
   if (!value) return [];
   return value
@@ -148,7 +161,7 @@ export const groupedConfig: GroupedConfig = {
   },
   embedding: {
     dimension: APP_CONSTANTS.embeddingDimension,
-    provider: (readProjectEnv("EMBEDDING_PROVIDER") || "auto") as EmbeddingProvider,
+    provider: parseEmbeddingProvider(readProjectEnv("EMBEDDING_PROVIDER")),
     daemonUrl: (readProjectEnv("EMBEDDING_DAEMON_URL") || "http://127.0.0.1:44512").replace(
       /\/+$/,
       "",
@@ -159,12 +172,6 @@ export const groupedConfig: GroupedConfig = {
     openaiModel: readProjectEnv("EMBEDDING_OPENAI_MODEL") || "text-embedding-3-small",
   },
   localLlm: {
-    embeddingRoot: path.resolve(process.cwd(), "../local-llm/embedding"),
-    embeddingPython: path.resolve(process.cwd(), "../local-llm/embedding/.venv/bin/python"),
-    embeddingModelDir: path.resolve(
-      process.cwd(),
-      "../local-llm/embedding/models/multilingual-e5-small",
-    ),
     apiBaseUrl: (readProjectEnv("LOCAL_LLM_API_BASE_URL") || "http://127.0.0.1:44448").replace(
       /\/+$/,
       "",

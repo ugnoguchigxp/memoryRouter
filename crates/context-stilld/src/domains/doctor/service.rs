@@ -3,7 +3,7 @@ use serde::Serialize;
 use crate::domains::{
     bootstrap::service::{preflight_with_supervisor, BootstrapPreflightReport},
     daemon::service::{status_with_supervisor, RuntimeStatus},
-    embedding_lifecycle::service::{health_report as embedding_health, EmbeddingHealthReport},
+    embedding_provider::service::{health_report as embedding_health, EmbeddingHealthReport},
     queue_lifecycle::service::inspect_report as inspect_queue,
     vector_index::service::{health as vector_health, VectorHealthReport},
 };
@@ -26,7 +26,7 @@ pub fn summary<E: EnvProvider, S: ProcessSupervisor>(env: &E, supervisor: &S) ->
     let bootstrap = preflight_with_supervisor(env, supervisor);
     let runtime = status_with_supervisor(env, supervisor);
     let vector = vector_health(env, supervisor);
-    let embedding = embedding_health(env, supervisor);
+    let embedding = embedding_health(env);
     let mut desktop_blockers = Vec::new();
     let mut server_warnings = Vec::new();
 

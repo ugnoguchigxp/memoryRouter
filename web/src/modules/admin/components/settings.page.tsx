@@ -4052,7 +4052,7 @@ export function SettingsPage() {
             {activeTab === "embedding" ? (
               <Card>
                 <CardHeader>
-                  <CardTitle>Embedding / Local Runtime</CardTitle>
+                  <CardTitle>Embedding Provider</CardTitle>
                 </CardHeader>
                 <CardContent className="settings-form-grid">
                   <label className="settings-field">
@@ -4072,13 +4072,12 @@ export function SettingsPage() {
                     >
                       <option value="auto">auto</option>
                       <option value="daemon">daemon</option>
-                      <option value="cli">cli</option>
                       <option value="openai">openai</option>
                       <option value="disabled">disabled</option>
                     </Select>
                   </label>
                   <label className="settings-field">
-                    <span>Daemon URL</span>
+                    <span>External provider URL</span>
                     <Input
                       value={draft.embedding.daemonUrl}
                       onChange={(event) =>

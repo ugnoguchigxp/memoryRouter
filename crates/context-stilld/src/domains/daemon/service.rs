@@ -24,7 +24,6 @@ pub struct RuntimeStatus {
     pub mcp_server: String,
     pub queue_supervisor: String,
     pub agent_log_sync: String,
-    pub embedding_daemon: String,
     pub managed_default_flags: ManagedDefaultFlags,
     pub paths: PathReport,
 }
@@ -35,7 +34,6 @@ pub struct ManagedDefaultFlags {
     pub mcp: bool,
     pub queue: bool,
     pub agent_log_sync: bool,
-    pub embedding: bool,
     pub admin_api: bool,
 }
 
@@ -58,8 +56,6 @@ pub fn status_with_supervisor<E: EnvProvider, S: ProcessSupervisor>(
     let mcp_server = resolve_process_status(run_dir, "mcp-server", supervisor);
     let queue_supervisor = resolve_process_status(run_dir, "queue-supervisor", supervisor);
     let agent_log_sync = resolve_process_status(run_dir, "agent-log-sync", supervisor);
-    let embedding_daemon = resolve_process_status(run_dir, "embedding-daemon", supervisor);
-
     RuntimeStatus {
         runtime_host: "rust-resident",
         version: repository::runtime_version(),
@@ -68,12 +64,10 @@ pub fn status_with_supervisor<E: EnvProvider, S: ProcessSupervisor>(
         mcp_server,
         queue_supervisor,
         agent_log_sync,
-        embedding_daemon,
         managed_default_flags: ManagedDefaultFlags {
             mcp: env_flag_default(env, "CONTEXT_STILL_RESIDENT_MCP", true),
             queue: env_flag_default(env, "CONTEXT_STILL_RESIDENT_QUEUE", true),
             agent_log_sync: env_flag_default(env, "CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC", true),
-            embedding: env_flag_default(env, "CONTEXT_STILL_RESIDENT_EMBEDDING", true),
             admin_api: env_flag(env, "CONTEXT_STILL_DAEMON_MANAGED_ADMIN_API"),
         },
         paths,
@@ -135,13 +129,11 @@ impl RuntimeStatus {
             format!("mcpServer={}", self.mcp_server),
             format!("queueSupervisor={}", self.queue_supervisor),
             format!("agentLogSync={}", self.agent_log_sync),
-            format!("embeddingDaemon={}", self.embedding_daemon),
             format!(
-                "managedDefaultFlags=mcp:{} queue:{} agentLogSync:{} embedding:{} adminApi:{}",
+                "managedDefaultFlags=mcp:{} queue:{} agentLogSync:{} adminApi:{}",
                 self.managed_default_flags.mcp,
                 self.managed_default_flags.queue,
                 self.managed_default_flags.agent_log_sync,
-                self.managed_default_flags.embedding,
                 self.managed_default_flags.admin_api
             ),
             self.paths.to_text(),

@@ -1,7 +1,4 @@
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use regex::Regex;
 use reqwest::blocking::Client;
@@ -40,9 +37,6 @@ pub(crate) struct FinalizeEmbeddingConfig {
     pub(crate) openai_api_version: Option<String>,
     pub(crate) openai_model: Option<String>,
     pub(crate) openai_api_key: Option<String>,
-    pub(crate) cli_python: PathBuf,
-    pub(crate) cli_root: PathBuf,
-    pub(crate) cli_model_dir: PathBuf,
 }
 
 #[derive(Debug)]
@@ -994,10 +988,6 @@ fn is_retryable_embedding_error(error: &str) -> bool {
         "openai embedding http 429",
         "failed to parse openai embedding response",
         "failed to parse embedding response",
-        "failed to start embedding cli",
-        "embedding cli timed out",
-        "embedding cli failed",
-        "failed to wait for embedding cli",
     ]
     .iter()
     .any(|needle| error.contains(needle))
@@ -1008,28 +998,15 @@ fn embed_one(config: &FinalizeEmbeddingConfig, text: &str) -> Result<Vec<f64>, C
     if provider == "disabled" {
         return Err(CliError::io("embedding provider is disabled"));
     }
-    let mut errors = Vec::new();
     if provider == "auto" || provider == "daemon" {
-        match embed_via_daemon(config, text) {
-            Ok(vector) => return Ok(vector),
-            Err(error) if provider == "daemon" => return Err(error),
-            Err(error) => errors.push(format!("daemon: {error}")),
-        }
+        return embed_via_daemon(config, text);
     }
     if provider == "openai" {
         return embed_via_openai(config, text);
     }
-    if provider == "auto" || provider == "cli" {
-        match embed_via_cli(config, text) {
-            Ok(vector) => return Ok(vector),
-            Err(error) => errors.push(format!("cli: {error}")),
-        }
-    }
-    Err(CliError::io(if errors.is_empty() {
-        format!("unsupported embedding provider: {provider}")
-    } else {
-        errors.join("; ")
-    }))
+    Err(CliError::io(format!(
+        "unsupported embedding provider: {provider}"
+    )))
 }
 
 fn embed_via_daemon(config: &FinalizeEmbeddingConfig, text: &str) -> Result<Vec<f64>, CliError> {
@@ -1135,68 +1112,6 @@ fn embed_via_openai(config: &FinalizeEmbeddingConfig, text: &str) -> Result<Vec<
         .ok_or_else(|| {
             CliError::io("OpenAI embedding response did not include data[0].embedding")
         })?;
-    validate_vector(vector, config.expected_dimension)
-}
-
-fn embed_via_cli(config: &FinalizeEmbeddingConfig, text: &str) -> Result<Vec<f64>, CliError> {
-    let mut child = Command::new(&config.cli_python)
-        .args(["-m", "e5embed.cli", "--model-dir"])
-        .arg(&config.cli_model_dir)
-        .args(["--type", "passage", "--text", text])
-        .current_dir(&config.cli_root)
-        .env(
-            "PYTHONPATH",
-            format!(
-                "{}:{}",
-                config.cli_root.to_string_lossy(),
-                config
-                    .cli_root
-                    .parent()
-                    .unwrap_or(&config.cli_root)
-                    .to_string_lossy()
-            ),
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| CliError::io(format!("failed to start embedding CLI: {error}")))?;
-    let started = Instant::now();
-    let timeout = Duration::from_secs(config.timeout_seconds.max(1));
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < timeout => thread::sleep(Duration::from_millis(20)),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(CliError::io(format!(
-                    "embedding CLI timed out after {} seconds",
-                    config.timeout_seconds.max(1)
-                )));
-            }
-            Err(error) => {
-                let _ = child.kill();
-                return Err(CliError::io(format!(
-                    "failed to wait for embedding CLI: {error}"
-                )));
-            }
-        }
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| CliError::io(format!("failed to read embedding CLI output: {error}")))?;
-    if !output.status.success() {
-        return Err(CliError::io(format!(
-            "embedding CLI failed: {}",
-            truncate(&String::from_utf8_lossy(&output.stderr), 500)
-        )));
-    }
-    let payload: Value = serde_json::from_slice(&output.stdout)
-        .map_err(|error| CliError::io(format!("failed to parse embedding CLI output: {error}")))?;
-    let vector = payload
-        .pointer("/0/embedding")
-        .and_then(Value::as_array)
-        .ok_or_else(|| CliError::io("embedding CLI output did not include [0].embedding"))?;
     validate_vector(vector, config.expected_dimension)
 }
 
@@ -1835,9 +1750,6 @@ mod tests {
             openai_api_version: None,
             openai_model: None,
             openai_api_key: None,
-            cli_python: PathBuf::new(),
-            cli_root: PathBuf::new(),
-            cli_model_dir: PathBuf::new(),
         }
     }
 

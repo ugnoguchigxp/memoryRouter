@@ -35,8 +35,6 @@
         <string>{{SQLITE_CORE_PATH}}</string>
         <key>CONTEXT_STILL_RESIDENT_MCP</key>
         <string>{{RESIDENT_MCP}}</string>
-        <key>CONTEXT_STILL_RESIDENT_EMBEDDING</key>
-        <string>{{RESIDENT_EMBEDDING}}</string>
         <key>CONTEXT_STILL_RESIDENT_QUEUE</key>
         <string>{{RESIDENT_QUEUE}}</string>
         <key>CONTEXT_STILL_RESIDENT_QUEUE_MODE</key>

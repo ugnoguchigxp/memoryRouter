@@ -72,16 +72,11 @@ Omit external search API keys when you do not want distillation to call external
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `CONTEXT_STILL_EMBEDDING_PROVIDER` | `auto` | `auto`, `daemon`, `cli`, or `disabled` |
-| `CONTEXT_STILL_EMBEDDING_DAEMON_URL` | `http://127.0.0.1:44512` | Embedding daemon URL |
+| `CONTEXT_STILL_EMBEDDING_PROVIDER` | `auto` | `auto`, `daemon`, `openai`, or `disabled` |
+| `CONTEXT_STILL_EMBEDDING_DAEMON_URL` | `http://127.0.0.1:44512` | Externally managed embedding HTTP endpoint |
 | `CONTEXT_STILL_EMBEDDING_DIMENSION` | `384` | Vector dimension |
-| `CONTEXT_STILL_RESIDENT_EMBEDDING` | `1` | Lets `context-stilld run` supervise a loopback local embedding daemon for `auto` or `daemon` providers |
-| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_ROOT` | `../local-llm/embedding` | Local e5embed runtime root |
-| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_PYTHON` | `<root>/.venv/bin/python` | Python executable used for the managed daemon and CLI fallback |
-| `CONTEXT_STILL_LOCAL_LLM_EMBEDDING_MODEL_DIR` | `<root>/models/multilingual-e5-small` | Local embedding model directory |
-| `CONTEXT_STILL_EMBEDDING_READY_TIMEOUT_MS` | `60000` | Maximum wait for a newly spawned local daemon to pass `/health` |
 
-Embedding improves semantic search and distillation quality, but it does not block minimal desktop usage. The resident only manages plain HTTP loopback URLs without a path prefix. Remote or prefixed daemon URLs remain externally owned. With provider `auto`, an unavailable daemon uses the existing CLI fallback.
+Embedding improves semantic search and distillation quality, but it does not block minimal desktop usage. ContextStill only probes and calls the configured HTTP endpoint; it never discovers model files or starts, supervises, or stops an embedding process. With provider `auto`, an unavailable endpoint is reported as unavailable without a local fallback.
 
 ## Rust Daemon Boundary
 
@@ -137,7 +132,6 @@ This protects against network and browser-origin access and accidental overexpos
 | `CONTEXT_STILL_ANTIGRAVITY_LOG_DIRS` | Additional Antigravity log roots |
 | `CONTEXT_STILL_CLAUDE_PROJECTS_DIR` | Claude projects directory |
 | `CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC` | `1` | Enables resident `context-stilld run` to own scheduled agent log sync |
-| `CONTEXT_STILL_RESIDENT_EMBEDDING` | `1` | Enables resident ownership of an available local e5embed runtime |
 | `CONTEXT_STILL_RESIDENT_QUEUE_MODE` | `rust-managed-one-shot` | Legacy value retained for compatibility; resident queue scheduling is Rust maintenance and no longer starts Bun continuous mode |
 | `CONTEXT_STILL_RESIDENT_QUEUE_INTERVAL_MS` | `5000` | Minimum interval between Rust-managed queue maintenance ticks |
 | `CONTEXT_STILL_RUST_COVERING_MODE` | `all` (LaunchAgent) / `off` (binary fallback) | Selects `off`, `negative`, `canary`, or `all`. `negative` is the rollback mode; no mode starts the legacy worker |

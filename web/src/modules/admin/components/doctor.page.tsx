@@ -289,18 +289,11 @@ function CoreInfrastructureDomain({ data }: { data: DoctorCoreInfrastructureDoma
     : embeddingMode === "disabled" || embeddingMode === "openai"
       ? "muted"
       : "warning";
-  const embeddingCliTone: HealthTone = data.embedding?.cli.usable ? "safe" : "warning";
   const embeddingDaemonLabel = data.embedding?.daemon.reachable
-    ? data.embedding.daemon.status === "managed_ready"
-      ? "Managed / Ready"
-      : "Reachable"
-    : embeddingMode === "cli_fallback"
-      ? "CLI Fallback"
-      : embeddingMode === "disabled" || embeddingMode === "openai"
-        ? "Not Required"
-        : data.embedding?.daemon.status === "starting"
-          ? "Starting"
-          : "Offline";
+    ? "External / Ready"
+    : embeddingMode === "disabled" || embeddingMode === "openai"
+      ? "Not Required"
+      : "Offline";
 
   return (
     <DomainShell
@@ -397,7 +390,7 @@ function CoreInfrastructureDomain({ data }: { data: DoctorCoreInfrastructureDoma
             </strong>
           </div>
           <div className="flex items-center justify-between">
-            <span>Embedding Daemon</span>
+            <span>Embedding Provider</span>
             <strong
               className={healthTextClass(embeddingDaemonTone)}
               title={
@@ -407,12 +400,6 @@ function CoreInfrastructureDomain({ data }: { data: DoctorCoreInfrastructureDoma
               }
             >
               {embeddingDaemonLabel}
-            </strong>
-          </div>
-          <div className="flex items-center justify-between">
-            <span>Embedding CLI</span>
-            <strong className={healthTextClass(embeddingCliTone)}>
-              {data.embedding?.cli.usable ? "Usable" : "Unavailable"}
             </strong>
           </div>
         </div>

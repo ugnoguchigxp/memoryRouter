@@ -1,5 +1,3 @@
-import { execFile } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { groupedConfig } from "../src/config.js";
 import { embedOne, embeddingHealth } from "../src/modules/embedding/embedding.service.js";
@@ -15,11 +13,6 @@ vi.mock("../src/config.js", () => ({
       timeoutMs: 1000,
       openaiModel: "text-embedding-3-small",
     },
-    localLlm: {
-      embeddingPython: "/bin/python",
-      embeddingRoot: "/root",
-      embeddingModelDir: "/models",
-    },
     azureOpenAi: {
       apiKey: "test-api-key",
       apiBaseUrl: "https://api.openai.com/v1",
@@ -33,22 +26,9 @@ vi.mock("../src/config.js", () => ({
 const mockFetch = vi.fn();
 global.fetch = Object.assign(mockFetch, { preconnect: vi.fn() }) as unknown as typeof fetch;
 
-// Mock child_process
-vi.mock("node:child_process", () => ({
-  execFile: vi.fn(),
-}));
-
-// Mock fs/promises
-vi.mock("node:fs/promises", () => ({
-  access: vi.fn(),
-  readFile: vi.fn().mockRejectedValue(new Error("No resident state")),
-}));
-
 describe("embedding service", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(execFile).mockReset();
-    vi.mocked(readFile).mockReset().mockRejectedValue(new Error("No resident state"));
     groupedConfig.embedding.provider = "auto";
   });
 
@@ -77,32 +57,10 @@ describe("embedding service", () => {
       );
     });
 
-    test("falls back to cli provider if daemon fails and provider is auto", async () => {
+    test("reports the external daemon failure without a local fallback", async () => {
       mockFetch.mockRejectedValue(new Error("Connection refused"));
 
-      const mockExecFile = execFile as unknown as any;
-      mockExecFile.mockImplementation(
-        (
-          file: string,
-          args: string[],
-          options: { timeout?: number; maxBuffer?: number },
-          callback: (error: Error | null, result: { stdout: string }) => void,
-        ) => {
-          void file;
-          void args;
-          void options;
-          callback(null, {
-            stdout: JSON.stringify([{ embedding: new Array(384).fill(0.2), dimension: 384 }]),
-          });
-          return undefined;
-        },
-      );
-
-      const result = await embedOne("test text", "query");
-
-      expect(result).toHaveLength(384);
-      expect(result[0]).toBe(0.2);
-      expect(mockExecFile).toHaveBeenCalled();
+      await expect(embedOne("test text", "query")).rejects.toThrow("daemon: Connection refused");
     });
 
     test("throws error if provider is disabled", async () => {
@@ -236,7 +194,6 @@ describe("embedding service", () => {
   describe("embeddingHealth", () => {
     test("returns reachable true if daemon health check succeeds", async () => {
       mockFetch.mockResolvedValue({ ok: true });
-      (access as any).mockResolvedValue(undefined);
 
       const health = await embeddingHealth();
 
@@ -244,73 +201,24 @@ describe("embedding service", () => {
       expect(health.daemon.reachable).toBe(true);
       expect(health.daemon.status).toBe("external_ready");
       expect(health.effectiveMode).toBe("daemon");
-      expect(health.cli.usable).toBe(true);
     });
 
-    test("reports a live resident-owned daemon from the persisted runtime ledger", async () => {
+    test("always reports a reachable daemon as externally managed", async () => {
       mockFetch.mockResolvedValue({ ok: true });
-      (access as any).mockResolvedValue(undefined);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          pid: process.pid,
-          status: "managed_ready",
-          command: "/usr/bin/python",
-          args: ["-m", "e5embed.daemon"],
-        }),
-      );
-      vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
-        const callback = args.at(-1) as (
-          error: Error | null,
-          stdout: string,
-          stderr: string,
-        ) => void;
-        callback(null, "/usr/bin/python -m e5embed.daemon", "");
-      }) as typeof execFile);
-
-      const health = await embeddingHealth();
-
-      expect(health.daemon.status).toBe("managed_ready");
-      expect(health.daemon.managedBy).toBe("rust-resident");
-      expect(health.daemon.pid).toBe(process.pid);
-    });
-
-    test("does not claim a reused resident PID owned by another process", async () => {
-      mockFetch.mockResolvedValue({ ok: true });
-      (access as any).mockResolvedValue(undefined);
-      vi.mocked(readFile).mockResolvedValue(
-        JSON.stringify({
-          pid: process.pid,
-          status: "managed_ready",
-          command: "/usr/bin/python",
-          args: ["-m", "e5embed.daemon"],
-        }),
-      );
-      vi.mocked(execFile).mockImplementation(((...args: unknown[]) => {
-        const callback = args.at(-1) as (
-          error: Error | null,
-          stdout: string,
-          stderr: string,
-        ) => void;
-        callback(null, "/usr/bin/node vitest", "");
-      }) as typeof execFile);
 
       const health = await embeddingHealth();
 
       expect(health.daemon.status).toBe("external_ready");
       expect(health.daemon.managedBy).toBe("external");
-      expect(health.daemon.pid).toBeUndefined();
     });
 
     test("returns reachable false and error if daemon health check fails", async () => {
       mockFetch.mockResolvedValue({ ok: false, status: 500 });
-      (access as any).mockRejectedValue(new Error("File not found"));
 
       const health = await embeddingHealth();
 
       expect(health.daemon.reachable).toBe(false);
       expect(health.daemon.error).toBe("HTTP 500");
-      expect(health.cli.usable).toBe(false);
-      expect(health.cli.error).toBe("File not found");
       expect(health.effectiveMode).toBe("unavailable");
     });
 
@@ -318,7 +226,6 @@ describe("embedding service", () => {
       groupedConfig.embedding.provider = "openai";
       groupedConfig.azureOpenAi.apiKey = "";
       mockFetch.mockResolvedValue({ ok: true }); // daemon health ok
-      (access as any).mockResolvedValue(undefined); // cli ok
 
       const health = await embeddingHealth();
 
@@ -336,7 +243,6 @@ describe("embedding service", () => {
           data: [{ embedding: new Array(384).fill(0.5) }],
         }),
       });
-      (access as any).mockResolvedValue(undefined); // cli ok
 
       const health = await embeddingHealth();
 

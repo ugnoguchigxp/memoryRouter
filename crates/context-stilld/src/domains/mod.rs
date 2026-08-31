@@ -6,7 +6,7 @@ pub mod cli;
 pub mod context_compile;
 pub mod daemon;
 pub mod doctor;
-pub mod embedding_lifecycle;
+pub mod embedding_provider;
 pub mod mcp_lifecycle;
 pub mod process_lifecycle;
 pub mod queue_lifecycle;

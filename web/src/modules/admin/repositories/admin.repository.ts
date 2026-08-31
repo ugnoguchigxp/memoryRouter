@@ -325,16 +325,14 @@ export type DoctorReport = {
   embedding?: {
     configured: boolean;
     provider: string;
-    effectiveMode?: "daemon" | "cli_fallback" | "openai" | "disabled" | "unavailable";
+    effectiveMode?: "daemon" | "openai" | "disabled" | "unavailable";
     daemon: {
       url: string;
       reachable: boolean;
-      status?: "managed_ready" | "external_ready" | "starting" | "offline" | "not_required";
-      managedBy?: "rust-resident" | "external" | "none";
-      pid?: number;
+      status?: "external_ready" | "offline" | "not_required";
+      managedBy?: "external" | "none";
       error?: string;
     };
-    cli: { python: string; root: string; modelDir: string; usable: boolean; error?: string };
   };
   agenticLlm?: {
     providerSetting: string;
@@ -2416,7 +2414,7 @@ export type RuntimeSettingsEditable = {
     };
   };
   embedding: {
-    provider: "auto" | "daemon" | "cli" | "openai" | "disabled";
+    provider: "auto" | "daemon" | "openai" | "disabled";
     daemonUrl: string;
     openaiModel: string;
     timeoutMs: number;

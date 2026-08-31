@@ -468,7 +468,7 @@ export const runtimeSettingsEditableSchema = z
       }),
     }),
     embedding: z.object({
-      provider: z.enum(["auto", "daemon", "cli", "openai", "disabled"] as const),
+      provider: z.enum(["auto", "daemon", "openai", "disabled"] as const),
       daemonUrl: z.string().trim().url(),
       openaiModel: z.string().trim().min(1),
       timeoutMs: z.number().int().min(1000).max(120_000),

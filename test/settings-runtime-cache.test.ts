@@ -72,6 +72,20 @@ describe("settings runtime cache", () => {
     settings = cloneDefaultSettings();
   });
 
+  test("normalizes removed embedding process providers to the configured default", () => {
+    const defaults = cloneDefaultSettings();
+    const input = structuredClone(defaults) as unknown as {
+      embedding: { provider: string };
+    };
+    input.embedding.provider = "process";
+
+    const normalized = normalizeRuntimeSettingsEditable(
+      input as unknown as RuntimeSettingsEditable,
+    );
+
+    expect(normalized.embedding.provider).toBe(defaults.embedding.provider);
+  });
+
   afterEach(() => {
     restoreProviderConfig(originalConfig);
   });

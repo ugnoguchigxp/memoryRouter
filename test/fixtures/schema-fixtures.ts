@@ -12,7 +12,6 @@ export const doctorReportValidInput = {
     configured: true,
     provider: "daemon",
     daemon: { url: "http://llm", reachable: true },
-    cli: { python: "python", root: "/root", modelDir: "/models", usable: true },
   },
   agenticLlm: {
     providerSetting: "auto",
