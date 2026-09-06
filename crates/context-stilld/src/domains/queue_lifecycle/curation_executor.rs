@@ -463,20 +463,36 @@ fn source_group<'a>(snapshot: &'a Value, id: &str) -> Option<&'a Value> {
 }
 
 fn rendered_body(snapshot: &Value, result: &Decision) -> Result<String, String> {
-    let groups = result
-        .retained_group_ids
+    let body = retained_source_groups(snapshot, result)?
         .iter()
-        .map(|id| {
-            source_group(snapshot, id)
-                .and_then(|group| group["text"].as_str())
-                .ok_or_else(|| format!("missing retained group {id}"))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let body = groups.join("\n\n");
+        .filter_map(|group| group["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if body.trim().is_empty() {
         return Err("rendered body is empty".into());
     }
     Ok(body)
+}
+
+fn retained_source_groups(snapshot: &Value, result: &Decision) -> Result<Vec<Value>, String> {
+    result
+        .retained_group_ids
+        .iter()
+        .enumerate()
+        .map(|(order, id)| {
+            let group =
+                source_group(snapshot, id).ok_or_else(|| format!("missing retained group {id}"))?;
+            let text = group["text"]
+                .as_str()
+                .ok_or_else(|| format!("retained group text missing {id}"))?;
+            Ok(json!({
+                "id": id,
+                "text": text,
+                "hash": repository::hash(text),
+                "order": order,
+            }))
+        })
+        .collect()
 }
 
 fn eligible(snapshot: &Value, result: &Decision) -> Result<(), String> {
@@ -627,7 +643,8 @@ pub(super) fn persist(
                 if survivor["body"].as_str() != Some(body.as_str()) && embedding.is_none() {
                     return Err("merged body requires embedding".into());
                 }
-                tx.execute("update knowledge_items set body=?2,metadata=json_set(metadata,'$.landscapeCuration',json(?3)),updated_at=CURRENT_TIMESTAMP where id=?1",params![survivor_id,body,json!({"curationJobId":job.id,"mergedKnowledgeId":deprecated_id,"policyVersion":VERSION}).to_string()]).map_err(|e|e.to_string())?;
+                let source_groups = retained_source_groups(snapshot, &decision)?;
+                tx.execute("update knowledge_items set body=?2,metadata=json_set(metadata,'$.landscapeCuration',json(?3)),updated_at=CURRENT_TIMESTAMP where id=?1",params![survivor_id,body,json!({"curationJobId":job.id,"mergedKnowledgeId":deprecated_id,"policyVersion":VERSION,"sourceGroups":source_groups}).to_string()]).map_err(|e|e.to_string())?;
                 if let Some(vector) = embedding.as_ref() {
                     upsert_embedding(
                         &tx,

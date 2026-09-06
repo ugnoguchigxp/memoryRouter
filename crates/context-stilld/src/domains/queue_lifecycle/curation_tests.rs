@@ -258,6 +258,13 @@ fn merges_body_embedding_and_deprecation_atomically() {
         canonical["body"],
         json!("Use a transaction for related writes.\n\nCommit related updates atomically.")
     );
+    assert_eq!(
+        canonical["sourceGroups"],
+        json!([
+            {"id":"subject:g0","text":"Use a transaction for related writes.","hash":repository::hash("Use a transaction for related writes."),"order":0},
+            {"id":"canonical:g0","text":"Commit related updates atomically.","hash":repository::hash("Commit related updates atomically."),"order":1}
+        ])
+    );
     let fts: String = connection
         .query_row(
             "select body from knowledge_items_fts where id='canonical'",

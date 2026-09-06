@@ -81,14 +81,66 @@ pub(super) fn load_knowledge(connection: &Connection, id: &str) -> Result<Option
             row["bodyHash"] = json!(hash(row["body"].as_str().unwrap_or_default()));
             row["appliesToHash"] = json!(hash(&canonical_json(&row["appliesTo"])));
             row["contentRevision"] = json!(content_revision(&row));
-            row["sourceGroups"] = json!([{
-                "id": format!("{}:g0", row["id"].as_str().unwrap_or_default()),
-                "text": row["body"].as_str().unwrap_or_default(),
-                "hash": hash(row["body"].as_str().unwrap_or_default()),
-                "order": 0
-            }]);
+            row["sourceGroups"] = Value::Array(source_groups(&row));
             Ok(row)
         }).transpose()
+}
+
+/// Returns the durable source groups only when they exactly reconstruct the persisted body.
+/// Metadata is historical evidence, never an authority that can alter knowledge text.
+pub(super) fn source_groups(item: &Value) -> Vec<Value> {
+    let body = item["body"].as_str().unwrap_or_default();
+    let fallback = || {
+        vec![json!({
+            "id": format!("{}:g0", item["id"].as_str().unwrap_or_default()),
+            "text": body,
+            "hash": hash(body),
+            "order": 0,
+        })]
+    };
+    let Some(groups) = item
+        .pointer("/metadata/landscapeCuration/sourceGroups")
+        .and_then(Value::as_array)
+    else {
+        return fallback();
+    };
+    let mut normalized = groups
+        .iter()
+        .filter_map(|group| {
+            let id = group["id"].as_str()?.trim();
+            let text = group["text"].as_str()?;
+            (!id.is_empty()).then(|| {
+                json!({
+                    "id": id,
+                    "text": text,
+                    "hash": hash(text),
+                    "order": group["order"].as_u64().unwrap_or(u64::MAX),
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    normalized.sort_by_key(|group| group["order"].as_u64().unwrap_or(u64::MAX));
+    let unique = normalized
+        .iter()
+        .filter_map(|group| group["id"].as_str())
+        .collect::<HashSet<_>>()
+        .len()
+        == normalized.len();
+    if normalized.is_empty()
+        || !unique
+        || normalized
+            .iter()
+            .filter_map(|group| group["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+            != body
+    {
+        return fallback();
+    }
+    for (order, group) in normalized.iter_mut().enumerate() {
+        group["order"] = json!(order);
+    }
+    normalized
 }
 
 pub(super) fn canonical_json(value: &Value) -> String {

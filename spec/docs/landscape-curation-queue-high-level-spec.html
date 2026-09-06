@@ -47,7 +47,8 @@
       統合bodyのembeddingは書き込み前に取得する。SQLite
       writerの単一transactionで本文・embedding・FTS・参照元・deprecated化・完了記録を確定する。変更前snapshot、proposal
       hash、verification hash、supersession、pair review、revision
-      ledgerを保存し、postcheck失敗時はtransaction全体をrollbackする。
+      ledgerを保存する。統合後のsurvivorには元のsource group
+      ID・本文・hash・順序も保存し、本文を完全に再構成できる場合だけ次回のcoverage検証に使う。postcheck失敗時はtransaction全体をrollbackする。
     </li>
     <li>
       LLM待機中はwriterを占有せず、provider

@@ -480,24 +480,6 @@ fn rust_finalize_local_lane_preempts_covering_and_finding_provider_backlog() {
             insert into finalize_distille_queue (
               id,evidence_result_id,distillation_version,status,priority,attempt_count,max_attempts,metadata,next_run_at,created_at,updated_at
             ) values ('finalize-local','evidence-finalize','v1','paused',50,0,5,'{}',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);
-            alter table covering_evidence_queue add column input_generation integer not null default 0;
-            alter table covering_evidence_queue add column protocol_version integer not null default 1;
-            alter table evidence_coverage_results add column current_revision_id text;
-            alter table finalize_distille_queue add column protocol_version integer not null default 1;
-            alter table finalize_distille_queue add column requested_revision_id text;
-            create table covering_evidence_inputs (
-              id text primary key, covering_job_id text not null, input_generation integer not null,
-              input_hash text not null, identity_json text not null, evidence_bundle_json text not null,
-              prompt_version text not null, model_config_hash text not null, created_at text not null default current_timestamp,
-              unique(covering_job_id, input_generation)
-            );
-            create table covering_evidence_revisions (
-              id text primary key, evidence_result_id text not null, revision_no integer not null,
-              input_id text not null, input_generation integer not null, attempt_id text not null unique,
-              protocol_version integer not null, result_status text not null, result_json text not null,
-              artifact_hash text, created_at text not null default current_timestamp,
-              unique(evidence_result_id, revision_no)
-            );
         "#).unwrap();
     drop(connection);
     let env = MapEnv::from_pairs(vec![

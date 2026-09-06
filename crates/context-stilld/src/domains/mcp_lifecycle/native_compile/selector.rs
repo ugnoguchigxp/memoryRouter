@@ -192,6 +192,7 @@ mod tests {
         for raw in [
             r#"{"schemaVersion":1,"decisions":[{"candidateId":"missing","verdict":"omit","reasonCode":"unrelated","goalAnchors":[],"evidenceGroupIds":[]},{"candidateId":"k2","verdict":"conditional","reasonCode":"direct","goalAnchors":["backup"],"evidenceGroupIds":["k2:whole"]}],"orderedOptionalIds":[]}"#,
             r#"{"schemaVersion":1,"decisions":[{"candidateId":"k1","verdict":"include","reasonCode":"direct","goalAnchors":["not-in-goal"],"evidenceGroupIds":["k1:whole"]},{"candidateId":"k2","verdict":"omit","reasonCode":"unrelated","goalAnchors":[],"evidenceGroupIds":[]}],"orderedOptionalIds":["k1"]}"#,
+            r#"{"schemaVersion":1,"decisions":[{"candidateId":"k1","verdict":"include","reasonCode":"direct","goalAnchors":["backup"],"evidenceGroupIds":["k1:whole"]},{"candidateId":"k1","verdict":"include","reasonCode":"direct","goalAnchors":["backup"],"evidenceGroupIds":["k1:whole"]}],"orderedOptionalIds":["k1","k1"]}"#,
         ] {
             assert!(validate(raw, "change backup", &candidates()).is_err());
         }
