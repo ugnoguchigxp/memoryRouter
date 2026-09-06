@@ -1,0 +1,578 @@
+<article lang="ja">
+  <h1>ContextStill 多角的プロジェクト評価 — 2026年9月6日</h1>
+  <p>
+    <strong>総合評価：64 / 100。</strong
+    >開発者が自ら運用する知識基盤としては、機能と安全設計に強みがある。第三者が容易に導入し、安心して更新できる製品にするには、秘密情報の保存、導入手順、実装の重複、操作全体の検証、配布体制を整える必要がある。
+  </p>
+  <p>
+    対象は
+    <code>b73500235b2c557b1aba080d97bc31927e48d1fd</code>
+    と調査時の未コミット変更。評価日・検証日は2026年9月6日（JST）。調査中も作業ツリーに変更が入ったため、初回検証と変更後の確認を区別した。今回、評価者によるアプリケーションコードの修正は行っていない。
+  </p>
+  <h2>採点方法と限界</h2>
+  <p>
+    各項目を10点満点で評価した。9〜10は実装と検証の根拠が強い、7〜8は実用的だが改善点がある、5〜6は機能していても制約や実証不足がある、3〜4は製品としての整備が不足している、1〜2は未成立を表す。22項目を同じ重みで平均し、100点換算して四捨五入した。合計140点
+    / 220点 = 63.64点。点数は統計的な品質指標ではなく、確認した証拠に基づく判断である。
+  </p>
+  <p>
+    コード、公開・内部資料、CI設定、テスト、ローカルビルドを調査した。ブラウザの実操作、クリーンOSへのインストール、長時間負荷、実データの復元、外部LLMを使った比較実験、最新の依存脆弱性監査は実施していない。UI評価はコードとコンポーネントテストを根拠とする暫定評価。市場規模、競合優位、利用者数、継続率、支払意思、実際の開発生産性向上率は未確認であり、採点対象にしていない。
+  </p>
+  <p>
+    多数の利用者を持つSaaSの基準は適用せず、READMEが掲げるローカル中心の知識管理製品として評価した。マルチテナント機能がないこと自体は減点していない。
+  </p>
+  <h2>22観点の評点</h2>
+  <table>
+    <caption>
+      各観点の評点と判断根拠
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">観点</th>
+        <th scope="col">点 / 10</th>
+        <th scope="col">評価</th>
+        <th scope="col">主な確認箇所</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th scope="row">1. 解決する課題・製品価値</th>
+        <td>9</td>
+        <td>
+          過去の作業知識を次のタスクで再利用し、出典と判断を追跡できる。対象の利用場面が明確。実際の時間削減量は未計測。
+        </td>
+        <td><code>README.md</code>、今回利用したMCPのcompile経路</td>
+      </tr>
+      <tr>
+        <th scope="row">2. 機能の一貫性・充実度</th>
+        <td>8</td>
+        <td>
+          収集、候補化、根拠確認、Knowledge化、compile、decision、feedbackまで実装がある。機能範囲に対して導入と実装統一が追いついていない。
+        </td>
+        <td>
+          <code>src/modules/</code>、<code>crates/context-stilld/src/domains/</code>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">3. 知識の出典・監査可能性</th>
+        <td>9</td>
+        <td>
+          source link、candidate trace、pack
+          snapshot、利用評価、明示的な状態遷移がある。採用知識を後から説明できる設計が強い。知識内容そのものの正しさを保証する点数ではない。
+        </td>
+        <td>
+          <code>native_compile.rs</code> の永続化処理、<code
+            >spec/docs/pub/architecture.md</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">4. 検索・生成効果の実証</th>
+        <td>6</td>
+        <td>
+          固定fixture、synthetic
+          recall、1万行の性能テスト、canary記録がある。一方、実タスクの成功率を記憶なし条件と比較した証拠は不足。
+        </td>
+        <td><code>native_memory_recall.rs</code>、repository-isolation closeout資料</td>
+      </tr>
+      <tr>
+        <th scope="row">5. アーキテクチャ・責務分離</th>
+        <td>7</td>
+        <td>
+          常駐Rust、UI用Hono、単一SQLite Writerの境界は明確。CLI/APIのTypeScript compileとMCPのRust
+          compileが並存し、意味の違いを管理する負担が残る。
+        </td>
+        <td>
+          <code>src/cli/compile.ts</code
+          >、<code>native_handlers.rs</code>、<code
+            >sqlite_writer/service.rs</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">6. 保守性・変更の局所性</th>
+        <td>5</td>
+        <td>
+          ドメイン単位の構成はあるが、設定画面4,679行、native compile
+          4,536行など大きなファイルが残る。Rustの行数には埋め込みテストも含む。
+        </td>
+        <td>調査開始時の追跡ファイル集計</td>
+      </tr>
+      <tr>
+        <th scope="row">7. 型・入力検証・コード規律</th>
+        <td>8</td>
+        <td>
+          TypeScript
+          strict、Zod、Rustの型、lint、format、Clippyが機能する。anyを許可し、Vitest設定にも型の回避が残る。
+        </td>
+        <td>
+          <code>tsconfig.json</code
+          >、<code>biome.json</code>、各schema、検証ログ
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">8. 単体・統合テスト</th>
+        <td>8</td>
+        <td>
+          Rust 379件、SQLite
+          59件を今回実行して成功。TypeScript側も2千件以上を検証する。ただし主要領域がcoverage集計から除外され、網羅率の代表性は弱い。
+        </td>
+        <td>
+          <code>test/</code>、Rust内のtests、<code
+            >vitest.config.ts</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">9. E2E・利用者操作の回帰保証</th>
+        <td>3</td>
+        <td>
+          E2Eは4ファイル32行。1件は <code>expect(true).toBe(true)</code> のみ。verify
+          workflowにPlaywright実行がなく、導入から知識利用までの通しの保証が弱い。
+        </td>
+        <td>
+          <code>e2e/</code>、<code>.github/workflows/verify.yml</code>
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">10. データ整合性・リポジトリ分離</th>
+        <td>8</td>
+        <td>
+          Writerの排他、トランザクション、schema更新、repository
+          scopeを実装・検証している。identity不明時はglobal-onlyに制限する。障害注入を伴う本番相当の長期検証は未実施。
+        </td>
+        <td>
+          <code>sqlite_writer/service.rs</code
+          >、<code>repository_scope.rs</code>、SQLiteテスト
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">11. HTTP・外部入力の境界防御</th>
+        <td>7</td>
+        <td>
+          loopback bind、管理API認証、HttpOnly
+          cookie、Origin確認、本文サイズ制限、外部URLのSSRF対策がある。通常MCPはローカル信頼境界に依存し、typed
+          memoryの認証とは異なる。
+        </td>
+        <td>
+          <code>api/middleware/</code
+          >、<code>endpoint_server.rs</code>、<code
+            >url-fetcher.ts</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">12. 秘密情報・保存データ保護</th>
+        <td>4</td>
+        <td>
+          ログの伏せ字処理と秘密値のUI分離は良い。一方、設定保存では
+          <code>encrypted</code>
+          と記録しながら秘密値をJSONで保存する。DBやバックアップを取得した主体から秘密を守る暗号化は、この経路にない。
+        </td>
+        <td>
+          <code>settings.service.ts:248</code
+          >、<code>settings.repository.sqlite.ts:121</code>、<code
+            >native_compile.rs:1958</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">13. 性能・規模への余力</th>
+        <td>5</td>
+        <td>
+          typed recallの性能テストと分離compile実装はある。既定のlegacy
+          compileは外部LLM待ちをWriter内で行い、検索も対象Knowledgeを全件読み込んで採点する。知識増加と並行処理の余力に課題がある。
+        </td>
+        <td>
+          <code>context_compile/runtime.rs:30</code
+          >、<code>native_compile.rs:92</code>、<code
+            >native_compile.rs:822</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">14. 障害復旧・運用の安全性</th>
+        <td>8</td>
+        <td>
+          stale lease回収、queue再試行、Writer稼働中のbackup拒否、offline
+          backup検証がある。実運用の復元訓練と所要時間は今回確認していない。
+        </td>
+        <td>
+          <code>queue_lifecycle/maintenance.rs</code
+          >、<code>backup/service.rs</code>、Rustテスト
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">15. 観測性・診断</th>
+        <td>8</td>
+        <td>
+          Doctor、Queue
+          inspect、利用・コスト・品質ダッシュボード、Writer待ち時間、degraded理由まで用意される。一方、HTTP
+          readinessは固定応答で、DBなどの依存状態を反映しない。
+        </td>
+        <td>
+          <code>api/app.ts:53</code
+          >、<code>sqlite_writer/service.rs</code>、<code
+            >overview.page.tsx</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">16. 導入体験・初回成功</th>
+        <td>4</td>
+        <td>
+          READMEの最初のcompile例は現行CLIの必須引数不足で失敗する。Bunのみの前提説明とMCPのCargo依存、SQLite推奨とstartupのserver経路が分かれている。
+        </td>
+        <td>
+          <code>README.md</code
+          >、<code>src/cli/compile.ts:75</code>、今回の隔離環境での再現
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">17. UI・アクセシビリティ</th>
+        <td>6</td>
+        <td>
+          遅延読み込み、ロード中・エラー表示、ラベル、aria属性、画面テストはある。14個の主要ナビゲーションと専門概念が初見の負担になりうる。視覚・キーボード・読み上げ操作は未確認の暫定点。
+        </td>
+        <td>
+          <code>web/src/App.tsx</code
+          >、<code>app-shell.tsx</code>、<code
+            >overview.page.tsx</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">18. ドキュメント</th>
+        <td>6</td>
+        <td>
+          内部資料の厚さ、実行証拠、HTML構造チェックは強い。一方、公開の導入・backup・runtime説明に実装との差がある。資料量だけでは初回成功を保証できない。
+        </td>
+        <td>
+          <code>spec/docs/</code
+          >、<code>spec/docs/pub/</code>、<code
+            >CONTRIBUTING.md</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">19. CI・依存管理・再現性</th>
+        <td>7</td>
+        <td>
+          ロックファイル、Bunの固定、Action
+          SHA固定、Rust/TS/DBの分離gateがある。主要CIはUbuntuのみで、Playwright、TS/Rustの依存脆弱性監査、配布物の検証は確認できない。
+        </td>
+        <td>
+          <code>.github/workflows/verify.yml</code
+          >、<code>.github/dependabot.yml</code>、<code
+            >package.json</code
+          >
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">20. 配布・更新・リリース成熟度</th>
+        <td>3</td>
+        <td>
+          Tauriは目標として記述され、現状は開発環境からの起動が中心。署名済み配布物、自動更新、対応OS行列、継続的なリリース記録をリポジトリ内で確認できない。
+        </td>
+        <td>
+          <code>README.md</code
+          >、<code>CHANGELOG.md</code>、workflows
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">21. コスト管理</th>
+        <td>6</td>
+        <td>
+          ローカルLLM、provider
+          routing、利用量と概算コストの仕組みがある。単価と為替は固定の代表値を含み、ローカル計算資源の総費用やタスク成功当たりの費用は測っていない。
+        </td>
+        <td><code>src/modules/llm/llm-cost-config.ts</code>、provider lease、overview</td>
+      </tr>
+      <tr>
+        <th scope="row">22. 継続開発・引き継ぎ</th>
+        <td>5</td>
+        <td>
+          MIT、貢献・安全性・支援・統治文書は揃う。Governanceはownerによる保守を明記し、変更追跡はGit中心。外部保守者による導入・変更・リリースの再現性は未確認。
+        </td>
+        <td>
+          <code>GOVERNANCE.md</code
+          >、<code>CONTRIBUTING.md</code>、<code
+            >CHANGELOG.md</code
+          >
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>特に評価できること</h2>
+  <p>
+    <strong>知識の生成だけでなく、採用した理由と結果を残す設計がある。</strong
+    >候補と有効知識を分け、出典、利用履歴、評価、判断を記録している。生成した知識が増えた後の監査・整理を考慮した構成である。
+  </p>
+  <p>
+    <strong>失敗時のデータ保全が実装に落ちている。</strong
+    >リポジトリの取り違えをscope条件で防ぎ、SQLiteへの書き込みを一元化し、leaseの回収やbackup時の排他をテストしている。計画書だけの安全性ではない。
+  </p>
+  <p>
+    <strong>検証の層が厚い。</strong
+    >Rust、TypeScript、SQLite、境界チェック、schema・資料チェックを分けている。今回の設定テストの不整合を通常のverifyが検出したことも、gateが機能している証拠である。
+  </p>
+  <h2>優先して改善する5項目</h2>
+  <table>
+    <caption>
+      優先改善事項と完了条件
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">優先</th>
+        <th scope="col">改善事項</th>
+        <th scope="col">具体的な完了条件</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th scope="row">1</th>
+        <td>秘密値の保存仕様を明確にし、保護する</td>
+        <td>
+          OSの秘密情報ストア、または適切に鍵を分離した暗号化に移行する。既存データとbackupの扱いも定義し、合成の秘密値を使ってDB内に平文が残らないこと、移行・削除・再起動後の利用を検証する。単に
+          <code>encrypted</code> と命名するだけでは完了としない。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">2</th>
+        <td>新規利用者の最初の成功を保証する</td>
+        <td>
+          空の作業用データ領域で、公開手順通りに起動し、source登録、知識の用意、repo付きcompile、evalまで完走する。依存ツール、CLI引数、バックアップ例を実装に合わせ、これを自動検証する。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">3</th>
+        <td>compileの実装責任を一本化し、外部I/OとWriterを分ける</td>
+        <td>
+          固定fixtureでCLI・API・MCPのscope、採用知識、No
+          Content、budgetを比較できる状態にする。外部LLMを遅延させても別のDB処理を塞がず、Writer待ち時間と検索・生成時間を個別に測れることを確認する。既存Foundationの実装と昇格条件を利用する。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">4</th>
+        <td>主要操作のE2Eと効果測定を追加する</td>
+        <td>
+          定数を確認するだけのE2Eを置き換え、導入、認証、source登録、compile/eval、再起動の通しのテストをCIへ入れる。検索評価は同一タスク集合で記憶なし条件と比較し、成功率、誤誘導、時間、トークン、費用を報告する。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">5</th>
+        <td>機能追加と並行して保守・配布の負担を減らす</td>
+        <td>
+          変更頻度と影響の大きい設定・compile・queueから責務を分け、同じ振る舞いを複数言語で二重実装する箇所を減らす。対応OS、版とschemaの対応、更新・復旧手順、配布物の検証を定義する。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>実装に基づく重要な所見</h2>
+  <h3>秘密情報の種別と保存実態が一致していない</h3>
+  <p>
+    <code>src/modules/settings/settings.service.ts</code> は <code>value: { value }</code> と
+    <code>valueKind: "encrypted"</code> をrepositoryへ渡す。SQLite repositoryは
+    <code>JSON.stringify(input.value)</code> を保存し、Rust側の
+    <code>query_secret_value</code>
+    はJSONを読み出す。これはコードから確認した保存形式の問題であり、実際の秘密値を読み取った結果ではない。ログのredactionやHTTPの認証は、この保存時の保護とは別の対策である。
+  </p>
+  <h3>READMEのcompile例は再現可能な導入障害になっている</h3>
+  <p>
+    README / Getting Startedの例には <code>--repo-path</code> も
+    <code>--global</code> もない。一方、<code
+      >src/cli/compile.ts:75</code
+    >
+    はどちらもない場合にエラーを返す。作業用の隔離ディレクトリで同じ引数を与え、<code
+      >Repository identity is required</code
+    >
+    と終了コード1を確認した。リポジトリ分離を守るCLIの要件は妥当であり、公開例を追従させる必要がある。
+  </p>
+  <p>
+    加えて <code>spec/docs/pub/operations.md</code> のbackup例は
+    <code>--output</code> を案内するが、現在のRust
+    <code>parse_backup_options</code> が受け付けるのは
+    <code>--json</code> と
+    <code>--require-idle</code
+    >。後者の不一致は静的確認であり、backupの実操作は行っていない。
+  </p>
+  <h3>改善用の実装が存在することと、既定動作が改善済みであることは異なる</h3>
+  <p>
+    <code>CompileFoundationMode::from_env</code> は未指定時に
+    <code>legacy</code> を選ぶ。この経路は
+    <code>with_writer</code> の中で検索から
+    <code>compose_context_response</code>
+    まで実行する。分離経路ではcomposeをWriterの外に置いており、改善の方向性と実装はある。今回、稼働中daemonの環境設定を調べていないため、実際のdaemonもlegacyで動いているとは断定しない。
+  </p>
+  <p>
+    <code>search_knowledge_items</code>
+    はscope内のactive行を読み込み、本文を採点してから件数を絞る。条件を満たす行にはsource
+    linkを個別取得する。小規模ローカルDBでは許容できる可能性があるが、知識数増加時の検索量とクエリ数は別途測るべきである。typed
+    memory recallの1万行テスト成功を、このcompile経路全体の性能保証に読み替えてはいけない。
+  </p>
+  <h3>カバレッジ設定とE2Eには穴がある</h3>
+  <p>
+    <code>vitest.config.ts</code> のcoverage対象から
+    <code>context-compiler</code
+    >、<code>knowledge</code>、<code>llm</code>、<code>queue/core</code>、UIのTSXなどが除外される。これらにテストがないという意味ではないが、カバレッジの数値を製品全体の網羅率として使えない。今回、カバレッジ測定自体は実行していない。
+  </p>
+  <p>
+    <code>e2e/admin-ui.spec.ts</code> は
+    <code>expect(true).toBe(true)</code>
+    のみ。ほかに画面遷移・登録を試すテストはあるが、CIのverify
+    workflowにPlaywrightが組み込まれていない。UIを開く前に検証を終える現状では、初回の操作成功を高く採点できない。
+  </p>
+  <h2>今回の検証結果</h2>
+  <table>
+    <caption>
+      実行した検証と結果
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">検証</th>
+        <th scope="col">結果</th>
+        <th scope="col">補足</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th scope="row">初回 bun run verify</th>
+        <td>TypeScriptテストで停止</td>
+        <td>
+          system-contextの2検証、typecheck、lint、format、specチェックは成功。テストは2,108成功、1失敗、13スキップ。257ファイル中254成功、1失敗、2スキップ。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">失敗テストの単独実行</th>
+        <td>再現した</td>
+        <td>
+          <code>PUT /api/settings backfills legacy task routing fields</code
+          >。19件中18成功、1失敗。設定の後方互換補完に対する期待値の不一致。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">調査中の変更後の単独実行</th>
+        <td>19 / 19成功</td>
+        <td>
+          評価者が編集していない同テストに、provider/model/fallbackとpoolの扱いを明示する変更が入った。変更後に再実行して成功した。初回失敗をHEADの確定不具合とは扱わない。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">cargo test --workspace</th>
+        <td>379成功、失敗・ignoreなし</td>
+        <td>
+          repository scope、Writer、queue、backup、typed memoryのsynthetic
+          recallと1万行性能gateを含む。27.42秒。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">cargo fmt / Clippy</th>
+        <td>成功</td>
+        <td>
+          <code>cargo clippy --workspace --all-targets -- -D warnings</code> を実行。vendored
+          sqlite-vecのCコンパイラwarningは出力されるが、コマンドは成功。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">SQLite関連5ファイル</th>
+        <td>59 / 59成功</td>
+        <td>
+          core、knowledge、migration、runtime、repository isolation。作業用の一時DBを使用。13.45秒。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">SQLite Writer ownership</th>
+        <td>成功</td>
+        <td><code>bun run verify:sqlite-writer-ownership</code>。</td>
+      </tr>
+      <tr>
+        <th scope="row">bun run build:web</th>
+        <td>成功</td>
+        <td>
+          26.09秒。500 kB超のchunk警告あり。最大のJavaScript chunkはmermaid core 801.00 kB、gzip
+          245.72 kB。初期表示で全chunkを読み込むという意味ではない。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">READMEのcompile引数</th>
+        <td>終了コード1を確認</td>
+        <td>
+          隔離ディレクトリと作業用SQLiteパスで実行。identity引数が不足し、compile本体に入る前に失敗。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <strong>最終の bun run verify は全項目成功した。</strong>
+    system-contextの2検証、typecheck、lint、format、specチェック、unitテスト、Webビルドを再確認した。最後のunit実行は41.3秒、buildは6.8秒。verifyは成功時のテスト件数を表示しないため、初回の件数を最終件数として流用していない。
+  </p>
+  <p>
+    文書には bun run spec:fix を適用し、bun run spec:check
+    でも検証する。初回の検証失敗のため、buildは独立して実行した。重複して起動した独立unit
+    runnerは負荷を避けるため停止し、初回全体結果にはverifyが起動したrunnerの結果を採用した。調査中のコード変更があるため、初回から最終までを単一の固定snapshotに対する結果とは扱わない。
+  </p>
+  <h2>規模と過去の運用証拠</h2>
+  <p>
+    調査開始時、追跡されたTS / TSX / Rustファイルは、<code>src</code>
+    411ファイル・113,029行、<code>api</code> 39・11,649行、<code
+      >web</code
+    >
+    60・28,729行、<code>crates</code>
+    107・51,374行。合計617ファイル・204,781行。Rustの埋め込みテストやschemaなどを含む物理行数であり、手書きの製品ロジック量ではない。<code
+      >test</code
+    >
+    は280ファイル・76,830行、E2Eは4ファイル・32行。開始時の内部HTMLは現行18件、archive26件。
+  </p>
+  <p>
+    既存の
+    <a href="context-compile-repository-isolation-closeout-evidence.html"
+      >repository-isolation closeout証拠</a
+    >
+    は、切替前50 runとcanary 50 runを比較し、保存されたdurationのp95を19,050 msから14,922
+    msへ改善したと報告する。ただしcanaryの31 / 50はcomposerのgoal-alignment
+    failureによるfallbackでdegradedだった。この数値は過去の記録であり、今回の性能測定でも、現在のend-to-end性能を保証する値でもない。
+  </p>
+  <p>
+    <a href="landscape-autonomous-curation-queue-evaluation.html">2026年8月26日のLANDSCAPE観測</a>
+    には、active Knowledge 7,810件のうちnever selectedが73.3%、direct usage
+    feedbackなしが72.1%とある。未選択だけで低品質とは判断できないが、知識を増やす活動と、役立つ知識を確実に届ける活動を別々に測る必要がある。
+  </p>
+  <h2>利用目的別の判断</h2>
+  <table>
+    <caption>
+      現時点での用途適合性
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">用途</th>
+        <th scope="col">判断</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th scope="row">開発者自身によるローカル継続利用</th>
+        <td>適性が高い。運用と復旧の仕組みを理解して利用できることが前提。</td>
+      </tr>
+      <tr>
+        <th scope="row">知識再利用の研究・技術検証</th>
+        <td>適性が高い。取得・利用・評価の痕跡と実験用経路があり、効果測定を進めやすい。</td>
+      </tr>
+      <tr>
+        <th scope="row">技術者の小規模な試験導入</th>
+        <td>
+          条件付きで適する。導入例の修正、秘密情報の扱い、データ領域、責任者、復旧手順を明確にする。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">不特定の利用者への安定配布</th>
+        <td>準備段階。導入・更新・操作全体の保証と配布物の整備が先に必要。</td>
+      </tr>
+      <tr>
+        <th scope="row">一般公開するマルチユーザーサービス</th>
+        <td>現行の製品目標外。現在のローカル信頼モデルをそのまま流用する判断はできない。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    次の段階で最も価値が高いのは、知識量や機能数だけを増やすことではなく、初めて使う人が公開手順で成功し、その後のタスクでどれだけ誤りと手戻りを減らせたかを測れる状態にすることである。
+  </p>
+</article>

@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "maxLines": 1200,
+  "policy": "Existing large modules may shrink but must not grow. Remove an exemption when its module is split. New modules require a responsibility boundary, not a larger budget.",
+  "exceptions": {
+    "api/modules/graph/graph.repository.ts": 1811,
+    "api/modules/overview/overview.repository.ts": 1610,
+    "api/modules/queue/queue.repository.ts": 1921,
+    "crates/context-stilld/src/domains/context_compile/foundation.rs": 1236,
+    "crates/context-stilld/src/domains/mcp_lifecycle/endpoint_server.rs": 1406,
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_knowledge.rs": 2010,
+    "crates/context-stilld/src/domains/provider_connection/service.rs": 1766,
+    "crates/context-stilld/src/domains/queue_lifecycle/executor.rs": 3320,
+    "crates/context-stilld/src/domains/queue_lifecycle/finalize_executor.rs": 2059,
+    "crates/context-stilld/src/domains/queue_lifecycle/finding_executor.rs": 1403,
+    "crates/context-stilld/src/domains/queue_lifecycle/inspect.rs": 1417,
+    "src/db/sqlite/core-schema.ts": 1367,
+    "src/modules/context-compiler/context-compiler.repository.sqlite.ts": 1454,
+    "src/modules/context-compiler/context-compiler.repository.ts": 1207,
+    "src/modules/context-decision/context-decision.service.ts": 1713,
+    "src/modules/coverEvidence/llm-runner.ts": 1543,
+    "src/modules/queue/core/worker.ts": 2465,
+    "web/src/modules/admin/components/graph.page.tsx": 2887,
+    "web/src/modules/admin/components/knowledge.page.tsx": 1538,
+    "web/src/modules/admin/components/sources.page.tsx": 1583,
+    "web/src/modules/context-compiler/components/context-compiler.page.tsx": 1364,
+    "web/src/modules/context-decision/components/context-decision.page.tsx": 1808
+  }
+}

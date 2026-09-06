@@ -32,13 +32,11 @@ import {
 import {
   ensureRuntimeSettingsLoaded,
   getRuntimeSettingsSnapshot,
-  resolveCoverEvidenceRoutes,
-  resolveDeadZoneMergeReviewRoute,
-  resolveLandscapeCurationRoute,
-  resolveEpisodeDistillerRoute,
-  resolveFindCandidateRoute,
 } from "../../../src/modules/settings/settings.service.js";
-import type { RuntimeSettingsRoute } from "../../../src/modules/settings/settings.types.js";
+import {
+  type RuntimeSettingsRoute,
+  isLarmAgentConnectionRoute,
+} from "../../../src/modules/settings/settings.types.js";
 
 export type QueueListQuery = {
   page: number;
@@ -272,6 +270,7 @@ function resolveRouteModel(
 }
 
 function summarizeProviderPoolRoute(route: RuntimeSettingsRoute): string | null {
+  if (isLarmAgentConnectionRoute(route)) return null;
   const poolId = route.providerPoolId?.trim();
   if (!poolId) return null;
 
@@ -289,9 +288,15 @@ function summarizeProviderPoolRoute(route: RuntimeSettingsRoute): string | null 
       }
       if (target.provider === "azure-openai") {
         return (
-          settings.providers["azure-openai"].deployments[target.deploymentSlot]?.model ??
+          settings.providers["azure-openai"].deployments[target.deploymentSlot - 1]?.model ??
           `deployment:${target.deploymentSlot}`
         );
+      }
+      if (target.provider === "larm-agent-connection") {
+        const connection = settings.providers["larm-agent-connection"].connections.find(
+          (item) => item.id === target.connectionId,
+        );
+        return connection?.agentProfile ?? target.connectionId;
       }
       return target.targetId;
     })
@@ -307,6 +312,16 @@ function resolveRouteRuntimeModel(route: RuntimeSettingsRoute): {
   provider: string | null;
   model: string | null;
 } {
+  if (isLarmAgentConnectionRoute(route)) {
+    const settings = getRuntimeSettingsSnapshot();
+    const connection = settings.providers["larm-agent-connection"].connections.find(
+      (item) => item.id === route.connectionId,
+    );
+    return {
+      provider: "larm-agent-connection",
+      model: connection?.agentProfile ?? route.connectionId,
+    };
+  }
   const provider = route.provider;
   const poolSummary = summarizeProviderPoolRoute(route);
   return {
@@ -327,26 +342,30 @@ function resolveQueueRuntimeModel(
   }
 
   if (queueName === "episodeDistiller") {
-    const route = resolveEpisodeDistillerRoute();
+    const route = getRuntimeSettingsSnapshot().taskRouting.episodeDistiller;
     return resolveRouteRuntimeModel(route);
   }
 
   if (queueName === "findingCandidate") {
     const sourceKind = row.source_kind === "vibe_memory" ? "vibe_memory" : "wiki_file";
-    const route = resolveFindCandidateRoute(sourceKind);
+    const findCandidate = getRuntimeSettingsSnapshot().taskRouting.findCandidate;
+    const route = sourceKind === "vibe_memory" ? findCandidate.vibe : findCandidate.source;
     return resolveRouteRuntimeModel(route);
   }
 
   if (queueName === "coveringEvidence") {
     const policy = normalizeProviderPolicy(row.provider_policy);
-    const routes = resolveCoverEvidenceRoutes();
+    const route = getRuntimeSettingsSnapshot().taskRouting.coverEvidence.externalEvidence;
+    if (isLarmAgentConnectionRoute(route) && policy === "default") {
+      return resolveRouteRuntimeModel(route);
+    }
     try {
-      const route = resolveCoverEvidenceRouteByPolicy({
-        route: routes.externalEvidence,
+      const resolvedRoute = resolveCoverEvidenceRouteByPolicy({
+        route,
         policy,
         routeName: "externalEvidence",
       });
-      return resolveRouteRuntimeModel(route);
+      return resolveRouteRuntimeModel(resolvedRoute);
     } catch {
       const provider = row.provider ?? null;
       return { provider, model: provider ? resolveRouteModel(provider, undefined) : null };
@@ -354,7 +373,8 @@ function resolveQueueRuntimeModel(
   }
 
   if (queueName === "deadZoneMergeReview") {
-    const route = resolveDeadZoneMergeReviewRoute();
+    const route = getRuntimeSettingsSnapshot().taskRouting.deadZoneMergeReview;
+    if (isLarmAgentConnectionRoute(route)) return resolveRouteRuntimeModel(route);
     const provider = row.provider?.trim() || route.provider;
     return {
       provider,
@@ -366,7 +386,8 @@ function resolveQueueRuntimeModel(
   }
 
   if (queueName === "landscapeCuration") {
-    const route = resolveLandscapeCurationRoute();
+    const route = getRuntimeSettingsSnapshot().taskRouting.landscapeCuration;
+    if (isLarmAgentConnectionRoute(route)) return resolveRouteRuntimeModel(route);
     return {
       provider: row.provider?.trim() || route.provider,
       model:
@@ -378,6 +399,9 @@ function resolveQueueRuntimeModel(
 
   const settings = getRuntimeSettingsSnapshot();
   const finalizeRoute = settings.taskRouting.finalizeDistille;
+  if (isLarmAgentConnectionRoute(finalizeRoute)) {
+    return resolveRouteRuntimeModel(finalizeRoute);
+  }
   const provider = finalizeRoute.provider;
   return {
     provider,
@@ -394,13 +418,61 @@ function resolveActiveLeaseRuntimeModel(
   if (!targetId) return null;
 
   const settings = getRuntimeSettingsSnapshot();
+  const poolId = row.active_lease_pool_id?.trim();
+  const configuredTarget = poolId
+    ? settings.providerPools
+        .find((pool) => pool.id === poolId)
+        ?.targets.find((target) => {
+          if (target.provider === "local-llm") return target.localLlmModelId === targetId;
+          if (target.provider === "azure-openai") {
+            return String(target.deploymentSlot) === targetId;
+          }
+          if (target.provider === "larm-agent-connection") {
+            return target.connectionId === targetId;
+          }
+          return target.targetId === targetId;
+        })
+    : undefined;
+  if (configuredTarget?.provider === "larm-agent-connection") {
+    const connection = settings.providers["larm-agent-connection"].connections.find(
+      (item) => item.id === configuredTarget.connectionId,
+    );
+    return {
+      provider: "larm-agent-connection",
+      model: connection?.agentProfile ?? configuredTarget.connectionId,
+    };
+  }
+  if (configuredTarget?.provider === "local-llm") {
+    const model = settings.providers["local-llm"].models.find(
+      (item) => item.id === configuredTarget.localLlmModelId,
+    );
+    return {
+      provider: "local-llm",
+      model: model?.model ?? configuredTarget.localLlmModelId,
+    };
+  }
+  if (configuredTarget?.provider === "azure-openai") {
+    const deployment =
+      settings.providers["azure-openai"].deployments[configuredTarget.deploymentSlot - 1];
+    return {
+      provider: "azure-openai",
+      model: deployment?.model ?? settings.providers["azure-openai"].model,
+    };
+  }
+  if (configuredTarget) {
+    return {
+      provider: configuredTarget.provider,
+      model: settings.providers[configuredTarget.provider].model,
+    };
+  }
+
   const localModel = settings.providers["local-llm"].models.find((model) => model.id === targetId);
   if (localModel) {
     return { provider: "local-llm", model: localModel.model };
   }
 
   if (/^\d+$/.test(targetId)) {
-    const deployment = settings.providers["azure-openai"].deployments[Number(targetId)];
+    const deployment = settings.providers["azure-openai"].deployments[Number(targetId) - 1];
     return {
       provider: "azure-openai",
       model: deployment?.model ?? settings.providers["azure-openai"].model,

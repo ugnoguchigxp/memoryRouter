@@ -1,0 +1,608 @@
+<article lang="ja">
+  <h1 id="larm-dynamic-provider-contextstill-implementation-plan">
+    ContextStill LARM動的Provider 実装計画
+  </h1>
+
+  <h2 id="status">Status</h2>
+  <p>Status: in progress</p>
+  <p>Created: 2026-09-06</p>
+  <p>Updated: 2026-09-06</p>
+  <p>Plan ID: <code>contextstill-larm-dynamic-provider-v1</code></p>
+  <p>
+    前提となるLARM変更は
+    <a href="local-llm-harness-background-availability-change-request.html"
+      >local-LLM-harness Background Provider Availability API 変更依頼書</a
+    >を権威とする。
+  </p>
+
+  <h2 id="implementation-progress">Implementation progress</h2>
+  <ul>
+    <li>
+      Phase 1は実装済み。後方互換なroute union、LARM connection設定、API
+      validation、管理UIのconnection編集とroute選択、queue表示を追加した。
+    </li>
+    <li>
+      Phase 2は実装済み。Rust resident向けcontrol client、strict claim validation、credential
+      redaction、connection manager state machine、busy／unknown時の fail-closed backoffを追加した。
+    </li>
+    <li>
+      Phase 3とPhase 4は実装済み。Rust
+      residentは実行可能jobの存在をclaim前に確認し、connection単位で
+      managerを再利用しながら、<code>findingCandidate</code>と<code>episodeDistiller</code>を動的targetへ接続する。
+      job境界ではavailabilityを再評価し、queueが空ならconnectionを解放する。
+    </li>
+    <li>
+      Phase 0のLARM availability endpointと<code>contextstill-background</code>
+      Profileは外部実装待ち。 live activationを行わず、
+      <code>providers.larm-agent-connection.enabled</code
+      >のdefaultを<code>false</code>に維持する。
+    </li>
+    <li>
+      現時点のTypeScript実行経路は動的routeを実行せず明示的にfail closedとする。credentialとclaim
+      payloadはsettings、SQLite、diagnosticへ保存しない。
+    </li>
+    <li>
+      コードレビューで、HTTP 201／202 create、availabilityの鮮度、boot epoch／catalog
+      revision、connection lifecycle identity、claim
+      expiry、URLとresponseの上限を追加検証した。短期tokenは
+      redactedかつzeroize対象とし、release失敗時も不確実なlocal claimを再利用しない。
+    </li>
+    <li>
+      旧TypeScript schedulerは、LARM routeだけでなくLARM targetを含むmixed poolもpool全体をfail
+      closedとする。static
+      targetだけを抜き出して暗黙実行する挙動は禁止する。findCandidateのsource／vibeが
+      static／LARMに分かれる場合も、rowのrouteをclaim前に判定し、動的rowのattemptを消費しない。
+    </li>
+  </ul>
+
+  <h2 id="executive-decision">1. Executive decision</h2>
+  <p>
+    ContextStillのRust residentが、実行可能なbackground queue jobが存在するときだけLARMを
+    ポーリングする。LARMが利用可能と返した場合にAgent Connectionを確保し、claimで得た
+    OpenAI互換providerを使ってjobを1件ずつ実行する。利用不能時はjobをclaimせず待機する。
+  </p>
+  <p>実装判断を次に固定する。</p>
+  <ul>
+    <li>SAAAとの通信、通知購読、activity推測を実装しない。</li>
+    <li>動的provider lifecycleのownerはRust residentだけとする。</li>
+    <li>availability GETは事前ゲート、Agent Connection POSTは原子的な最終admissionとする。</li>
+    <li>Agent ConnectionがreadyになるまでSQLite queue jobをclaimしない。</li>
+    <li>connection token、動的base URL、claim payloadをSQLiteへ永続化しない。</li>
+    <li>connectionがある間も次のjobを開始する前にavailabilityを再評価する。</li>
+    <li>
+      job実行中にforeground activityが始まった場合は、そのjobを完了または通常失敗まで進め、
+      次jobを開始せずconnectionを解放する。
+    </li>
+    <li>static provider routeは既存挙動を完全に維持し、明示設定したrouteだけを動的化する。</li>
+  </ul>
+
+  <h2 id="scope">2. Scope</h2>
+  <h3 id="in-scope">2.1 In scope</h3>
+  <ul>
+    <li>runtime settingsの後方互換な動的connection設定。</li>
+    <li>Rust resident内のavailability poll、create、status、claim、renew、delete。</li>
+    <li>provider poolが動的targetを選択できるための型とscheduler統合。</li>
+    <li>
+      <code>findingCandidate</code>、<code>episodeDistiller</code>、
+      <code>coveringEvidence</code>の段階的rollout。
+    </li>
+    <li>queue ownership、provider lease、fencing、retry、telemetryとの統合。</li>
+    <li>settings UI/APIでの設定表示、validation、保存。</li>
+  </ul>
+
+  <h3 id="out-of-scope">2.2 Out of scope</h3>
+  <ul>
+    <li>
+      <code>agenticCompile</code
+      >、<code>context_compile</code>、embedding、searchの動的化。
+    </li>
+    <li>TypeScript CLIやUI processによるAgent Connection lifecycle所有。</li>
+    <li>SAAA callback、SAAA API poll、SAAA process監視。</li>
+    <li>generation途中のpreemption、cancel、checkpoint resume。</li>
+    <li>動的provider credentialのDB保存。</li>
+    <li>static fallbackへの黙示的切替。</li>
+  </ul>
+
+  <h2 id="authority">3. Authority and precedence</h2>
+  <table>
+    <caption>
+      Table: Authority
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Concern</th>
+        <th scope="col">Authority</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>providerの利用可能性とforeground activity</td>
+        <td>LARM availability API</td>
+      </tr>
+      <tr>
+        <td>resource reservationとconnection admission</td>
+        <td>LARM Agent Connection POST</td>
+      </tr>
+      <tr>
+        <td>動的connection lifecycle</td>
+        <td>ContextStill Rust residentの単一manager</td>
+      </tr>
+      <tr>
+        <td>queue job stateと再試行時刻</td>
+        <td>ContextStill SQLite queue row</td>
+      </tr>
+      <tr>
+        <td>job単位のprovider排他</td>
+        <td>ContextStill <code>llm_provider_leases</code></td>
+      </tr>
+      <tr>
+        <td>LLM responseのpersist可否</td>
+        <td>queue ownershipとprovider lease fencing</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>矛盾時は次の順で優先する。</p>
+  <ol>
+    <li>SQLite単一writer、短いtransaction、ownership fencing。</li>
+    <li>LARMのatomic admissionとcredential lifetime。</li>
+    <li>foreground activityを優先するjob境界gate。</li>
+    <li>既存settingsとstatic providerの互換性。</li>
+    <li>workerのwarm再利用とthroughput。</li>
+  </ol>
+
+  <h2 id="architecture">4. Target architecture</h2>
+  <pre><code class="language-text">SQLite queue (due job exists)
+        |
+        v
+Rust resident / LarmConnectionManager
+        |  GET profile availability
+        |  POST connection -> poll -> claim
+        v
+ephemeral OpenAI-compatible target (memory only)
+        |
+        v
+short writer transaction: queue claim + internal provider lease
+        |
+        v
+external LLM execution outside writer
+        |
+        v
+short writer transaction: fenced persist + lease release
+        |
+        +-- next due job: availability(currentConnectionId)を再評価
+        +-- queue empty/busy/error/shutdown: DELETE connection
+</code></pre>
+  <p>
+    この境界は
+    <a href="sqlite-single-writer-external-io-isolation-implementation-plan.html"
+      >SQLite単一writer・外部I/O分離 実装計画</a
+    >を変更しない。availability、connection create、status poll、claim、renew、delete、 LLM
+    requestのすべてをwriter transaction外で行う。
+  </p>
+
+  <h2 id="settings-contract">5. Runtime settings contract</h2>
+  <h3 id="connection-catalog">5.1 Connection catalog</h3>
+  <p>
+    <code>providers</code>へ、static local
+    modelとは別のcontrol-plane設定を追加する。 field名とdefaultを次で固定する。
+  </p>
+  <pre><code class="language-json">{
+  &quot;providers&quot;: {
+    &quot;larm-agent-connection&quot;: {
+      &quot;enabled&quot;: false,
+      &quot;connections&quot;: [
+        {
+          &quot;id&quot;: &quot;contextstill-background&quot;,
+          &quot;controlBaseUrl&quot;: &quot;http://192.168.0.130:9810&quot;,
+          &quot;agentProfile&quot;: &quot;contextstill-background&quot;,
+          &quot;audience&quot;: &quot;saaa-desktop&quot;,
+          &quot;availabilityPollMs&quot;: 5000,
+          &quot;availabilityTimeoutMs&quot;: 2000,
+          &quot;controlTimeoutMs&quot;: 5000,
+          &quot;readyTimeoutMs&quot;: 180000,
+          &quot;ttlSeconds&quot;: 900,
+          &quot;requestTimeoutMs&quot;: 300000
+        }
+      ]
+    }
+  }
+}
+</code></pre>
+  <ul>
+    <li><code>id</code>はsettings内で一意かつ非空とする。</li>
+    <li><code>controlBaseUrl</code>はcredential、query、fragmentを禁止する。</li>
+    <li>
+      <code>agentProfile</code
+      >と<code>audience</code>は非空の固定値とする。
+    </li>
+    <li>
+      <code>ttlSeconds</code>は1 jobのrequest
+      timeoutとcleanup余裕を満たす値とし、 LARMの上限内でvalidationする。
+    </li>
+    <li>tokenやclaim結果をsettingsへ追加しない。</li>
+  </ul>
+
+  <h3 id="route-union">5.2 Route discriminated union</h3>
+  <p>
+    現行routeをstatic variant、新しいrouteをLARM variantとして明示的なunionにする。
+    既存JSONで<code>kind</code>がないrouteはstaticとしてparseする。
+  </p>
+  <pre><code class="language-ts">type StaticRuntimeSettingsRoute = {
+  kind?: &quot;static&quot;;
+  provider: RuntimeProviderName;
+  model?: string;
+  localLlmModel?: string;
+  providerPoolId?: string;
+  fallback: RuntimeFallbackTarget[];
+};
+
+type LarmAgentConnectionRoute = {
+  kind: &quot;larm-agent-connection&quot;;
+  connectionId: string;
+};
+
+type RuntimeSettingsRoute =
+  | StaticRuntimeSettingsRoute
+  | LarmAgentConnectionRoute;
+</code></pre>
+  <p>
+    LARM
+    variantへ<code>provider</code>、<code>model</code>、<code>fallback</code>、
+    <code>providerPoolId</code>を併記することは禁止する。LARM
+    claimが返すproviderを唯一の実行targetとし、 黙示的fallbackを発生させない。
+  </p>
+  <p>
+    serializerは既存routeへ一律に<code>kind: static</code>を追記せず、現行settings
+    snapshotと API responseを維持する。settings API、UI、Zod schema、Rust
+    deserializerで同じvalidationを行う。
+  </p>
+
+  <h3 id="provider-pool-target">5.3 Provider pool target</h3>
+  <p>内部provider pool targetへ次のvariantを追加する。</p>
+  <pre><code class="language-ts">{
+  provider: &quot;larm-agent-connection&quot;;
+  connectionId: string;
+}
+</code></pre>
+  <p>
+    schedulerはrouteが明示した場合だけこのtargetを生成する。static
+    <code>local-llm</code> targetへ変換したり、claim後のbase
+    URLをsettingsへ書き戻したりしない。
+  </p>
+
+  <h2 id="resident-lifecycle">6. Rust resident lifecycle</h2>
+  <h3 id="state-machine">6.1 State machine</h3>
+  <pre><code class="language-text">Disabled
+  -> WaitingAvailability
+  -> Creating
+  -> WaitingReady
+  -> Claiming
+  -> Ready
+  -> Renewing -> Ready
+  -> Releasing -> WaitingAvailability
+  -> Backoff -> WaitingAvailability
+</code></pre>
+  <p>
+    connection設定ごとにresident内で一つの<code>LarmConnectionManager</code>を生成する。
+    同じconnection設定を参照する複数queue routeはmanagerを共有し、同時createをmutexまたは
+    単一scheduler ownerで防ぐ。
+  </p>
+  <p>
+    推奨配置は<code>crates/context-stilld/src/domains/provider_connection/</code>配下とし、 control client、state
+    machine、claim validation、redacted telemetryをqueue executorから分離する。
+  </p>
+
+  <h3 id="polling">6.2 Polling policy</h3>
+  <ul>
+    <li>対象routeにdue jobがない間はavailabilityをpollしない。</li>
+    <li>
+      due jobがありconnectionがない場合は5秒を基準に20% jitterを加え、
+      LARMの<code>retryAfterMs</code>を下限として再評価する。
+    </li>
+    <li>
+      transport error、HTTP
+      5xx、<code>unknown</code>は5秒から最大60秒まで指数backoffする。
+    </li>
+    <li>
+      <code>unavailable</code>、schema mismatch、unsupported
+      contractは最大5分のbackoffとし、 operator向けにrate-limitした警告を出す。
+    </li>
+    <li>
+      <code>validForMs</code>を過ぎたresponseを利用しない。response
+      cacheを永続化しない。
+    </li>
+    <li>
+      connectionがreadyの場合も、各job開始前に
+      <code>currentConnectionId</code>付きavailabilityを評価する。
+    </li>
+  </ul>
+
+  <h3 id="create-claim">6.3 Create, ready and claim</h3>
+  <ol>
+    <li>
+      <code>available</code
+      >を受けたら、<code>explicitAgentProfile: true</code>、
+      <code>allowFallback: false</code>、<code>deploymentPolicy: existing-only</code>で
+      <code>POST /v1/agent-connections</code>を呼ぶ。
+    </li>
+    <li>
+      一つのlogical create retryでは同じ<code>Idempotency-Key</code>を再利用する。
+      新しいadmission試行へ移る場合だけ新しいkeyを生成する。
+    </li>
+    <li>201または202を受け、terminal failureまたはreadyまでstatusをpollする。</li>
+    <li>ready後に<code>openai-provider-v1</code> formatでclaimする。</li>
+    <li>claimをstrict validationし、短命targetをmemoryだけに保持する。</li>
+    <li>ここまで成功した後で初めてSQLite queue jobをclaimする。</li>
+  </ol>
+  <p>
+    availability取得後にPOSTがresource競合で拒否されることは正常なTOCTOU raceである。 queue
+    jobは未claimのまま残し、LARMのretry hintに従ってWaitingAvailabilityへ戻る。
+  </p>
+
+  <h3 id="claim-validation">6.4 Claim validation</h3>
+  <p>少なくとも次を検証する。</p>
+  <ul>
+    <li>connection ID、Profile、audience、boot epoch、revisionの整合。</li>
+    <li>providerがちょうど1件で、protocolとclaim formatが期待値である。</li>
+    <li>base URLが許可されたscheme、host、port、pathを満たす。</li>
+    <li>model名とOpenAI互換設定が欠落していない。</li>
+    <li>credential typeが対応形式で、expiryが現在時刻より十分先である。</li>
+    <li>provider healthがreadyかつaccepting requestsである。</li>
+  </ul>
+  <p>
+    validation失敗時はLLM
+    requestを送らずconnectionをdeleteし、credentialを含まないerrorだけを記録する。
+  </p>
+
+  <h3 id="renewal">6.5 Renewal</h3>
+  <p>
+    job開始前に、credentialまたはconnection expiryまでの残時間が
+    <code>requestTimeoutMs + 30秒</code>未満ならrenewと再claimを完了させる。
+    renewには毎回新しいidempotency keyを使う。job実行中の定期renewはv1では行わず、
+    job開始時点で十分なlifetimeを確保する。
+  </p>
+
+  <h3 id="release">6.6 Release</h3>
+  <p>次の場合はbest-effortでconnectionをDELETEし、memory上のclaimとtokenを破棄する。</p>
+  <ul>
+    <li>対象routeに次のdue jobがない。</li>
+    <li>
+      job境界のavailabilityが<code>busy</code>、<code>unavailable</code>、<code>unknown</code>。
+    </li>
+    <li>claim、renew、provider healthまたはrequestの回復不能error。</li>
+    <li>resident shutdown、settings変更、route無効化。</li>
+  </ul>
+  <p>
+    process crashやSIGKILLではDELETEを保証できないため、LARM TTLを最終cleanupとする。
+    ContextStill再起動後に旧connectionを推測して再利用しない。
+  </p>
+
+  <h2 id="queue-integration">7. Queue integration</h2>
+  <h3 id="execution-sequence">7.1 Execution sequence</h3>
+  <ol>
+    <li>query-only readで対象routeのdue job有無を確認する。</li>
+    <li>動的targetならconnection managerからready targetを取得する。</li>
+    <li>single writer transactionでqueue ownershipと内部provider leaseをclaimする。</li>
+    <li>immutable execution inputを確定し、writerを解放する。</li>
+    <li>claim由来のproviderへ外部LLM requestを送る。</li>
+    <li>single writer transactionでownershipとleaseを再検証して結果をpersistする。</li>
+    <li>内部provider leaseをreleaseする。</li>
+    <li>次jobの有無とLARM availabilityを再評価する。</li>
+  </ol>
+  <p>
+    connection確保の待機中にqueue
+    jobを<code>running</code>へ変更しない。したがってLARMが長時間busyでも、
+    job attempt、ownership timeout、writer待機を消費しない。
+  </p>
+
+  <h3 id="job-boundary">7.2 Foreground activity at job boundary</h3>
+  <p>
+    foreground priorityはjob境界で適用する。LLM request送信後にLARMのprotected runtimeがBUSYへ
+    変化しても、進行中requestは通常どおり完了または失敗まで処理する。その後は次jobをclaimせず、
+    connectionを解放する。
+  </p>
+  <p>
+    この判断により、部分responseの破棄、queue checkpointの曖昧化、強制cancelのprovider差異を
+    v1へ持ち込まない。hard preemptionが必要になった場合は、LARMのcancel契約とContextStillの
+    checkpoint契約を別計画で定義する。
+  </p>
+
+  <h3 id="failures">7.3 Failure mapping</h3>
+  <table>
+    <caption>
+      Table: Failure mapping
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Failure</th>
+        <th scope="col">Queue state</th>
+        <th scope="col">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>availability busy／unknown／transport error</td>
+        <td>未claimのまま</td>
+        <td>managerだけbackoffする</td>
+      </tr>
+      <tr>
+        <td>connection POST race rejection</td>
+        <td>未claimのまま</td>
+        <td>retry hint後にavailabilityへ戻る</td>
+      </tr>
+      <tr>
+        <td>ready timeout／claim invalid</td>
+        <td>未claimのまま</td>
+        <td>DELETE、redacted error、backoff</td>
+      </tr>
+      <tr>
+        <td>LLM requestのbusy 503</td>
+        <td><code>pending</code>へ戻す</td>
+        <td>
+          <a href="llm-provider-busy-503-contract.html">LLM Provider busy 503 contract</a>を適用
+        </td>
+      </tr>
+      <tr>
+        <td>job完了後にownership喪失</td>
+        <td>現ownerを維持</td>
+        <td>superseded outputをdiscardする</td>
+      </tr>
+      <tr>
+        <td>resident crash</td>
+        <td>既存recovery契約</td>
+        <td>LARM側はTTLでconnectionをreclaimする</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="typescript-boundary">8. TypeScript boundary</h2>
+  <p>TypeScript側は次の責務だけを持つ。</p>
+  <ul>
+    <li>settings schema、route union、UI editor、API responseのvalidation。</li>
+    <li>dynamic routeとstatic routeの表示と保存。</li>
+    <li>構成testと後方互換snapshot。</li>
+  </ul>
+  <p>
+    TypeScriptの明示CLIまたはsidecar executionが動的routeを直接実行しようとした場合は、
+    <code>dynamic_provider_requires_rust_resident</code>としてfail closedする。static providerへ
+    黙示的にfallbackしたり、二つ目のconnection managerを起動したりしない。
+  </p>
+
+  <h2 id="security">9. Security</h2>
+  <ul>
+    <li>
+      control HTTP clientとprovider HTTP clientはredirectを禁止し、proxy利用を明示的に制御する。
+    </li>
+    <li>response body size、content type、JSON nesting、timeoutをboundedにする。</li>
+    <li>
+      <code>controlBaseUrl</code>とclaimのbase URLはloopback、許可private
+      network、明示host policyに 適合させ、URL credential、query、fragmentを拒否する。
+    </li>
+    <li>tokenをzeroizing memoryで保持し、Debug、panic、error、event、SQLiteへ出さない。</li>
+    <li>promptとcompletionをconnection telemetryへ含めない。</li>
+    <li>claimのexpiryとLARM boot epoch変更を検出したら再claimせずconnectionを作り直す。</li>
+  </ul>
+
+  <h2 id="observability">10. Observability</h2>
+  <p>次の非機密fieldをstructured telemetryとして記録する。</p>
+  <ul>
+    <li>connection設定ID、Profile、route、queue kind。</li>
+    <li>availability state、reasonCode、observed age、poll duration、backoff。</li>
+    <li>create、ready、claim、renew、deleteのdurationと結果分類。</li>
+    <li>connection IDの短いhash、catalog revision、boot epoch。</li>
+    <li>job boundaryで継続、停止、releaseを選んだ理由。</li>
+  </ul>
+  <p>token、authorization header、完全なclaim payload、prompt、completionは記録しない。</p>
+
+  <h2 id="implementation-phases">11. Implementation phases</h2>
+  <ol>
+    <li><strong>Phase 0:</strong> LARM変更依頼のcontract testとlive endpointを先に完成させる。</li>
+    <li>
+      <strong>Phase 1:</strong> settings union、Rust deserializer、UI/APIを追加する。
+      defaultはdisabledとし、runtime動作を変えない。
+    </li>
+    <li>
+      <strong>Phase 2:</strong> LARM control client、state machine、claim validationをunit
+      test付きで追加する。
+    </li>
+    <li>
+      <strong>Phase 3:</strong> <code>findingCandidate</code>だけをfeature
+      flag下で動的routeへ接続する。
+    </li>
+    <li>
+      <strong>Phase 4:</strong> live canaryと観測期間を通過後、
+      <code>episodeDistiller</code>へ展開する。
+    </li>
+    <li>
+      <strong>Phase 5:</strong> split execution invariantを再確認して
+      <code>coveringEvidence</code>へ展開する。
+    </li>
+    <li>
+      <strong>Phase 6:</strong> 他のprovider-pool
+      queueは個別のread／execute／persist監査後に追加する。
+    </li>
+  </ol>
+
+  <h2 id="test-plan">12. Test plan</h2>
+  <h3 id="settings-tests">12.1 Settings tests</h3>
+  <ul>
+    <li>既存settings fixtureが変更なしでparse、serializeされる。</li>
+    <li>static routeのAPI snapshotとUI保存結果が変わらない。</li>
+    <li>LARM routeへstatic fieldを混在させる設定を拒否する。</li>
+    <li>unknown connection ID、重複ID、不正URL、timeout／TTL範囲外を拒否する。</li>
+  </ul>
+
+  <h3 id="manager-tests">12.2 Connection manager tests</h3>
+  <ul>
+    <li>due jobがなければavailability requestを一度も送らない。</li>
+    <li>
+      <code>busy</code
+      >または<code>unknown</code>ではconnectionを作成しない。
+    </li>
+    <li>
+      <code>available</code>でexactly one
+      connectionを作成し、ready後にclaimする。
+    </li>
+    <li>available後のPOST拒否でqueueをclaimせずbackoffする。</li>
+    <li>同時tickでもcreate、renew、deleteが重複しない。</li>
+    <li>同じlogical create retryでidempotency keyを維持する。</li>
+    <li>claim field、host、expiry、healthの不一致をfail closedで拒否する。</li>
+    <li>job deadlineに対してlifetime不足ならrenewと再claimを先に行う。</li>
+    <li>すべての通常終了経路でDELETEを試み、crash時はTTLへ委譲する。</li>
+  </ul>
+
+  <h3 id="queue-tests">12.3 Queue and fencing tests</h3>
+  <ul>
+    <li>
+      external connection ready前にqueue
+      rowを<code>running</code>へ変更しない。
+    </li>
+    <li>writer transaction中にcontrolまたはprovider network I/Oを行わない。</li>
+    <li>動的targetでも内部provider leaseを1 jobずつ取得する。</li>
+    <li>connectionを再利用しても次job前にavailabilityを再評価する。</li>
+    <li>foreground busyをjob境界で検出したら次jobをclaimせずDELETEする。</li>
+    <li>job実行中のbusy変化では進行中requestを強制中断しない。</li>
+    <li>ownership喪失後のresponseをpersistしない。</li>
+    <li>provider busy 503を既存retry contractへ正しくmappingする。</li>
+  </ul>
+
+  <h3 id="integration-tests">12.4 Integration and canary</h3>
+  <ol>
+    <li>worker runtimeがCOLD、foreground runtimeがIDLEのbaselineを確認する。</li>
+    <li>due jobなしでLARM pollとworker起動が発生しないことを確認する。</li>
+    <li>foreground runtimeをBUSYにし、jobがpendingのままworkerが起動しないことを確認する。</li>
+    <li>IDLEへ戻し、availability、connection create、ready、claim、job実行を確認する。</li>
+    <li>連続2 job間でcurrent connection付き再評価とconnection reuseを確認する。</li>
+    <li>次の境界でforegroundをBUSYにし、2件目以降を開始せずreleaseすることを確認する。</li>
+    <li>queue空でconnectionがDELETEされ、workerが期待どおりCOLDへ戻ることを確認する。</li>
+    <li>resident kill後にTTLでallocationが回収されることを確認する。</li>
+  </ol>
+
+  <h2 id="rollout-guards">13. Rollout guards</h2>
+  <p>初期releaseでは次を満たすまでdefaultをdisabledのままにする。</p>
+  <ul>
+    <li>LARMとContextStill双方のcontract testがgreen。</li>
+    <li>static route regressionがない。</li>
+    <li>SQLite writer hold時間が外部connection待ちで増加しない。</li>
+    <li>busy中にworkerを起動しないcanaryが成功する。</li>
+    <li>tokenまたはclaim payloadがlog、DB、diagnostic dumpへ出ない。</li>
+    <li>connection leakが通常終了で0件、crash後にTTL内で0件へ戻る。</li>
+  </ul>
+  <p>
+    stop conditionは、foreground busy中の誤起動、connection leak、duplicate execution、 ownership
+    fencing違反、static route regression、credential露出のいずれかとする。 発生時はdynamic
+    routeをdisabledへ戻し、static設定には触れない。
+  </p>
+
+  <h2 id="acceptance-criteria">14. Acceptance criteria</h2>
+  <ol>
+    <li>SAAAから通知を受けず、LARMのAPIだけでbackground開始可否を判定できる。</li>
+    <li>空いていない間はqueue jobが未claimのまま保持され、DB writerを占有しない。</li>
+    <li>空いた後はexactly one connection、exactly one jobの順で処理を開始する。</li>
+    <li>各job境界でforeground優先が再評価される。</li>
+    <li>動的credentialとprovider endpointがmemory外へ残らない。</li>
+    <li>既存static provider routeと公開settings contractが後方互換である。</li>
+    <li>shutdown、error、queue emptyでconnectionを解放し、crash時はTTLで回収される。</li>
+    <li>単一writer、外部I/O分離、provider lease、ownership fencingを維持する。</li>
+  </ol>
+</article>

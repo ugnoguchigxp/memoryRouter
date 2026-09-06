@@ -82,6 +82,7 @@ Embedding improves semantic search and distillation quality, but it does not blo
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `DOTENV_CONFIG_PATH` | `.env` | Explicit dotenv file for the Bun API/CLIs; isolated tests point to an empty temporary file and also use Bun `--no-env-file` |
 | `CONTEXT_STILL_APP_DATA_DIR` | OS-specific app data directory | Overrides the app data root used by `context-stilld` path, preflight, pid, log, and backup state |
 | `CONTEXT_STILL_SQLITE_CORE_PATH` | `appDataDir/context-still-core.sqlite` | Overrides the SQLite core database path reported by Rust preflight/backup checks |
 | `CONTEXT_STILL_PROJECT_ROOT` | current working directory | Project root used when Rust delegates TypeScript child processes |

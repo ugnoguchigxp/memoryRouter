@@ -1,5 +1,6 @@
 import { resolveDatabaseBackendConfig } from "../../../db/backend.js";
 import { getRuntimeSettingsSnapshot } from "../../settings/settings.service.js";
+import { isLarmAgentConnectionRoute } from "../../settings/settings.types.js";
 import type {
   RuntimeProviderPool,
   RuntimeProviderPoolTarget,
@@ -19,6 +20,7 @@ export const providerPoolQueuePriorityOrder: DistillationQueueName[] = [
 ];
 
 export function routeClaimGroupId(route: RuntimeSettingsRoute | undefined): string | null {
+  if (route && isLarmAgentConnectionRoute(route)) return null;
   if (!route || route.provider === "auto") return null;
   return route.providerPoolId?.trim() || `task-routing:${route.provider}`;
 }
@@ -52,6 +54,7 @@ function localLlmTargetForRoute(
   settings: RuntimeSettingsEditable,
   route: RuntimeSettingsRoute,
 ): RuntimeProviderPoolTarget | null {
+  if (isLarmAgentConnectionRoute(route)) return null;
   const routeValue = route.localLlmModel ?? route.model;
   const parsed = parseLocalLlmRouteTarget(routeValue);
   const matched = parsed
@@ -72,6 +75,7 @@ function targetsForRoute(
   settings: RuntimeSettingsEditable,
   route: RuntimeSettingsRoute,
 ): RuntimeProviderPoolTarget[] {
+  if (isLarmAgentConnectionRoute(route)) return [];
   if (route.provider === "local-llm") {
     const target = localLlmTargetForRoute(settings, route);
     return target ? [target] : [];
@@ -89,6 +93,9 @@ function targetsForRoute(
 }
 
 function targetKey(target: RuntimeProviderPoolTarget): string {
+  if (target.provider === "larm-agent-connection") {
+    return `${target.provider}:${target.connectionId}`;
+  }
   if (target.provider === "local-llm") return `${target.provider}:${target.localLlmModelId}`;
   if (target.provider === "azure-openai") return `${target.provider}:${target.deploymentSlot}`;
   return `${target.provider}:${target.targetId}`;
@@ -162,12 +169,18 @@ export function enabledProviderPoolsForQueues(
   for (const queueName of providerPoolQueuePriorityOrder) {
     if (!queueNameSet.has(queueName)) continue;
     for (const route of queueRoutes(settings, queueName)) {
+      if (isLarmAgentConnectionRoute(route)) continue;
       const groupId = routeClaimGroupId(route);
       if (!groupId) continue;
       const legacy = legacyPools.get(groupId);
-      const routeTargets = route.providerPoolId?.trim()
-        ? dedupeTargets(legacy?.targets ?? [])
-        : targetsForRoute(settings, route);
+      if (legacy?.targets.some((target) => target.provider === "larm-agent-connection")) {
+        continue;
+      }
+      const routeTargets = (
+        route.providerPoolId?.trim()
+          ? dedupeTargets(legacy?.targets ?? [])
+          : targetsForRoute(settings, route)
+      ).filter((target) => target.provider !== "larm-agent-connection");
       if (routeTargets.length === 0) continue;
       const group =
         groups.get(groupId) ??
@@ -201,6 +214,10 @@ export function enabledProviderPoolsForQueues(
 }
 
 export function unpooledQueues(queueNames: DistillationQueueName[]): DistillationQueueName[] {
-  if (resolveDatabaseBackendConfig().kind !== "sqlite") return queueNames;
-  return queueNames.filter((queueName) => providerPoolIdsForQueue(queueName).length === 0);
+  const settings = getRuntimeSettingsSnapshot();
+  const staticQueueNames = queueNames.filter(
+    (queueName) => !queueRoutes(settings, queueName).some(isLarmAgentConnectionRoute),
+  );
+  if (resolveDatabaseBackendConfig().kind !== "sqlite") return staticQueueNames;
+  return staticQueueNames.filter((queueName) => providerPoolIdsForQueue(queueName).length === 0);
 }

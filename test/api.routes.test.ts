@@ -28,6 +28,7 @@ import {
   getDoctorReportForApi,
 } from "../api/modules/doctor/doctor.service.js";
 import { episodesRouter } from "../api/modules/episodes/episodes.routes.js";
+import { checkReadiness } from "../api/modules/health/readiness.service.js";
 import {
   bulkUpdateKnowledgeStatus,
   countKnowledgeItems,
@@ -85,6 +86,10 @@ import {
   overviewLlmResourcesDomainSchema,
   overviewSystemQualityDomainSchema,
 } from "../src/shared/schemas/overview.schema.js";
+
+vi.mock("../api/modules/health/readiness.service.js", () => ({
+  checkReadiness: vi.fn(async () => ({ database: "ok", writer: "ok" })),
+}));
 
 vi.mock("../api/modules/context-compiler/context-compiler.service.js", () => ({
   compilePackForApi: vi.fn(),
@@ -791,6 +796,20 @@ describe("API route contract tests", () => {
     const ready = await app.request("/api/health/ready");
     expect(ready.status).toBe(200);
     await expect(ready.json()).resolves.toEqual({ status: "ready", service: "context-still-api" });
+  });
+
+  test("readiness fails closed without changing liveness", async () => {
+    vi.mocked(checkReadiness).mockResolvedValueOnce({ database: "unavailable", writer: "ok" });
+    const ready = await app.request("/api/health/ready");
+    expect(ready.status).toBe(503);
+    expect(ready.headers.get("cache-control")).toBe("no-store");
+    await expect(ready.json()).resolves.toEqual({
+      status: "not_ready",
+      service: "context-still-api",
+      checks: { database: "unavailable", writer: "ok" },
+    });
+    expect((await app.request("/api/health/live")).status).toBe(200);
+    expect((await app.request("/api/health/ready")).status).toBe(200);
   });
 
   test("app request logs redact secret query parameters", async () => {

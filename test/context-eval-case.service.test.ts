@@ -88,9 +88,9 @@ describe("context eval case service", () => {
 
   test("buildContextEvalCaseReport executes cases and aggregates metrics correctly", async () => {
     const jsonlContent = `
-{"id":"case-success","goal":"Succeed","expectedKnowledgeIds":["k-expect-hit"],"forbiddenKnowledgeIds":["k-forbid-miss"]}
-{"id":"case-fail-missing","goal":"Fail missing","expectedKnowledgeIds":["k-expect-miss"]}
-{"id":"case-fail-forbidden","goal":"Fail forbidden","expectedKnowledgeIds":[],"forbiddenKnowledgeIds":["k-forbid-hit"]}
+{"id":"case-success","goal":"Succeed","judgmentsComplete":true,"expectedKnowledgeIds":["k-expect-hit"],"forbiddenKnowledgeIds":["k-forbid-miss"]}
+{"id":"case-fail-missing","goal":"Fail missing","judgmentsComplete":true,"expectedKnowledgeIds":["k-expect-miss"]}
+{"id":"case-fail-forbidden","goal":"Fail forbidden","judgmentsComplete":true,"expectedKnowledgeIds":[],"forbiddenKnowledgeIds":["k-forbid-hit"]}
     `;
     await fs.writeFile(tempFilePath, jsonlContent, "utf-8");
 
@@ -162,6 +162,85 @@ describe("context eval case service", () => {
     expect(report.metrics.strictPrecision).toBe(1 / 3);
     expect(report.metrics.strictF1).toBe(0.4);
     expect(report.metrics.degradedCaseCount).toBe(2); // case-fail-missing + case-fail-forbidden
-    expect(report.metrics.noContentCaseCount).toBe(1); // case-fail-forbidden
+    expect(report.metrics.noContentCaseCount).toBe(0); // A stale NO_CONTENT marker is not empty retrieval.
+  });
+
+  test("preserves repository identity and does not treat unjudged results as irrelevant", async () => {
+    await fs.writeFile(
+      tempFilePath,
+      JSON.stringify({
+        id: "scoped",
+        goal: "Review",
+        projectRef: "project-a",
+        repoKey: "repo-a",
+        repoPath: "/work/a",
+        expectedKnowledgeIds: ["k1", "k1"],
+      }),
+    );
+    retrieveKnowledgeMock.mockResolvedValue({
+      items: [{ id: "k1" }, { id: "k1" }, { id: "unjudged" }],
+      degradedReasons: [],
+    });
+    const report = await buildContextEvalCaseReport({ casesPath: tempFilePath, currentLimit: 5 });
+    expect(retrieveKnowledgeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ projectRef: "project-a", repoKey: "repo-a", repoPath: "/work/a" }),
+      expect.any(Object),
+    );
+    expect(report.metrics.expectedTotalCount).toBe(1);
+    expect(report.metrics.retrievedTotalCount).toBe(2);
+    expect(report.metrics.strictPrecision).toBeNull();
+    expect(report.source.datasetSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(report.source.engine).toBe("typescript-knowledge");
+    expect(report.metrics.meanReciprocalRank).toBe(1);
+  });
+
+  test("unlabelled cases are unscored and cannot make the suite pass", async () => {
+    await fs.writeFile(tempFilePath, JSON.stringify({ goal: "Unknown" }));
+    retrieveKnowledgeMock.mockResolvedValue({ items: [], degradedReasons: [] });
+    const report = await buildContextEvalCaseReport({ casesPath: tempFilePath, currentLimit: 5 });
+    expect(report.summary).toMatchObject({ status: "no_data", passedCount: 0, unscoredCount: 1 });
+    expect(report.metrics.meanReciprocalRank).toBeNull();
+  });
+
+  test("records provider errors and degraded results as failures without losing later cases", async () => {
+    await fs.writeFile(
+      tempFilePath,
+      [
+        { id: "error", goal: "Error", expectNoContent: true },
+        { id: "degraded", goal: "Degraded", expectedKnowledgeIds: ["k1"] },
+        { id: "empty", goal: "Empty", expectNoContent: true },
+      ]
+        .map((item) => JSON.stringify(item))
+        .join("\n"),
+    );
+    retrieveKnowledgeMock
+      .mockRejectedValueOnce(new Error("sensitive provider details"))
+      .mockResolvedValueOnce({ items: [{ id: "k1" }], degradedReasons: ["EMBEDDING_FAILED"] })
+      .mockResolvedValueOnce({ items: [], degradedReasons: [] });
+    const report = await buildContextEvalCaseReport({ casesPath: tempFilePath, currentLimit: 5 });
+    expect(report.summary).toMatchObject({ failedCount: 2, passedCount: 1 });
+    expect(report.metrics.errorCaseCount).toBe(1);
+    expect(JSON.stringify(report)).not.toContain("sensitive provider details");
+    expect(report.cases.map((item) => item.status)).toEqual(["failed", "failed", "passed"]);
+  });
+
+  test("rejects ambiguous duplicate IDs and conflicting empty expectations", async () => {
+    await fs.writeFile(tempFilePath, '{"id":"same","goal":"One"}\n{"id":"same","goal":"Two"}');
+    await expect(loadContextEvalCases(tempFilePath)).rejects.toThrow("Duplicate case id");
+    await fs.writeFile(
+      tempFilePath,
+      JSON.stringify({ goal: "Invalid", expectNoContent: true, expectedKnowledgeIds: ["k1"] }),
+    );
+    await expect(loadContextEvalCases(tempFilePath)).rejects.toThrow("expectNoContent cannot");
+  });
+  test("zero relevant hits produce zero F1 rather than an unmeasured metric", async () => {
+    await fs.writeFile(
+      tempFilePath,
+      JSON.stringify({ goal: "Miss", expectedKnowledgeIds: ["expected"], judgmentsComplete: true }),
+    );
+    retrieveKnowledgeMock.mockResolvedValue({ items: [{ id: "wrong" }], degradedReasons: [] });
+    const report = await buildContextEvalCaseReport({ casesPath: tempFilePath, currentLimit: 5 });
+    expect(report.metrics.strictPrecision).toBe(0);
+    expect(report.metrics.strictF1).toBe(0);
   });
 });

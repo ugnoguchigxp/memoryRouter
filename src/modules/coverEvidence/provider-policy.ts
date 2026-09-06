@@ -1,5 +1,10 @@
 import type { DistillationProviderName } from "../distillation/llm-resolver.js";
-import type { RuntimeSettingsRoute } from "../settings/settings.types.js";
+import {
+  type RuntimeSettingsRoute,
+  type StaticRuntimeSettingsRoute,
+  isLarmAgentConnectionRoute,
+  requireStaticRuntimeSettingsRoute,
+} from "../settings/settings.types.js";
 
 export type CoverEvidenceProviderPolicy = "default" | "cloud_api";
 
@@ -50,6 +55,7 @@ function dedupeProviders(values: DistillationProviderName[]): DistillationProvid
 
 function cloudApiRouteProviders(route: RuntimeSettingsRoute): DistillationProviderName[] {
   const candidates: DistillationProviderName[] = [];
+  if (isLarmAgentConnectionRoute(route)) return candidates;
   if (isDistillationProviderName(route.provider) && cloudApiProviders.has(route.provider)) {
     candidates.push(route.provider);
   }
@@ -63,8 +69,9 @@ function cloudApiRouteProviders(route: RuntimeSettingsRoute): DistillationProvid
 export function resolveCloudApiRuntimeRoute(
   route: RuntimeSettingsRoute,
   options: { routeName?: string } = {},
-): RuntimeSettingsRoute {
-  const providers = cloudApiRouteProviders(route);
+): StaticRuntimeSettingsRoute {
+  const staticRoute = requireStaticRuntimeSettingsRoute(route);
+  const providers = cloudApiRouteProviders(staticRoute);
   if (providers.length === 0) {
     throw new CoverEvidenceProviderPolicyError({ routeName: options.routeName });
   }
@@ -72,10 +79,10 @@ export function resolveCloudApiRuntimeRoute(
   if (!provider) {
     throw new CoverEvidenceProviderPolicyError({ routeName: options.routeName });
   }
-  const usesPrimaryRouteModel = provider === route.provider;
+  const usesPrimaryRouteModel = provider === staticRoute.provider;
   if (usesPrimaryRouteModel) {
     return {
-      ...route,
+      ...staticRoute,
       provider,
       fallback,
     };
@@ -85,7 +92,7 @@ export function resolveCloudApiRuntimeRoute(
     localLlmModel: _localLlmModel,
     azureDeploymentSlots: _slots,
     ...rest
-  } = route;
+  } = staticRoute;
   return {
     ...rest,
     provider,
@@ -97,11 +104,11 @@ export function resolveCoverEvidenceRouteByPolicy(params: {
   route: RuntimeSettingsRoute;
   policy?: CoverEvidenceProviderPolicy;
   routeName?: string;
-}): RuntimeSettingsRoute {
+}): StaticRuntimeSettingsRoute {
   if (params.policy === "cloud_api") {
     return resolveCloudApiRuntimeRoute(params.route, { routeName: params.routeName });
   }
-  return params.route;
+  return requireStaticRuntimeSettingsRoute(params.route);
 }
 
 export function ensureCloudApiCoverEvidenceRoutesAvailable(routes: {

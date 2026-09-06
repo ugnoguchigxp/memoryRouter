@@ -1,15 +1,30 @@
 import { z } from "zod";
+import {
+  compileProjectRefSchema,
+  compileRepoKeySchema,
+  compileRepoPathSchema,
+} from "./compile.schema.js";
 
 export const contextEvalCaseSchema = z
   .object({
     id: z.string().optional(),
     goal: z.string().trim().min(1),
+    projectRef: compileProjectRefSchema.optional(),
+    repoKey: compileRepoKeySchema.optional(),
+    repoPath: compileRepoPathSchema.optional(),
     changeTypes: z.array(z.string().trim().min(1)).optional(),
     technologies: z.array(z.string().trim().min(1)).optional(),
     domains: z.array(z.string().trim().min(1)).optional(),
     expectedKnowledgeIds: z.array(z.string().trim().min(1)).optional(),
     forbiddenKnowledgeIds: z.array(z.string().trim().min(1)).optional(),
+    expectNoContent: z.boolean().optional(),
+    judgmentsComplete: z.boolean().default(false),
     notes: z.string().optional(),
+  })
+  .strict()
+  .refine((data) => !data.expectNoContent || !data.expectedKnowledgeIds?.length, {
+    message: "expectNoContent cannot be combined with expectedKnowledgeIds",
+    path: ["expectNoContent"],
   })
   .refine(
     (data) => {
@@ -28,7 +43,11 @@ export type ContextEvalCase = z.infer<typeof contextEvalCaseSchema>;
 export const contextEvalCaseResultSchema = z.object({
   id: z.string(),
   goal: z.string(),
-  status: z.enum(["passed", "failed"]),
+  status: z.enum(["passed", "failed", "unscored"]),
+  retrievalMs: z.number().nonnegative().optional(),
+  reciprocalRank: z.number().min(0).max(1).nullable().optional(),
+  ndcg: z.number().min(0).max(1).nullable().optional(),
+  errorCategory: z.literal("retrieval_failed").nullable().optional(),
   retrievedKnowledgeIds: z.array(z.string()),
   expectedKnowledgeIds: z.array(z.string()),
   expectedHitIds: z.array(z.string()),
@@ -47,6 +66,8 @@ export const contextEvalCaseReportSchema = z.object({
     path: z.string(),
     currentLimit: z.number(),
     readOnly: z.literal(true),
+    engine: z.literal("typescript-knowledge").optional(),
+    datasetSha256: z.string().optional(),
   }),
   summary: z.object({
     status: z.enum(["passed", "failed", "no_data"]),
@@ -55,6 +76,7 @@ export const contextEvalCaseReportSchema = z.object({
     failedCount: z.number(),
     passRate: z.number(),
     reason: z.string(),
+    unscoredCount: z.number().default(0),
   }),
   metrics: z.object({
     expectedTotalCount: z.number(),
@@ -68,6 +90,10 @@ export const contextEvalCaseReportSchema = z.object({
     strictF1: z.number().nullable(),
     noContentCaseCount: z.number(),
     degradedCaseCount: z.number(),
+    errorCaseCount: z.number().default(0),
+    meanReciprocalRank: z.number().nullable().optional(),
+    meanNdcg: z.number().nullable().optional(),
+    completeJudgmentCaseCount: z.number().default(0),
   }),
   cases: z.array(contextEvalCaseResultSchema),
 });

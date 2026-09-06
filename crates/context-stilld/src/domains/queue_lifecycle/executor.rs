@@ -7,6 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::domains::{
     bootstrap::service::resolve_paths, daemon::repository::ProcessState,
@@ -19,6 +20,9 @@ use super::covering_executor::{
     execute_covering, load_claimed_negative_execution, persist_negative_covering_result,
     CoveringExternalSearchConfig, NegativeCoveringExecution, NegativeCoveringHeartbeatGuard,
     NegativeCoveringPersistStatus, NegativeCoveringResult,
+};
+use super::dynamic_provider::{
+    claim_dynamic_provider_execution_for_path, dynamic_provider_routes_configured,
 };
 use super::episode_executor::{
     run_episode_distiller_job_for_connection, run_episode_distiller_job_for_path,
@@ -218,6 +222,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         covering_canary_job_ids,
     };
     let run_dir = paths.run_dir.clone();
+    let dynamic_routes_configured = dynamic_provider_routes_configured(&paths.sqlite_core_path)?;
     let pending_finalize = sqlite_writer::execute_for_path(
         &paths.sqlite_core_path,
         "queue.finalize_pending_check",
@@ -408,6 +413,7 @@ pub fn run_executor_tick_report<E: EnvProvider>(
         Ok(report)
     } else if config.finding_execution_mode == ProviderExecutionMode::Split
         || config.episode_execution_mode == ProviderExecutionMode::Split
+        || dynamic_routes_configured
     {
         run_split_provider_executor_tick_for_path(
             &paths.sqlite_core_path,
@@ -454,11 +460,12 @@ fn run_generic_executor_tick_for_path(
     .map_err(|error| CliError::io(format!("SQLite writer executor tick failed: {error}")))
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct PreparedProviderClaim {
     job: super::types::ClaimedProviderLeaseJob,
     target: LocalLlmTargetConfig,
-    api_key: Option<String>,
+    api_key: Option<Zeroizing<String>>,
+    request_timeout_seconds: u64,
 }
 
 fn run_split_provider_executor_tick_for_path(
@@ -467,6 +474,7 @@ fn run_split_provider_executor_tick_for_path(
     run_dir: std::path::PathBuf,
     config: ExecutorTickConfig,
 ) -> Result<QueueExecutorTickReport, CliError> {
+    let dynamic_routes_configured = dynamic_provider_routes_configured(sqlite_path)?;
     let mut claimed = 0;
     let mut completed = 0;
     let mut failed = 0;
@@ -474,23 +482,46 @@ fn run_split_provider_executor_tick_for_path(
     let mut unsupported = 0;
 
     while claimed < config.max_claims {
-        let claim_config = config.clone();
-        let setup = sqlite_writer::execute_for_path(
-            sqlite_path,
-            "queue.provider_claim",
-            move |connection| {
-                claim_provider_execution_for_connection(connection, &claim_config)
-                    .map_err(|error| error.to_string())
-            },
-        )
-        .map_err(|error| CliError::io(format!("SQLite writer provider claim failed: {error}")))?;
-        let Some(setup) = setup else {
-            break;
+        let dynamic_setup =
+            claim_dynamic_provider_execution_for_path(sqlite_path, config.queue_stale_seconds)?;
+        let (setup, _dynamic_manager) = match dynamic_setup {
+            Some(dynamic) => (
+                PreparedProviderClaim {
+                    job: dynamic.job.clone(),
+                    target: dynamic.target.clone(),
+                    api_key: dynamic.api_key.clone(),
+                    request_timeout_seconds: dynamic.request_timeout_seconds,
+                },
+                Some(dynamic),
+            ),
+            None => {
+                let claim_config = config.clone();
+                let setup = sqlite_writer::execute_for_path(
+                    sqlite_path,
+                    "queue.provider_claim",
+                    move |connection| {
+                        claim_provider_execution_for_connection(connection, &claim_config)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+                .map_err(|error| {
+                    CliError::io(format!("SQLite writer provider claim failed: {error}"))
+                })?;
+                let Some(setup) = setup else {
+                    break;
+                };
+                (setup, None)
+            }
         };
         claimed += 1;
 
+        let is_dynamic = setup
+            .job
+            .provider_lease
+            .target_id
+            .starts_with("larm-agent-connection:");
         if setup.job.queue_name == "findingCandidate"
-            && config.finding_execution_mode == ProviderExecutionMode::Split
+            && (config.finding_execution_mode == ProviderExecutionMode::Split || is_dynamic)
         {
             let _heartbeat = match ProviderExecutionHeartbeatGuard::start(
                 sqlite_path,
@@ -520,7 +551,7 @@ fn run_split_provider_executor_tick_for_path(
                     continue;
                 }
             };
-            let result = execute_finding(&execution, config.llm_timeout_seconds);
+            let result = execute_finding(&execution, setup.request_timeout_seconds);
             let persisted = sqlite_writer::execute_for_path(
                 sqlite_path,
                 "queue.finding_persist",
@@ -543,7 +574,7 @@ fn run_split_provider_executor_tick_for_path(
         }
 
         if setup.job.queue_name == "episodeDistiller"
-            && config.episode_execution_mode == ProviderExecutionMode::Split
+            && (config.episode_execution_mode == ProviderExecutionMode::Split || is_dynamic)
         {
             let _heartbeat = match ProviderExecutionHeartbeatGuard::start(
                 sqlite_path,
@@ -561,7 +592,7 @@ fn run_split_provider_executor_tick_for_path(
                 setup.job.clone(),
                 setup.target.clone(),
                 setup.api_key.clone(),
-                config.llm_timeout_seconds,
+                setup.request_timeout_seconds,
             );
             let outcome = match outcome {
                 Ok(outcome) => outcome,
@@ -582,7 +613,7 @@ fn run_split_provider_executor_tick_for_path(
         }
 
         let legacy_setup = setup.clone();
-        let timeout_seconds = config.llm_timeout_seconds;
+        let timeout_seconds = setup.request_timeout_seconds;
         let outcome = sqlite_writer::execute_for_path(
             sqlite_path,
             "queue.provider_legacy_execute",
@@ -604,7 +635,9 @@ fn run_split_provider_executor_tick_for_path(
         }
     }
 
-    let status = if claimed == 0 {
+    let status = if claimed == 0 && dynamic_routes_configured {
+        "waiting_for_dynamic_provider"
+    } else if claimed == 0 {
         "idle"
     } else if unsupported > 0 {
         "unsupported"
@@ -624,9 +657,13 @@ fn run_split_provider_executor_tick_for_path(
         failed,
         retried,
         unsupported,
-        message: format!(
-            "queue split executor tick completed; claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported={unsupported}"
-        ),
+        message: if claimed == 0 && dynamic_routes_configured {
+            "dynamic LARM route is waiting for availability or runnable routed work".to_string()
+        } else {
+            format!(
+                "queue split executor tick completed; claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported={unsupported}"
+            )
+        },
     };
     write_executor_state(
         &run_dir,
@@ -708,17 +745,20 @@ fn claim_provider_execution_for_connection(
             return_provider_setup_failure_for_connection(connection, &job, &error)?;
             return Err(CliError::io(error));
         };
-        let api_key = load_secret_value(connection, &secret_key).or_else(|| {
-            if secret_key == "localLlmApiKey" {
-                config.local_llm_api_key.clone()
-            } else {
-                None
-            }
-        });
+        let api_key = load_secret_value(connection, &secret_key)
+            .or_else(|| {
+                if secret_key == "localLlmApiKey" {
+                    config.local_llm_api_key.clone()
+                } else {
+                    None
+                }
+            })
+            .map(Zeroizing::new);
         return Ok(Some(PreparedProviderClaim {
             job,
             target,
             api_key,
+            request_timeout_seconds: config.llm_timeout_seconds,
         }));
     }
     Ok(None)
@@ -835,7 +875,7 @@ fn run_claimed_legacy_provider_execution(
             &setup.job.id,
             &setup.job.provider_lease.worker_id,
             &setup.target,
-            setup.api_key.as_deref(),
+            setup.api_key.as_ref().map(|key| key.as_str()),
             timeout_seconds,
         )? {
             FindingExecutionStatus::Completed | FindingExecutionStatus::Skipped => {
@@ -850,7 +890,7 @@ fn run_claimed_legacy_provider_execution(
             &setup.job.id,
             &setup.job.provider_lease.worker_id,
             &setup.target,
-            setup.api_key.as_deref(),
+            setup.api_key.as_ref().map(|key| key.as_str()),
             timeout_seconds,
         )? {
             EpisodeExecutionStatus::Completed | EpisodeExecutionStatus::Skipped => {
@@ -1706,7 +1746,7 @@ fn load_paused_queues(connection: &Connection) -> Result<HashSet<String>, CliErr
     Ok(queues)
 }
 
-fn provider_pools(settings: &Value) -> Vec<ProviderPoolClaimConfig> {
+pub(super) fn provider_pools(settings: &Value) -> Vec<ProviderPoolClaimConfig> {
     let legacy_pools = legacy_provider_pool_configs(settings);
     let mut route_targets: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for route in task_routing_routes(settings) {
@@ -1762,6 +1802,17 @@ fn legacy_provider_pool_configs(settings: &Value) -> BTreeMap<String, ProviderPo
                 .get("enabled")
                 .and_then(Value::as_bool)
                 .is_some_and(|enabled| !enabled)
+            {
+                return None;
+            }
+            if pool
+                .get("targets")
+                .and_then(Value::as_array)
+                .is_some_and(|targets| {
+                    targets.iter().any(|target| {
+                        string_field(target, "provider").as_deref() == Some("larm-agent-connection")
+                    })
+                })
             {
                 return None;
             }
@@ -1827,7 +1878,7 @@ fn priority_queues_for_pool(
         .collect()
 }
 
-fn executor_priority_queues_for_pool(
+pub(super) fn executor_priority_queues_for_pool(
     settings: &Value,
     pool_id: &str,
     paused_queues: &HashSet<String>,
@@ -1856,6 +1907,12 @@ fn queue_spec_for_pool(
 ) -> Option<ProviderQueueClaimSpec> {
     match queue_name {
         "findingCandidate" => {
+            if settings
+                .pointer("/taskRouting/findCandidate/vibe")
+                .is_some_and(is_larm_route)
+            {
+                return None;
+            }
             let source_targets = route_target_preference(
                 settings,
                 settings.pointer("/taskRouting/findCandidate/source"),
@@ -2002,6 +2059,10 @@ fn route_claim_group_id(route: &Value) -> Option<String> {
         .or_else(|| Some("task-routing:local-llm".to_string()))
 }
 
+fn is_larm_route(route: &Value) -> bool {
+    string_field(route, "kind").as_deref() == Some("larm-agent-connection")
+}
+
 fn route_provider_pool_id(route: &Value) -> Option<String> {
     string_field(route, "providerPoolId")
         .map(|value| value.trim().to_string())
@@ -2071,6 +2132,7 @@ fn target_id(target: &Value) -> Option<String> {
                 .map(ToOwned::to_owned)
                 .or_else(|| value.as_u64().map(|number| number.to_string()))
         }),
+        Some("larm-agent-connection") => None,
         _ => string_field(target, "targetId"),
     }
 }

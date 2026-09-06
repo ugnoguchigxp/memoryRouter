@@ -204,6 +204,10 @@ function buildSettingsView(): RuntimeSettingsView {
         apiKeySecret: secretStatus(false),
         apiKeySecrets: [secretStatus(false), secretStatus(true)],
       },
+      "larm-agent-connection": {
+        enabled: false,
+        connections: [],
+      },
       codex: {
         enabled: false,
         model: "codex-sdk-agent",
@@ -554,6 +558,129 @@ describe("SettingsPage", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("preserves an enabled LARM connection and dynamic route in the settings form", async () => {
+    const settings = buildSettingsView();
+    settings.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    const dynamicRoute = {
+      kind: "larm-agent-connection" as const,
+      connectionId: "contextstill-background",
+    };
+    settings.taskRouting.findCandidate.source = dynamicRoute;
+    settings.taskRouting.findCandidate.vibe = dynamicRoute;
+    repositoryMocks.fetchRuntimeSettings.mockResolvedValue({
+      ...buildSnapshot(),
+      settings,
+      effective: settings,
+    });
+    routerState.pathname = "/setting/taskrouting";
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Task Routing" })).toBeInTheDocument();
+    const rowScope = within(getRouteRow("findCandidate"));
+    expect(rowScope.getByLabelText("Routing Target")).toHaveValue(
+      "larm-agent-connection:contextstill-background",
+    );
+    expect(rowScope.getByLabelText("Fallback 1 Endpoint")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Find Candidate Tool Calls"), {
+      target: { value: "7" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
+
+    await waitFor(() => expect(repositoryMocks.updateRuntimeSettings).toHaveBeenCalledTimes(1));
+    const payload = repositoryMocks.updateRuntimeSettings.mock.calls[0]?.[0];
+    expect(payload.settings.providers["larm-agent-connection"]).toEqual(
+      settings.providers["larm-agent-connection"],
+    );
+    expect(payload.settings.taskRouting.findCandidate.source).toEqual(dynamicRoute);
+    expect(payload.settings.taskRouting.findCandidate.vibe).toEqual(dynamicRoute);
+  });
+
+  it("keeps LARM route and pool references consistent when a connection id changes", async () => {
+    const settings = buildSettingsView();
+    settings.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    settings.taskRouting.episodeDistiller = {
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    };
+    settings.providerPools = [
+      {
+        id: "dynamic-background",
+        label: "Dynamic background",
+        targets: [
+          {
+            provider: "larm-agent-connection",
+            connectionId: "contextstill-background",
+          },
+        ],
+        maxConcurrent: 1,
+        staleLeaseSeconds: 600,
+        enabled: true,
+        lowPriorityAgingSeconds: 1800,
+      },
+    ];
+    repositoryMocks.fetchRuntimeSettings.mockResolvedValue({
+      ...buildSnapshot(),
+      settings,
+      effective: settings,
+    });
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Provider Endpoints" })).toBeInTheDocument();
+    const card = getEndpointCardByValue("contextstill-background");
+    expect(within(card).getByRole("button", { name: "Delete" })).toBeDisabled();
+    fireEvent.change(getEndpointField(card, "Connection ID"), {
+      target: { value: "contextstill-renamed" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
+
+    await waitFor(() => expect(repositoryMocks.updateRuntimeSettings).toHaveBeenCalledTimes(1));
+    const payload = repositoryMocks.updateRuntimeSettings.mock.calls[0]?.[0];
+    expect(payload.settings.providers["larm-agent-connection"].connections[0].id).toBe(
+      "contextstill-renamed",
+    );
+    expect(payload.settings.taskRouting.episodeDistiller).toEqual({
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-renamed",
+    });
+    expect(payload.settings.providerPools[0].targets).toEqual([
+      { provider: "larm-agent-connection", connectionId: "contextstill-renamed" },
+    ]);
+  });
+
   it("supports legacy settings URL and resolves active tab", async () => {
     routerState.pathname = "/settings/taskrouting";
     renderPage();
@@ -714,6 +841,56 @@ describe("SettingsPage", () => {
     expect(payload.settings.taskRouting.findCandidate.vibe.providerPoolId).toBe(
       "local-llm-default",
     );
+  });
+
+  it("does not offer LARM provider pools to agenticCompile", async () => {
+    const settings = buildSettingsView();
+    settings.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    settings.providerPools.push({
+      id: "larm-background",
+      label: "LARM Background",
+      targets: [{ provider: "larm-agent-connection", connectionId: "contextstill-background" }],
+      maxConcurrent: 1,
+      staleLeaseSeconds: 600,
+      enabled: true,
+      lowPriorityAgingSeconds: 1800,
+    });
+    repositoryMocks.fetchRuntimeSettings.mockResolvedValue({
+      ...buildSnapshot(),
+      settings,
+      effective: settings,
+    });
+    routerState.pathname = "/setting/taskrouting";
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "Task Routing" })).toBeInTheDocument();
+    expect(
+      within(getRouteRow("findCandidate")).getByRole("option", {
+        name: "Pool / LARM Background",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      within(getRouteRow("agenticCompile")).queryByRole("option", {
+        name: "Pool / LARM Background",
+      }),
+    ).not.toBeInTheDocument();
   });
 
   it("clears the route pool when saving episodeDistiller as a direct endpoint", async () => {
@@ -1175,6 +1352,63 @@ describe("SettingsPage", () => {
     expect(
       payload.settings.providers["local-llm"].models.map((model: { id?: string }) => model.id),
     ).toEqual(["local-primary", "local-qwen", "local-reasoner"]);
+  });
+
+  it("preserves a LARM pool target when the last Local LLM target is removed", async () => {
+    const settings = buildSettingsView();
+    settings.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    settings.providerPools = [
+      {
+        id: "local-llm-default",
+        label: "Mixed pool",
+        targets: [
+          { provider: "larm-agent-connection", connectionId: "contextstill-background" },
+          { provider: "local-llm", localLlmModelId: "local-primary" },
+        ],
+        maxConcurrent: 2,
+        staleLeaseSeconds: 600,
+        enabled: true,
+        lowPriorityAgingSeconds: 1800,
+      },
+    ];
+    repositoryMocks.fetchRuntimeSettings.mockResolvedValue({
+      ...buildSnapshot(),
+      settings,
+      effective: settings,
+    });
+    routerState.pathname = "/setting/llmpool";
+
+    renderPage();
+
+    expect(await screen.findByRole("heading", { name: "LLM Pool" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Queue Pool Concurrent Jobs")).toHaveValue(2);
+    const localTarget = screen.getByLabelText(/Use Primary .* for Mixed pool/);
+    expect(localTarget).not.toBeDisabled();
+    fireEvent.click(localTarget);
+    fireEvent.click(screen.getByRole("button", { name: "Save Settings" }));
+
+    await waitFor(() => expect(repositoryMocks.updateRuntimeSettings).toHaveBeenCalledTimes(1));
+    const payload = repositoryMocks.updateRuntimeSettings.mock.calls[0]?.[0];
+    expect(payload.settings.providerPools[0]).toMatchObject({
+      maxConcurrent: 1,
+      targets: [{ provider: "larm-agent-connection", connectionId: "contextstill-background" }],
+    });
   });
 
   it("shows provider pool diagnostics as non-blocking warnings", async () => {

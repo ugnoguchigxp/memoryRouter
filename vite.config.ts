@@ -6,6 +6,9 @@ import { defineConfig } from "vite";
 import { adminDevServerPort } from "./src/dev-server.config.js";
 
 export default defineConfig({
+  // Isolated runtimes supply an explicit dotenv file and must not load the checkout's .env.
+  envDir: process.env.DOTENV_CONFIG_PATH ? false : undefined,
+  cacheDir: process.env.CONTEXT_STILL_TEST_VITE_CACHE_DIR || undefined,
   plugins: [
     tailwindcss(),
     react(),

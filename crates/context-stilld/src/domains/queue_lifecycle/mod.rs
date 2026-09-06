@@ -1,6 +1,7 @@
 mod claim;
 mod common;
 mod covering_executor;
+mod dynamic_provider;
 mod episode_executor;
 mod events;
 mod executor;

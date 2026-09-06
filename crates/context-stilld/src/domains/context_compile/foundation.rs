@@ -79,6 +79,11 @@ pub fn run<E: EnvProvider, S: ProcessSupervisor>(
                     "experiment requires the exact --allow-provider-calls flag",
                 ));
             }
+            if out.exists() {
+                return Err(CliError::invalid_arguments(
+                    "experiment output already exists; use a new path",
+                ));
+            }
             let manifest = load_manifest(&manifest)?;
             let report = experiment_report(&manifest, &identity, mode)?;
             write_report(&out, &report)?;
@@ -750,43 +755,16 @@ fn experiment_report(
 ) -> Result<Value, CliError> {
     let bytes = fs::read(&manifest.hard_query_set)
         .map_err(|error| CliError::io(format!("failed to read hard query set: {error}")))?;
-    let query_set: Value = serde_json::from_slice(&bytes).map_err(|error| {
-        CliError::invalid_arguments(format!("invalid hard query set JSON: {error}"))
-    })?;
-    let queries = query_set
-        .get("queries")
-        .and_then(Value::as_array)
-        .ok_or_else(|| CliError::invalid_arguments("hard query set requires queries[]"))?;
-    let results = queries
-        .iter()
-        .map(|query| {
-            let query_id = query.get("id").and_then(Value::as_str).unwrap_or("invalid");
-            json!({
-                "queryId": query_id,
-                "route": "current_two_call",
-                "preparedSnapshotSha256": sha256_hex(query_id.as_bytes()),
-                "outputSha256": null,
-                "selectedIds": [],
-                "usedIds": [],
-                "logicalCalls": 0,
-                "providerAttempts": 0,
-                "failovers": 0,
-                "latencyUs": null,
-                "errorCategory": "route_not_enabled"
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(json!({
-        "contractVersion": CONTRACT_VERSION,
-        "reportKind": "composition_experiment",
-        "generatedAt": now_timestamp(),
-        "manifest": {"id": manifest.id, "sha256": manifest.sha256},
-        "binding": binding(manifest, identity, mode),
-        "providerCallsAllowed": true,
-        "providerCallsExecuted": 0,
-        "results": results,
-        "promotionEligible": false
-    }))
+    let mut report =
+        crate::domains::mcp_lifecycle::run_context_experiment(&bytes, &identity.effective_path)
+            .map_err(CliError::runtime)?;
+    report["contractVersion"] = json!(CONTRACT_VERSION);
+    report["reportKind"] = json!("composition_experiment");
+    report["generatedAt"] = json!(now_timestamp());
+    report["manifest"] = json!({"id": manifest.id, "sha256": manifest.sha256});
+    report["binding"] = binding(manifest, identity, mode);
+    report["providerCallsAllowed"] = json!(true);
+    Ok(report)
 }
 
 fn probe_report<E: EnvProvider>(

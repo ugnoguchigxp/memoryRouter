@@ -10,9 +10,12 @@ import {
   applyRuntimeSettingsToProcess,
   buildRuntimeSettingsView,
 } from "../src/modules/settings/settings.runtime-cache.js";
-import type {
-  RuntimeSecretKey,
-  RuntimeSettingsEditable,
+import {
+  type RuntimeSecretKey,
+  type RuntimeSettingsEditable,
+  requireStaticRuntimeSettingsRoute,
+  runtimeSettingsEditableSchema,
+  settingsUpdateRequestSchema,
 } from "../src/modules/settings/settings.types.js";
 
 type ProviderConfigSnapshot = {
@@ -84,6 +87,272 @@ describe("settings runtime cache", () => {
     );
 
     expect(normalized.embedding.provider).toBe(defaults.embedding.provider);
+  });
+
+  test("keeps LARM Agent Connection disabled when legacy settings omit it", () => {
+    const defaults = structuredClone(cloneDefaultSettings());
+    const { "larm-agent-connection": _omitted, ...providers } = defaults.providers;
+    const legacy = { ...defaults, providers } as unknown as Record<string, unknown>;
+
+    const normalized = normalizeRuntimeSettingsEditable(legacy);
+
+    expect(normalized.providers["larm-agent-connection"]).toEqual({
+      enabled: false,
+      connections: [],
+    });
+  });
+
+  test("normalizes an explicit LARM route without static provider fields", () => {
+    const input = cloneDefaultSettings();
+    input.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    input.taskRouting.findCandidate.source = {
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    };
+
+    const normalized = normalizeRuntimeSettingsEditable(input);
+
+    expect(normalized.taskRouting.findCandidate.source).toEqual({
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    });
+    expect(() =>
+      requireStaticRuntimeSettingsRoute(normalized.taskRouting.findCandidate.source),
+    ).toThrow("dynamic_provider_requires_rust_resident: contextstill-background");
+
+    const view = buildRuntimeSettingsView(normalized, {
+      openaiApiKey: emptySecretStatus(),
+      azureOpenAiApiKey: emptySecretStatus(),
+      localLlmApiKey: emptySecretStatus(),
+      braveApiKey: emptySecretStatus(),
+      exaApiKey: emptySecretStatus(),
+      bedrockCredential: emptySecretStatus(),
+    });
+    expect(
+      view.diagnostics.providerPools.some(
+        (diagnostic) => diagnostic.path === "taskRouting.findCandidate.source",
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects mixed static and LARM route fields", () => {
+    const input = cloneDefaultSettings() as unknown as {
+      providers: Record<string, unknown>;
+      taskRouting: {
+        findCandidate: {
+          source: unknown;
+        };
+      };
+    };
+    input.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    input.taskRouting.findCandidate.source = {
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+      provider: "local-llm",
+      fallback: [],
+    };
+
+    expect(runtimeSettingsEditableSchema.safeParse(input).success).toBe(false);
+  });
+
+  test("backfills a legacy missing route from a dynamic route without static-only fields", () => {
+    const settings = cloneDefaultSettings();
+    settings.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    settings.taskRouting.webSourceResearch = {
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    };
+    const legacy = structuredClone(settings) as unknown as {
+      taskRouting: Record<string, unknown>;
+    };
+    legacy.taskRouting.episodeDistiller = undefined;
+
+    const parsed = settingsUpdateRequestSchema.parse({ settings: legacy });
+
+    expect(parsed.settings.taskRouting.episodeDistiller).toEqual({
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    });
+  });
+
+  test("rejects public LARM control endpoints", () => {
+    const input = cloneDefaultSettings();
+    input.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "https://example.com",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+
+    const parsed = runtimeSettingsEditableSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((issue) => issue.path.at(-1) === "controlBaseUrl")).toBe(
+        true,
+      );
+    }
+  });
+
+  test("rejects a LARM provider-pool target that has no configured connection", () => {
+    const input = cloneDefaultSettings();
+    input.providers["larm-agent-connection"].enabled = true;
+    input.providerPools = [
+      {
+        id: "background",
+        label: "Background",
+        enabled: true,
+        maxConcurrent: 1,
+        staleLeaseSeconds: 120,
+        lowPriorityAgingSeconds: 1_800,
+        targets: [
+          {
+            provider: "larm-agent-connection",
+            connectionId: "missing-connection",
+          },
+        ],
+      },
+    ];
+
+    const parsed = runtimeSettingsEditableSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((issue) => issue.path.at(-1) === "connectionId")).toBe(true);
+    }
+  });
+
+  test("rejects a LARM pool target id that aliases a static provider lease target", () => {
+    const input = cloneDefaultSettings();
+    input.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "local-primary",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    input.providerPools = [
+      {
+        id: "mixed",
+        label: "Mixed",
+        enabled: true,
+        maxConcurrent: 1,
+        staleLeaseSeconds: 120,
+        lowPriorityAgingSeconds: 1_800,
+        targets: [
+          { provider: "local-llm", localLlmModelId: "local-primary" },
+          { provider: "larm-agent-connection", connectionId: "local-primary" },
+        ],
+      },
+    ];
+
+    const parsed = runtimeSettingsEditableSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((issue) => issue.message.includes("collides"))).toBe(true);
+    }
+  });
+
+  test("rejects a LARM target id that aliases a direct static provider lease target", () => {
+    const input = cloneDefaultSettings();
+    input.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "openai",
+          controlBaseUrl: "http://gnosis.local:9810",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+    input.taskRouting.episodeDistiller = {
+      kind: "larm-agent-connection",
+      connectionId: "openai",
+    };
+
+    const parsed = runtimeSettingsEditableSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((issue) => issue.message.includes("collides"))).toBe(true);
+    }
   });
 
   afterEach(() => {
@@ -375,7 +644,7 @@ describe("settings runtime cache", () => {
     );
     expect(parsed.taskRouting.coverEvidence.externalEvidence).toMatchObject({
       provider: "local-llm",
-      model: "gemma-4-e4b-it",
+      model: settings.providers["local-llm"].model,
       fallback: ["azure-openai"],
     });
   });

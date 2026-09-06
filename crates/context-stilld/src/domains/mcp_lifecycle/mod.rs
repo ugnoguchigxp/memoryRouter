@@ -30,3 +30,5 @@ pub mod routing;
 pub mod service;
 #[cfg(test)]
 mod service_tests;
+
+pub(crate) use native_compile::experiment::run as run_context_experiment;

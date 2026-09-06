@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { deriveRetrievalModeFromChangeTypes } from "../../shared/schemas/compile.schema.js";
 import {
@@ -8,6 +9,7 @@ import {
   contextEvalCaseSchema,
 } from "../../shared/schemas/context-eval-case.schema.js";
 import { retrieveKnowledge } from "../knowledge/knowledge.service.js";
+import { meanMeasured, rankedRetrievalMetrics } from "./context-eval-metrics.js";
 
 /**
  * Loads and validates evaluation cases from a JSONL file.
@@ -30,8 +32,10 @@ export async function loadContextEvalCases(filePath: string): Promise<ContextEva
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(trimmed);
-    } catch (err: any) {
-      throw new Error(`Invalid JSON on line ${lineNum}: ${err.message}`);
+    } catch (error) {
+      throw new Error(
+        `Invalid JSON on line ${lineNum}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
 
     const result = contextEvalCaseSchema.safeParse(parsedJson);
@@ -42,7 +46,13 @@ export async function loadContextEvalCases(filePath: string): Promise<ContextEva
       throw new Error(`Validation failed on line ${lineNum}: ${errorMsg}`);
     }
 
-    cases.push(result.data);
+    const data = result.data;
+    data.id ||= `case-${cases.length + 1}`;
+    if (cases.some((item) => item.id === data.id))
+      throw new Error(`Duplicate case id on line ${lineNum}: ${data.id}`);
+    data.expectedKnowledgeIds = [...new Set(data.expectedKnowledgeIds ?? [])];
+    data.forbiddenKnowledgeIds = [...new Set(data.forbiddenKnowledgeIds ?? [])];
+    cases.push(data);
   }
 
   return cases;
@@ -61,6 +71,10 @@ export async function buildContextEvalCaseReport(
 ): Promise<ContextEvalCaseReport> {
   const generatedAt = new Date().toISOString();
   const cases = await loadContextEvalCases(input.casesPath);
+  if (!Number.isInteger(input.currentLimit) || input.currentLimit < 1 || input.currentLimit > 50) {
+    throw new Error("currentLimit must be an integer between 1 and 50");
+  }
+  const datasetSha256 = createHash("sha256").update(JSON.stringify(cases)).digest("hex");
 
   if (cases.length === 0) {
     return contextEvalCaseReportSchema.parse({
@@ -70,6 +84,8 @@ export async function buildContextEvalCaseReport(
         path: input.casesPath,
         currentLimit: input.currentLimit,
         readOnly: true,
+        engine: "typescript-knowledge",
+        datasetSha256,
       },
       summary: {
         status: "no_data",
@@ -106,15 +122,27 @@ export async function buildContextEvalCaseReport(
       changeTypes: c.changeTypes,
       technologies: c.technologies,
       domains: c.domains,
+      projectRef: c.projectRef,
+      repoKey: c.repoKey,
+      repoPath: c.repoPath,
     };
     const retrievalMode = deriveRetrievalModeFromChangeTypes(c.changeTypes);
 
-    const result = await retrieveKnowledge(compileInput, {
-      retrievalMode,
-      limit: input.currentLimit,
-    });
+    const started = performance.now();
+    let result: Pick<Awaited<ReturnType<typeof retrieveKnowledge>>, "items" | "degradedReasons">;
+    let errorCategory: "retrieval_failed" | null = null;
+    try {
+      result = await retrieveKnowledge(compileInput, { retrievalMode, limit: input.currentLimit });
+    } catch {
+      errorCategory = "retrieval_failed";
+      result = { items: [], degradedReasons: ["RETRIEVAL_FAILED"] };
+    }
+    const retrievalMs = performance.now() - started;
 
-    const retrievedKnowledgeIds = result.items.map((item) => item.id).slice(0, input.currentLimit);
+    const retrievedKnowledgeIds = [...new Set(result.items.map((item) => item.id))].slice(
+      0,
+      input.currentLimit,
+    );
     const expectedKnowledgeIds = c.expectedKnowledgeIds || [];
     const forbiddenKnowledgeIds = c.forbiddenKnowledgeIds || [];
 
@@ -128,13 +156,25 @@ export async function buildContextEvalCaseReport(
       retrievedKnowledgeIds.includes(forbiddenId),
     );
 
-    const status =
-      missingExpectedIds.length === 0 && forbiddenHitIds.length === 0 ? "passed" : "failed";
+    const labelled =
+      expectedKnowledgeIds.length > 0 ||
+      forbiddenKnowledgeIds.length > 0 ||
+      c.expectNoContent === true;
+    const failed =
+      errorCategory !== null ||
+      result.degradedReasons.length > 0 ||
+      missingExpectedIds.length > 0 ||
+      forbiddenHitIds.length > 0 ||
+      (c.expectNoContent === true && retrievedKnowledgeIds.length > 0);
+    const status = failed ? "failed" : labelled ? "passed" : "unscored";
 
     results.push({
       id,
       goal: c.goal,
       status,
+      retrievalMs,
+      errorCategory,
+      ...rankedRetrievalMetrics(expectedKnowledgeIds, retrievedKnowledgeIds, input.currentLimit),
       retrievedKnowledgeIds,
       expectedKnowledgeIds,
       expectedHitIds,
@@ -148,6 +188,7 @@ export async function buildContextEvalCaseReport(
   const caseCount = results.length;
   const passedCount = results.filter((r) => r.status === "passed").length;
   const failedCount = results.filter((r) => r.status === "failed").length;
+  const unscoredCount = results.filter((r) => r.status === "unscored").length;
   const passRate = caseCount > 0 ? passedCount / caseCount : 0;
 
   const expectedTotalCount = results.reduce((sum, r) => sum + r.expectedKnowledgeIds.length, 0);
@@ -158,22 +199,29 @@ export async function buildContextEvalCaseReport(
   const retrievedTotalCount = results.reduce((sum, r) => sum + r.retrievedKnowledgeIds.length, 0);
 
   const expectedRecall = expectedTotalCount > 0 ? expectedHitCount / expectedTotalCount : null;
-  const strictPrecision = retrievedTotalCount > 0 ? expectedHitCount / retrievedTotalCount : null;
+  const fullyJudged = results.filter((_, index) => cases[index].judgmentsComplete);
+  const judgedRetrieved = fullyJudged.reduce(
+    (sum, row) => sum + row.retrievedKnowledgeIds.length,
+    0,
+  );
+  const judgedHits = fullyJudged.reduce((sum, row) => sum + row.expectedHitIds.length, 0);
+  const judgedExpected = fullyJudged.reduce((sum, row) => sum + row.expectedKnowledgeIds.length, 0);
+  const strictPrecision = judgedRetrieved > 0 ? judgedHits / judgedRetrieved : null;
   const strictF1 =
-    strictPrecision !== null && expectedRecall !== null && strictPrecision + expectedRecall > 0
-      ? (2 * strictPrecision * expectedRecall) / (strictPrecision + expectedRecall)
+    judgedExpected + judgedRetrieved > 0
+      ? (2 * judgedHits) / (judgedExpected + judgedRetrieved)
       : null;
 
-  const noContentCaseCount = results.filter((r) =>
-    r.degradedReasons.some((reason) => reason.toUpperCase().includes("NO_CONTENT")),
+  const noContentCaseCount = results.filter(
+    (r) => r.errorCategory === null && r.retrievedKnowledgeIds.length === 0,
   ).length;
   const degradedCaseCount = results.filter((r) => r.degradedReasons.length > 0).length;
 
-  const summaryStatus = failedCount > 0 ? "failed" : "passed";
+  const summaryStatus = failedCount > 0 ? "failed" : unscoredCount > 0 ? "no_data" : "passed";
   const reason =
     summaryStatus === "passed"
       ? "All evaluation cases passed."
-      : `${failedCount} of ${caseCount} cases failed expected or forbidden assertions.`;
+      : `${failedCount} failed and ${unscoredCount} unscored of ${caseCount} cases.`;
 
   return contextEvalCaseReportSchema.parse({
     generatedAt,
@@ -182,12 +230,15 @@ export async function buildContextEvalCaseReport(
       path: input.casesPath,
       currentLimit: input.currentLimit,
       readOnly: true,
+      engine: "typescript-knowledge",
+      datasetSha256,
     },
     summary: {
       status: summaryStatus,
       caseCount,
       passedCount,
       failedCount,
+      unscoredCount,
       passRate,
       reason,
     },
@@ -203,6 +254,10 @@ export async function buildContextEvalCaseReport(
       strictF1,
       noContentCaseCount,
       degradedCaseCount,
+      errorCaseCount: results.filter((r) => r.errorCategory !== null).length,
+      meanReciprocalRank: meanMeasured(results.map((r) => r.reciprocalRank)),
+      meanNdcg: meanMeasured(results.map((r) => r.ndcg)),
+      completeJudgmentCaseCount: fullyJudged.length,
     },
     cases: results,
   });

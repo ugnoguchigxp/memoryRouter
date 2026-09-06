@@ -198,4 +198,58 @@ describe("provider pool scheduler", () => {
       "coveringEvidence",
     ]);
   });
+
+  test("does not hand a dynamic LARM route to the TypeScript worker", async () => {
+    mocks.settings.taskRouting.episodeDistiller = {
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    } as unknown as typeof mocks.settings.taskRouting.episodeDistiller;
+
+    const { enabledProviderPoolsForQueues, unpooledQueues } = await import(
+      "../src/modules/queue/core/scheduler.js"
+    );
+
+    expect(enabledProviderPoolsForQueues(["episodeDistiller"])).toEqual([]);
+    expect(unpooledQueues(["episodeDistiller"])).toEqual([]);
+  });
+
+  test("fails closed for a mixed static and LARM provider pool", async () => {
+    mocks.settings.providerPools[0].targets = [
+      { provider: "local-llm", localLlmModelId: "local-a" },
+      {
+        provider: "larm-agent-connection",
+        connectionId: "contextstill-background",
+      },
+    ] as (typeof mocks.settings.providerPools)[0]["targets"];
+
+    const { enabledProviderPoolsForQueues, unpooledQueues } = await import(
+      "../src/modules/queue/core/scheduler.js"
+    );
+
+    expect(enabledProviderPoolsForQueues(["episodeDistiller"])).toEqual([]);
+    expect(unpooledQueues(["episodeDistiller"])).toEqual([]);
+  });
+
+  test("does not claim a dynamic vibe row through the static source pool", async () => {
+    mocks.settings.taskRouting.findCandidate.vibe = {
+      kind: "larm-agent-connection",
+      connectionId: "contextstill-background",
+    } as unknown as typeof mocks.settings.taskRouting.findCandidate.vibe;
+    const { candidateUsesLarmRoute } = await import("../src/modules/queue/core/provider-lease.js");
+
+    expect(
+      candidateUsesLarmRoute({
+        settings: mocks.settings as never,
+        queueName: "findingCandidate",
+        row: { source_kind: "vibe_memory" },
+      }),
+    ).toBe(true);
+    expect(
+      candidateUsesLarmRoute({
+        settings: mocks.settings as never,
+        queueName: "findingCandidate",
+        row: { source_kind: "wiki_file" },
+      }),
+    ).toBe(false);
+  });
 });

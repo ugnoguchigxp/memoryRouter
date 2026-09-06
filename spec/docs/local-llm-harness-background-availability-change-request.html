@@ -1,0 +1,429 @@
+<article lang="ja">
+  <h1 id="local-llm-harness-background-availability-change-request">
+    local-LLM-harness Background Provider Availability API 変更依頼書
+  </h1>
+
+  <h2 id="status">Status</h2>
+  <p>Status: proposed</p>
+  <p>Created: 2026-09-06</p>
+  <p>Request ID: <code>larm-background-provider-availability-v1</code></p>
+  <p>
+    依頼先: <code>local-LLM-harness</code>。依頼元:
+    <code>ContextStill</code>。
+  </p>
+
+  <h2 id="request-summary">1. 依頼概要</h2>
+  <p>
+    ContextStillが背景LLM処理を開始してよいかを、SAAAからの通知に依存せず
+    local-LLM-harness（以下LARM）へ問い合わせられるAPIを追加してください。
+    ContextStillはqueueに実行可能なjobがある間だけこのAPIをポーリングし、
+    LARMが利用可能と返した場合に限って既存のAgent Connection APIでproviderを確保します。
+  </p>
+  <p>本依頼で固定する判断は次のとおりです。</p>
+  <ul>
+    <li>LARMをproviderの利用可能性に関する唯一のauthorityとする。</li>
+    <li>SAAAからContextStillまたはLARMへの通知、callback、webhookは追加しない。</li>
+    <li>read-onlyな空き判定はadvisoryとし、接続作成時の原子的なadmission判定を置き換えない。</li>
+    <li>
+      背景処理の開始可否はAgent Profileに紐づくpolicyとしてLARM側で管理し、
+      ContextStillへruntime内部構造や利用者情報を公開しない。
+    </li>
+    <li>
+      foreground側の利用がjob実行中に始まっても、そのjobを途中で強制中断しない。
+      新しいjobを開始する境界で再判定する。
+    </li>
+  </ul>
+
+  <h2 id="confirmed-baseline">2. 確認済みbaseline</h2>
+  <p>2026-09-06時点のLARM sourceとlive APIでは、次の基盤がすでに存在する。</p>
+  <ul>
+    <li><code>GET /v2/agent-profiles</code>によるProfile discovery。</li>
+    <li>
+      <code>POST /v1/agent-connections</code>、status poll、claim、renew、deleteからなる Agent
+      Connection lifecycle。
+    </li>
+    <li>admission時のmemory headroom、runtime allocation数、swap group、transition状態の検査。</li>
+    <li>
+      backend observerとsemantic readinessが保持する<code>BUSY</code>、
+      <code>ready</code
+      >、<code>acceptingRequests</code>等のlive signal。
+    </li>
+    <li>
+      <code>llm-agent-worker</code> routeと、1 allocation／1 requestに制限された
+      <code>qwen-worker-agent</code> runtime。
+    </li>
+  </ul>
+  <p>
+    一方で、Profile単位で接続作成前に利用可能性を問い合わせる狭い公開APIはない。
+    management向けinspection APIやmetricsは、権限・公開範囲・契約安定性の点から
+    ContextStillの制御入力には使用しない。
+  </p>
+
+  <h2 id="requested-profile">3. 追加するAgent Profile</h2>
+  <p>
+    <code>config/local-node/agent-connections.yaml</code>へ
+    <code>contextstill-background</code>
+    Profileを追加してください。公開契約として必要な意味は
+    次のとおりです。YAMLの内部表現は既存schemaに合わせて調整して構いません。
+  </p>
+  <table>
+    <caption>
+      Table: ContextStill background profile
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">項目</th>
+        <th scope="col">要求値</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Profile ID</td>
+        <td><code>contextstill-background</code></td>
+      </tr>
+      <tr>
+        <td>Audience</td>
+        <td><code>saaa-desktop</code></td>
+      </tr>
+      <tr>
+        <td>Route</td>
+        <td><code>llm-agent-worker</code></td>
+      </tr>
+      <tr>
+        <td>Fallback</td>
+        <td>禁止。<code>allowFallback=false</code></td>
+      </tr>
+      <tr>
+        <td>Deployment</td>
+        <td>既存artifactのみ。<code>existing-only</code></td>
+      </tr>
+      <tr>
+        <td>Selection</td>
+        <td>明示Profile指定のみ</td>
+      </tr>
+      <tr>
+        <td>Workload class</td>
+        <td>background</td>
+      </tr>
+      <tr>
+        <td>Foreground protection</td>
+        <td>
+          <code>llm-default</code
+          >に解決される保護対象runtimeがBUSYの場合は開始不可
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    foreground protectionはSAAA processやSAAA connectionの存在ではなく、LARMが直接観測する protected
+    routeの実行activityで判定する。単にSAAAのAgent Connectionが存在するだけで
+    backgroundを恒久的に止めてはならない。
+  </p>
+
+  <h2 id="availability-endpoint">4. Profile availability API</h2>
+  <h3 id="request">4.1 Request</h3>
+  <pre><code class="language-http">GET /v2/agent-profiles/contextstill-background/availability?audience=saaa-desktop
+Cache-Control: no-cache
+</code></pre>
+  <p>
+    既存のbackground connectionを再利用中は、次のように
+    <code>currentConnectionId</code>を指定できるようにしてください。
+  </p>
+  <pre><code class="language-http">GET /v2/agent-profiles/contextstill-background/availability?audience=saaa-desktop&amp;currentConnectionId=ac_123
+</code></pre>
+  <ul>
+    <li><code>audience</code>は必須とする。</li>
+    <li>
+      <code>currentConnectionId</code
+      >は任意とし、同じprincipal、Profile、audienceに属する 非terminal connectionだけを受理する。
+    </li>
+    <li>
+      current connectionを指定した場合、そのconnection自身のallocationは
+      「新規allocation枠が埋まっている」という判定から除外し、再利用可能性を評価する。
+    </li>
+    <li>
+      protected foreground runtimeのBUSY状態、他connection、resource headroom、drain、
+      transitionは除外しない。
+    </li>
+    <li>このGETによってCOLD runtimeを起動したりallocationを作成したりしてはならない。</li>
+  </ul>
+
+  <h3 id="response">4.2 Response</h3>
+  <p>正しく評価できたdomain stateは、状態にかかわらずHTTP 200で返す。</p>
+  <pre><code class="language-json">{
+  &quot;contractVersion&quot;: &quot;agent-profile-availability.v1&quot;,
+  &quot;agentProfile&quot;: &quot;contextstill-background&quot;,
+  &quot;audience&quot;: &quot;saaa-desktop&quot;,
+  &quot;state&quot;: &quot;available&quot;,
+  &quot;reasonCode&quot;: &quot;available&quot;,
+  &quot;observedAt&quot;: &quot;2026-09-06T12:34:56.789Z&quot;,
+  &quot;validForMs&quot;: 1000,
+  &quot;retryAfterMs&quot;: 0,
+  &quot;reservationGuaranteed&quot;: false,
+  &quot;catalogRevision&quot;: &quot;...&quot;,
+  &quot;bootEpoch&quot;: &quot;...&quot;
+}
+</code></pre>
+  <p>
+    Responseには<code>Cache-Control: no-store</code>を付ける。
+    <code>retryAfterMs</code>が正の場合はHTTP
+    <code>Retry-After</code>も可能な範囲で付ける。
+  </p>
+
+  <h3 id="states">4.3 State semantics</h3>
+  <table>
+    <caption>
+      Table: Availability states
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">state</th>
+        <th scope="col">意味</th>
+        <th scope="col">代表的reasonCode</th>
+        <th scope="col">client動作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>available</code></td>
+        <td>
+          現在のsnapshotでは、fallbackやpreemptionなしにProfileの新規作成または指定connectionの再利用が可能
+        </td>
+        <td><code>available</code></td>
+        <td>Agent Connection作成または次job開始へ進む</td>
+      </tr>
+      <tr>
+        <td><code>busy</code></td>
+        <td>一時的な競合によりbackgroundを開始できない</td>
+        <td>
+          <code>protected_runtime_busy</code
+          >、<code>runtime_allocation_busy</code>、
+          <code>swap_group_busy</code>、<code>resource_exhausted</code>
+        </td>
+        <td><code>retryAfterMs</code>以降に再評価する</td>
+      </tr>
+      <tr>
+        <td><code>unavailable</code></td>
+        <td>Profile、route、artifact、audienceまたは構成上の理由で利用できない</td>
+        <td>
+          <code>profile_disabled</code
+          >、<code>unsupported_audience</code>、
+          <code>no_eligible_provider</code>、<code>artifact_unavailable</code>
+        </td>
+        <td>長いbackoffとoperator向け警告</td>
+      </tr>
+      <tr>
+        <td><code>unknown</code></td>
+        <td>安全な判定に必要な観測値が揃わない</td>
+        <td>
+          <code>stale_observation</code
+          >、<code>transition_in_progress</code>、
+          <code>draining</code>、<code>observer_error</code>
+        </td>
+        <td>fail closedで待機する</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    path、query、principal、current connectionの検証に失敗した場合は既存API規約に従って
+    <code>400</code
+    >、<code>403</code>、<code>404</code>、<code>409</code>または
+    <code>410</code
+    >を返す。daemon自身が評価不能な場合は<code>503</code>とし、clientは
+    <code>unknown</code>相当に扱う。
+  </p>
+
+  <h3 id="evaluation-rules">4.4 Evaluation rules</h3>
+  <p>
+    availability handler専用の判定を複製せず、Agent Connection作成時のadmission evaluatorと
+    同じcoreをread-only
+    modeで利用してください。<code>available</code>には少なくとも次をすべて要求する。
+  </p>
+  <ol>
+    <li>Profile、audience、route、artifactが有効である。</li>
+    <li>deploymentを追加せず、fallbackを使わずにcandidateが解決できる。</li>
+    <li>protected routeのlive observationがfreshで、実行中activityがない。</li>
+    <li>対象runtimeとswap groupに、current connection以外の競合allocationがない。</li>
+    <li>memory headroomとruntime allocation capacityを満たす。</li>
+    <li>drain、mutation、transition、observer errorのいずれでもない。</li>
+  </ol>
+  <p>
+    protected routeの「activity」は、可能ならrequest gateまたはbackendのBUSY signalを利用する。
+    health endpointへの単純なTCP到達性や、Agent Connectionの存在だけをactivityとみなさない。
+  </p>
+
+  <h2 id="atomic-admission">5. Atomic admissionとの関係</h2>
+  <p>
+    availability responseは短時間で失効する観測結果であり、reservationではない。
+    <code>available</code>取得後に別clientやforeground
+    requestが開始する競合は正常系として扱う。
+  </p>
+  <ol>
+    <li>ContextStillがavailabilityをGETする。</li>
+    <li>
+      <code>available</code
+      >なら既存の<code>POST /v1/agent-connections</code>を呼ぶ。
+    </li>
+    <li>LARMはPOST時点の最新状態で原子的なadmissionを再評価する。</li>
+    <li>競合していれば既存のstructured errorで拒否し、ContextStillは待機へ戻る。</li>
+  </ol>
+  <p>
+    availability GETとconnection POSTを一つのtransactionに見せる必要はない。
+    <code>reservationGuaranteed: false</code>を恒久contractとして明示する。
+  </p>
+
+  <h2 id="security-privacy">6. Security and privacy</h2>
+  <ul>
+    <li>
+      management inspection tokenをContextStillへ渡す設計にしない。既存Agent Connection APIと同じ
+      local lifecycleの認証・到達範囲を利用する。
+    </li>
+    <li>
+      responseへclient ID、prompt、model出力、他connection ID、process情報、VRAM内訳を含めない。
+    </li>
+    <li>
+      <code>currentConnectionId</code
+      >から他principalのconnection存在を推測できないよう、
+      ownership不一致時のerror形状を既存規約へ揃える。
+    </li>
+    <li>
+      availability responseとerror
+      responseはすべて<code>no-store</code>とする。
+    </li>
+    <li>logにはProfile、state、reasonCode、duration、revisionだけを残し、credentialを残さない。</li>
+  </ul>
+
+  <h2 id="compatibility">7. Compatibility</h2>
+  <ul>
+    <li>
+      既存<code>/v1</code>および<code
+        >/v2/agent-profiles</code
+      >
+      responseを破壊的に変更しない。
+    </li>
+    <li>
+      <code>coding-default</code>とcompatibility
+      aliasのselection、claim、renew、delete契約を変更しない。
+    </li>
+    <li>
+      availability policy未設定のProfileに対するendpointは、明示的な
+      <code>unavailable</code
+      >または<code>404</code>のどちらかに統一し、曖昧なavailableを返さない。
+    </li>
+    <li>API追加後もPOSTを直接呼ぶ既存clientをサポートする。</li>
+  </ul>
+
+  <h2 id="implementation-guidance">8. 実装ガイダンス</h2>
+  <p>責務は次のように分離する。</p>
+  <table>
+    <caption>
+      Table: Suggested ownership
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">責務</th>
+        <th scope="col">推奨owner</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>HTTP parse、strict query validation、response mapping</td>
+        <td>Agent Connection API route/controller</td>
+      </tr>
+      <tr>
+        <td>Profile policy解決</td>
+        <td>Agent Profile catalog/service</td>
+      </tr>
+      <tr>
+        <td>candidate、headroom、allocation、swap group判定</td>
+        <td>既存admission evaluator</td>
+      </tr>
+      <tr>
+        <td>protected route activity</td>
+        <td>backend observer／semantic readiness</td>
+      </tr>
+      <tr>
+        <td>current connection ownershipと再利用判定</td>
+        <td>Agent Connection lifecycle service</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    observer snapshotのfreshness上限はLARM側で決め、responseの
+    <code>validForMs</code
+    >へ反映する。ContextStillが独自にbusy判定規則を再実装する前提にしない。
+  </p>
+
+  <h2 id="tests">9. 必須test</h2>
+  <h3 id="contract-tests">9.1 Contract tests</h3>
+  <ul>
+    <li>unknown Profile、unsupported audience、余分なquery fieldをstrictに拒否する。</li>
+    <li>すべてのstateでschema、enum、timestamp、revision、no-store headerを固定する。</li>
+    <li>既存Profile catalogとAgent Connection fixtureが変化しない。</li>
+  </ul>
+
+  <h3 id="policy-tests">9.2 Policy tests</h3>
+  <ul>
+    <li>
+      protected runtimeがIDLEかつcapacity十分なら<code>available</code>。
+    </li>
+    <li>protected runtimeがBUSYなら<code>protected_runtime_busy</code>。</li>
+    <li>protected observationがstaleなら<code>unknown</code>。</li>
+    <li>
+      別connectionがworker allocationを保持していれば<code>busy</code>。
+    </li>
+    <li>
+      current
+      connectionが同じProfileを保持している場合は、自身のallocationを除外して再利用可能性を返す。
+    </li>
+    <li>他principalまたは別Profileのcurrent connection指定を受理しない。</li>
+    <li>swap group transition、drain、resource exhaustionをfail closedで分類する。</li>
+  </ul>
+
+  <h3 id="race-tests">9.3 Race and lifecycle tests</h3>
+  <ul>
+    <li>
+      <code>available</code
+      >取得直後に競合し、POSTが拒否されるraceを正常系として固定する。
+    </li>
+    <li>同じidempotency keyのPOST replayが既存どおり同じ結果を返す。</li>
+    <li>renew後のcurrent connection指定で再利用可能性を正しく評価する。</li>
+    <li>delete済みまたはexpired connectionの指定を安全に拒否する。</li>
+    <li>GET availabilityだけではruntimeがCOLDから変化しない。</li>
+  </ul>
+
+  <h2 id="acceptance-criteria">10. Acceptance criteria</h2>
+  <ol>
+    <li>
+      live LARMで<code>contextstill-background</code>が
+      <code>GET /v2/agent-profiles</code>に公開される。
+    </li>
+    <li>foreground runtimeのIDLE／BUSYを切り替えるcanaryで、availabilityが期待stateへ遷移する。</li>
+    <li>
+      <code>available</code>時だけAgent
+      Connectionを作成でき、競合時はPOSTの原子的判定が拒否する。
+    </li>
+    <li>current connection指定によって、同一connectionを使った複数jobの境界判定ができる。</li>
+    <li>availability pollがSAAA API、SAAA process、SAAA callbackに依存しない。</li>
+    <li>既存Agent Connection contract testとlocal-node smoke testがすべて通る。</li>
+  </ol>
+
+  <h2 id="non-goals">11. Non-goals</h2>
+  <ul>
+    <li>SAAAからのactivity通知、callback、webhook。</li>
+    <li>ContextStill queueの状態管理をLARMへ移すこと。</li>
+    <li>実行中generationの強制cancelまたはpreemption。</li>
+    <li>management inspection APIやmetricsをclient向けcontrol contractへ転用すること。</li>
+    <li>background Profileからresident foreground modelへfallbackすること。</li>
+    <li>availability GETによるresource reservation。</li>
+  </ul>
+
+  <h2 id="delivery">12. 依頼する成果物</h2>
+  <ol>
+    <li>Profile availability contractを記載したLARM Spec HTML。</li>
+    <li><code>contextstill-background</code> Profileとbackground policy設定。</li>
+    <li>read-only availability endpointと共有admission evaluator。</li>
+    <li>contract、policy、race、lifecycleの自動test。</li>
+    <li>local-nodeでのIDLE／BUSY／connection reuse canary結果。</li>
+  </ol>
+</article>

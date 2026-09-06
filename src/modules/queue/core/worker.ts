@@ -130,6 +130,7 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
 }
 
 function providerPoolTargetId(target: RuntimeProviderPoolTarget): string {
+  if (target.provider === "larm-agent-connection") return target.connectionId;
   if (target.provider === "local-llm") return target.localLlmModelId;
   if (target.provider === "azure-openai") return String(target.deploymentSlot);
   return target.targetId;

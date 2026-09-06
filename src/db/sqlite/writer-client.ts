@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -63,6 +63,36 @@ export function executeSqliteWriterSync(input: {
     return response;
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+/** Check the authenticated writer transport without changing database contents. */
+export async function probeSqliteWriter(signal: AbortSignal, expectedPath: string): Promise<void> {
+  const endpoint = resolveWriterEndpoint();
+  const response = await fetch(endpoint.url, {
+    method: "POST",
+    redirect: "error",
+    signal,
+    headers: {
+      authorization: `Bearer ${endpoint.token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      clientId: `readiness-${process.pid}`,
+      sql: "SELECT 1 AS ready, file FROM pragma_database_list WHERE name = 'main'",
+      params: [],
+      method: "get",
+      rowMode: "object",
+    }),
+  });
+  if (!response.ok) throw new Error("SQLite writer unavailable");
+  const payload = (await response.json()) as SqliteWriterResponse;
+  const row = payload.rows?.[0] as { ready?: number; file?: string } | undefined;
+  if (!payload.ok || row?.ready !== 1 || typeof row.file !== "string") {
+    throw new Error("SQLite writer probe failed");
+  }
+  if (realpathSync(row.file) !== realpathSync(expectedPath)) {
+    throw new Error("SQLite reader and writer paths differ");
   }
 }
 

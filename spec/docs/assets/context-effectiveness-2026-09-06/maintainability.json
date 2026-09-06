@@ -1,0 +1,50 @@
+[
+  {
+    "originalFile": "web/src/modules/admin/components/settings.page.tsx",
+    "originalLines": 4679,
+    "originalSha256": "2d03bd7ca6437bb8e916b21acac2a7b9e9c01902004bf07fe89cd78a45a96ed4",
+    "largestAfter": 1179,
+    "largestAfterFile": "web/src/modules/admin/components/settings/provider-endpoints-panel.tsx",
+    "moduleCount": 14
+  },
+  {
+    "originalFile": "web/src/modules/admin/repositories/admin.repository.ts",
+    "originalLines": 3809,
+    "originalSha256": "7de890cc887ed14fafc990da02304b001b27c8053454c73292b54200372fe2ef",
+    "largestAfter": 673,
+    "largestAfterFile": "web/src/modules/admin/repositories/admin/overview-contracts.ts",
+    "moduleCount": 16
+  },
+  {
+    "originalFile": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile.rs",
+    "originalLines": 4536,
+    "originalSha256": "47b4d211f96864d6049806e0f999af61a07f67fb746b0019ce68862efb5c3ce1",
+    "largestAfter": 947,
+    "largestAfterFile": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/tests.rs",
+    "moduleCount": 15
+  },
+  {
+    "originalFile": "crates/context-stilld/src/domains/queue_lifecycle/covering_executor.rs",
+    "originalLines": 4408,
+    "originalSha256": "191b065fce76b0c229be6aca30b470f38ab10ec167b98969c2b899882ef7b523",
+    "largestAfter": 948,
+    "largestAfterFile": "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/tests.rs",
+    "moduleCount": 15
+  },
+  {
+    "originalFile": "crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs",
+    "originalLines": 4402,
+    "originalSha256": "59d2d8609395246f5eeb255ce6e58bbf948ef677f24911d9ae8b1075d6576e53",
+    "largestAfter": 1141,
+    "largestAfterFile": "crates/context-stilld/src/domains/queue_lifecycle/episode_executor/tests.rs",
+    "moduleCount": 15
+  },
+  {
+    "originalFile": "src/modules/context-compiler/context-compiler.service.ts",
+    "originalLines": 2110,
+    "originalSha256": "663f37d6f6fc179c6cd308cdb681926af73c10af97242cd4c7d6783c941730a2",
+    "largestAfter": 922,
+    "largestAfterFile": "src/modules/context-compiler/context-compiler.service.ts",
+    "moduleCount": 7
+  }
+]

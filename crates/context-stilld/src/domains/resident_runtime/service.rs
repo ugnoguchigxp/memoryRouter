@@ -155,6 +155,7 @@ pub fn run<E: EnvProvider, S: ProcessSupervisor>(
     let pid = std::process::id();
 
     if once {
+        queue_lifecycle::service::release_dynamic_provider_connections();
         let mut shutdown_surfaces = stop_owned_surfaces(env, supervisor, &mut runtime_state)?;
         surfaces.append(&mut shutdown_surfaces);
         runtime_state.shutdown_writer()?;
@@ -186,6 +187,7 @@ pub fn run<E: EnvProvider, S: ProcessSupervisor>(
         }
     }
 
+    queue_lifecycle::service::release_dynamic_provider_connections();
     let mut shutdown_surfaces = stop_owned_surfaces(env, supervisor, &mut runtime_state)?;
     surfaces.append(&mut shutdown_surfaces);
     runtime_state.shutdown_writer()?;
@@ -308,6 +310,7 @@ fn reconcile_queue_continuous<E: EnvProvider, S: ProcessSupervisor>(
         let executor = queue_lifecycle::service::run_executor_tick_report(env)?;
         let status = match executor.status.as_str() {
             "missing_sqlite" | "executor_unconfigured" => executor.status.clone(),
+            "waiting_for_dynamic_provider" => executor.status.clone(),
             "unsupported" => "degraded".to_string(),
             _ => maintenance.status.clone(),
         };
@@ -363,6 +366,7 @@ fn reconcile_queue_once<E: EnvProvider, S: ProcessSupervisor>(
         let executor = queue_lifecycle::service::run_executor_tick_report(env)?;
         let status = match executor.status.as_str() {
             "missing_sqlite" | "executor_unconfigured" => executor.status.clone(),
+            "waiting_for_dynamic_provider" => executor.status.clone(),
             "unsupported" => "degraded".to_string(),
             _ => maintenance.status.clone(),
         };

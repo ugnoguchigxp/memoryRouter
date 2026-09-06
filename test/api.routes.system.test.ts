@@ -477,17 +477,27 @@ describe("API route contract tests", () => {
     });
 
     expect(response.status).toBe(200);
-    expect(updateSettingsForApi).toHaveBeenCalledWith(
-      expect.objectContaining({
-        settings: expect.objectContaining({
-          taskRouting: expect.objectContaining({
-            episodeDistiller: expect.objectContaining(settings.taskRouting.webSourceResearch),
-            mergeActivationFinalize: expect.objectContaining(settings.taskRouting.finalizeDistille),
-          }),
-        }),
-        updatedBy: "api-routes-test",
-      }),
-    );
+    expect(updateSettingsForApi).toHaveBeenCalledTimes(1);
+    const update = vi.mocked(updateSettingsForApi).mock.calls[0]?.[0];
+    expect(update?.updatedBy).toBe("api-routes-test");
+    expect(update?.settings.taskRouting.episodeDistiller).toMatchObject({
+      provider: settings.taskRouting.webSourceResearch.provider,
+      model: settings.taskRouting.webSourceResearch.model,
+      fallback: settings.taskRouting.webSourceResearch.fallback,
+    });
+    expect(update?.settings.taskRouting.mergeActivationFinalize).toMatchObject({
+      provider: settings.taskRouting.finalizeDistille.provider,
+      model: settings.taskRouting.finalizeDistille.model,
+      fallback: settings.taskRouting.finalizeDistille.fallback,
+    });
+    const episodeRoute = update?.settings.taskRouting.episodeDistiller;
+    const mergeRoute = update?.settings.taskRouting.mergeActivationFinalize;
+    expect(
+      episodeRoute && "providerPoolId" in episodeRoute ? episodeRoute.providerPoolId : undefined,
+    ).toBeUndefined();
+    expect(
+      mergeRoute && "providerPoolId" in mergeRoute ? mergeRoute.providerPoolId : undefined,
+    ).toBeUndefined();
   });
 
   test("POST /api/settings/providers/:provider/test returns provider health", async () => {

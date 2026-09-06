@@ -40,28 +40,32 @@ Expected desktop behavior:
 
 ## Backups
 
-SQLite backup is the default desktop backup path:
+Use the same `CONTEXT_STILL_APP_DATA_DIR` and absolute `CONTEXT_STILL_SQLITE_CORE_PATH` as the running application. Stop the resident writer before creating an offline backup; `backup create` refuses while its lock is held.
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run sqlite:backup
+cargo run -q -p context-stilld -- backup preflight --require-idle --json
+bun run sqlite:backup --json
 ```
 
-It writes a consistent `VACUUM INTO` snapshot after `PRAGMA integrity_check`.
+The returned `output` is the backup path under `<appDataDir>/backup/core-<timestamp>.sqlite`. The command checkpoints SQLite, checks integrity and creates a consistent `VACUUM INTO` snapshot. It does not accept `--output`.
 
-Inputs:
-
-- source: `CONTEXT_STILL_SQLITE_CORE_PATH`, `SQLITE_CORE_PATH`, `DB_SQLITE_PATH`, or the default `data/context-still-core.sqlite`
-- output: `data/backups/<sqlite-name>-<timestamp>.sqlite` by default
-
-Override output:
+Verify the returned file before relying on it:
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run sqlite:backup -- --output data/backups/context-still.sqlite
+bun run sqlite:backup:verify --path /absolute/path/from/output.sqlite --json
 ```
 
-Restore SQLite backups by stopping writers, replacing the configured SQLite DB file with the backup file, and restarting the app. If copying over a live WAL-mode database manually, remove stale sidecar files (`.sqlite-wal` / `.sqlite-shm`) with the old database after writers are stopped.
+Verification opens the standalone file read-only, creates no sidecars, checks integrity, foreign keys, supported schema version/revision and required tables, and returns SHA-256, byte size, Knowledge count and Source count. It rejects missing/corrupt files, files with pending WAL/journal data and unsupported schemas. It checks the digest again to detect concurrent modification. It does not repair or overwrite the file.
 
-The legacy `./scripts/backup-db.sh` script follows the configured backend. In SQLite mode it delegates to the same SQLite backup behavior; in PostgreSQL mode it keeps the Docker/pg_dump flow.
+Exercise the complete backup/restore flow with synthetic data:
+
+```bash
+bun run verify:onboarding
+```
+
+For an operational restore, first verify the backup, stop the resident process and API, and preserve the existing database **together with its WAL/SHM files** in a separate rollback directory. Copy the verified standalone backup into the configured database path, then start the resident process and check `bootstrap preflight`, `/api/health/ready`, and the expected knowledge records. Do not mix a restored database with the old WAL/SHM files. Keep the original copy until application-level checks pass. SQLite backup covers database records; separately preserve source Markdown/Git content, configuration and any externally stored credentials.
+
+The legacy `scripts/backup-db.sh` uses a separate TypeScript SQLite path. Use the Rust commands above for the current resident-writer workflow; PostgreSQL backup remains separate.
 
 ## Agent Log Sync
 

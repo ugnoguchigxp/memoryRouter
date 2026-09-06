@@ -10,6 +10,7 @@ This directory contains public-facing documentation for context-still.
 | [CLI Reference](cli.md) | Command inventory and examples |
 | [REST API Reference](api.md) | Local admin HTTP API endpoint inventory |
 | [Configuration](configuration.md) | Desktop defaults, product modes, and advanced configuration |
+| [Context Evaluation](context-evaluation.md) | Retrieval regression cases, paired model experiments, evidence and limitations |
 | [Operations](operations.md) | Desktop doctor, backups, automation, verification gates, and server backend operations |
 
 Internal implementation plans and design notes are intentionally kept in `../docs/`.

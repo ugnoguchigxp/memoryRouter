@@ -9,6 +9,7 @@ pub mod doctor;
 pub mod embedding_provider;
 pub mod mcp_lifecycle;
 pub mod process_lifecycle;
+pub mod provider_connection;
 pub mod queue_lifecycle;
 pub mod resident_runtime;
 pub mod runtime_identity;

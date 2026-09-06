@@ -22,6 +22,17 @@ pub fn handle_command<E: EnvProvider, S: ProcessSupervisor>(
                 Ok(report.to_text())
             }
         }
+        BackupAction::Verify { path } => {
+            let report = super::verification::verify(&path)?;
+            if json {
+                serde_json::to_string(&report).map_err(|error| CliError::runtime(error.to_string()))
+            } else {
+                Ok(format!(
+                    "SQLite backup verified: {} ({} bytes, sha256={})",
+                    report.path, report.bytes, report.sha256
+                ))
+            }
+        }
         BackupAction::Create => {
             let report = super::service::create(env, supervisor)?;
             if json {

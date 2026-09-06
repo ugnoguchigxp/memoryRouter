@@ -12,7 +12,7 @@ import { APP_CONSTANTS } from "./constants.js";
 import { projectIdentity, readProjectEnv, readProjectEnvWithFallback } from "./project-identity.js";
 import { resolveAdminApiKey } from "./shared/admin-api-key.js";
 
-loadEnv({ quiet: true });
+loadEnv({ quiet: true, path: process.env.DOTENV_CONFIG_PATH || ".env" });
 
 const distillationSearchProviderValues = new Set<DistillationSearchProvider>([
   "brave",

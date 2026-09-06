@@ -26,7 +26,7 @@ context-still は、AI コーディングエージェントの記憶を扱う lo
 
 - storage: ローカル app data 配下の SQLite
 - UI: local admin / control-plane 体験。Tauri packaging を desktop target として扱う
-- daemon: `context-stilld run` が resident runtime owner。Rust 移行中のため、一部の durable worker は分類済み TypeScript sidecar として実行する
+- daemon: `context-stilld run` がSQLiteの書き込み、MCP、キュー、ログ同期を所有する
 - MCP: ユーザーが有効化する任意の streamable HTTP agent integration
 - model usage: minimal local usage を先に成立させ、local LLM / cloud-assisted mode は任意の拡張にする
 
@@ -64,45 +64,55 @@ context-still は hosted SaaS ではありません。DB、source、settings、A
 
 ## デスクトップクイックスタート
 
-現時点の前提:
-
-- [Bun](https://bun.sh/) 1.3+
-
-clone して依存関係を入れます。
+Bun 1.3.14、Git、stable Rust（CargoとCコンパイラ）が必要です。
 
 ```bash
 git clone https://github.com/ugnoguchigxp/contextStill.git
 cd contextStill
-bun install
+bun install --frozen-lockfile
 ```
 
-最初の health check:
+1つ目のターミナルで専用の保存先を設定し、常駐プロセスを起動します。初回はキュー処理と個人ログの取り込みを無効にしています。
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run doctor
+export CONTEXT_STILL_APP_DATA_DIR="$PWD/data/local"
+export CONTEXT_STILL_SQLITE_CORE_PATH="$CONTEXT_STILL_APP_DATA_DIR/context-still-core.sqlite"
+export CONTEXT_STILL_DB_BACKEND=sqlite
+export CONTEXT_STILL_SOURCE_CONTENT_ROOT="$CONTEXT_STILL_APP_DATA_DIR/wiki"
+export CONTEXT_STILL_EMBEDDING_PROVIDER=disabled
+cargo build --locked -p context-stilld
+./target/debug/context-stilld bootstrap init --json
+CONTEXT_STILL_RESIDENT_QUEUE=0 CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC=0 \
+  ./target/debug/context-stilld run
 ```
 
-タスク用 context を compile:
+2つ目のターミナルで同じリポジトリを開き、同じ保存先を指定します。
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run compile --goal "このリポジトリの開発フローを把握したい" \
-  --change-types docs,plan \
-  --domains onboarding,workflow \
-  --json
+export CONTEXT_STILL_APP_DATA_DIR="$PWD/data/local"
+export CONTEXT_STILL_SQLITE_CORE_PATH="$CONTEXT_STILL_APP_DATA_DIR/context-still-core.sqlite"
+export CONTEXT_STILL_DB_BACKEND=sqlite
+export CONTEXT_STILL_SOURCE_CONTENT_ROOT="$CONTEXT_STILL_APP_DATA_DIR/wiki"
+export CONTEXT_STILL_EMBEDDING_PROVIDER=disabled
+./target/debug/context-stilld bootstrap preflight --json
+bun run compile --goal "understand this repository's development workflow" \
+  --repo-path "$PWD" --change-types docs,plan --domains onboarding,workflow --json
+bun run dev
 ```
 
-管理 UI と API を起動:
+http://localhost:39171 を開きます。知識が未登録なら、最初のcompile結果が空になるのは正常です。リポジトリを対象にするときは `--repo-path`、共通知識だけを対象にするときは `--global` を指定します。
+
+外部モデルを使わない場合は、知識を登録する前に **Settings → taskRouting → agenticCompile.runtime** の **enabled** をオフにして保存してください。上記の設定では埋め込みも無効です。独自の管理APIキーを設定している場合はログイン画面に入力します。
+
+`bootstrap init` はディレクトリを作成し、`run` がDBの初期化・移行と書き込みを担当します。`mcp start` 単独では書き込みサービスが起動しません。MCPクライアントへの登録は任意です。終了時は1つ目のターミナルでCtrl+Cを押します。
+
+一時ディレクトリで、初回compile、保存した知識の検索、障害からの復帰、バックアップ検証・復元を確認できます。
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run dev
+bun run verify:onboarding
 ```
 
-- UI: http://localhost:39171
-- API: 同一 origin の `/api/*`
-
-将来の Tauri shell は、同じ SQLite-first default、desktop data path、resident daemon boundary、doctor state を使います。packaging が入るまでは、local Bun/admin runtime が desktop product path の開発 baseline です。
-
-対話型の `startup` command は現時点では advanced server setup path です。desktop / local development では上記の明示的な SQLite commands を使ってください。
+Tauriのパッケージ化までは、このローカル環境を使ってください。対話型の `startup` はadvanced server向けです。
 
 ## Product Modes
 
@@ -128,10 +138,10 @@ Hono API は UI 向け facade に留めます。継続的な background work と
 
 ## MCP Integration
 
-daemon-owned MCP endpoint を起動:
+起動済みの常駐プロセスのMCP endpointを確認:
 
 ```bash
-cargo run -q -p context-stilld -- mcp start
+cargo run -q -p context-stilld -- mcp endpoint --json
 ```
 
 MCP client には次のように登録します。

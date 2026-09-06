@@ -28,7 +28,7 @@ describe("repository isolation producer manifest", () => {
     const manifest = loadRepositoryIsolationProducerManifest();
     const sources = [
       "crates/context-stilld/src/domains/agent_log_sync/store.rs",
-      "crates/context-stilld/src/domains/queue_lifecycle/episode_executor.rs",
+      "crates/context-stilld/src/domains/queue_lifecycle/episode_executor/persistence.rs",
       "crates/context-stilld/src/domains/mcp_lifecycle/native_knowledge.rs",
     ].map((file) => readFileSync(new URL(`../${file}`, import.meta.url), "utf8"));
 

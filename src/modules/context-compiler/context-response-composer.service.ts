@@ -1,3 +1,4 @@
+import { composerEvidence } from "./composer-evidence.js";
 import { groupedConfig } from "../../config.js";
 import type { CompileInput, RetrievalMode } from "../../shared/schemas/compile.schema.js";
 import type { ContextPackItem } from "../../shared/schemas/context-pack.schema.js";
@@ -532,7 +533,7 @@ function buildComposerUserPrompt(params: ComposeInput, plan: ComposePlan): strin
     for (const item of guardrails.slice(0, 4)) {
       lines.push(`- id: ${item.itemId}`);
       lines.push(`  title: ${item.title}`);
-      lines.push(`  summary: ${firstSentence(item.content, 180)}`);
+      lines.push(`  content: ${JSON.stringify(composerEvidence(item.content))}`);
     }
   }
   if (episodePrecedents.length > 0) {
@@ -540,7 +541,7 @@ function buildComposerUserPrompt(params: ComposeInput, plan: ComposePlan): strin
     for (const item of episodePrecedents.slice(0, 3)) {
       lines.push(`- id: ${item.itemId}`);
       lines.push(`  title: ${item.title}`);
-      lines.push(`  summary: ${firstSentence(item.content, 180)}`);
+      lines.push(`  content: ${JSON.stringify(composerEvidence(item.content))}`);
       if (item.sourceRefs.length > 0) {
         lines.push(`  sourceRefs: ${item.sourceRefs.slice(0, 3).join(" | ")}`);
       }
@@ -551,7 +552,7 @@ function buildComposerUserPrompt(params: ComposeInput, plan: ComposePlan): strin
     lines.push(`- id: ${item.itemId}`);
     lines.push(`  kind: ${item.itemKind}`);
     lines.push(`  title: ${item.title}`);
-    lines.push(`  summary: ${firstSentence(item.content, 160)}`);
+    lines.push(`  content: ${JSON.stringify(composerEvidence(item.content))}`);
   }
   return lines.join("\n");
 }

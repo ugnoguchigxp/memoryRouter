@@ -44,7 +44,8 @@ export type RuntimeSecretStatus = {
   updatedAt: string | null;
 };
 
-export type RuntimeSettingsRoute = {
+export type StaticRuntimeSettingsRoute = {
+  kind?: "static";
   provider: RuntimeProviderSetting;
   model?: string;
   localLlmModel?: string;
@@ -52,6 +53,34 @@ export type RuntimeSettingsRoute = {
   fallback: RuntimeProviderName[];
   azureDeploymentSlots?: number[];
 };
+
+export type LarmAgentConnectionRoute = {
+  kind: "larm-agent-connection";
+  connectionId: string;
+  provider?: never;
+  model?: never;
+  localLlmModel?: never;
+  providerPoolId?: never;
+  fallback?: never;
+  azureDeploymentSlots?: never;
+};
+
+export type RuntimeSettingsRoute = StaticRuntimeSettingsRoute | LarmAgentConnectionRoute;
+
+export function isLarmAgentConnectionRoute(
+  route: RuntimeSettingsRoute,
+): route is LarmAgentConnectionRoute {
+  return route.kind === "larm-agent-connection";
+}
+
+export function requireStaticRuntimeSettingsRoute(
+  route: RuntimeSettingsRoute,
+): StaticRuntimeSettingsRoute {
+  if (isLarmAgentConnectionRoute(route)) {
+    throw new Error(`dynamic_provider_requires_rust_resident: ${route.connectionId}`);
+  }
+  return route;
+}
 
 export type FindCandidateThrottlingSettings = {
   backgroundEnabled: boolean;
@@ -81,6 +110,19 @@ export type LocalLlmModelSettings = {
   model: string;
 };
 
+export type LarmAgentConnectionSettings = {
+  id: string;
+  controlBaseUrl: string;
+  agentProfile: string;
+  audience: string;
+  availabilityPollMs: number;
+  availabilityTimeoutMs: number;
+  controlTimeoutMs: number;
+  readyTimeoutMs: number;
+  ttlSeconds: number;
+  requestTimeoutMs: number;
+};
+
 export type RuntimeProviderPoolTarget =
   | {
       provider: "local-llm";
@@ -93,6 +135,10 @@ export type RuntimeProviderPoolTarget =
   | {
       provider: "openai" | "bedrock" | "codex";
       targetId: string;
+    }
+  | {
+      provider: "larm-agent-connection";
+      connectionId: string;
     };
 
 export type RuntimeProviderPool = {
@@ -106,7 +152,7 @@ export type RuntimeProviderPool = {
 };
 
 export type RuntimeEffectiveProviderTarget = {
-  provider: RuntimeProviderName;
+  provider: RuntimeProviderName | "larm-agent-connection";
   id: string;
   label: string;
   source: "route" | "provider_pool";
@@ -115,6 +161,7 @@ export type RuntimeEffectiveProviderTarget = {
   providerPoolId?: string;
   localLlmModelId?: string;
   deploymentSlot?: number;
+  connectionId?: string;
 };
 
 export type RuntimeEffectiveRouteTargets = {
@@ -199,6 +246,10 @@ export type RuntimeSettingsEditable = {
       apiPath: string;
       model: string;
       models: LocalLlmModelSettings[];
+    };
+    "larm-agent-connection": {
+      enabled: boolean;
+      connections: LarmAgentConnectionSettings[];
     };
     codex: {
       enabled: boolean;
@@ -343,14 +394,110 @@ const localLlmModelSchema = z.object({
   model: z.string().trim().min(1).or(z.literal("")),
 });
 
-const runtimeRouteSchema = z.object({
-  provider: runtimeProviderSettingSchema,
-  model: z.string().trim().min(1).optional(),
-  localLlmModel: z.string().trim().min(1).optional(),
-  providerPoolId: z.string().trim().min(1).max(120).optional(),
-  fallback: z.array(runtimeProviderSchema).max(8).default([]),
-  azureDeploymentSlots: z.array(z.number().int().min(1)).optional(),
-});
+const larmIdentifierSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(192)
+  .regex(/^[A-Za-z0-9._:-]+$/, "must be a valid LARM identifier");
+
+function isAllowedLarmControlHost(hostname: string): boolean {
+  const host = hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "")
+    .toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
+    return true;
+  }
+  if (host === "::1" || /^f[cd][0-9a-f:]+$/i.test(host) || /^fe[89ab][0-9a-f:]+$/i.test(host)) {
+    return true;
+  }
+  const octets = host.split(".").map(Number);
+  if (
+    octets.length !== 4 ||
+    octets.some((value) => !Number.isInteger(value) || value < 0 || value > 255)
+  ) {
+    return false;
+  }
+  return (
+    octets[0] === 10 ||
+    octets[0] === 127 ||
+    (octets[0] === 169 && octets[1] === 254) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+    (octets[0] === 192 && octets[1] === 168)
+  );
+}
+
+const larmAgentConnectionSchema = z
+  .object({
+    id: larmIdentifierSchema,
+    controlBaseUrl: z.string().trim().url(),
+    agentProfile: larmIdentifierSchema,
+    audience: larmIdentifierSchema,
+    availabilityPollMs: z.number().int().min(1_000).max(300_000).default(5_000),
+    availabilityTimeoutMs: z.number().int().min(250).max(30_000).default(2_000),
+    controlTimeoutMs: z.number().int().min(250).max(120_000).default(5_000),
+    readyTimeoutMs: z.number().int().min(1_000).max(900_000).default(180_000),
+    ttlSeconds: z.number().int().min(60).max(86_400).default(900),
+    requestTimeoutMs: z.number().int().min(1_000).max(3_600_000).default(300_000),
+  })
+  .strict()
+  .superRefine((connection, ctx) => {
+    let url: URL;
+    try {
+      url = new URL(connection.controlBaseUrl);
+    } catch {
+      return;
+    }
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      (url.pathname !== "/" && url.pathname !== "")
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["controlBaseUrl"],
+        message: "controlBaseUrl must be a canonical HTTP(S) origin without credentials or path",
+      });
+    }
+    if (!isAllowedLarmControlHost(url.hostname)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["controlBaseUrl"],
+        message: "controlBaseUrl host must be loopback, private, link-local, localhost, or .local",
+      });
+    }
+    if (connection.ttlSeconds * 1_000 < connection.requestTimeoutMs + 30_000) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ttlSeconds"],
+        message: "ttlSeconds must cover requestTimeoutMs plus a 30 second cleanup margin",
+      });
+    }
+  });
+
+const runtimeRouteSchema = z.union([
+  z
+    .object({
+      kind: z.literal("static").optional(),
+      provider: runtimeProviderSettingSchema,
+      model: z.string().trim().min(1).optional(),
+      localLlmModel: z.string().trim().min(1).optional(),
+      providerPoolId: z.string().trim().min(1).max(120).optional(),
+      fallback: z.array(runtimeProviderSchema).max(8).default([]),
+      azureDeploymentSlots: z.array(z.number().int().min(1)).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("larm-agent-connection"),
+      connectionId: larmIdentifierSchema,
+    })
+    .strict(),
+]);
 
 const runtimeProviderPoolTargetSchema = z.discriminatedUnion("provider", [
   z.object({
@@ -364,6 +511,10 @@ const runtimeProviderPoolTargetSchema = z.discriminatedUnion("provider", [
   z.object({
     provider: z.enum(["openai", "bedrock", "codex"] as const),
     targetId: z.string().trim().min(1).max(120),
+  }),
+  z.object({
+    provider: z.literal("larm-agent-connection"),
+    connectionId: larmIdentifierSchema,
   }),
 ]);
 
@@ -412,6 +563,12 @@ export const runtimeSettingsEditableSchema = z
         model: z.string().trim().min(1).or(z.literal("")),
         models: z.array(localLlmModelSchema).default([]),
       }),
+      "larm-agent-connection": z
+        .object({
+          enabled: z.boolean().default(false),
+          connections: z.array(larmAgentConnectionSchema).max(16).default([]),
+        })
+        .default({ enabled: false, connections: [] }),
       codex: z.object({
         enabled: z.boolean().default(false),
         model: z.string().trim().min(1).default("codex-sdk-agent"),
@@ -521,6 +678,98 @@ export const runtimeSettingsEditableSchema = z
           "llmMaxInputTokens と llmInputSafetyMarginTokens の合計は llmContextWindowTokens 以下にしてください",
       });
     }
+    const connectionIds = new Set<string>();
+    for (const [index, connection] of settings.providers[
+      "larm-agent-connection"
+    ].connections.entries()) {
+      if (connectionIds.has(connection.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["providers", "larm-agent-connection", "connections", index, "id"],
+          message: `duplicate LARM connection id: ${connection.id}`,
+        });
+      }
+      connectionIds.add(connection.id);
+    }
+    const staticLeaseTargetIds = new Set<string>([
+      "openai",
+      "bedrock",
+      "codex",
+      ...settings.providers["local-llm"].models.flatMap((model) =>
+        model.id?.trim() ? [model.id.trim()] : [],
+      ),
+      ...settings.providers["azure-openai"].deployments.map((_deployment, index) =>
+        String(index + 1),
+      ),
+      ...settings.providerPools.flatMap((pool) =>
+        pool.targets.flatMap((target) => {
+          if (target.provider === "larm-agent-connection") return [];
+          if (target.provider === "local-llm") return [target.localLlmModelId];
+          if (target.provider === "azure-openai") return [String(target.deploymentSlot)];
+          return [target.targetId];
+        }),
+      ),
+    ]);
+    for (const [poolIndex, pool] of settings.providerPools.entries()) {
+      for (const [targetIndex, target] of pool.targets.entries()) {
+        if (target.provider !== "larm-agent-connection") continue;
+        const path = ["providerPools", poolIndex, "targets", targetIndex];
+        if (!settings.providers["larm-agent-connection"].enabled) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path,
+            message: "LARM Agent Connection provider must be enabled for a pool target",
+          });
+        } else if (!connectionIds.has(target.connectionId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [...path, "connectionId"],
+            message: `unknown LARM connection id: ${target.connectionId}`,
+          });
+        } else if (staticLeaseTargetIds.has(target.connectionId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [...path, "connectionId"],
+            message: `LARM connection id collides with a static provider lease target: ${target.connectionId}`,
+          });
+        }
+      }
+    }
+    const routes: Array<[string, RuntimeSettingsRoute]> = [
+      ["findCandidate.source", settings.taskRouting.findCandidate.source],
+      ["findCandidate.vibe", settings.taskRouting.findCandidate.vibe],
+      ["webSourceResearch", settings.taskRouting.webSourceResearch],
+      ["episodeDistiller", settings.taskRouting.episodeDistiller],
+      ["coverEvidence.sourceSupport", settings.taskRouting.coverEvidence.sourceSupport],
+      ["coverEvidence.externalEvidence", settings.taskRouting.coverEvidence.externalEvidence],
+      ["coverEvidence.mcpEvidence", settings.taskRouting.coverEvidence.mcpEvidence],
+      ["deadZoneMergeReview", settings.taskRouting.deadZoneMergeReview],
+      ["landscapeCuration", settings.taskRouting.landscapeCuration],
+      ["finalizeDistille", settings.taskRouting.finalizeDistille],
+      ["mergeActivationFinalize", settings.taskRouting.mergeActivationFinalize],
+    ];
+    for (const [path, route] of routes) {
+      if (route.kind !== "larm-agent-connection") continue;
+      if (!settings.providers["larm-agent-connection"].enabled) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["taskRouting", ...path.split(".")],
+          message: "LARM Agent Connection provider must be enabled for a dynamic route",
+        });
+      } else if (!connectionIds.has(route.connectionId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["taskRouting", ...path.split("."), "connectionId"],
+          message: `unknown LARM connection id: ${route.connectionId}`,
+        });
+      } else if (staticLeaseTargetIds.has(route.connectionId)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["taskRouting", ...path.split("."), "connectionId"],
+          message: `LARM connection id collides with a static provider lease target: ${route.connectionId}`,
+        });
+      }
+    }
   });
 
 export const runtimeSecretUpdateSchema = z
@@ -541,6 +790,12 @@ function objectRecord(value: unknown): Record<string, unknown> | null {
 function cloneRouteInput(value: unknown): unknown {
   const route = objectRecord(value);
   if (!route) return value;
+  if (route.kind === "larm-agent-connection") {
+    return {
+      kind: "larm-agent-connection",
+      connectionId: route.connectionId,
+    };
+  }
   return {
     ...route,
     fallback: Array.isArray(route.fallback) ? [...route.fallback] : route.fallback,

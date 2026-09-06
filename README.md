@@ -26,7 +26,7 @@ The default product path is desktop/local:
 
 - storage: SQLite in a local app data path
 - UI: local admin/control-plane experience, with Tauri packaging as the desktop target
-- daemon: `context-stilld run` is the resident runtime owner; several durable workers still execute as classified TypeScript sidecars while the Rust migration continues
+- daemon: `context-stilld run` owns the resident SQLite writer, MCP endpoint, queues, and log sync
 - MCP: optional streamable HTTP agent integration enabled by the user
 - model usage: minimal local usage first, with local LLM and cloud-assisted modes as optional upgrades
 
@@ -65,51 +65,61 @@ context-still is local-first software, not a hosted SaaS. You control the databa
 
 ## Desktop Quick Start
 
-Current prerequisite:
-
-- [Bun](https://bun.sh/) 1.3+
-
-Clone and install dependencies:
+Requirements: Bun 1.3.14, Git, and the stable Rust toolchain (Cargo and a native C compiler).
 
 ```bash
 git clone https://github.com/ugnoguchigxp/contextStill.git
 cd contextStill
-bun install
+bun install --frozen-lockfile
 ```
 
-Run a first health check:
+In the first terminal, initialize a dedicated local data directory and keep the resident writer running. Background queue execution and personal log import are disabled for this first run:
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run doctor
+export CONTEXT_STILL_APP_DATA_DIR="$PWD/data/local"
+export CONTEXT_STILL_SQLITE_CORE_PATH="$CONTEXT_STILL_APP_DATA_DIR/context-still-core.sqlite"
+export CONTEXT_STILL_DB_BACKEND=sqlite
+export CONTEXT_STILL_SOURCE_CONTENT_ROOT="$CONTEXT_STILL_APP_DATA_DIR/wiki"
+export CONTEXT_STILL_EMBEDDING_PROVIDER=disabled
+cargo build --locked -p context-stilld
+./target/debug/context-stilld bootstrap init --json
+CONTEXT_STILL_RESIDENT_QUEUE=0 CONTEXT_STILL_RESIDENT_AGENT_LOG_SYNC=0 \
+  ./target/debug/context-stilld run
 ```
 
-Compile context for a task:
+In a second terminal, open the same repository and use the same absolute paths:
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run compile --goal "understand this repository's development workflow" \
-  --change-types docs,plan \
-  --domains onboarding,workflow \
-  --json
+export CONTEXT_STILL_APP_DATA_DIR="$PWD/data/local"
+export CONTEXT_STILL_SQLITE_CORE_PATH="$CONTEXT_STILL_APP_DATA_DIR/context-still-core.sqlite"
+export CONTEXT_STILL_DB_BACKEND=sqlite
+export CONTEXT_STILL_SOURCE_CONTENT_ROOT="$CONTEXT_STILL_APP_DATA_DIR/wiki"
+export CONTEXT_STILL_EMBEDDING_PROVIDER=disabled
+./target/debug/context-stilld bootstrap preflight --json
+bun run compile --goal "understand this repository's development workflow" \
+  --repo-path "$PWD" --change-types docs,plan --domains onboarding,workflow --json
+bun run dev
 ```
 
-Start the local admin UI and API:
+Open http://localhost:39171. The API shares that origin under `/api/*`. An empty database returns an empty context pack; this is expected until knowledge has been added. `--repo-path` is required for repository-specific retrieval; `--global` explicitly selects global knowledge only.
+
+For use without model calls, open **Settings → taskRouting → agenticCompile.runtime**, turn **enabled** off, and save before compiling populated knowledge. Embeddings are disabled by the environment above. A configured custom admin key is entered in the sign-in form; the built-in local key signs in automatically.
+
+`bootstrap init` creates directories. The resident `run` command initializes/migrates SQLite and owns its writer; `mcp start` by itself does not start that writer. Client registration remains optional. Stop the first terminal with Ctrl+C when finished.
+
+The automated equivalent runs in a temporary directory, retrieves newly saved knowledge, checks outage/recovery, and verifies a backup and restore without provider calls:
 
 ```bash
-CONTEXT_STILL_DB_BACKEND=sqlite bun run dev
+bun run verify:onboarding
 ```
 
-- UI: http://localhost:39171
-- API: same origin under `/api/*`
-
-The future Tauri shell should use the same SQLite-first defaults, desktop data paths, resident daemon boundary, and doctor states. Until packaging exists, the local Bun/admin runtime is the development baseline for the desktop product path.
-
-The interactive `startup` command currently follows the advanced server setup path. Use the explicit SQLite commands above for desktop/local development.
+The Tauri shell remains a packaging target. For the current development runtime, follow these SQLite commands; interactive `startup` still targets the advanced server path.
 
 ## Product Modes
 
 | Mode | Purpose | Required setup |
 |---|---|---|
-| `minimal` | SQLite + local sources + manual/MCP candidates + context compile | Bun and local SQLite path |
+| `minimal` | SQLite + local sources + manual/MCP candidates + context compile | Bun, Rust and a local SQLite path |
 | `cloud-review` | Cloud LLM assisted distillation, review, and decision support | Provider credentials and route settings |
 | `local-llm` | Local LLM / local embedding assisted distillation | Local OpenAI-compatible endpoint and/or embedding service |
 
@@ -129,10 +139,10 @@ The Hono API should stay a UI-facing facade. Durable background work and externa
 
 ## MCP Integration
 
-Start the daemon-owned local MCP endpoint:
+The resident process in the quick start already serves MCP. Confirm its endpoint:
 
 ```bash
-cargo run -q -p context-stilld -- mcp start
+cargo run -q -p context-stilld -- mcp endpoint --json
 ```
 
 For an MCP client, use:

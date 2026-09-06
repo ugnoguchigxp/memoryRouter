@@ -26,8 +26,11 @@ Run commands from the repository root.
 | `cargo run -q -p context-stilld -- bootstrap preflight --json` | Read-only first-run readiness summary |
 | `cargo run -q -p context-stilld -- bootstrap init --json` | Explicitly create app data/logs/run/backup directories |
 | `cargo run -q -p context-stilld -- doctor summary --json` | Desktop-focused summary that delegates full detail to `bun run doctor` |
-| `cargo run -q -p context-stilld -- backup preflight --json` | Check SQLite path and active managed writers before TypeScript backup |
+| `cargo run -q -p context-stilld -- backup preflight --json` | Check SQLite path and active managed writers before an offline Rust backup |
 | `cargo run -q -p context-stilld -- backup preflight --require-idle --json` | Fail if Rust-managed writer processes are active |
+| `bun run sqlite:backup --json` | Create an offline backup after stopping the resident writer |
+| `bun run sqlite:backup:verify --path /absolute/backup.sqlite --json` | Verify integrity, references, schema and SHA-256 without modifying the file |
+| `bun run verify:onboarding` | Isolated first-use, dependency recovery and backup/restore smoke |
 | `cargo run -q -p context-stilld -- mcp endpoint --json` | Print the daemon-owned streamable HTTP MCP endpoint URL and readiness |
 | `cargo run -q -p context-stilld -- mcp status --json` | Report the managed MCP endpoint worker state |
 | `cargo run -q -p context-stilld -- mcp sessions --json` | List daemon-visible MCP sessions and close reasons |
@@ -55,7 +58,7 @@ The `CONTEXT_STILL_DAEMON_MANAGED_MCP`, `CONTEXT_STILL_DAEMON_MANAGED_QUEUE`, `C
 
 | Command | Description |
 |---|---|
-| `bun run compile --goal "<goal>"` | Compile task-specific context |
+| `bun run compile --goal "<goal>" --repo-path "$PWD"` | Compile task-specific context |
 | `bun run eval:context` | Run deterministic context evaluation tooling |
 | `bun run import:wiki <path>` | Import Markdown source tree |
 | `bun run import:markdown <file>` | Import one Markdown file |
@@ -130,6 +133,7 @@ The `CONTEXT_STILL_DAEMON_MANAGED_MCP`, `CONTEXT_STILL_DAEMON_MANAGED_QUEUE`, `C
 
 ```bash
 bun run compile --goal "fix context compiler ranking" \
+  --repo-path "$PWD" \
   --change-types bugfix,backend \
   --technologies bun,typescript \
   --domains context-compiler \

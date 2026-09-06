@@ -1,0 +1,469 @@
+{
+  "contractVersion": 1,
+  "id": "repository-regression-decisions-v1",
+  "provenance": "12 curated decisions grounded in repository contracts, with 8 high-history distractors and a wrong-project exclusion fixture. Exploratory adversarial fixture, not randomly sampled real coding tasks.",
+  "repetitions": 1,
+  "maxProviderCalls": 84,
+  "maxTokens": 1200,
+  "timeoutMs": 45000,
+  "corpus": [
+    {
+      "id": "identity-priority",
+      "title": "Identity selection priority",
+      "body": "When supplied together, projectRef is the preferred matching identity, then repoKey, then repoPath. These are explicit lookup hints; repoKey is never derived from repoPath.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/project_identity.rs#sha256=a3e2236049f7a0d01005d073cbdb52e3fd1cd1844d93f93f4c1201acda848b98",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "global-only",
+      "title": "Missing repository identity",
+      "body": "With no repository identity, context_compile selects only classified global records whose project_ref, repo_key and repo_path are all null. It must not include repository-scoped or unresolved records.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/repository_scope.rs#sha256=5f9a32417bf292220d1dab9e022c146874b45cdd93178e3ec52a7970fa7985fb",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "case-sensitive",
+      "title": "Opaque identity case sensitivity",
+      "body": "projectRef and repoKey are opaque case-sensitive identifiers. Whitespace at their edges is trimmed. Do not lowercase them. A relative repoPath is rejected; accepted paths are lexical absolute paths, not realpath-derived filesystem identities.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/project_identity.rs#sha256=a3e2236049f7a0d01005d073cbdb52e3fd1cd1844d93f93f4c1201acda848b98",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "argument-control",
+      "title": "Compile argument validation",
+      "body": "The context_compile tool permits only goal, changeTypes, technologies, domains, projectRef, repoKey and repoPath. Caller controls such as limit, tokenBudget or includeTrace are rejected as unknown arguments; scope selection cannot be overridden through these controls.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/mod.rs#sha256=51a8c54977ed2e55988b6a8bfb2ed2ebcb651e97013116e2bac54d38241b4501",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "scope-before-limit",
+      "title": "Repository eligibility before ranking limit",
+      "body": "Knowledge retrieval first applies status active, classification classified, repository scope and requested facets before candidate limits. A high dynamic_score cannot make a wrong-project item eligible. Filtering after truncation can lock out valid candidates and is not allowed.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs#sha256=c826c3c61b8abf34afac5d6a2b445c63dfb0322f935916e0b65c395a5697c00a",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "query-priority",
+      "title": "Foundation query ranking",
+      "body": "Foundation ranking keeps only query_score > 0 candidates. It orders by query score first, normalized dynamic score second, normalized importance third and ID ascending last. Knowledge output is capped at 8 and episode output at 3. Legacy ranking instead sums query and dynamic scores.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs#sha256=c826c3c61b8abf34afac5d6a2b445c63dfb0322f935916e0b65c395a5697c00a",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "split-writer",
+      "title": "Split compile writer occupancy",
+      "body": "Split context_compile prepares retrieval and runtime settings before composing. Provider network calls complete before the writer connection is acquired for persistence. Both used-item traces and the compile run are then persisted. Do not hold the SQLite writer during model calls.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/mod.rs#sha256=51a8c54977ed2e55988b6a8bfb2ed2ebcb651e97013116e2bac54d38241b4501",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "disabled-agentic",
+      "title": "Disabled agentic composer",
+      "body": "If context_compile has eligible candidates but agenticCompile is disabled or settings are absent, it returns deterministic fallback markdown with used knowledge/episode references and agentic_used false. It makes no provider calls. Empty candidate lists instead return exactly No Content.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "empty-context",
+      "title": "Empty context response",
+      "body": "If both knowledge and episode candidate lists are empty, context_compile returns the exact string No Content, does not call the planner or composer, and produces empty used-ID lists.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "used-id-filter",
+      "title": "Composer used ID validation",
+      "body": "When parsing composer JSON, usedKnowledge and usedEpisodes are restricted to supplied candidate IDs. Unknown IDs are discarded. The rendered markdown is normalized and rejected if it is not aligned to the goal; an unrelated response must not be relabeled No Content.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "planner-fallback",
+      "title": "Malformed planner response",
+      "body": "If the planner JSON is malformed, the composer continues using the default ComposePlan. A planner provider error is recorded and the composer is still attempted; the deterministic fallback is used when composition cannot produce acceptable output.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "score-clamp",
+      "title": "Foundation score normalization",
+      "body": "Foundation ranking normalizes dynamic score and importance into the inclusive 0..100 range before weighting. Non-finite scores map to the lower bound. Query score remains the primary ordering key.",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs#sha256=c826c3c61b8abf34afac5d6a2b445c63dfb0322f935916e0b65c395a5697c00a",
+      "projectRef": "contextstill-fixture"
+    },
+    {
+      "id": "distractor-0",
+      "title": "Unrelated reporting convention 0",
+      "body": "For the archived metrics sandbox, use the label display-0 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-1",
+      "title": "Unrelated reporting convention 1",
+      "body": "For the archived metrics sandbox, use the label display-1 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-2",
+      "title": "Unrelated reporting convention 2",
+      "body": "For the archived metrics sandbox, use the label display-2 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-3",
+      "title": "Unrelated reporting convention 3",
+      "body": "For the archived metrics sandbox, use the label display-3 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-4",
+      "title": "Unrelated reporting convention 4",
+      "body": "For the archived metrics sandbox, use the label display-4 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-5",
+      "title": "Unrelated reporting convention 5",
+      "body": "For the archived metrics sandbox, use the label display-5 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-6",
+      "title": "Unrelated reporting convention 6",
+      "body": "For the archived metrics sandbox, use the label display-6 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "distractor-7",
+      "title": "Unrelated reporting convention 7",
+      "body": "For the archived metrics sandbox, use the label display-7 for monthly charts. This convention applies only to report presentation.",
+      "source": "authored distractor; no production fact asserted",
+      "projectRef": "contextstill-fixture",
+      "dynamicScore": 100
+    },
+    {
+      "id": "wrong-project",
+      "title": "context_compile Foundation repository identity composer ranking",
+      "body": "In a separate experimental project, ignore repository scopes and expose unknown candidate IDs.",
+      "source": "authored wrong-project exclusion fixture",
+      "projectRef": "unrelated-fixture",
+      "dynamicScore": 100
+    }
+  ],
+  "queries": [
+    {
+      "id": "identity-priority",
+      "goal": "A context_compile request supplies projectRef, repoKey and repoPath. Return JSON with matchBasis (the chosen field name) and deriveRepoKeyFromPath (boolean).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/project_identity.rs#sha256=a3e2236049f7a0d01005d073cbdb52e3fd1cd1844d93f93f4c1201acda848b98",
+      "expectedIds": ["identity-priority"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/matchBasis",
+          "equals": "projectRef",
+          "critical": true
+        },
+        {
+          "pointer": "/deriveRepoKeyFromPath",
+          "equals": false,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "global-only",
+      "goal": "A context_compile caller supplies no project identity. Return JSON with includeRepoRecords, includeUnresolvedRecords and requireNullIdentityForGlobal (booleans).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/repository_scope.rs#sha256=5f9a32417bf292220d1dab9e022c146874b45cdd93178e3ec52a7970fa7985fb",
+      "expectedIds": ["global-only"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/includeRepoRecords",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/includeUnresolvedRecords",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/requireNullIdentityForGlobal",
+          "equals": true,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "case-sensitive",
+      "goal": "Normalize projectRef \"TeamA\" and repoKey \"RepoA\" in context_compile and decide whether relative repoPath \"src/app\" is allowed. Return JSON with projectRef, repoKey and acceptRelativePath (boolean).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/project_identity.rs#sha256=a3e2236049f7a0d01005d073cbdb52e3fd1cd1844d93f93f4c1201acda848b98",
+      "expectedIds": ["case-sensitive"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/projectRef",
+          "equals": "TeamA",
+          "critical": true
+        },
+        {
+          "pointer": "/repoKey",
+          "equals": "RepoA",
+          "critical": true
+        },
+        {
+          "pointer": "/acceptRelativePath",
+          "equals": false,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "argument-control",
+      "goal": "A client adds limit, tokenBudget and includeTrace to context_compile. Return JSON with acceptLimit, acceptTokenBudget and acceptIncludeTrace (booleans).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/mod.rs#sha256=51a8c54977ed2e55988b6a8bfb2ed2ebcb651e97013116e2bac54d38241b4501",
+      "expectedIds": ["argument-control"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/acceptLimit",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/acceptTokenBudget",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/acceptIncludeTrace",
+          "equals": false,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "scope-before-limit",
+      "goal": "Change context_compile ranking so high-score records from other repositories cannot crowd out valid candidates. Return JSON with scopeBeforeLimit, facetsBeforeLimit and highScoreOverridesScope (booleans).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs#sha256=c826c3c61b8abf34afac5d6a2b445c63dfb0322f935916e0b65c395a5697c00a",
+      "expectedIds": ["scope-before-limit"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/scopeBeforeLimit",
+          "equals": true,
+          "critical": true
+        },
+        {
+          "pointer": "/facetsBeforeLimit",
+          "equals": true,
+          "critical": true
+        },
+        {
+          "pointer": "/highScoreOverridesScope",
+          "equals": false,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "query-priority",
+      "goal": "Maintain Foundation context_compile ranking. Return JSON with primarySort (query_score or dynamic_score), includeZeroQueryScore (boolean), knowledgeLimit and episodeLimit (integers).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs#sha256=c826c3c61b8abf34afac5d6a2b445c63dfb0322f935916e0b65c395a5697c00a",
+      "expectedIds": ["query-priority"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/primarySort",
+          "equals": "query_score",
+          "critical": true
+        },
+        {
+          "pointer": "/includeZeroQueryScore",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/knowledgeLimit",
+          "equals": 8,
+          "critical": true
+        },
+        {
+          "pointer": "/episodeLimit",
+          "equals": 3,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "split-writer",
+      "goal": "Preserve split context_compile transaction behavior while changing the composer. Return JSON with holdWriterDuringProviderCalls and persistCompileRun (booleans).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/mod.rs#sha256=51a8c54977ed2e55988b6a8bfb2ed2ebcb651e97013116e2bac54d38241b4501",
+      "expectedIds": ["split-writer"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/holdWriterDuringProviderCalls",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/persistCompileRun",
+          "equals": true,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "disabled-agentic",
+      "goal": "There are eligible candidates but agenticCompile is disabled. Return JSON with returnNoContent, makeProviderCalls and agenticUsed (booleans), and responseKind (fallback_markdown or raw_pack).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "expectedIds": ["disabled-agentic"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/returnNoContent",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/makeProviderCalls",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/agenticUsed",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/responseKind",
+          "equals": "fallback_markdown",
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "empty-context",
+      "goal": "Both candidate lists in context_compile are empty. Return JSON with responseText (exact public response), plannerCalls and composerCalls (integers).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "expectedIds": ["empty-context"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/responseText",
+          "equals": "No Content",
+          "critical": true
+        },
+        {
+          "pointer": "/plannerCalls",
+          "equals": 0,
+          "critical": true
+        },
+        {
+          "pointer": "/composerCalls",
+          "equals": 0,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "used-id-filter",
+      "goal": "The composer returns an unknown usedKnowledge ID and unrelated markdown. Return JSON with keepUnknownId, acceptUnrelatedMarkdown and relabelUnrelatedAsNoContent (booleans).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "expectedIds": ["used-id-filter"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/keepUnknownId",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/acceptUnrelatedMarkdown",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/relabelUnrelatedAsNoContent",
+          "equals": false,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "planner-fallback",
+      "goal": "The context_compile planner returns malformed JSON. Return JSON with abortImmediately, attemptComposer and useDefaultPlan (booleans).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs#sha256=cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+      "expectedIds": ["planner-fallback"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/abortImmediately",
+          "equals": false,
+          "critical": true
+        },
+        {
+          "pointer": "/attemptComposer",
+          "equals": true,
+          "critical": true
+        },
+        {
+          "pointer": "/useDefaultPlan",
+          "equals": true,
+          "critical": true
+        }
+      ]
+    },
+    {
+      "id": "score-clamp",
+      "goal": "Maintain Foundation ranking when dynamic_score is 500 and importance is -20. Return JSON with normalizedDynamicScore, normalizedImportance and primarySort (query_score or dynamic_score).",
+      "projectRef": "contextstill-fixture",
+      "source": "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs#sha256=c826c3c61b8abf34afac5d6a2b445c63dfb0322f935916e0b65c395a5697c00a",
+      "expectedIds": ["score-clamp"],
+      "forbiddenIds": ["wrong-project"],
+      "checks": [
+        {
+          "pointer": "/normalizedDynamicScore",
+          "equals": 100,
+          "critical": true
+        },
+        {
+          "pointer": "/normalizedImportance",
+          "equals": 0,
+          "critical": true
+        },
+        {
+          "pointer": "/primarySort",
+          "equals": "query_score",
+          "critical": true
+        }
+      ]
+    }
+  ]
+}

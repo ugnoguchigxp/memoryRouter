@@ -141,7 +141,11 @@
     "verify:full": "bun run verify && bun run verify:sqlite && bun run verify:rust-daemon",
     "test:mcp:contract": "DATABASE_URL=${CONTEXT_STILL_TEST_DATABASE_URL:-postgres://postgres:postgres@localhost:7889/context_still_test} CONTEXT_STILL_RUN_DB_TESTS=1 bun test --timeout=30000 --max-concurrency=1 test/mcp.contract.test.ts",
     "coverage:rust": "cargo llvm-cov -p context-stilld --summary-only",
-    "coverage:rust:html": "cargo llvm-cov -p context-stilld --html --output-dir target/llvm-cov/html"
+    "coverage:rust:html": "cargo llvm-cov -p context-stilld --html --output-dir target/llvm-cov/html",
+    "maintainability:check": "bun scripts/verify-maintainability.mjs",
+    "test:context-effectiveness": "cargo test -p context-stilld native_compile::experiment",
+    "verify:onboarding": "bun --no-env-file scripts/verify-onboarding.mjs",
+    "sqlite:backup:verify": "cargo run -q -p context-stilld -- backup verify"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "3.1047.0",

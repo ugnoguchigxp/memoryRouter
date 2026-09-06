@@ -33,7 +33,9 @@ API request bodies are capped at 16 MiB. The admin-session exchange applies a na
 |---|---|---|
 | `GET` | `/api/health` | Basic health |
 | `GET` | `/api/health/live` | Liveness probe |
-| `GET` | `/api/health/ready` | Readiness probe |
+| `GET` | `/api/health/ready` | 200 when database/schema and SQLite writer are available; otherwise 503 |
+
+Readiness uses read-only schema probes and an authenticated query through the SQLite writer, including confirmation that the reader and writer refer to the same canonical database path. Each dependency has a 1.5-second response budget; optional LLM/embedding services are excluded. PostgreSQL checks its own database/schema and does not require a SQLite writer. Failure responses expose only `database`/`writer` states (`ok` or `unavailable`), without raw dependency errors or paths, and use `Cache-Control: no-store`. Liveness remains 200 during dependency outages. A recovered writer or a database initialized after API startup is checked again automatically.
 
 ## Context Compile
 

@@ -3,6 +3,7 @@ import type { DistillationSearchProvider } from "../../config.types.js";
 import { projectEnvKey } from "../../project-identity.js";
 import { bootstrap, cloneDefaultSettings, secretRowKeys } from "./settings.defaults.js";
 import type { SettingsRow } from "./settings.repository.js";
+import { isLarmAgentConnectionRoute } from "./settings.types.js";
 import type {
   RuntimeEffectiveProviderTarget,
   RuntimeEffectiveRouteTargets,
@@ -16,6 +17,7 @@ import type {
   RuntimeSettingsEffectiveTargets,
   RuntimeSettingsRoute,
   RuntimeSettingsView,
+  StaticRuntimeSettingsRoute,
 } from "./settings.types.js";
 
 export type SecretValueEntry = {
@@ -92,7 +94,7 @@ function findLocalLlmModel(
   );
 }
 
-function localLlmRouteTargetValue(route: RuntimeSettingsRoute): string | undefined {
+function localLlmRouteTargetValue(route: StaticRuntimeSettingsRoute): string | undefined {
   const raw = route.localLlmModel?.trim() || route.model?.trim();
   if (!raw) return undefined;
   try {
@@ -114,6 +116,12 @@ function targetLabelForProviderPoolTarget(
   settings: RuntimeSettingsEditable,
   target: RuntimeProviderPoolTarget,
 ): string {
+  if (target.provider === "larm-agent-connection") {
+    const connection = settings.providers["larm-agent-connection"].connections.find(
+      (item) => item.id === target.connectionId,
+    );
+    return connection?.agentProfile ?? target.connectionId;
+  }
   if (target.provider === "local-llm") {
     const model = findLocalLlmModel(settings, target.localLlmModelId);
     return model?.name.trim() || model?.model.trim() || target.localLlmModelId;
@@ -134,6 +142,21 @@ function resolveProviderPoolTarget(
   target: RuntimeProviderPoolTarget,
   providerPoolId: string,
 ): RuntimeEffectiveProviderTarget {
+  if (target.provider === "larm-agent-connection") {
+    const connection = settings.providers["larm-agent-connection"].connections.find(
+      (item) => item.id === target.connectionId,
+    );
+    return {
+      provider: "larm-agent-connection",
+      id: `provider-pool:${providerPoolId}:larm-agent-connection:${target.connectionId}`,
+      label: targetLabelForProviderPoolTarget(settings, target),
+      source: "provider_pool",
+      model: connection?.agentProfile ?? null,
+      endpoint: connection?.controlBaseUrl ?? null,
+      providerPoolId,
+      connectionId: target.connectionId,
+    };
+  }
   if (target.provider === "local-llm") {
     const model = findLocalLlmModel(settings, target.localLlmModelId);
     return {
@@ -175,6 +198,22 @@ function resolveDirectRouteTarget(
   settings: RuntimeSettingsEditable,
   route: RuntimeSettingsRoute,
 ): RuntimeEffectiveProviderTarget[] {
+  if (isLarmAgentConnectionRoute(route)) {
+    const connection = settings.providers["larm-agent-connection"].connections.find(
+      (item) => item.id === route.connectionId,
+    );
+    return [
+      {
+        provider: "larm-agent-connection",
+        id: `route:larm-agent-connection:${route.connectionId}`,
+        label: connection?.agentProfile ?? route.connectionId,
+        source: "route",
+        model: connection?.agentProfile ?? null,
+        endpoint: connection?.controlBaseUrl ?? null,
+        connectionId: route.connectionId,
+      },
+    ];
+  }
   if (route.provider === "auto") return [];
   if (route.provider === "local-llm") {
     const value = localLlmRouteTargetValue(route);
@@ -231,6 +270,9 @@ function resolveEffectiveRouteTargets(
   settings: RuntimeSettingsEditable,
   route: RuntimeSettingsRoute,
 ): RuntimeEffectiveRouteTargets {
+  if (isLarmAgentConnectionRoute(route)) {
+    return { source: "route", targets: resolveDirectRouteTarget(settings, route) };
+  }
   if (route.providerPoolId?.trim()) {
     const providerPoolId = route.providerPoolId.trim();
     const pool = settings.providerPools.find((item) => item.id === providerPoolId);
@@ -359,6 +401,16 @@ function unresolvedProviderPoolTarget(
   settings: RuntimeSettingsEditable,
   target: RuntimeProviderPoolTarget,
 ): string | null {
+  if (target.provider === "larm-agent-connection") {
+    const connection = settings.providers["larm-agent-connection"].connections.find(
+      (item) => item.id === target.connectionId,
+    );
+    if (!connection) return `LARM connection ${target.connectionId} is not configured`;
+    if (!connection.controlBaseUrl.trim() || !connection.agentProfile.trim()) {
+      return `LARM connection ${target.connectionId} is missing control endpoint or profile`;
+    }
+    return null;
+  }
   if (target.provider === "local-llm") {
     const model = findLocalLlmModel(settings, target.localLlmModelId);
     if (!model) return `Local LLM model ${target.localLlmModelId} is not configured`;
@@ -385,6 +437,24 @@ function buildRuntimeDiagnostics(settings: RuntimeSettingsEditable): RuntimeSett
   const emittedPoolTargetWarnings = new Set<string>();
 
   for (const entry of routeDiagnosticEntries(settings)) {
+    if (isLarmAgentConnectionRoute(entry.route)) {
+      const connectionId = entry.route.connectionId;
+      const connection = settings.providers["larm-agent-connection"].connections.find(
+        (item) => item.id === connectionId,
+      );
+      if (!settings.providers["larm-agent-connection"].enabled || !connection) {
+        diagnostics.push({
+          severity: "error",
+          code: connection ? "larm_provider_disabled" : "larm_connection_missing",
+          path: `${entry.path}.connectionId`,
+          message: connection
+            ? `${entry.path} uses LARM Agent Connection while the provider is disabled.`
+            : `${entry.path} references missing LARM connection "${connectionId}".`,
+          details: { connectionId },
+        });
+      }
+      continue;
+    }
     const providerPoolId = entry.route.providerPoolId?.trim();
     if (!providerPoolId) continue;
     const pool = poolsById.get(providerPoolId);
@@ -413,6 +483,15 @@ function buildRuntimeDiagnostics(settings: RuntimeSettingsEditable): RuntimeSett
         code: "provider_pool_empty",
         path: `providerPools.${providerPoolId}.targets`,
         message: `Provider pool "${providerPoolId}" has no targets for ${entry.path}.`,
+        details: { providerPoolId },
+      });
+    }
+    if (pool.targets.some((target) => target.provider === "larm-agent-connection")) {
+      diagnostics.push({
+        severity: "error",
+        code: "larm_provider_pool_unsupported",
+        path: `${entry.path}.providerPoolId`,
+        message: `${entry.path} references a LARM provider pool. Dynamic execution is supported only through a direct LARM route, so the entire mixed pool remains fail-closed.`,
         details: { providerPoolId },
       });
     }
@@ -574,9 +653,13 @@ export function applyRuntimeSettingsToProcess(
   groupedConfig.agenticCompile.provider = settings.taskRouting.agenticCompile.provider;
   groupedConfig.agenticCompile.timeoutMs = settings.taskRouting.agenticCompile.timeoutMs;
   groupedConfig.agenticCompile.maxTokens = settings.taskRouting.agenticCompile.maxTokens;
-  groupedConfig.distillation.provider = settings.taskRouting.finalizeDistille.provider;
-  groupedConfig.distillation.findCandidateProvider =
-    settings.taskRouting.findCandidate.source.provider;
+  if (!isLarmAgentConnectionRoute(settings.taskRouting.finalizeDistille)) {
+    groupedConfig.distillation.provider = settings.taskRouting.finalizeDistille.provider;
+  }
+  if (!isLarmAgentConnectionRoute(settings.taskRouting.findCandidate.source)) {
+    groupedConfig.distillation.findCandidateProvider =
+      settings.taskRouting.findCandidate.source.provider;
+  }
   groupedConfig.distillation.findCandidateBackgroundEnabled =
     settings.taskRouting.findCandidate.throttling.backgroundEnabled;
   groupedConfig.distillation.findCandidateInteractiveWindowSeconds =

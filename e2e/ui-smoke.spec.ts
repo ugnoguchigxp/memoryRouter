@@ -1,10 +1,14 @@
 import { expect, test } from "@playwright/test";
+import { signIn } from "./helpers";
 
-test("Knowledge and sources pages show core UI", async ({ page }) => {
-  await page.goto("/sources");
-  // より堅牢な待機処理とセレクタに変更
-  const button = page.getByRole("button", { name: /show evidence/i });
-  await expect(button).toBeVisible({ timeout: 10000 });
-  await button.click();
-  await expect(page.getByText("file://")).toBeVisible();
+test("page validation prevents an empty-title write", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("button", { name: "New page", exact: true }).first().click();
+  await page
+    .getByPlaceholder("engineering/onboarding", { exact: true })
+    .fill("invalid-empty-title");
+  await page.getByPlaceholder("Page title", { exact: true }).fill("");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("title is required", { exact: true })).toBeVisible();
+  expect((await page.request.get("/api/sources/pages/invalid-empty-title")).status()).toBe(404);
 });

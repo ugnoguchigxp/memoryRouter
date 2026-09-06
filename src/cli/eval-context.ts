@@ -15,6 +15,7 @@ type CliOptions = {
   runStatus: LandscapeRunStatusFilter;
   currentLimit: number;
   asJson: boolean;
+  check: boolean;
 };
 
 function readArgValue(args: string[], index: number, name: string): string {
@@ -57,10 +58,15 @@ function parseArgs(args: string[]): CliOptions {
     runStatus: "all",
     currentLimit: 12,
     asJson: false,
+    check: false,
   };
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "--check") {
+      options.check = true;
+      continue;
+    }
     if (arg === "--from-replay") {
       options.fromReplay = true;
       continue;
@@ -141,7 +147,7 @@ function printCaseSummary(report: ContextEvalCaseReport): void {
     `Context Eval (cases, cases=${report.summary.caseCount}, currentLimit=${report.source.currentLimit})`,
   );
   console.log(
-    `Summary: ${report.summary.status} passRate=${report.summary.passRate.toFixed(2)} expectedRecall=${report.metrics.expectedRecall !== null ? report.metrics.expectedRecall.toFixed(2) : "null"} forbiddenHits=${report.metrics.forbiddenHitCount} degraded=${report.metrics.degradedCaseCount}`,
+    `Summary: ${report.summary.status} passRate=${report.summary.passRate.toFixed(2)} expectedRecall=${report.metrics.expectedRecall !== null ? report.metrics.expectedRecall.toFixed(2) : "null"} forbiddenHits=${report.metrics.forbiddenHitCount} degraded=${report.metrics.degradedCaseCount} unscored=${report.summary.unscoredCount} errors=${report.metrics.errorCaseCount}`,
   );
 
   const failedCases = report.cases.filter((c) => c.status === "failed");
@@ -165,11 +171,14 @@ async function main(): Promise<void> {
     throw new Error("Cannot specify both --from-replay and --cases <path> simultaneously.");
   }
 
+  if (options.check && !options.casesPath) throw new Error("--check requires --cases");
+
   if (options.casesPath) {
     const report = await buildContextEvalCaseReport({
       casesPath: options.casesPath,
       currentLimit: options.currentLimit,
     });
+    if (options.check && report.summary.status !== "passed") process.exitCode = 1;
 
     if (options.asJson) {
       console.log(JSON.stringify(report, null, 2));

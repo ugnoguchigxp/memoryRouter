@@ -815,4 +815,37 @@ describe("context response composer", () => {
     expect(result.agenticUsed).toBe(false); // Fell back to template
     expect(unconfiguredProvider.chat).not.toHaveBeenCalled();
   });
+  test("passes later evidence sentences to the actual composer request", async () => {
+    groupedConfig.agenticCompile.enabled = true;
+    mockProvider.chat.mockResolvedValue({
+      content: JSON.stringify({
+        markdown: "## Foundation ranking\n- Keep exact limits.",
+        usedKnowledge: [],
+      }),
+    });
+    await composeContextResponse({
+      input: { goal: "Maintain Foundation ranking limits" },
+      retrievalMode: "task_context",
+      rules: [
+        {
+          id: "knowledge:limits",
+          itemKind: "rule",
+          itemId: "limits",
+          section: "rules",
+          title: "Foundation ranking",
+          content:
+            "Use query ranking. Knowledge is capped at 8; episodes at 3. Never raise the limits silently.",
+          score: 1,
+          rankingReason: "ranked",
+          sourceRefs: [],
+        },
+      ],
+      procedures: [],
+    });
+    const request = mockProvider.chat.mock.calls[1]?.[0];
+    const prompt = request?.messages?.[1]?.content ?? "";
+    expect(prompt).toContain("Knowledge is capped at 8; episodes at 3.");
+    expect(prompt).toContain("Never raise the limits silently.");
+    expect(prompt).toContain('"truncated":false');
+  });
 });

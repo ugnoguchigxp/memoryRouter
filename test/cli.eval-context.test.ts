@@ -88,4 +88,15 @@ describe("cli eval-context e2e", () => {
     expect(run.stdout).toContain("Context Eval (cases, cases=0");
     expect(run.stdout).toContain("Summary: no_data");
   });
+
+  test("check mode fails on an empty dataset while preserving its JSON report", async () => {
+    const casesPath = await createEmptyCasesFile();
+    const run = spawnSync(
+      "bun",
+      ["run", "src/cli/eval-context.ts", "--cases", casesPath, "--json", "--check"],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+    expect(run.status).toBe(1);
+    expect(JSON.parse(run.stdout).summary.status).toBe("no_data");
+  });
 });

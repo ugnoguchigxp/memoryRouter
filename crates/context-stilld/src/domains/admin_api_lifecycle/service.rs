@@ -1,8 +1,4 @@
-use std::{
-    io::{Read, Write},
-    net::{TcpStream, ToSocketAddrs},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use crate::domains::{
     bootstrap::service::resolve_paths,
@@ -146,38 +142,24 @@ fn wait_for_ready(url: &str, timeout: Duration) -> Result<(), String> {
 }
 
 fn http_get_ok(url: &str) -> Result<(), String> {
-    let (host, port, path) = parse_http_url(url)?;
-    let mut addrs = (host.as_str(), port)
-        .to_socket_addrs()
+    // Keep local HTTP-only URL validation, but do not wait for a keep-alive socket to close.
+    parse_http_url(url)?;
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_millis(2500))
+        .build()
         .map_err(|error| error.to_string())?;
-    let addr = addrs
-        .next()
-        .ok_or_else(|| format!("could not resolve {host}:{port}"))?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(500))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| error.to_string())?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(1)))
-        .map_err(|error| error.to_string())?;
-    let request =
-        format!("GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n");
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| error.to_string())?;
-    if response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200") {
+    let status = client
+        .get(url)
+        .send()
+        .map_err(|error| error.to_string())?
+        .status();
+    if status == reqwest::StatusCode::OK {
         Ok(())
     } else {
-        Err(response
-            .lines()
-            .next()
-            .unwrap_or("non-200 response")
-            .to_string())
+        Err(format!("HTTP {status}"))
     }
 }
 
@@ -196,4 +178,58 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String), String> {
         .parse::<u16>()
         .map_err(|error| format!("invalid readiness URL port: {error}"))?;
     Ok((host.to_string(), port, path))
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
+    #[test]
+    fn reads_status_without_waiting_for_keep_alive_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api/health/ready", listener.local_addr().unwrap());
+        let (release, wait) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0; 4];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"GET ");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n",
+                )
+                .unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(5));
+        });
+        let result = http_get_ok(&url);
+        release.send(()).unwrap();
+        server.join().unwrap();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn rejects_unavailable_readiness() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/api/health/ready", listener.local_addr().unwrap());
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0; 4];
+            stream.read_exact(&mut request).unwrap();
+            assert_eq!(&request, b"GET ");
+            stream
+                .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+        });
+        assert!(http_get_ok(&url).unwrap_err().contains("503"));
+        server.join().unwrap();
+    }
 }

@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "bootstrap": "ready",
+  "compile": {
+    "emptyRunPersisted": true,
+    "savedKnowledgeRetrieved": true
+  },
+  "readiness": "ready -> not_ready -> ready",
+  "providerCalls": 0,
+  "backup": {
+    "writeLockEnforced": true,
+    "sha256": "10a64a6b3b26737d0d3a4f10e859518f6bcad0772b9d491e928638e124653387",
+    "restoredKnowledge": 1,
+    "restoredRuns": 2
+  }
+}

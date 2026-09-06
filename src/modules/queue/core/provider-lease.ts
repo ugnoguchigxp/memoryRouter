@@ -1,6 +1,7 @@
 import { groupedConfig } from "../../../config.js";
 import { resolveDatabaseBackendConfig } from "../../../db/backend.js";
 import { getRuntimeSettingsSnapshot } from "../../settings/settings.service.js";
+import { isLarmAgentConnectionRoute } from "../../settings/settings.types.js";
 import type {
   RuntimeProviderPool,
   RuntimeProviderPoolTarget,
@@ -56,6 +57,7 @@ function isSqliteBackend(): boolean {
 }
 
 function targetId(target: RuntimeProviderPoolTarget): string {
+  if (target.provider === "larm-agent-connection") return target.connectionId;
   if (target.provider === "local-llm") return target.localLlmModelId;
   if (target.provider === "azure-openai") return String(target.deploymentSlot);
   return target.targetId;
@@ -110,7 +112,7 @@ function queueRoutes(
 
 function routeForFindingCandidateRow(
   settings: RuntimeSettingsEditable,
-  row: RunnableQueueRow,
+  row: Pick<RunnableQueueRow, "source_kind">,
 ): RuntimeSettingsRoute {
   return row.source_kind === "vibe_memory"
     ? settings.taskRouting.findCandidate.vibe
@@ -120,12 +122,23 @@ function routeForFindingCandidateRow(
 function candidateRoutes(params: {
   settings: RuntimeSettingsEditable;
   queueName: DistillationQueueName;
-  row: RunnableQueueRow;
+  row: Pick<RunnableQueueRow, "source_kind" | "provider_policy">;
 }): RuntimeSettingsRoute[] {
   if (params.queueName === "findingCandidate") {
     return [routeForFindingCandidateRow(params.settings, params.row)];
   }
   return queueRoutes(params.settings, params.queueName);
+}
+
+export function candidateUsesLarmRoute(params: {
+  settings: RuntimeSettingsEditable;
+  queueName: DistillationQueueName;
+  row: {
+    source_kind?: string | null;
+    provider_policy?: string | null;
+  };
+}): boolean {
+  return candidateRoutes(params).some(isLarmAgentConnectionRoute);
 }
 
 function preferredTargetIdsForQueue(params: {
@@ -142,6 +155,7 @@ function preferredTargetIdsForQueue(params: {
         row: params.row,
       })
     : queueRoutes(params.settings, params.queueName)) {
+    if (isLarmAgentConnectionRoute(route)) continue;
     if (routeClaimGroupId(route) !== params.poolId) continue;
     if (route.providerPoolId?.trim()) continue;
     if (route.provider === "local-llm") {
@@ -186,8 +200,9 @@ function eligibleTargetsForQueue(
   targets: RuntimeProviderPoolTarget[],
   preferredTargetIds: Set<string>,
 ): RuntimeProviderPoolTarget[] {
-  if (preferredTargetIds.size === 0) return targets;
-  return targets.filter((target) => preferredTargetIds.has(targetId(target)));
+  const staticTargets = targets.filter((target) => target.provider !== "larm-agent-connection");
+  if (preferredTargetIds.size === 0) return staticTargets;
+  return staticTargets.filter((target) => preferredTargetIds.has(targetId(target)));
 }
 
 function activePoolCapacity(pool: RuntimeProviderPool): number {
@@ -399,6 +414,7 @@ export async function claimNextJobWithProviderLease(params: {
       sqlite.db.query(recoverStaleQueueJobsSql(tableName)).run(queueStaleCutoff);
       const rows = sqlite.db.query<RunnableQueueRow, []>(runnableSql(queueName, tableName)).all();
       for (const row of rows) {
+        if (candidateUsesLarmRoute({ settings, queueName, row })) continue;
         const createdAtMs = rowCreatedAtMs(row.created_at);
         const waitingSeconds = Math.max(0, Math.floor((nowMs - createdAtMs) / 1000));
         const preferredTargetIds = preferredTargetIdsForQueue({

@@ -15,6 +15,7 @@ import {
   type RuntimeSettingsRoute,
   type RuntimeSettingsSecrets,
   distillationPriorityTargetKindValues,
+  isLarmAgentConnectionRoute,
   runtimeProviderNames,
   runtimeSettingsEditableSchema,
 } from "./settings.types.js";
@@ -67,8 +68,15 @@ function normalizeProviderList(values: unknown[]): RuntimeProviderName[] {
 function normalizeProviderPoolTarget(
   value: unknown,
   localLlmModelIds: Set<string>,
+  larmConnectionIds: Set<string>,
 ): RuntimeProviderPoolTarget | null {
   const record = asRecord(value);
+  if (record.provider === "larm-agent-connection") {
+    const connectionId = typeof record.connectionId === "string" ? record.connectionId.trim() : "";
+    return connectionId && larmConnectionIds.has(connectionId)
+      ? { provider: "larm-agent-connection", connectionId }
+      : null;
+  }
   const provider = normalizeProviderName(record.provider);
   if (!provider) return null;
   if (provider === "local-llm") {
@@ -97,6 +105,9 @@ function normalizeProviderPools(
       .map((model) => model.id)
       .filter((id): id is string => Boolean(id)),
   );
+  const larmConnectionIds = new Set(
+    settings.providers["larm-agent-connection"].connections.map((connection) => connection.id),
+  );
   const rawPools = Array.isArray(values) ? values : [];
   const pools: RuntimeProviderPool[] = [];
   const seen = new Set<string>();
@@ -107,7 +118,7 @@ function normalizeProviderPools(
     if (!id || seen.has(id)) continue;
     const targets = Array.isArray(record.targets)
       ? record.targets
-          .map((target) => normalizeProviderPoolTarget(target, localLlmModelIds))
+          .map((target) => normalizeProviderPoolTarget(target, localLlmModelIds, larmConnectionIds))
           .filter((target): target is RuntimeProviderPoolTarget => Boolean(target))
       : [];
     if (targets.length === 0) continue;
@@ -440,6 +451,10 @@ export const bootstrap: BootstrapConfig = {
         },
       ],
     },
+    "larm-agent-connection": {
+      enabled: false,
+      connections: [],
+    },
     codex: {
       enabled: false,
       model: "codex-sdk-agent",
@@ -615,93 +630,31 @@ export function cloneDefaultSettings(): RuntimeSettingsEditable {
         ...bootstrap.providers["local-llm"],
         models: bootstrap.providers["local-llm"].models.map((model) => ({ ...model })),
       },
+      "larm-agent-connection": {
+        ...bootstrap.providers["larm-agent-connection"],
+        connections: bootstrap.providers["larm-agent-connection"].connections.map((connection) => ({
+          ...connection,
+        })),
+      },
       codex: { ...bootstrap.providers.codex },
     },
     taskRouting: {
       findCandidate: {
-        source: {
-          ...bootstrap.taskRouting.findCandidate.source,
-          fallback: [...bootstrap.taskRouting.findCandidate.source.fallback],
-          azureDeploymentSlots: bootstrap.taskRouting.findCandidate.source.azureDeploymentSlots
-            ? [...bootstrap.taskRouting.findCandidate.source.azureDeploymentSlots]
-            : undefined,
-        },
-        vibe: {
-          ...bootstrap.taskRouting.findCandidate.vibe,
-          fallback: [...bootstrap.taskRouting.findCandidate.vibe.fallback],
-          azureDeploymentSlots: bootstrap.taskRouting.findCandidate.vibe.azureDeploymentSlots
-            ? [...bootstrap.taskRouting.findCandidate.vibe.azureDeploymentSlots]
-            : undefined,
-        },
+        source: cloneRoute(bootstrap.taskRouting.findCandidate.source),
+        vibe: cloneRoute(bootstrap.taskRouting.findCandidate.vibe),
         throttling: { ...bootstrap.taskRouting.findCandidate.throttling },
       },
-      webSourceResearch: {
-        ...bootstrap.taskRouting.webSourceResearch,
-        fallback: [...bootstrap.taskRouting.webSourceResearch.fallback],
-        azureDeploymentSlots: bootstrap.taskRouting.webSourceResearch.azureDeploymentSlots
-          ? [...bootstrap.taskRouting.webSourceResearch.azureDeploymentSlots]
-          : undefined,
-      },
-      episodeDistiller: {
-        ...bootstrap.taskRouting.episodeDistiller,
-        fallback: [...bootstrap.taskRouting.episodeDistiller.fallback],
-        azureDeploymentSlots: bootstrap.taskRouting.episodeDistiller.azureDeploymentSlots
-          ? [...bootstrap.taskRouting.episodeDistiller.azureDeploymentSlots]
-          : undefined,
-      },
+      webSourceResearch: cloneRoute(bootstrap.taskRouting.webSourceResearch),
+      episodeDistiller: cloneRoute(bootstrap.taskRouting.episodeDistiller),
       coverEvidence: {
-        sourceSupport: {
-          ...bootstrap.taskRouting.coverEvidence.sourceSupport,
-          fallback: [...bootstrap.taskRouting.coverEvidence.sourceSupport.fallback],
-          azureDeploymentSlots: bootstrap.taskRouting.coverEvidence.sourceSupport
-            .azureDeploymentSlots
-            ? [...bootstrap.taskRouting.coverEvidence.sourceSupport.azureDeploymentSlots]
-            : undefined,
-        },
-        externalEvidence: {
-          ...bootstrap.taskRouting.coverEvidence.externalEvidence,
-          fallback: [...bootstrap.taskRouting.coverEvidence.externalEvidence.fallback],
-          azureDeploymentSlots: bootstrap.taskRouting.coverEvidence.externalEvidence
-            .azureDeploymentSlots
-            ? [...bootstrap.taskRouting.coverEvidence.externalEvidence.azureDeploymentSlots]
-            : undefined,
-        },
-        mcpEvidence: {
-          ...bootstrap.taskRouting.coverEvidence.mcpEvidence,
-          fallback: [...bootstrap.taskRouting.coverEvidence.mcpEvidence.fallback],
-          azureDeploymentSlots: bootstrap.taskRouting.coverEvidence.mcpEvidence.azureDeploymentSlots
-            ? [...bootstrap.taskRouting.coverEvidence.mcpEvidence.azureDeploymentSlots]
-            : undefined,
-        },
+        sourceSupport: cloneRoute(bootstrap.taskRouting.coverEvidence.sourceSupport),
+        externalEvidence: cloneRoute(bootstrap.taskRouting.coverEvidence.externalEvidence),
+        mcpEvidence: cloneRoute(bootstrap.taskRouting.coverEvidence.mcpEvidence),
       },
-      finalizeDistille: {
-        ...bootstrap.taskRouting.finalizeDistille,
-        fallback: [...bootstrap.taskRouting.finalizeDistille.fallback],
-        azureDeploymentSlots: bootstrap.taskRouting.finalizeDistille.azureDeploymentSlots
-          ? [...bootstrap.taskRouting.finalizeDistille.azureDeploymentSlots]
-          : undefined,
-      },
-      mergeActivationFinalize: {
-        ...bootstrap.taskRouting.mergeActivationFinalize,
-        fallback: [...bootstrap.taskRouting.mergeActivationFinalize.fallback],
-        azureDeploymentSlots: bootstrap.taskRouting.mergeActivationFinalize.azureDeploymentSlots
-          ? [...bootstrap.taskRouting.mergeActivationFinalize.azureDeploymentSlots]
-          : undefined,
-      },
-      deadZoneMergeReview: {
-        ...bootstrap.taskRouting.deadZoneMergeReview,
-        fallback: [...bootstrap.taskRouting.deadZoneMergeReview.fallback],
-        azureDeploymentSlots: bootstrap.taskRouting.deadZoneMergeReview.azureDeploymentSlots
-          ? [...bootstrap.taskRouting.deadZoneMergeReview.azureDeploymentSlots]
-          : undefined,
-      },
-      landscapeCuration: {
-        ...bootstrap.taskRouting.landscapeCuration,
-        fallback: [...bootstrap.taskRouting.landscapeCuration.fallback],
-        azureDeploymentSlots: bootstrap.taskRouting.landscapeCuration.azureDeploymentSlots
-          ? [...bootstrap.taskRouting.landscapeCuration.azureDeploymentSlots]
-          : undefined,
-      },
+      finalizeDistille: cloneRoute(bootstrap.taskRouting.finalizeDistille),
+      mergeActivationFinalize: cloneRoute(bootstrap.taskRouting.mergeActivationFinalize),
+      deadZoneMergeReview: cloneRoute(bootstrap.taskRouting.deadZoneMergeReview),
+      landscapeCuration: cloneRoute(bootstrap.taskRouting.landscapeCuration),
       agenticCompile: {
         ...bootstrap.taskRouting.agenticCompile,
         fallback: [...bootstrap.taskRouting.agenticCompile.fallback],
@@ -827,6 +780,12 @@ function sanitizeRoute(
   settings: RuntimeSettingsEditable,
   route: RuntimeSettingsRoute,
 ): RuntimeSettingsRoute {
+  if (isLarmAgentConnectionRoute(route)) {
+    return {
+      kind: "larm-agent-connection",
+      connectionId: route.connectionId.trim(),
+    };
+  }
   const configuredLocalLlmTarget = resolveConfiguredLocalLlmRouteTarget(
     settings,
     route.localLlmModel,
@@ -858,6 +817,9 @@ function sanitizeRoute(
 }
 
 function cloneRoute(route: RuntimeSettingsRoute): RuntimeSettingsRoute {
+  if (isLarmAgentConnectionRoute(route)) {
+    return { kind: "larm-agent-connection", connectionId: route.connectionId };
+  }
   return {
     ...route,
     providerPoolId: route.providerPoolId,
@@ -868,6 +830,20 @@ function cloneRoute(route: RuntimeSettingsRoute): RuntimeSettingsRoute {
 
 function hasRouteConfig(value: unknown): boolean {
   return Object.keys(asRecord(value)).length > 0;
+}
+
+function mergeRoute(fallback: RuntimeSettingsRoute, value: unknown): RuntimeSettingsRoute {
+  const record = asRecord(value);
+  if (record.kind === "larm-agent-connection") {
+    return {
+      kind: "larm-agent-connection",
+      connectionId: typeof record.connectionId === "string" ? record.connectionId : "",
+    };
+  }
+  return {
+    ...fallback,
+    ...record,
+  } as RuntimeSettingsRoute;
 }
 
 function mergeRuntimeSettings(
@@ -908,6 +884,10 @@ function mergeRuntimeSettings(
         ...defaults.providers["local-llm"],
         ...asRecord(asRecord(input.providers)["local-llm"]),
       },
+      "larm-agent-connection": {
+        ...defaults.providers["larm-agent-connection"],
+        ...asRecord(asRecord(input.providers)["larm-agent-connection"]),
+      },
       codex: {
         ...defaults.providers.codex,
         ...asRecord(asRecord(input.providers).codex),
@@ -919,59 +899,59 @@ function mergeRuntimeSettings(
       findCandidate: {
         ...defaults.taskRouting.findCandidate,
         ...asRecord(asRecord(input.taskRouting).findCandidate),
-        source: {
-          ...defaults.taskRouting.findCandidate.source,
-          ...asRecord(asRecord(asRecord(input.taskRouting).findCandidate).source),
-        },
-        vibe: {
-          ...defaults.taskRouting.findCandidate.vibe,
-          ...asRecord(asRecord(asRecord(input.taskRouting).findCandidate).vibe),
-        },
+        source: mergeRoute(
+          defaults.taskRouting.findCandidate.source,
+          asRecord(asRecord(input.taskRouting).findCandidate).source,
+        ),
+        vibe: mergeRoute(
+          defaults.taskRouting.findCandidate.vibe,
+          asRecord(asRecord(input.taskRouting).findCandidate).vibe,
+        ),
         throttling: {
           ...defaults.taskRouting.findCandidate.throttling,
           ...asRecord(asRecord(asRecord(input.taskRouting).findCandidate).throttling),
         },
       },
-      webSourceResearch: {
-        ...defaults.taskRouting.webSourceResearch,
-        ...asRecord(asRecord(input.taskRouting).webSourceResearch),
-      },
-      episodeDistiller: {
-        ...defaults.taskRouting.episodeDistiller,
-        ...asRecord(rawTaskRouting.episodeDistiller),
-      },
+      webSourceResearch: mergeRoute(
+        defaults.taskRouting.webSourceResearch,
+        asRecord(input.taskRouting).webSourceResearch,
+      ),
+      episodeDistiller: mergeRoute(
+        defaults.taskRouting.episodeDistiller,
+        rawTaskRouting.episodeDistiller,
+      ),
       coverEvidence: {
         ...defaults.taskRouting.coverEvidence,
         ...asRecord(asRecord(input.taskRouting).coverEvidence),
-        sourceSupport: {
-          ...defaults.taskRouting.coverEvidence.sourceSupport,
-          ...asRecord(asRecord(asRecord(input.taskRouting).coverEvidence).sourceSupport),
-        },
-        externalEvidence: {
-          ...defaults.taskRouting.coverEvidence.externalEvidence,
-          ...asRecord(asRecord(asRecord(input.taskRouting).coverEvidence).externalEvidence),
-        },
-        mcpEvidence: {
-          ...defaults.taskRouting.coverEvidence.mcpEvidence,
-          ...asRecord(asRecord(asRecord(input.taskRouting).coverEvidence).mcpEvidence),
-        },
+        sourceSupport: mergeRoute(
+          defaults.taskRouting.coverEvidence.sourceSupport,
+          asRecord(asRecord(input.taskRouting).coverEvidence).sourceSupport,
+        ),
+        externalEvidence: mergeRoute(
+          defaults.taskRouting.coverEvidence.externalEvidence,
+          asRecord(asRecord(input.taskRouting).coverEvidence).externalEvidence,
+        ),
+        mcpEvidence: mergeRoute(
+          defaults.taskRouting.coverEvidence.mcpEvidence,
+          asRecord(asRecord(input.taskRouting).coverEvidence).mcpEvidence,
+        ),
       },
-      finalizeDistille: {
-        ...defaults.taskRouting.finalizeDistille,
-        ...asRecord(asRecord(input.taskRouting).finalizeDistille),
-      },
-      mergeActivationFinalize: {
-        ...defaults.taskRouting.mergeActivationFinalize,
-        ...asRecord(asRecord(input.taskRouting).mergeActivationFinalize),
-      },
-      deadZoneMergeReview: {
-        ...defaults.taskRouting.deadZoneMergeReview,
-        ...asRecord(asRecord(input.taskRouting).deadZoneMergeReview),
-      },
-      landscapeCuration: {
-        ...defaults.taskRouting.landscapeCuration,
-        ...asRecord(asRecord(input.taskRouting).landscapeCuration),
-      },
+      finalizeDistille: mergeRoute(
+        defaults.taskRouting.finalizeDistille,
+        asRecord(input.taskRouting).finalizeDistille,
+      ),
+      mergeActivationFinalize: mergeRoute(
+        defaults.taskRouting.mergeActivationFinalize,
+        asRecord(input.taskRouting).mergeActivationFinalize,
+      ),
+      deadZoneMergeReview: mergeRoute(
+        defaults.taskRouting.deadZoneMergeReview,
+        asRecord(input.taskRouting).deadZoneMergeReview,
+      ),
+      landscapeCuration: mergeRoute(
+        defaults.taskRouting.landscapeCuration,
+        asRecord(input.taskRouting).landscapeCuration,
+      ),
       agenticCompile: {
         ...defaults.taskRouting.agenticCompile,
         ...asRecord(asRecord(input.taskRouting).agenticCompile),

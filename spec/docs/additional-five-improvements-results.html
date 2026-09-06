@@ -1,0 +1,98 @@
+<article lang="ja">
+  <h1>追加5項目の改善結果</h1>
+  <p>
+    2026年9月6日。保守性・検索生成効果の改善に続き、初回利用、障害検知、画面操作、認証復旧、バックアップ復元を改善した。既存の変更と並行作業の変更を保持し、検証には一時ディレクトリの合成データを使用した。
+  </p>
+  <table>
+    <caption>
+      追加した5項目と確認する動作
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">項目</th>
+        <th scope="col">修正前の問題</th>
+        <th scope="col">変更した動作</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <th scope="row">1. Readiness</th>
+        <td>依存先の状態にかかわらず200を返していた。</td>
+        <td>
+          DBの必要テーブル・列、SQLite
+          writerの認証付き読み取り、reader/writerの保存先一致を確認する。各依存の応答期限は1.5秒。障害時は503、livenessは200を維持し、復旧を再検知する。管理APIの起動監視も、HTTP
+          keep-aliveの切断待ちで失敗する問題を解消した。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">2. 初回導入</th>
+        <td>
+          Rustの依存、初期化とwriter起動、共通のDB保存先、compileのrepository指定が不足していた。
+        </td>
+        <td>
+          日英READMEと公開ガイドを修正。空のDBから初回compile、知識登録、取得、履歴保存までを実サービスで確認するverify:onboardingを追加した。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">3. ブラウザE2E</th>
+        <td>固定値の比較や存在しない旧UIの操作が含まれていた。既存サーバーを使い回していた。</td>
+        <td>
+          認証失敗からの復帰、セッション失効、Sourceの作成・編集・再読込・削除、入力検証をChromiumで操作する。APIは実際のRust
+          writerに書き込み、一時DB・Source
+          Git・Viteキャッシュを使う。CIに導入・ブラウザ検証と失敗時のトレース保存を追加した。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">4. 認証と更新エラー</th>
+        <td>認証初期化の失敗が後続リクエストに残り、更新系エラーからHTTP情報が失われていた。</td>
+        <td>
+          完了・失敗した認証promiseを競合なく解除し、状態確認と再ログインを可能にした。JSONとFormDataの更新もAdminApiErrorにstatus・code・payloadを保持し、既存のconflict
+          outcomeと詳細reasonの表示を維持する。
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">5. バックアップと復元</th>
+        <td>作成後の検証コマンドとアプリケーションのデータを復元する定常試験がなかった。</td>
+        <td>
+          backup verify
+          --pathを追加。ファイルを変更せず、整合性、外部キー、対応スキーマ、主要テーブル、SHA-256を検査する。WAL・journal付きファイルや破損・未対応スキーマを拒否し、隔離コピーで知識とcompile履歴を読み戻す。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>導入・復元試験の結果</h2>
+  <p>
+    初期化後のpreflightはready。空のcompileの履歴が保存され、登録した知識が次のcompileで取得された。writer停止でreadinessは200から503へ変化し、再起動後200へ戻った。稼働中のバックアップ作成はロックにより拒否された。停止後のバックアップから知識1件とcompile履歴2件を復元し、ID・本文とSHA-256の一致を確認した。外部モデル呼び出しは0件。
+  </p>
+  <p>
+    <a href="assets/additional-five-improvements-2026-09-06/onboarding.json"
+      >導入・復元試験の機械可読結果</a
+    >。
+  </p>
+  <h2>検証</h2>
+  <ul>
+    <li>
+      bun run verify：保守性上限、system-context、型、lint、format、Spec、単体テスト、Web
+      buildを通過。
+    </li>
+    <li>SQLite：5スイート、59テストを通過。既存データへの書き込みは行っていない。</li>
+    <li>
+      Rust：cargo test --workspaceで409テストを通過。backup、CLI引数、HTTP
+      keep-aliveの起動監視を含む。
+    </li>
+    <li>管理API lifecycleのsmoke：一時writer起動後の管理API起動・readiness・status確認を通過。</li>
+    <li>
+      ブラウザE2E：4テストを通過（27.1秒）。SourceのCRUDと再読込、認証エラーからの復帰、セッション失効後の再ログイン、空タイトルの保存拒否を実APIで確認した。
+    </li>
+  </ul>
+  <h2>検証範囲</h2>
+  <p>
+    実行環境はmacOS、Bun 1.3.14、ローカルSQLite、Chromium。GitHub
+    ActionsのLinuxジョブは設定を追加した段階であり、この作業中にクラウド上で実行した結果ではない。PostgreSQLは依存プローブの分岐を単体テストで確認したが、実サーバーへの接続試験は実施していない。SQLiteバックアップはDBの復元を対象とし、SourceのMarkdown/Git、環境設定、外部保管の認証情報は別途保全する。
+  </p>
+  <p>
+    操作手順は<a href="pub/getting-started.md">Getting Started</a>、<a href="pub/operations.md"
+      >Operations</a
+    >、<a href="pub/api.md">API reference</a>に記載した。
+  </p>
+</article>

@@ -24,6 +24,7 @@ for (const file of filesUnder(rustRoot, ".rs")) {
   const name = relative(file);
   if (name.endsWith("_tests.rs")) continue;
   const source = readFileSync(file, "utf8");
+  if (/^#!\[cfg\(test\)\]/.test(source)) continue;
   const testModule = source.search(/#\[cfg\(test\)\]\s*mod tests\s*\{/);
   const production = testModule >= 0 ? source.slice(0, testModule) : source;
   const lines = production.split("\n");

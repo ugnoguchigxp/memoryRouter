@@ -1,10 +1,9 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::shared::errors::CliError;
 
@@ -46,14 +45,14 @@ pub(crate) struct Candidate {
     content: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct FindingExecution {
     job: FindingJob,
     source: Option<String>,
     self_ingestion_blocked: bool,
     pub(crate) provider_lease: ProviderLeaseAssignment,
     target: LocalLlmTargetConfig,
-    api_key: Option<String>,
+    api_key: Option<zeroize::Zeroizing<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -78,7 +77,7 @@ pub(crate) fn load_claimed_finding_execution(
     connection: &Connection,
     claimed: ClaimedProviderLeaseJob,
     target: LocalLlmTargetConfig,
-    api_key: Option<String>,
+    api_key: Option<zeroize::Zeroizing<String>>,
 ) -> Result<FindingExecution, CliError> {
     let job = load_job(connection, &claimed.id)?;
     if job.input_kind != "source_target" || job.source_kind != "vibe_memory" {
@@ -125,7 +124,7 @@ pub(crate) fn execute_finding(
     };
     match request_candidates(
         &execution.target,
-        execution.api_key.as_deref(),
+        execution.api_key.as_ref().map(|key| key.as_str()),
         timeout_seconds,
         source,
     ) {

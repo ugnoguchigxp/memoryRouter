@@ -12,7 +12,10 @@ import {
   ensureRuntimeSettingsLoaded,
   resolveCoverEvidenceRoutes,
 } from "../settings/settings.service.js";
-import type { RuntimeSettingsRoute } from "../settings/settings.types.js";
+import {
+  type RuntimeSettingsRoute,
+  requireStaticRuntimeSettingsRoute,
+} from "../settings/settings.types.js";
 import { dedupeCoverEvidenceCandidate } from "./dedupe.service.js";
 import {
   baseCandidate,
@@ -113,26 +116,24 @@ function resolveCoverEvidenceProviderRoute(params: {
   providerOverride?: DistillationProviderSetting;
   providerFallbackMode?: "fallback" | "single";
 }): CoverEvidenceResolvedProviderRoute {
-  const provider =
-    params.providerOverride ?? (params.route.provider as DistillationProviderSetting);
+  const route = requireStaticRuntimeSettingsRoute(params.route);
+  const provider = params.providerOverride ?? (route.provider as DistillationProviderSetting);
   const fallbackMode = params.providerFallbackMode === "single" ? "single" : "fallback";
-  const routeFallback = [...params.route.fallback] as DistillationProviderName[];
+  const routeFallback = [...route.fallback] as DistillationProviderName[];
   const fallbackOrder =
     fallbackMode === "single" ? [] : dedupeProviderFallbackOrder(routeFallback, provider);
-  const routeModelBelongsToProvider = params.route.provider === provider;
+  const routeModelBelongsToProvider = route.provider === provider;
 
   return {
     provider,
     fallbackOrder,
     model: resolveRouteModelForProvider({
       provider,
-      routeModel: routeModelBelongsToProvider ? params.route.model : undefined,
-      localLlmModel: routeModelBelongsToProvider ? params.route.localLlmModel : undefined,
+      routeModel: routeModelBelongsToProvider ? route.model : undefined,
+      localLlmModel: routeModelBelongsToProvider ? route.localLlmModel : undefined,
     }),
-    azureDeploymentSlots: params.route.azureDeploymentSlots
-      ? [...params.route.azureDeploymentSlots]
-      : undefined,
-    localLlmModel: params.route.localLlmModel,
+    azureDeploymentSlots: route.azureDeploymentSlots ? [...route.azureDeploymentSlots] : undefined,
+    localLlmModel: route.localLlmModel,
   };
 }
 

@@ -71,6 +71,7 @@ pub enum DoctorAction {
 pub enum BackupAction {
     Preflight { require_idle: bool },
     Create,
+    Verify { path: PathBuf },
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -367,18 +368,28 @@ where
             })
         }
         "backup" => {
-            let action_str = required_action(&mut args, "backup", "preflight")?;
+            let action_str = required_action(&mut args, "backup", "preflight, create or verify")?;
             let options = parse_backup_options(args)?;
+            if options.require_idle && action_str != "preflight" {
+                return Err(CliError::invalid_arguments(
+                    "--require-idle is only valid for backup preflight",
+                ));
+            }
+            if options.path.is_some() && action_str != "verify" {
+                return Err(CliError::invalid_arguments(
+                    "--path is only valid for backup verify",
+                ));
+            }
             let action = match action_str.as_str() {
+                "verify" => BackupAction::Verify {
+                    path: options.path.ok_or_else(|| {
+                        CliError::invalid_arguments("backup verify requires --path <backup.sqlite>")
+                    })?,
+                },
                 "preflight" => BackupAction::Preflight {
                     require_idle: options.require_idle,
                 },
-                "create" if !options.require_idle => BackupAction::Create,
-                "create" => {
-                    return Err(CliError::invalid_arguments(
-                        "--require-idle is only valid for backup preflight",
-                    ))
-                }
+                "create" => BackupAction::Create,
                 _ => {
                     return Err(CliError::invalid_arguments(format!(
                         "unknown backup action: {action_str}"
@@ -805,6 +816,7 @@ fn parse_positive_u64(name: &str, value: &str) -> Result<u64, CliError> {
 struct BackupOptions {
     json: bool,
     require_idle: bool,
+    path: Option<PathBuf>,
 }
 
 fn parse_backup_options<I>(args: I) -> Result<BackupOptions, CliError>
@@ -814,9 +826,20 @@ where
     let mut options = BackupOptions {
         json: false,
         require_idle: false,
+        path: None,
     };
-    for arg in args {
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--path" => {
+                let value = args
+                    .next()
+                    .filter(|value| !value.is_empty() && !value.starts_with("--"))
+                    .ok_or_else(|| CliError::invalid_arguments("--path requires a file path"))?;
+                if options.path.replace(PathBuf::from(value)).is_some() {
+                    return Err(CliError::invalid_arguments("--path must be specified once"));
+                }
+            }
             "--json" => options.json = true,
             "--require-idle" => options.require_idle = true,
             _ => {
@@ -833,6 +856,29 @@ where
 mod tests {
     use super::{parse_args, CliCommand};
     use crate::shared::errors::CliErrorCategory;
+
+    #[test]
+    fn validates_backup_verify_arguments() {
+        use super::BackupAction;
+        assert_eq!(
+            parse_args(["backup", "verify", "--path", "/tmp/backup.sqlite", "--json"]).unwrap(),
+            CliCommand::Backup {
+                action: BackupAction::Verify {
+                    path: "/tmp/backup.sqlite".into()
+                },
+                json: true
+            }
+        );
+        for args in [
+            vec!["backup", "verify"],
+            vec!["backup", "verify", "--path", "--json"],
+            vec!["backup", "create", "--path", "x"],
+            vec!["backup", "verify", "--require-idle", "--path", "x"],
+            vec!["backup", "verify", "--path", "x", "--path", "y"],
+        ] {
+            assert!(parse_args(args).is_err());
+        }
+    }
 
     #[test]
     fn parses_status_json() {

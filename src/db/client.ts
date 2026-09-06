@@ -88,3 +88,21 @@ export const db = new Proxy({} as Database, {
     return Reflect.get(ensureDatabase() as object, property, receiver);
   },
 }) as Database;
+
+/** A bounded, read-only dependency check, independent of application pool saturation. */
+export async function probePostgresDatabase(query: string, timeoutMs: number): Promise<void> {
+  assertSafeTestDatabase(groupedConfig.database.url);
+  const client = new pkg.Client({
+    connectionString: groupedConfig.database.url,
+    application_name: `${projectIdentity.packageName}:readiness`,
+    connectionTimeoutMillis: timeoutMs,
+    query_timeout: timeoutMs,
+    statement_timeout: timeoutMs,
+  });
+  try {
+    await client.connect();
+    await client.query(query);
+  } finally {
+    await client.end();
+  }
+}

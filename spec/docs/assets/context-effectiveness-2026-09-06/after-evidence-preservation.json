@@ -1,0 +1,2258 @@
+{
+  "binding": {
+    "effectiveDatabaseFingerprint": "701d35a80b2c82c1a61269e280d1462a415c45980c52679fd0041fd5d886b840",
+    "effectiveDatabaseIdentitySource": "explicitEnvironment",
+    "fixtureSha256": {
+      "goldenFixture": "cffa8b2dc74c6dc7e6c041672d90c08367a6c412ecc699812cbe5d052d96b146",
+      "hardQuerySet": "036658c00184997a25704db07a49ad82f2310c8420d878d7bd6651bfa5f550b9",
+      "timestampFixture": "0a443235786c7e784b9b4005120b5c180da44340dbe9b99aea59e044f6eee347"
+    },
+    "pipelineMode": "legacy",
+    "pipelineVersion": "foundation-v1",
+    "runtimeBuildId": "caba8c8dde581e65b2c481e3148d2a067236d63fdc35c3d88091eb8e325a5325",
+    "runtimeVersion": "0.1.0",
+    "sourceCommit": "unavailable",
+    "sourceTreeState": "unknown"
+  },
+  "cohort": {
+    "included": 12,
+    "unit": "curated regression decision"
+  },
+  "contractVersion": 1,
+  "dataset": {
+    "corpusSize": 21,
+    "id": "repository-regression-decisions-v1",
+    "provenance": "12 curated decisions grounded in repository contracts, with 8 high-history distractors and a wrong-project exclusion fixture. Exploratory adversarial fixture, not randomly sampled real coding tasks.",
+    "repetitions": 1,
+    "sha256": "036658c00184997a25704db07a49ad82f2310c8420d878d7bd6651bfa5f550b9",
+    "taskCount": 12
+  },
+  "execution": {
+    "answerSystemSha256": "4567625ce007432bd28ac276b927dacbd7014f797ae6ccba43ee89a7ca81cd86",
+    "corpusDatabase": "isolated_in_memory",
+    "fallbackAllowed": false,
+    "implementationSha256": "8b505c1f12ad3917bc347f2032641189d53e9e5a5b4dfd54fde64100809eb65f",
+    "knowledgeCandidateLimit": 256,
+    "knowledgePackLimit": 8,
+    "maxProviderCalls": 84,
+    "maxTokens": 1200,
+    "order": "task/repetition-rotated",
+    "provider": "azure-openai",
+    "reportedModels": [
+      "gpt-5.4-mini-2026-03-17"
+    ],
+    "settingsDatabaseAccess": "read_only",
+    "timeoutMs": 45000
+  },
+  "generatedAt": "unix-ms:1788659971360",
+  "limitations": [
+    "Curated repository regression decisions, not measured end-to-end code changes or human time savings",
+    "Corpus and held-out checks are authored fixtures; independently collected tasks are still needed",
+    "No-context and memory conditions share one answer model; composer calls are charged to memory",
+    "Failed and unattempted observations receive zero quality in all-attempt comparisons",
+    "Confidence intervals resample tasks, not repetitions; small datasets remain exploratory",
+    "Unknown provider usage or absent pricing produces null cost, never zero"
+  ],
+  "manifest": {
+    "id": "contextstill-paired-regression-decisions-v1",
+    "sha256": "d03243bfa5102dc41e66444ad6ef2d94f6d1f497636773fec8845f88963ca919"
+  },
+  "promotionEligible": false,
+  "providerCallsAllowed": true,
+  "providerCallsExecuted": 84,
+  "reportKind": "composition_experiment",
+  "results": [
+    {
+      "answer": {
+        "deriveRepoKeyFromPath": false,
+        "matchBasis": "repoPath"
+      },
+      "answerQuality": 0.5,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 0,
+      "inputTokens": 92,
+      "latencyMs": 1392.2165,
+      "outputSha256": "3add5885c2197196b8b9f5fd09c50add84b4d33051d34f2f00841c45373d8fe5",
+      "outputTokens": 22,
+      "promptSha256": "668b291cd17af89d48a18cd1299a8c8d3ea4ddba34e71bdd660978750867833b",
+      "providerCalls": [
+        {
+          "inputTokens": 92,
+          "latencyMs": 1392.0116249999999,
+          "outputTokens": 22,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.5,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "identity-priority",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "deriveRepoKeyFromPath": null,
+        "matchBasis": null
+      },
+      "answerQuality": 0.0,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 1,
+      "inputTokens": 1644,
+      "latencyMs": 4683.990875,
+      "outputSha256": "fa4f688dd2aca9596b40e7afff580b166dd9df58ff3b14a222b37525c8a7ac8f",
+      "outputTokens": 255,
+      "promptSha256": "6b12f57a88b93a811de18e5e7711efbb965affe826d8fea516d5989e60553955",
+      "providerCalls": [
+        {
+          "inputTokens": 470,
+          "latencyMs": 2764.171625,
+          "outputTokens": 213,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1079,
+          "latencyMs": 1121.872875,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 95,
+          "latencyMs": 793.138959,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 2.7195829999999996,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "identity-priority",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "deriveRepoKeyFromPath": false,
+        "matchBasis": "projectRef"
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "ddf77e1e7007df3c76d0926868b907d4e63ffc57076426c81b7c6d8eaa235e6a",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 2,
+      "inputTokens": 2311,
+      "latencyMs": 6580.339,
+      "outputSha256": "87a46d42f4db13544934f6319c548748d3addd3ae06620c7a85429376b371de4",
+      "outputTokens": 1079,
+      "promptSha256": "5d0fc8152c1ac90451e6eed11f95b37f6e0994a272326aebeb51c9587f3a94bd",
+      "providerCalls": [
+        {
+          "inputTokens": 461,
+          "latencyMs": 1827.332583,
+          "outputTokens": 169,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1180,
+          "latencyMs": 3841.851959,
+          "outputTokens": 888,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 670,
+          "latencyMs": 904.674708,
+          "outputTokens": 22,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.38685280723454163,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.2
+      },
+      "retrievalMs": 3.375542,
+      "selectedIds": [
+        "argument-control",
+        "case-sensitive",
+        "disabled-agentic",
+        "empty-context",
+        "identity-priority",
+        "global-only",
+        "planner-fallback",
+        "split-writer"
+      ],
+      "status": "completed",
+      "taskId": "identity-priority",
+      "usedIds": [
+        "identity-priority",
+        "case-sensitive",
+        "argument-control"
+      ]
+    },
+    {
+      "answer": {
+        "includeRepoRecords": null,
+        "includeUnresolvedRecords": null,
+        "requireNullIdentityForGlobal": null
+      },
+      "answerQuality": 0.0,
+      "condition": "legacy_memory",
+      "contextSha256": "838499a356b3877933f6d63b0c3a26e7b7b5093b53028d274f47e6771c5f4883",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 3,
+      "inputTokens": 2027,
+      "latencyMs": 5219.023042,
+      "outputSha256": "e88bdd9979a7bf2adc942ff9695764d7a0a923dcfb2c4f2b90c7219f3975eaf3",
+      "outputTokens": 624,
+      "promptSha256": "01824c92b346a91fc319daaf0eab2d7b9eba12aee24e6e786ae058a725e3714f",
+      "providerCalls": [
+        {
+          "inputTokens": 467,
+          "latencyMs": 1908.277,
+          "outputTokens": 191,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1084,
+          "latencyMs": 2477.5183749999997,
+          "outputTokens": 404,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 476,
+          "latencyMs": 829.001,
+          "outputTokens": 29,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 1.988334,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "global-only",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "includeRepoRecords": false,
+        "includeUnresolvedRecords": false,
+        "requireNullIdentityForGlobal": true
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "d82807362fe0d0ea30cbe51ed3a1206223dfa45fb29284688ca6326a98728c15",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 4,
+      "inputTokens": 2089,
+      "latencyMs": 6488.676583,
+      "outputSha256": "c4057a1bec312528fa0ded1825906847b2ea30e8498acc4de56f121055f532d4",
+      "outputTokens": 733,
+      "promptSha256": "d78c0829cf7f7fe94ed24217e729aed74dc5a02457adb495d1ceb4aa29aca188",
+      "providerCalls": [
+        {
+          "inputTokens": 458,
+          "latencyMs": 2465.517417,
+          "outputTokens": 156,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1183,
+          "latencyMs": 2966.8428329999997,
+          "outputTokens": 548,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 448,
+          "latencyMs": 1051.0358330000001,
+          "outputTokens": 29,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 1.0,
+        "recallAt8": 1.0,
+        "reciprocalRank": 1.0
+      },
+      "retrievalMs": 2.9387499999999998,
+      "selectedIds": [
+        "global-only",
+        "argument-control",
+        "disabled-agentic",
+        "case-sensitive",
+        "empty-context",
+        "planner-fallback",
+        "scope-before-limit",
+        "split-writer"
+      ],
+      "status": "completed",
+      "taskId": "global-only",
+      "usedIds": [
+        "global-only",
+        "argument-control"
+      ]
+    },
+    {
+      "answer": {
+        "includeRepoRecords": false,
+        "includeUnresolvedRecords": false,
+        "requireNullIdentityForGlobal": true
+      },
+      "answerQuality": 1.0,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 5,
+      "inputTokens": 89,
+      "latencyMs": 1348.619666,
+      "outputSha256": "c4057a1bec312528fa0ded1825906847b2ea30e8498acc4de56f121055f532d4",
+      "outputTokens": 29,
+      "promptSha256": "1f407c47e6060a77b8c0298cb080d013fa4b6b5493c4f60d0572d6b1d81ca127",
+      "providerCalls": [
+        {
+          "inputTokens": 89,
+          "latencyMs": 1348.549542,
+          "outputTokens": 29,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "global-only",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptRelativePath": false,
+        "projectRef": "TeamA",
+        "repoKey": "RepoA"
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "86ac7870a4f0d120e2e41c715ee04107934d8b71b3856d1e01f68927877fbf2b",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 6,
+      "inputTokens": 2178,
+      "latencyMs": 6365.296625,
+      "outputSha256": "eb13c916d11a2559584cf2ba51d374c897c92a1733603a35a357b3addddbcc59",
+      "outputTokens": 850,
+      "promptSha256": "7fa4dd1a10d1d770edbbf1368eb1004ac53749c69584d2a6e9de0c44b16d7aea",
+      "providerCalls": [
+        {
+          "inputTokens": 472,
+          "latencyMs": 2288.706875,
+          "outputTokens": 232,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1227,
+          "latencyMs": 3120.263625,
+          "outputTokens": 592,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 479,
+          "latencyMs": 951.621083,
+          "outputTokens": 26,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.6309297535714575,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.5
+      },
+      "retrievalMs": 2.510958,
+      "selectedIds": [
+        "argument-control",
+        "case-sensitive",
+        "disabled-agentic",
+        "empty-context",
+        "global-only",
+        "query-priority",
+        "score-clamp",
+        "split-writer"
+      ],
+      "status": "completed",
+      "taskId": "case-sensitive",
+      "usedIds": [
+        "case-sensitive",
+        "argument-control"
+      ]
+    },
+    {
+      "answer": {
+        "acceptRelativePath": true,
+        "projectRef": "TeamA",
+        "repoKey": "RepoA"
+      },
+      "answerQuality": 0.6666666666666666,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 7,
+      "inputTokens": 103,
+      "latencyMs": 964.651084,
+      "outputSha256": "4edfcb676b2373526a7f7ffeff2e32a9f160f0a5b9790509c219a06701da9a34",
+      "outputTokens": 26,
+      "promptSha256": "fe5340d69a4eefe446542b2e8f58ad3bcb03aaa6bc208459ec06336c1a987b4a",
+      "providerCalls": [
+        {
+          "inputTokens": 103,
+          "latencyMs": 964.5650420000001,
+          "outputTokens": 26,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.6666666666666666,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "case-sensitive",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptRelativePath": null,
+        "projectRef": "TeamA",
+        "repoKey": "RepoA"
+      },
+      "answerQuality": 0.6666666666666666,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 8,
+      "inputTokens": 1663,
+      "latencyMs": 4413.601167000001,
+      "outputSha256": "f2efabcc25ea6029d5881d78ae881126ccc36dab33e8631f18c9e1f8b3d0a608",
+      "outputTokens": 227,
+      "promptSha256": "c31f9ffb2c5ccbee9de7a76565562a3b8dd185517deb7448e15ee9626dc0e35d",
+      "providerCalls": [
+        {
+          "inputTokens": 481,
+          "latencyMs": 2320.727167,
+          "outputTokens": 180,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1076,
+          "latencyMs": 1008.8092500000001,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 106,
+          "latencyMs": 1080.554875,
+          "outputTokens": 26,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.6666666666666666,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 1.718916,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "case-sensitive",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptIncludeTrace": true,
+        "acceptLimit": true,
+        "acceptTokenBudget": true
+      },
+      "answerQuality": 0.0,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 9,
+      "inputTokens": 90,
+      "latencyMs": 1088.981292,
+      "outputSha256": "6100b479084c9b9652b704ea230a27b28fc601a17160c5c1a053796b17e5da73",
+      "outputTokens": 25,
+      "promptSha256": "d6e87987fe672f987a299a92033ac3b28c39dad1a91b3462719ed3c830cb2988",
+      "providerCalls": [
+        {
+          "inputTokens": 90,
+          "latencyMs": 1088.8645,
+          "outputTokens": 25,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.0,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "argument-control",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptIncludeTrace": true,
+        "acceptLimit": true,
+        "acceptTokenBudget": true
+      },
+      "answerQuality": 0.0,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 10,
+      "inputTokens": 1632,
+      "latencyMs": 4358.2045,
+      "outputSha256": "6100b479084c9b9652b704ea230a27b28fc601a17160c5c1a053796b17e5da73",
+      "outputTokens": 225,
+      "promptSha256": "cc14faef45968c62f6d827081345d1e8fc267f19c24c8bc0b0571c14f6d59dfb",
+      "providerCalls": [
+        {
+          "inputTokens": 468,
+          "latencyMs": 2145.361625,
+          "outputTokens": 179,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1071,
+          "latencyMs": 1054.264042,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 93,
+          "latencyMs": 1153.351917,
+          "outputTokens": 25,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 3.090083,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "argument-control",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptIncludeTrace": false,
+        "acceptLimit": false,
+        "acceptTokenBudget": false
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "30032b10789c39618928099f00b1df8fd5011176f7a4a9cf4d9573dd220a6102",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 11,
+      "inputTokens": 2134,
+      "latencyMs": 7307.4495830000005,
+      "outputSha256": "c369cd1110eb4498d89c90dd8a2e0d40b4b68f9478924e59beedc3076ff7e95a",
+      "outputTokens": 876,
+      "promptSha256": "5c0bc0afa22bf5677c0fa0d2460e1d0d4ad5b8399b64995cf17365f6c3b094cd",
+      "providerCalls": [
+        {
+          "inputTokens": 457,
+          "latencyMs": 2297.9725000000003,
+          "outputTokens": 196,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1172,
+          "latencyMs": 3560.226542,
+          "outputTokens": 655,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 505,
+          "latencyMs": 1443.63125,
+          "outputTokens": 25,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 1.0,
+        "recallAt8": 1.0,
+        "reciprocalRank": 1.0
+      },
+      "retrievalMs": 2.796583,
+      "selectedIds": [
+        "argument-control",
+        "disabled-agentic",
+        "global-only",
+        "empty-context",
+        "scope-before-limit",
+        "used-id-filter",
+        "distractor-0",
+        "distractor-1"
+      ],
+      "status": "completed",
+      "taskId": "argument-control",
+      "usedIds": [
+        "argument-control",
+        "used-id-filter"
+      ]
+    },
+    {
+      "answer": {
+        "facetsBeforeLimit": true,
+        "highScoreOverridesScope": false,
+        "scopeBeforeLimit": true
+      },
+      "answerQuality": 1.0,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 12,
+      "inputTokens": 1638,
+      "latencyMs": 4817.547459,
+      "outputSha256": "7e57ce79cabfa5a6f85d60041260fb577d1956caf21ec74c3396058a04451caa",
+      "outputTokens": 241,
+      "promptSha256": "2c0770c2211adcae5e3e238dbf318f4859cc06aa54f66f6a2947753354f39cf2",
+      "providerCalls": [
+        {
+          "inputTokens": 473,
+          "latencyMs": 2399.6235,
+          "outputTokens": 192,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1067,
+          "latencyMs": 1041.556291,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 98,
+          "latencyMs": 1372.247084,
+          "outputTokens": 28,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 2.1698749999999998,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "scope-before-limit",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "facetsBeforeLimit": true,
+        "highScoreOverridesScope": false,
+        "scopeBeforeLimit": true
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "e8741068ead9dab2b533ffb0f2bad3503b155dd473d150940c53bebdd1c43e94",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 13,
+      "inputTokens": 2344,
+      "latencyMs": 7289.649375,
+      "outputSha256": "7e57ce79cabfa5a6f85d60041260fb577d1956caf21ec74c3396058a04451caa",
+      "outputTokens": 1167,
+      "promptSha256": "8af0e6f9c29b750ad0954ba13197029c8b527cb4825238a135d53c2c5ff56f67",
+      "providerCalls": [
+        {
+          "inputTokens": 462,
+          "latencyMs": 1981.90825,
+          "outputTokens": 181,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1200,
+          "latencyMs": 4396.542,
+          "outputTokens": 958,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 682,
+          "latencyMs": 908.8334590000001,
+          "outputTokens": 28,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.38685280723454163,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.2
+      },
+      "retrievalMs": 0.607041,
+      "selectedIds": [
+        "argument-control",
+        "global-only",
+        "planner-fallback",
+        "query-priority",
+        "scope-before-limit",
+        "disabled-agentic",
+        "empty-context",
+        "case-sensitive"
+      ],
+      "status": "completed",
+      "taskId": "scope-before-limit",
+      "usedIds": [
+        "scope-before-limit",
+        "query-priority",
+        "argument-control"
+      ]
+    },
+    {
+      "answer": {
+        "facetsBeforeLimit": true,
+        "highScoreOverridesScope": false,
+        "scopeBeforeLimit": true
+      },
+      "answerQuality": 1.0,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 14,
+      "inputTokens": 95,
+      "latencyMs": 834.670459,
+      "outputSha256": "7e57ce79cabfa5a6f85d60041260fb577d1956caf21ec74c3396058a04451caa",
+      "outputTokens": 28,
+      "promptSha256": "5a9cc1c8b72244f59f9893f0beeb200052a554a0f333670e59acbac5f01f29e1",
+      "providerCalls": [
+        {
+          "inputTokens": 95,
+          "latencyMs": 834.584375,
+          "outputTokens": 28,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "scope-before-limit",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "episodeLimit": 3,
+        "includeZeroQueryScore": false,
+        "knowledgeLimit": 8,
+        "primarySort": "query_score"
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "00079257b0a6b1351895f4a30b6dfebdcfc33479dad9f5d1fd2239d313a6e31f",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 15,
+      "inputTokens": 2220,
+      "latencyMs": 5734.279208,
+      "outputSha256": "e5606ae73d63bb943202c7d3e822fe5bb32f70418d3a1014c690d5c9f5ef2612",
+      "outputTokens": 914,
+      "promptSha256": "0501bc8db8e53c5330f5323a82f090c56c5f229bc7f34d03cf9b84f087a0c136",
+      "providerCalls": [
+        {
+          "inputTokens": 459,
+          "latencyMs": 2260.79425,
+          "outputTokens": 207,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1206,
+          "latencyMs": 2920.058917,
+          "outputTokens": 676,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 555,
+          "latencyMs": 549.27525,
+          "outputTokens": 31,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.6309297535714575,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.5
+      },
+      "retrievalMs": 1.931875,
+      "selectedIds": [
+        "disabled-agentic",
+        "query-priority",
+        "empty-context",
+        "global-only",
+        "scope-before-limit",
+        "score-clamp",
+        "argument-control",
+        "planner-fallback"
+      ],
+      "status": "completed",
+      "taskId": "query-priority",
+      "usedIds": [
+        "query-priority",
+        "scope-before-limit"
+      ]
+    },
+    {
+      "answer": {
+        "episodeLimit": null,
+        "includeZeroQueryScore": false,
+        "knowledgeLimit": null,
+        "primarySort": "query_score"
+      },
+      "answerQuality": 0.5,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 16,
+      "inputTokens": 92,
+      "latencyMs": 1792.545375,
+      "outputSha256": "e9107280106e4d76825bffd19401379c6b0e8045e556f73371954768e0a19996",
+      "outputTokens": 31,
+      "promptSha256": "a67a865cf7a05bed7647c17747972aabf1d9ff2cfb5d9d9d367960b0185c3dfe",
+      "providerCalls": [
+        {
+          "inputTokens": 92,
+          "latencyMs": 1792.2265830000001,
+          "outputTokens": 31,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.5,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "query-priority",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "episodeLimit": 0,
+        "includeZeroQueryScore": false,
+        "knowledgeLimit": 0,
+        "primarySort": "query_score"
+      },
+      "answerQuality": 0.5,
+      "condition": "legacy_memory",
+      "contextSha256": "fd7f7c73c116f86aca5d0ac544d82c4b5c775ec2822e993ddc21f5f19902255c",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 17,
+      "inputTokens": 2179,
+      "latencyMs": 6029.55025,
+      "outputSha256": "3d0c8eff9c49686fdcdd1acc493f9a69d70e3343c7948467451b844f383bc908",
+      "outputTokens": 745,
+      "promptSha256": "d9cae10186d1e5411c673d55c4f2ace730cff84c73bf5810216c9d44ba6b5fd3",
+      "providerCalls": [
+        {
+          "inputTokens": 470,
+          "latencyMs": 2504.430459,
+          "outputTokens": 234,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1155,
+          "latencyMs": 2483.377709,
+          "outputTokens": 480,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 554,
+          "latencyMs": 1036.7208329999999,
+          "outputTokens": 31,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.5,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 3.676875,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "query-priority",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "holdWriterDuringProviderCalls": true,
+        "persistCompileRun": true
+      },
+      "answerQuality": 0.5,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 18,
+      "inputTokens": 87,
+      "latencyMs": 1075.852292,
+      "outputSha256": "15c54aa5c9263ef4d652c728bce9279a8d57dcdcaced421e26d9f1f179fdf702",
+      "outputTokens": 22,
+      "promptSha256": "9e9fffca264517a8331f9b045b78d26e0a34d19a5a3b38d8f2f006fe82f50330",
+      "providerCalls": [
+        {
+          "inputTokens": 87,
+          "latencyMs": 1075.7874590000001,
+          "outputTokens": 22,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.5,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "split-writer",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "holdWriterDuringProviderCalls": true,
+        "persistCompileRun": true
+      },
+      "answerQuality": 0.5,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 19,
+      "inputTokens": 1671,
+      "latencyMs": 4595.056209,
+      "outputSha256": "15c54aa5c9263ef4d652c728bce9279a8d57dcdcaced421e26d9f1f179fdf702",
+      "outputTokens": 280,
+      "promptSha256": "40ba7c19d7ee11d6c35aeaba6d09b9472ce75ad977087089a790b12b2e118dfc",
+      "providerCalls": [
+        {
+          "inputTokens": 464,
+          "latencyMs": 2493.943875,
+          "outputTokens": 237,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1117,
+          "latencyMs": 913.096209,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 90,
+          "latencyMs": 1184.582833,
+          "outputTokens": 22,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.5,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 2.3856659999999996,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "split-writer",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "holdWriterDuringProviderCalls": false,
+        "persistCompileRun": true
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "aed1b65df10ee6705689999c36ac5369d4fffc1f5eb443f3fdc71d67d07956e0",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 20,
+      "inputTokens": 2193,
+      "latencyMs": 6344.146667,
+      "outputSha256": "05dcc7d4013ec02cfe2b5599131dc92be60440665df2c3aa2afb570404f7212e",
+      "outputTokens": 992,
+      "promptSha256": "bc84f8af506f73c29dc9a9b91f24b15004e44f22673f48700c6919e2368a8a33",
+      "providerCalls": [
+        {
+          "inputTokens": 455,
+          "latencyMs": 2005.938917,
+          "outputTokens": 171,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1166,
+          "latencyMs": 3521.069625,
+          "outputTokens": 799,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 572,
+          "latencyMs": 813.036875,
+          "outputTokens": 22,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.43067655807339306,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.25
+      },
+      "retrievalMs": 1.88825,
+      "selectedIds": [
+        "disabled-agentic",
+        "empty-context",
+        "planner-fallback",
+        "split-writer",
+        "used-id-filter",
+        "argument-control",
+        "global-only",
+        "distractor-0"
+      ],
+      "status": "completed",
+      "taskId": "split-writer",
+      "usedIds": [
+        "split-writer",
+        "used-id-filter",
+        "planner-fallback"
+      ]
+    },
+    {
+      "answer": {
+        "agenticUsed": false,
+        "makeProviderCalls": false,
+        "responseKind": "fallback_markdown",
+        "returnNoContent": true
+      },
+      "answerQuality": 0.75,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 21,
+      "inputTokens": 1721,
+      "latencyMs": 4065.391,
+      "outputSha256": "7bee51ebc8a575946ffead52c2f297f99c49d8629bebc7959fedb5948ace298b",
+      "outputTokens": 295,
+      "promptSha256": "313612b7eddd0b9a3c04a45842a269f9bbca0db03ba11e4e8e86b37acad1e239",
+      "providerCalls": [
+        {
+          "inputTokens": 477,
+          "latencyMs": 2176.856083,
+          "outputTokens": 241,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1142,
+          "latencyMs": 899.4505419999999,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 102,
+          "latencyMs": 987.6731669999999,
+          "outputTokens": 33,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.75,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 0.585833,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "disabled-agentic",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "agenticUsed": false,
+        "makeProviderCalls": false,
+        "responseKind": "fallback_markdown",
+        "returnNoContent": false
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "6159725f244e4c5c82e820b13c379db9bdc6448b79b2f112ed7f25ea1895e2c3",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 22,
+      "inputTokens": 2239,
+      "latencyMs": 7539.701499999999,
+      "outputSha256": "8857507f60a619275f12d1be5edcb5e20945e757509337801620bff77a482b62",
+      "outputTokens": 938,
+      "promptSha256": "12258ad7668263d2465330f7744c9262a5dd3d397f3f50db27b249a59814903a",
+      "providerCalls": [
+        {
+          "inputTokens": 468,
+          "latencyMs": 2330.456083,
+          "outputTokens": 208,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1185,
+          "latencyMs": 4257.445041999999,
+          "outputTokens": 697,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 586,
+          "latencyMs": 950.369542,
+          "outputTokens": 33,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 1.0,
+        "recallAt8": 1.0,
+        "reciprocalRank": 1.0
+      },
+      "retrievalMs": 0.721334,
+      "selectedIds": [
+        "disabled-agentic",
+        "empty-context",
+        "global-only",
+        "scope-before-limit",
+        "used-id-filter",
+        "case-sensitive",
+        "identity-priority",
+        "planner-fallback"
+      ],
+      "status": "completed",
+      "taskId": "disabled-agentic",
+      "usedIds": [
+        "disabled-agentic",
+        "empty-context"
+      ]
+    },
+    {
+      "answer": {
+        "agenticUsed": false,
+        "makeProviderCalls": false,
+        "responseKind": "fallback_markdown",
+        "returnNoContent": false
+      },
+      "answerQuality": 1.0,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 23,
+      "inputTokens": 99,
+      "latencyMs": 786.357584,
+      "outputSha256": "8857507f60a619275f12d1be5edcb5e20945e757509337801620bff77a482b62",
+      "outputTokens": 33,
+      "promptSha256": "a732fc7d725bd6bdceb822ce992194149c4ff8b9c2d8a9fccdf18a7344a8469f",
+      "providerCalls": [
+        {
+          "inputTokens": 99,
+          "latencyMs": 786.296875,
+          "outputTokens": 33,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "disabled-agentic",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "composerCalls": 0,
+        "plannerCalls": 0,
+        "responseText": "No Content",
+        "usedEpisodes": [],
+        "usedKnowledge": []
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "ad11b4b692512a79b0b6392cfe3677edb1c93c7f5f1d82f5c87e668be8581e21",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 24,
+      "inputTokens": 2062,
+      "latencyMs": 6141.936833,
+      "outputSha256": "955d3786090fe8e1351aab19fc64d943ec289fa160aa6693fa017d3ae0feac6e",
+      "outputTokens": 771,
+      "promptSha256": "25d65ec5a1f092804237ca1ef8e04a2e954dc0b28db7e5445e3671974910c782",
+      "providerCalls": [
+        {
+          "inputTokens": 454,
+          "latencyMs": 2338.690375,
+          "outputTokens": 248,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1264,
+          "latencyMs": 2787.077,
+          "outputTokens": 491,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 344,
+          "latencyMs": 1012.900375,
+          "outputTokens": 32,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.6309297535714575,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.5
+      },
+      "retrievalMs": 1.762875,
+      "selectedIds": [
+        "disabled-agentic",
+        "empty-context",
+        "global-only",
+        "split-writer",
+        "used-id-filter",
+        "argument-control",
+        "identity-priority",
+        "planner-fallback"
+      ],
+      "status": "completed",
+      "taskId": "empty-context",
+      "usedIds": [
+        "empty-context",
+        "disabled-agentic"
+      ]
+    },
+    {
+      "answer": {
+        "composerCalls": 0,
+        "plannerCalls": 0,
+        "responseText": "No candidates were available in either list for context_compile."
+      },
+      "answerQuality": 0.6666666666666666,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 25,
+      "inputTokens": 86,
+      "latencyMs": 1031.19875,
+      "outputSha256": "59989a53615ea13a3d663244ae5fc1d436dfe6103920489ebf524c653ccdbe22",
+      "outputTokens": 32,
+      "promptSha256": "8fc93e40049083be35aafb7bd51010a00afb716ba1bb1cabae7f87a50e604f44",
+      "providerCalls": [
+        {
+          "inputTokens": 86,
+          "latencyMs": 1031.125959,
+          "outputTokens": 32,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.6666666666666666,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "empty-context",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "composerCalls": 0,
+        "plannerCalls": 0,
+        "responseText": ""
+      },
+      "answerQuality": 0.6666666666666666,
+      "condition": "legacy_memory",
+      "contextSha256": "f1dee19e16cca2ca0da97ce52bf8392039cb3d10aedff902a9ccf5d7514a811a",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 26,
+      "inputTokens": 1951,
+      "latencyMs": 11112.95175,
+      "outputSha256": "ccbe3571009410113bcf02ae5ee9f10c83fcd8d22dc68252156241ab97d6d8f6",
+      "outputTokens": 520,
+      "promptSha256": "5db9c29f784b1666a31d07d35291952e24966a0bfcbcf9d729287f6c2b7956e3",
+      "providerCalls": [
+        {
+          "inputTokens": 464,
+          "latencyMs": 8243.856791,
+          "outputTokens": 217,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1137,
+          "latencyMs": 2001.0006250000001,
+          "outputTokens": 282,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 350,
+          "latencyMs": 865.08375,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.6666666666666666,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 1.9607499999999998,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "empty-context",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptUnrelatedMarkdown": false,
+        "keepUnknownId": false,
+        "relabelUnrelatedAsNoContent": false
+      },
+      "answerQuality": 1.0,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 27,
+      "inputTokens": 94,
+      "latencyMs": 659.6700840000001,
+      "outputSha256": "dd281be8d8fc682764c74e3c9fa766360b17d0afd86a1066ca3c682d52ea7e6e",
+      "outputTokens": 31,
+      "promptSha256": "e87c0bc814953f3a5c80faa3cbca409ef08f867ef9ea6dd7a24ca2fc8304875f",
+      "providerCalls": [
+        {
+          "inputTokens": 94,
+          "latencyMs": 659.623917,
+          "outputTokens": 31,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "used-id-filter",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptUnrelatedMarkdown": false,
+        "keepUnknownId": false,
+        "relabelUnrelatedAsNoContent": false
+      },
+      "answerQuality": 1.0,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 28,
+      "inputTokens": 1629,
+      "latencyMs": 3461.184167,
+      "outputSha256": "dd281be8d8fc682764c74e3c9fa766360b17d0afd86a1066ca3c682d52ea7e6e",
+      "outputTokens": 230,
+      "promptSha256": "c5effb0f428493d2e98a84313b1d9b94f4ea3fdb1aca326ee8cf180936d953f3",
+      "providerCalls": [
+        {
+          "inputTokens": 472,
+          "latencyMs": 1826.4565830000001,
+          "outputTokens": 178,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1060,
+          "latencyMs": 961.2190830000001,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 97,
+          "latencyMs": 671.4488749999999,
+          "outputTokens": 31,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 0.7429169999999999,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "used-id-filter",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "acceptUnrelatedMarkdown": false,
+        "keepUnknownId": false,
+        "relabelUnrelatedAsNoContent": false
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "cee02a47efeca52e05fa1fd36a8ab37263d92bc0d9ee554b9722b9cf4cef5650",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 29,
+      "inputTokens": 2210,
+      "latencyMs": 7073.349792,
+      "outputSha256": "dd281be8d8fc682764c74e3c9fa766360b17d0afd86a1066ca3c682d52ea7e6e",
+      "outputTokens": 931,
+      "promptSha256": "f08d48c7cf9dace85ef096383bce9ae2add9946a3559daef6f67114e1a0f55f0",
+      "providerCalls": [
+        {
+          "inputTokens": 463,
+          "latencyMs": 1804.9815,
+          "outputTokens": 170,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1143,
+          "latencyMs": 4140.423042,
+          "outputTokens": 730,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 604,
+          "latencyMs": 1122.609083,
+          "outputTokens": 31,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 1.0,
+        "recallAt8": 1.0,
+        "reciprocalRank": 1.0
+      },
+      "retrievalMs": 3.396375,
+      "selectedIds": [
+        "used-id-filter",
+        "disabled-agentic",
+        "empty-context",
+        "planner-fallback",
+        "argument-control",
+        "distractor-0",
+        "distractor-1",
+        "distractor-2"
+      ],
+      "status": "completed",
+      "taskId": "used-id-filter",
+      "usedIds": [
+        "used-id-filter",
+        "argument-control"
+      ]
+    },
+    {
+      "answer": {
+        "abortImmediately": false,
+        "attemptComposer": false,
+        "useDefaultPlan": true
+      },
+      "answerQuality": 0.6666666666666666,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 30,
+      "inputTokens": 1631,
+      "latencyMs": 4111.058083,
+      "outputSha256": "b185fafd78e5c36831faddedf259d5b7ac56214e0d178d6b1660157367055836",
+      "outputTokens": 252,
+      "promptSha256": "db1e8d5253725a43217e2e8c0bfb3427623e0839f116baafd96649c83e2035cf",
+      "providerCalls": [
+        {
+          "inputTokens": 461,
+          "latencyMs": 2376.289458,
+          "outputTokens": 207,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1084,
+          "latencyMs": 945.9685,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 86,
+          "latencyMs": 787.523958,
+          "outputTokens": 24,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.6666666666666666,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 0.5934999999999999,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "planner-fallback",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "abortImmediately": false,
+        "attemptComposer": true,
+        "useDefaultPlan": true
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "fd49af3de7e2d490c851d3772bbffad65ebcbd2e9dda0a9fc9a21cff455a9568",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 31,
+      "inputTokens": 2077,
+      "latencyMs": 6472.908958,
+      "outputSha256": "54ff8713698d1788b4a15b00028f773e9f396528f4d452e6210e0e27dddf479e",
+      "outputTokens": 833,
+      "promptSha256": "4302ba5e0d09c52190fcb55b516d61d4924ee0e87bdcbb1e30b0cc0d411103a5",
+      "providerCalls": [
+        {
+          "inputTokens": 452,
+          "latencyMs": 2149.37325,
+          "outputTokens": 206,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1187,
+          "latencyMs": 3694.664917,
+          "outputTokens": 603,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 438,
+          "latencyMs": 627.174875,
+          "outputTokens": 24,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.6309297535714575,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.5
+      },
+      "retrievalMs": 0.904625,
+      "selectedIds": [
+        "empty-context",
+        "planner-fallback",
+        "disabled-agentic",
+        "used-id-filter",
+        "argument-control",
+        "global-only",
+        "split-writer",
+        "distractor-0"
+      ],
+      "status": "completed",
+      "taskId": "planner-fallback",
+      "usedIds": [
+        "planner-fallback",
+        "empty-context",
+        "used-id-filter"
+      ]
+    },
+    {
+      "answer": {
+        "abortImmediately": false,
+        "attemptComposer": false,
+        "useDefaultPlan": true
+      },
+      "answerQuality": 0.6666666666666666,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 32,
+      "inputTokens": 83,
+      "latencyMs": 1201.718166,
+      "outputSha256": "b185fafd78e5c36831faddedf259d5b7ac56214e0d178d6b1660157367055836",
+      "outputTokens": 24,
+      "promptSha256": "02d0bfa9413790336f5ecf5508ce2047ac04a58bc92e8034605cef9f74319f80",
+      "providerCalls": [
+        {
+          "inputTokens": 83,
+          "latencyMs": 1201.694625,
+          "outputTokens": 24,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.6666666666666666,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "planner-fallback",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "normalizedDynamicScore": 100,
+        "normalizedImportance": 0,
+        "primarySort": "query_score"
+      },
+      "answerQuality": 1.0,
+      "condition": "foundation_memory",
+      "contextSha256": "1858c963d28fbd652ba81488cab3478477a64759ba3f513c48f0abb9a2bdce3c",
+      "criticalFailure": false,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 33,
+      "inputTokens": 2223,
+      "latencyMs": 6901.343583,
+      "outputSha256": "47604ccd9b3d3dca91330bb897450081953323f58fdd61db2d02621ff6159759",
+      "outputTokens": 961,
+      "promptSha256": "7aa59fafffc98e0963320c8bfba054ed52b87a96bb85909d1deb072f343ed729",
+      "providerCalls": [
+        {
+          "inputTokens": 461,
+          "latencyMs": 2260.28625,
+          "outputTokens": 201,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1196,
+          "latencyMs": 3914.282792,
+          "outputTokens": 735,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 566,
+          "latencyMs": 725.3614590000001,
+          "outputTokens": 25,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 1.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": 0.3562071871080222,
+        "recallAt8": 1.0,
+        "reciprocalRank": 0.16666666666666666
+      },
+      "retrievalMs": 0.647667,
+      "selectedIds": [
+        "query-priority",
+        "scope-before-limit",
+        "disabled-agentic",
+        "empty-context",
+        "planner-fallback",
+        "score-clamp",
+        "used-id-filter",
+        "distractor-0"
+      ],
+      "status": "completed",
+      "taskId": "score-clamp",
+      "usedIds": [
+        "query-priority",
+        "score-clamp",
+        "scope-before-limit"
+      ]
+    },
+    {
+      "answer": {
+        "normalizedDynamicScore": 500,
+        "normalizedImportance": -20,
+        "primarySort": "dynamic_score"
+      },
+      "answerQuality": 0.0,
+      "condition": "no_memory",
+      "contextSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 34,
+      "inputTokens": 92,
+      "latencyMs": 1207.964917,
+      "outputSha256": "7c15161973e18b4f7f1f8691bd09601d498298bca7a27edaf13a8d06ea866621",
+      "outputTokens": 32,
+      "promptSha256": "e0172e04f685276807dfe7ed73ae35f86c83c61cb3d05b6c5d334bc81c0fccb4",
+      "providerCalls": [
+        {
+          "inputTokens": 92,
+          "latencyMs": 1207.928041,
+          "outputTokens": 32,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.0,
+      "repetition": 0,
+      "retrieval": null,
+      "retrievalMs": null,
+      "selectedIds": [],
+      "status": "completed",
+      "taskId": "score-clamp",
+      "usedIds": []
+    },
+    {
+      "answer": {
+        "normalizedDynamicScore": 500,
+        "normalizedImportance": -20,
+        "primarySort": "dynamic_score"
+      },
+      "answerQuality": 0.0,
+      "condition": "legacy_memory",
+      "contextSha256": "4e47ec927670bb96ab007a75ff1cf84822eaf4c5e996bc0f5925a5eed0d28b40",
+      "criticalFailure": true,
+      "currency": null,
+      "errorCategory": null,
+      "estimatedCost": null,
+      "executionIndex": 35,
+      "inputTokens": 1662,
+      "latencyMs": 3978.43625,
+      "outputSha256": "7c15161973e18b4f7f1f8691bd09601d498298bca7a27edaf13a8d06ea866621",
+      "outputTokens": 271,
+      "promptSha256": "5fadd1ef4c7ec622fa4d263a4e6f7c4a806e6ac643e9c3b3968c66e9ed51b09e",
+      "providerCalls": [
+        {
+          "inputTokens": 470,
+          "latencyMs": 2263.473916,
+          "outputTokens": 224,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 1097,
+          "latencyMs": 820.675291,
+          "outputTokens": 21,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        },
+        {
+          "inputTokens": 95,
+          "latencyMs": 891.567416,
+          "outputTokens": 26,
+          "provider": "azure-openai",
+          "reportedModel": "gpt-5.4-mini-2026-03-17",
+          "succeeded": true
+        }
+      ],
+      "quality": 0.0,
+      "repetition": 0,
+      "retrieval": {
+        "forbiddenHits": [],
+        "ndcgAt8": -0.0,
+        "recallAt8": 0.0,
+        "reciprocalRank": 0.0
+      },
+      "retrievalMs": 1.2698749999999999,
+      "selectedIds": [
+        "distractor-0",
+        "distractor-1",
+        "distractor-2",
+        "distractor-3",
+        "distractor-4",
+        "distractor-5",
+        "distractor-6",
+        "distractor-7"
+      ],
+      "status": "completed",
+      "taskId": "score-clamp",
+      "usedIds": []
+    }
+  ],
+  "summary": {
+    "comparisons": [
+      {
+        "baseline": "no_memory",
+        "bootstrapIterations": 10000,
+        "bootstrapSeed": 1337,
+        "candidate": "legacy_memory",
+        "completePairs": 12,
+        "independentTasks": 12,
+        "interpretation": "Exploratory regression-task decisions; not a coding-productivity or deployment gate",
+        "meanQualityDeltaAllAttempts": -0.14583333333333334,
+        "taskPairedBootstrap95": [
+          -0.3333333333333333,
+          0.0
+        ]
+      },
+      {
+        "baseline": "no_memory",
+        "bootstrapIterations": 10000,
+        "bootstrapSeed": 1337,
+        "candidate": "foundation_memory",
+        "completePairs": 12,
+        "independentTasks": 12,
+        "interpretation": "Exploratory regression-task decisions; not a coding-productivity or deployment gate",
+        "meanQualityDeltaAllAttempts": 0.375,
+        "taskPairedBootstrap95": [
+          0.18055555555555558,
+          0.5694444444444445
+        ]
+      }
+    ],
+    "conditions": {
+      "foundation_memory": {
+        "completed": 12,
+        "criticalFailureCount": 0,
+        "failedOrDegraded": 0,
+        "meanLatencyMs": 6686.589808916666,
+        "meanQualityAllAttempts": 1.0,
+        "observations": 12,
+        "providerCalls": 36
+      },
+      "legacy_memory": {
+        "completed": 12,
+        "criticalFailureCount": 10,
+        "failedOrDegraded": 0,
+        "meanLatencyMs": 5070.499562666667,
+        "meanQualityAllAttempts": 0.4791666666666667,
+        "observations": 12,
+        "providerCalls": 36
+      },
+      "no_memory": {
+        "completed": 12,
+        "criticalFailureCount": 8,
+        "failedOrDegraded": 0,
+        "meanLatencyMs": 1115.3705140833333,
+        "meanQualityAllAttempts": 0.625,
+        "observations": 12,
+        "providerCalls": 12
+      }
+    }
+  }
+}

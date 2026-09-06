@@ -4,12 +4,16 @@ import {
   resolveCloudApiRuntimeRoute,
   resolveCoverEvidenceRouteByPolicy,
 } from "../src/modules/coverEvidence/provider-policy.js";
-import type { RuntimeSettingsRoute } from "../src/modules/settings/settings.types.js";
+import type {
+  RuntimeProviderName,
+  RuntimeProviderSetting,
+  StaticRuntimeSettingsRoute,
+} from "../src/modules/settings/settings.types.js";
 
 function runtimeRoute(
-  provider: RuntimeSettingsRoute["provider"],
-  fallback: RuntimeSettingsRoute["fallback"],
-): RuntimeSettingsRoute {
+  provider: RuntimeProviderSetting,
+  fallback: RuntimeProviderName[],
+): StaticRuntimeSettingsRoute {
   return { provider, fallback };
 }
 

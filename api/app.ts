@@ -17,6 +17,7 @@ import { contextDecisionRouter } from "./modules/context-decision/context-decisi
 import { doctorRouter } from "./modules/doctor/doctor.routes.js";
 import { episodesRouter } from "./modules/episodes/episodes.routes.js";
 import { graphRouter } from "./modules/graph/graph.routes.js";
+import { checkReadiness } from "./modules/health/readiness.service.js";
 import { knowledgeRouter } from "./modules/knowledge/knowledge.routes.js";
 import { overviewRouter } from "./modules/overview/overview.routes.js";
 import { queueRouter } from "./modules/queue/queue.routes.js";
@@ -50,9 +51,14 @@ app.use("/api/*", apiAuthenticationDispatcher());
 app.get("/api/health/live", (c) =>
   c.json({ status: "alive", service: projectIdentity.apiServiceName }),
 );
-app.get("/api/health/ready", (c) =>
-  c.json({ status: "ready", service: projectIdentity.apiServiceName }),
-);
+app.get("/api/health/ready", async (c) => {
+  c.header("Cache-Control", "no-store");
+  const checks = await checkReadiness();
+  const ready = Object.values(checks).every((status) => status === "ok");
+  return ready
+    ? c.json({ status: "ready", service: projectIdentity.apiServiceName })
+    : c.json({ status: "not_ready", service: projectIdentity.apiServiceName, checks }, 503);
+});
 app.get("/api/health", (c) => c.json({ status: "ok", service: projectIdentity.apiServiceName }));
 app.route("/api/admin-session", adminSessionRouter);
 app.route("/api/context", contextCompilerRouter);

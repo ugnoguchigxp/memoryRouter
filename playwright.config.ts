@@ -1,17 +1,28 @@
 import { defineConfig } from "@playwright/test";
-import { adminDevServerOrigin } from "./src/dev-server.config.js";
+
+const port = 39271;
+const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
   testDir: "e2e",
-  timeout: 30_000,
+  timeout: 60_000,
+  expect: { timeout: 15_000 },
+  workers: 1,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 1 : 0,
+  reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: adminDevServerOrigin,
-    trace: "on-first-retry",
+    baseURL,
+    browserName: "chromium",
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
   },
   webServer: {
-    command: "bun run dev",
-    url: adminDevServerOrigin,
-    reuseExistingServer: true,
-    timeout: 120_000,
+    command: "bun --no-env-file scripts/e2e-server.mjs",
+    url: `${baseURL}/api/health/ready`,
+    env: { CONTEXT_STILL_E2E_PORT: String(port) },
+    reuseExistingServer: false,
+    timeout: 600_000,
+    gracefulShutdown: { signal: "SIGTERM", timeout: 10_000 },
   },
 });
