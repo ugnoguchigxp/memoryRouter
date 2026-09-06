@@ -1,0 +1,16 @@
+import {applySectionTokenBudget, estimateTokens} from '/Users/y.noguchi/Code/contextStill/src/modules/context-compiler/token-budget.ts';
+import {CONTEXT_COMPILE_SECTION_RATIOS} from '/Users/y.noguchi/Code/contextStill/src/modules/context-compiler/compiler-contracts.ts';
+import {suppressNearDuplicateKnowledge} from '/Users/y.noguchi/Code/contextStill/src/modules/context-compiler/duplicate-suppression.service.ts';
+import assert from 'node:assert/strict';
+const item = {itemId:'rule-1',itemKind:'rule',section:'rules',title:'X'.repeat(80),content:'x'.repeat(1000),rankingReason:'reason',score:1,sourceRefs:[]} as const;
+const budgeted=applySectionTokenBudget([item] as any,32);
+const total=estimateTokens(`${budgeted.items[0].title}\n${budgeted.items[0].content}\n${budgeted.items[0].rankingReason}`);
+assert.ok(total>32); assert.equal(budgeted.dropped,false);
+console.log(JSON.stringify({case:'budget',budget:32,actualEstimated:total,dropped:budgeted.dropped,ratiosTotal:Object.values(CONTEXT_COMPILE_SECTION_RATIOS).reduce((a,b)=>a+b,0)}));
+const prefix = '共通の運用条件です。'.repeat(60);
+const duplicate = suppressNearDuplicateKnowledge([
+ {id:'allow',type:'rule',status:'active',title:'バックアップ削除条件',content:prefix+'復元確認は不要。',polarity:'positive'},
+ {id:'deny',type:'rule',status:'active',title:'バックアップ削除条件',content:prefix+'復元確認前の削除は禁止。',polarity:'negative'},
+]);
+assert.deepEqual(duplicate.items.map(x=>x.id),['allow']);
+console.log(JSON.stringify({case:'opposite-polarity',inputIds:['allow','deny'],outputIds:duplicate.items.map(x=>x.id),suppressed:[...duplicate.suppressedById]}));

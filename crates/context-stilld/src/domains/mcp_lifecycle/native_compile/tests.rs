@@ -1,9 +1,50 @@
 #![cfg(test)]
+use super::call_metrics::ProviderCall;
 use super::test_support::*;
 use super::*;
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::BTreeSet;
+
+#[test]
+fn provider_failover_count_requires_a_failed_transition_to_a_different_provider() {
+    let calls = vec![
+        ProviderCall {
+            provider: "primary".to_string(),
+            succeeded: false,
+            latency_ms: 10.0,
+            input_tokens: None,
+            output_tokens: None,
+            reported_model: None,
+        },
+        ProviderCall {
+            provider: "primary".to_string(),
+            succeeded: true,
+            latency_ms: 10.0,
+            input_tokens: None,
+            output_tokens: None,
+            reported_model: None,
+        },
+        ProviderCall {
+            provider: "primary".to_string(),
+            succeeded: false,
+            latency_ms: 10.0,
+            input_tokens: None,
+            output_tokens: None,
+            reported_model: None,
+        },
+        ProviderCall {
+            provider: "fallback".to_string(),
+            succeeded: true,
+            latency_ms: 10.0,
+            input_tokens: None,
+            output_tokens: None,
+            reported_model: None,
+        },
+    ];
+
+    assert_eq!(count_provider_failovers(&calls), 1);
+}
 
 #[test]
 fn native_compile_excludes_wrong_project_and_unresolved_selection() {
@@ -348,6 +389,11 @@ fn agentic_harness_observes_candidate_outbound_and_pack_ids() {
         .and_then(Value::as_bool)
         .unwrap_or(false));
     let outbound_requests = mock_handle.join().unwrap();
+    assert_eq!(
+        outbound_requests.len(),
+        1,
+        "composer must use one provider call"
+    );
 
     let connection = Connection::open(&db_path).unwrap();
     let selected_ids = connection
@@ -398,6 +444,21 @@ fn agentic_harness_observes_candidate_outbound_and_pack_ids() {
     assert!(!selected_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
     assert!(!outbound_ids.contains(&fixture.legacy_reproduction.wrong_project_knowledge_id));
     assert!(!outbound_ids.contains(&fixture.legacy_reproduction.unresolved_knowledge_id));
+    let pack_snapshot = connection
+        .query_row(
+            "select pack_snapshot from context_compile_runs limit 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap();
+    let pack: Value = serde_json::from_str(&pack_snapshot).unwrap();
+    let provider_attempts = pack["diagnostics"]["responseComposer"]["providerAttempts"]
+        .as_array()
+        .unwrap();
+    assert_eq!(provider_attempts.len(), outbound_requests.len());
+    assert!(provider_attempts
+        .iter()
+        .all(|attempt| attempt["succeeded"] == true));
     let _ = std::fs::remove_file(db_path);
 }
 
@@ -447,7 +508,152 @@ fn fallback_compose_does_not_render_raw_context_pack() {
     assert!(!markdown.contains("# Context Pack"));
     assert!(!markdown.contains("runId"));
     assert!(!markdown.contains("score"));
-    assert!(!markdown.contains("[rule-1]"));
+    assert!(markdown.contains("[rule-1]"));
+    assert!(markdown.contains("Use when: migrating context_compile to Rust."));
+}
+
+#[test]
+fn fallback_compose_preserves_late_conditions_and_negative_guardrails() {
+    let knowledge = vec![
+        PackKnowledge {
+            id: "rule-retention".to_string(),
+            kind: "rule".to_string(),
+            title: "バックアップ運用".to_string(),
+            body: "保存期間は30日。\n削除前に復元確認を必須とする。".to_string(),
+            polarity: "positive".to_string(),
+            score: 10,
+            query_score: 10,
+            dynamic_score: 0.0,
+            importance: 70.0,
+            source_refs: vec![],
+            scope_snapshot: json!({}),
+        },
+        PackKnowledge {
+            id: "guardrail-delete".to_string(),
+            kind: "rule".to_string(),
+            title: "削除の前提".to_string(),
+            body: "復元確認前の削除は禁止。".to_string(),
+            polarity: "negative".to_string(),
+            score: 9,
+            query_score: 9,
+            dynamic_score: 0.0,
+            importance: 70.0,
+            source_refs: vec![],
+            scope_snapshot: json!({}),
+        },
+    ];
+
+    let markdown = build_fallback_compose(
+        "バックアップ運用を変更する",
+        &knowledge,
+        &[],
+        &ComposePlan::default(),
+    );
+    let used = fallback_used_knowledge(&knowledge, &[], &ComposePlan::default());
+
+    assert!(markdown.contains("保存期間は30日。"));
+    assert!(markdown.contains("削除前に復元確認を必須とする。"));
+    assert!(markdown.contains("復元確認前の削除は禁止。"));
+    assert!(markdown.contains("## 適用条件・禁止事項"));
+    assert_eq!(used.len(), 2);
+    assert!(used
+        .iter()
+        .all(|item| item.reason.as_deref() == Some("fallback_evidence_rendered")));
+    assert!(used.iter().any(|item| item.id == "guardrail-delete"
+        && item.output_section.as_deref() == Some("適用条件・禁止事項")));
+}
+
+#[test]
+fn budget_partial_is_persisted_as_degraded_with_renderer_reasons() {
+    let db_path = temp_db_path();
+    let connection = Connection::open(&db_path).unwrap();
+    create_minimal_compile_schema(&connection);
+    connection
+        .execute(
+            r#"
+            insert into knowledge_items
+              (id, type, status, scope, classification_status, polarity, title, body, applies_to)
+            values (?1, 'rule', 'active', 'global', 'classified', 'negative', ?2, ?3, '{}')
+            "#,
+            (
+                "oversized-protected",
+                "Budget guardrail",
+                "budget-token ".repeat(3_000),
+            ),
+        )
+        .unwrap();
+    drop(connection);
+
+    let mut context = NativeToolContext::for_test(std::env::temp_dir(), db_path.clone());
+    context.compile_runtime = std::sync::Arc::new(
+        crate::domains::context_compile::runtime::CompileRuntimeContext {
+            mode: CompileFoundationMode::SplitLegacyRank,
+            ..(*context.compile_runtime).clone()
+        },
+    );
+    let result = context_compile(
+        &json!({"arguments": {"goal": "budget-token", "projectRef": "project-a"}}),
+        &context,
+    );
+    assert!(result.get("isError").is_none());
+
+    let (status, snapshot): (String, String) = Connection::open(&db_path)
+        .unwrap()
+        .query_row(
+            "select status, pack_snapshot from context_compile_runs limit 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+    assert_eq!(status, "degraded");
+    assert!(snapshot["diagnostics"]["degradedReasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason.as_str().is_some_and(|value| value
+            .starts_with("CONTEXT_EVIDENCE_PARTIAL:protected_group_omitted:oversized-protected"))));
+    assert!(
+        snapshot["diagnostics"]["responseComposer"]["partialReasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason == "protected_group_omitted:oversized-protected")
+    );
+    let _ = std::fs::remove_file(db_path);
+}
+
+#[test]
+fn context_compile_reports_incompatible_retrieval_schema_instead_of_no_content() {
+    let db_path = temp_db_path();
+    let mut connection = Connection::open(&db_path).unwrap();
+    create_minimal_compile_schema(&connection);
+    connection
+        .execute(
+            "alter table knowledge_items rename column body to broken_body",
+            [],
+        )
+        .unwrap();
+    let context = NativeToolContext::for_test(std::env::temp_dir(), db_path.clone());
+
+    let result = context_compile_on_connection(
+        &json!({"arguments": {"goal": "backup retention"}}),
+        &context,
+        &mut connection,
+    );
+
+    assert_eq!(result["isError"], true);
+    assert!(result["content"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("knowledge retrieval schema is incompatible")));
+    let run_count: i64 = connection
+        .query_row("select count(*) from context_compile_runs", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(run_count, 0);
+    drop(connection);
+    let _ = std::fs::remove_file(db_path);
 }
 
 #[test]

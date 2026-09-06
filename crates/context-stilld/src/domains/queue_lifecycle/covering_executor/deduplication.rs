@@ -68,6 +68,8 @@ pub(super) fn inspect_knowledge_duplicates(
                 && normalize_dedupe_text(&body) == normalized_body;
             (id, title, score, exact)
         })
+        // Similarity is diagnostic only.  v2 must never discard a supported candidate
+        // solely because a semantically close knowledge item exists.
         .filter(|(_, _, score, exact)| *exact || *score >= 0.62)
         .collect::<Vec<_>>();
     scored.sort_by(|a, b| b.2.total_cmp(&a.2));
@@ -83,11 +85,9 @@ pub(super) fn inspect_knowledge_duplicates(
             })
         })
         .collect::<Vec<_>>();
-    let status = scored.first().and_then(|(_, _, score, exact)| {
-        if *exact || *score >= 0.93 {
+    let status = scored.first().and_then(|(_, _, _score, exact)| {
+        if *exact {
             Some("duplicate".to_string())
-        } else if *score >= 0.82 {
-            Some("near_duplicate".to_string())
         } else {
             None
         }
@@ -97,10 +97,11 @@ pub(super) fn inspect_knowledge_duplicates(
 
 pub(super) fn normalize_dedupe_text(value: &str) -> String {
     value
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
-        .to_lowercase()
 }
 
 pub(super) fn bigram_similarity(first: &str, second: &str) -> f64 {

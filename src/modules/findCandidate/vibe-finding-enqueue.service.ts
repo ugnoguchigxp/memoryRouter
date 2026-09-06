@@ -18,6 +18,7 @@ export type {
   VibeFindingEnqueueOptions,
   VibeFindingEnqueueReport,
   VibeFindingEnqueueSource,
+  VibeFindingSelectorVersion,
   VibeFindingSourceRow,
 } from "./vibe-finding-enqueue-planner.js";
 
@@ -249,6 +250,8 @@ export async function runVibeFindingEnqueue(
         dedupeKey: metadata.dedupeKey,
         eligibilityScore: item.score,
         eligibilitySignals: item.signals,
+        eligibilityReasonCodes: item.reasonCodes,
+        selectorVersion: item.selectorVersion,
         sourceCreatedAt: row.createdAt,
         projectIdentity: metadata.projectIdentity,
         backfill: true,

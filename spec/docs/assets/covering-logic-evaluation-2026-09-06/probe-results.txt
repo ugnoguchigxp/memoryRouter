@@ -1,0 +1,53 @@
+    Blocking waiting for file lock on build directory
+warning: sqlite-vec@0.1.10-alpha.4: In file included from sqlite-vec.c:3772:
+warning: sqlite-vec@0.1.10-alpha.4: ./sqlite-vec-diskann.c:917:30: warning: unused parameter 'p_vector' [-Wunused-parameter]
+warning: sqlite-vec@0.1.10-alpha.4:   917 |     i64 p_rowid, const void *p_vector,
+warning: sqlite-vec@0.1.10-alpha.4:       |                              ^
+warning: sqlite-vec@0.1.10-alpha.4: sqlite-vec.c:10633:65: warning: unused parameter 'pApi' [-Wunused-parameter]
+warning: sqlite-vec@0.1.10-alpha.4:  10633 |                                     const sqlite3_api_routines *pApi) {
+warning: sqlite-vec@0.1.10-alpha.4:        |                                                                 ^
+warning: sqlite-vec@0.1.10-alpha.4: 2 warnings generated.
+   Compiling context-stilld v0.1.0 (/private/var/folders/mx/jbv8qfwd52z14q0mby_273lhlp5gd2/T/contextstill-covering-review-n8a1qwlf/crates/context-stilld)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 15.16s
+     Running unittests src/lib.rs (/Users/y.noguchi/Code/contextStill/target/debug/deps/context_stilld-ab64202dd68fe9a1)
+
+running 29 tests
+test domains::queue_lifecycle::covering_executor::tests::missing_and_non_exact_polarity_route_to_positive_executor ... ok
+test domains::queue_lifecycle::covering_executor::tests::negative_covering_chat_url_deduplicates_v1_prefix ... ok
+test domains::queue_lifecycle::covering_executor::tests::duckduckgo_redirect_unwrap_requires_exact_domain_boundary ... ok
+test domains::queue_lifecycle::covering_executor::tests::covering_applicability_preserves_canonical_source_project_identity ... ok
+test domains::queue_lifecycle::covering_executor::tests::external_search_fallback_reports_each_failed_configured_provider ... ok
+test domains::queue_lifecycle::covering_executor::tests::negative_response_without_required_applicability_is_insufficient ... ok
+test domains::queue_lifecycle::covering_executor::tests::negative_response_maps_to_knowledge_ready_with_applicability ... ok
+test domains::queue_lifecycle::covering_executor::tests::covering_applicability_resolves_trusted_agent_log_project_root ... ok
+test domains::queue_lifecycle::covering_executor::tests::positive_label_output_preserves_title_body_and_applicability ... ok
+test domains::queue_lifecycle::covering_executor::tests::embedded_value_prompt_renders_catalog_threshold ... ok
+test domains::queue_lifecycle::covering_executor::tests::persist_negative_parse_failure_returns_job_with_backoff ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_llm_can_overwrite_positive_project_identity ... ok
+test domains::queue_lifecycle::covering_executor::tests::persist_negative_retry_updates_existing_result_under_duplicate_trigger ... ok
+test domains::queue_lifecycle::covering_executor::tests::persist_negative_knowledge_ready_completes_and_enqueues_finalize_once ... ok
+test domains::queue_lifecycle::covering_executor::tests::persist_reprocessed_attempt_uses_lease_scoped_terminal_event_id ... ok
+opposite instruction similarity: 0.994
+test domains::queue_lifecycle::covering_executor::tests::review_probe_normalized_exact_duplicate_missed_by_sql_prefilter ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_opposite_instruction_is_duplicate ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_unknown_rejection_status_becomes_ready ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_reprocessed_ready_does_not_reopen_failed_finalize ... ok
+test domains::queue_lifecycle::covering_executor::tests::web_ingest_source_uses_guarded_http_fetch_instead_of_local_file_read ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_high_risk_negative_accepts_zero_evidence_and_empty_source ... ok
+test domains::queue_lifecycle::covering_executor::tests::positive_source_read_honors_candidate_token_ranges ... ok
+test domains::queue_lifecycle::covering_executor::tests::stale_covering_result_cannot_overwrite_reclaimed_job ... ok
+test domains::queue_lifecycle::covering_executor::tests::external_evidence_blocks_local_network_and_instruction_override ... ok
+test domains::queue_lifecycle::covering_executor::tests::local_source_read_is_bounded_to_configured_root ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_transient_refinement_failure_becomes_terminal ... ok
+test domains::queue_lifecycle::covering_executor::tests::review_probe_value_prompt_drops_late_evidence ... ok
+test domains::queue_lifecycle::covering_executor::tests::positive_execution_without_project_identity_is_quarantined_before_finalize ... ok
+test domains::queue_lifecycle::covering_executor::tests::positive_source_only_execution_persists_atomically ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 414 filtered out; finished in 0.03s
+
+     Running unittests src/main.rs (/Users/y.noguchi/Code/contextStill/target/debug/deps/context_stilld-bf0791a302b9de65)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

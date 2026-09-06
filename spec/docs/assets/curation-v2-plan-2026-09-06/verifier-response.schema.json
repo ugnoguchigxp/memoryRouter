@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "inputHash",
+    "proposalHash",
+    "verdict",
+    "findings",
+    "noNewMeaning",
+    "noUnresolvedContradiction",
+    "rationale"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "curation-verification-v2"
+    },
+    "inputHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "proposalHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "verdict": {
+      "enum": [
+        "supported",
+        "rejected",
+        "unknown"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceGroupId",
+          "targetGroupIds",
+          "checks"
+        ],
+        "properties": {
+          "sourceGroupId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "targetGroupIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "checks": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "obligations",
+              "conditions",
+              "negation",
+              "exceptions",
+              "numbersAndUnits",
+              "identifiers",
+              "ordering",
+              "provenance"
+            ],
+            "properties": {
+              "obligations": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "conditions": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "negation": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "exceptions": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "numbersAndUnits": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "identifiers": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "ordering": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              },
+              "provenance": {
+                "enum": [
+                  "preserved",
+                  "not_preserved",
+                  "unknown"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "noNewMeaning": {
+      "enum": [
+        "preserved",
+        "not_preserved",
+        "unknown"
+      ]
+    },
+    "noUnresolvedContradiction": {
+      "enum": [
+        "preserved",
+        "not_preserved",
+        "unknown"
+      ]
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200
+    }
+  }
+}

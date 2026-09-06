@@ -5,6 +5,7 @@ import {
   getEpisodeCardBySourceSqlite,
   getEpisodeCardSqlite,
   searchEpisodeCardsSqlite,
+  listEpisodeCardsForAdminSqlite,
 } from "../src/modules/episodic-memory/episode-card.repository.sqlite.js";
 
 vi.mock("../src/db/sqlite/runtime.js", () => {
@@ -304,5 +305,40 @@ describe("episode-card.repository.sqlite", () => {
     });
 
     expect(results.map((episode) => episode.id)).toEqual(["newest-low-score", "older-high-score"]);
+  });
+  test("admin listing includes all repositories and unresolved records without widening retrieval", async () => {
+    const rows = [
+      dummyEpisodeRow,
+      {
+        ...dummyEpisodeRow,
+        id: "unresolved",
+        classification_status: "unresolved",
+        repo_key: null,
+        created_at: "2026-06-27T00:00:00.000Z",
+      },
+      { ...dummyEpisodeRow, id: "other-repo", repo_key: "other-key" },
+      { ...dummyEpisodeRow, id: "deprecated", status: "deprecated" },
+    ];
+    mockDb.query.mockImplementation((sql: string) => ({
+      all: vi.fn().mockReturnValue(sql.includes("from episode_cards") ? rows : []),
+    }));
+
+    const listed = await listEpisodeCardsForAdminSqlite({ status: "active", limit: 100 });
+    expect(listed.map((episode) => episode.id)).toEqual(["unresolved", "test-id", "other-repo"]);
+    expect(await searchEpisodeCardsSqlite({ status: "active" })).toEqual([]);
+    expect(
+      (await searchEpisodeCardsSqlite({ repoKey: "key" })).map((episode) => episode.id),
+    ).toEqual(["test-id"]);
+    expect(
+      (await listEpisodeCardsForAdminSqlite({ repoKey: "other-key" })).map((episode) => episode.id),
+    ).toEqual(["other-repo"]);
+    expect(await listEpisodeCardsForAdminSqlite({ technologies: ["missing"] })).toEqual([]);
+    expect(await listEpisodeCardsForAdminSqlite({ query: "does-not-match" })).toEqual([]);
+    expect(
+      (await listEpisodeCardsForAdminSqlite({ status: "deprecated" })).map((episode) => episode.id),
+    ).toEqual(["deprecated"]);
+    expect(
+      (await listEpisodeCardsForAdminSqlite({ limit: 1 })).map((episode) => episode.id),
+    ).toEqual(["unresolved"]);
   });
 });

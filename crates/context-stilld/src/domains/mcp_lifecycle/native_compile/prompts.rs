@@ -4,25 +4,6 @@ use super::super::native_common::single_line;
 
 use super::types::{ComposePlan, PackEpisode, PackKnowledge};
 
-pub(super) fn build_plan_system_prompt() -> String {
-    [
-        "あなたは context_compile の返答構成プランナーです。",
-        "goal と候補要約だけを使って、次ラウンドで使う返答構成・出力形式・検索ヒントを JSON で設計してください。",
-        "",
-        "JSON 形式:",
-        "{ \"headings\": { \"focus\": \"...\", \"steps\": \"...\", \"verification\": \"...\", \"avoid\": \"...\" }, \"includeAvoidSection\": true, \"ruleQueryHints\": [\"...\"], \"procedureQueryHints\": [\"...\"], \"exclusionHints\": [\"...\"], \"responseStyle\": \"skill|narrative\", \"styleReason\": \"...\", \"styleConfidence\": 0.0, \"candidateSufficiency\": \"enough|limited|insufficient\" }",
-        "",
-        "必須ルール:",
-        "- 回答は JSON のみ。Markdown や説明文は返さない。",
-        "- 見出しは goal に合わせて自然な日本語で作る。",
-        "- ruleQueryHints / procedureQueryHints は、候補検索・選別で使える短い語句を2-6件に絞る。",
-        "- Goal が再利用可能な手順を求め、候補が十分な場合は responseStyle=skill を優先する。",
-        "- 候補が不足している場合は responseStyle=narrative を選ぶ。",
-        "- 過剰な一般論は避け、goal達成に必要な最小限へ絞る。",
-    ]
-    .join("\n")
-}
-
 pub(super) fn build_composer_system_prompt(max_tokens: i64, plan: &ComposePlan) -> String {
     let heading_rule = if plan.response_style == "skill" {
         "- 見出しは `## Use when` / `## Workflow` / `## Verification` / `## Avoid` をこの順で必ず出す。".to_string()
@@ -65,64 +46,6 @@ pub(super) fn build_composer_system_prompt(max_tokens: i64, plan: &ComposePlan) 
         "- ノイズを避け、受け手が次に行う行動へ変換する。",
     ]
     .join("\n")
-}
-
-pub(super) fn build_plan_user_prompt(
-    goal: &str,
-    knowledge: &[PackKnowledge],
-    episodes: &[PackEpisode],
-) -> String {
-    let rules = knowledge
-        .iter()
-        .filter(|item| item.kind != "procedure" && item.polarity != "negative")
-        .collect::<Vec<_>>();
-    let procedures = knowledge
-        .iter()
-        .filter(|item| item.kind == "procedure" && item.polarity != "negative")
-        .collect::<Vec<_>>();
-    let guardrails = knowledge
-        .iter()
-        .filter(|item| item.polarity == "negative")
-        .collect::<Vec<_>>();
-    let mut lines = vec![
-        format!("goal: {}", single_line(goal, 4000)),
-        "retrievalMode: sqlite_text".to_string(),
-        format!("ruleCandidates: {}", rules.len()),
-        format!("procedureCandidates: {}", procedures.len()),
-        format!("guardrailCandidates: {}", guardrails.len()),
-        format!("episodePrecedents: {}", episodes.len()),
-        format!(
-            "topRuleTitles: {}",
-            joined_titles(&rules.into_iter().take(4).collect::<Vec<_>>())
-        ),
-        format!(
-            "topProcedureTitles: {}",
-            joined_titles(&procedures.into_iter().take(4).collect::<Vec<_>>())
-        ),
-        format!(
-            "topGuardrailTitles: {}",
-            joined_titles(&guardrails.into_iter().take(4).collect::<Vec<_>>())
-        ),
-        format!(
-            "topEpisodePrecedents: {}",
-            episodes
-                .iter()
-                .take(4)
-                .map(|item| single_line(&item.title, 80))
-                .collect::<Vec<_>>()
-                .join(" | ")
-        ),
-        String::new(),
-        "output requirements:".to_string(),
-        "- JSON only".to_string(),
-        "- sections should feel natural for this goal".to_string(),
-        "- include concise query hints".to_string(),
-        "- decide responseStyle from goal + candidate sufficiency".to_string(),
-    ];
-    if lines[8].ends_with(": ") {
-        lines[8].push_str("(none)");
-    }
-    lines.join("\n")
 }
 
 pub(super) fn build_composer_user_prompt(
@@ -218,85 +141,6 @@ pub(super) fn select_prompt_knowledge_candidates<'a>(
     items
 }
 
-pub(super) fn section_lines(content: &str, label: &str) -> Vec<String> {
-    let mut in_section = false;
-    let mut captured = Vec::new();
-    let target = format!("{}:", label.to_lowercase());
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if line
-            .chars()
-            .next()
-            .is_some_and(|character| character.is_ascii_alphabetic())
-            && line.contains(':')
-        {
-            in_section = line.to_lowercase().starts_with(&target);
-            continue;
-        }
-        if !in_section {
-            continue;
-        }
-        let cleaned = line
-            .trim_start_matches(|character: char| {
-                character.is_ascii_digit()
-                    || character == '.'
-                    || character == '-'
-                    || character == '・'
-                    || character == '•'
-                    || character.is_whitespace()
-            })
-            .trim();
-        if !cleaned.is_empty() {
-            captured.push(cleaned.to_string());
-        }
-    }
-    captured
-}
-
-pub(super) fn first_sentence(text: &str, max_chars: usize) -> String {
-    let normalized = single_line(text, max_chars.saturating_mul(2));
-    if normalized.is_empty() {
-        return normalized;
-    }
-    let sentence_end = normalized
-        .char_indices()
-        .find_map(|(index, character)| {
-            matches!(character, '。' | '.' | '!' | '?').then_some(index + character.len_utf8())
-        })
-        .unwrap_or(normalized.len());
-    single_line(&normalized[..sentence_end], max_chars)
-}
-
-pub(super) fn joined_titles(items: &[&PackKnowledge]) -> String {
-    let joined = items
-        .iter()
-        .map(|item| single_line(&item.title, 80))
-        .collect::<Vec<_>>()
-        .join(" | ");
-    if joined.is_empty() {
-        "(none)".to_string()
-    } else {
-        joined
-    }
-}
-
-pub(super) fn sanitize_heading(value: Option<&Value>, fallback: &str) -> String {
-    string_value(value)
-        .map(|value| {
-            value
-                .trim_start_matches('#')
-                .trim()
-                .chars()
-                .take(32)
-                .collect::<String>()
-        })
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| fallback.to_string())
-}
-
 pub(super) fn string_value(value: Option<&Value>) -> Option<String> {
     value
         .and_then(Value::as_str)
@@ -352,21 +196,8 @@ pub(super) fn max_tokens_with_json_headroom(markdown_target_tokens: i64) -> i64 
         .min(16_384)
 }
 
-pub(super) fn planner_max_tokens(markdown_target_tokens: i64) -> i64 {
-    let normalized = markdown_target_tokens.max(128);
-    2048.min(384.max((normalized as f64 * 0.35).floor() as i64))
-}
-
-/// Bound evidence without silently discarding every sentence after the first.
+/// A selected evidence group is atomic: the renderer must never silently remove its
+/// later conditions. Input selection and the outer request budget decide how many groups fit.
 pub(super) fn composer_evidence(content: &str) -> Value {
-    let characters = content.trim().chars().collect::<Vec<_>>();
-    let limit = 1200;
-    if characters.len() <= limit {
-        return json!({"text": characters.iter().collect::<String>(), "truncated": false});
-    }
-    let marker = "\n[... omitted ...]\n";
-    let head = 900;
-    let tail = limit - head - marker.chars().count();
-    json!({"text": format!("{}{}{}", characters[..head].iter().collect::<String>(), marker,
-        characters[characters.len()-tail..].iter().collect::<String>()), "truncated": true})
+    json!({"text": content.trim(), "truncated": false})
 }

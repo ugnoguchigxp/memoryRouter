@@ -1,0 +1,14 @@
+{
+  "date": "2026-09-06",
+  "sources": [
+    {
+      "title": "SQLite FTS5 official documentation",
+      "url": "https://www.sqlite.org/fts5.html",
+      "facts": [
+        "Trigram full-text queries do not match substrings shorter than 3 Unicode characters.",
+        "FTS5 bm25 is ordered ascending for better matches."
+      ],
+      "scope": "Only tokenizer and rank behavior; architecture thresholds are proposed design choices."
+    }
+  ]
+}

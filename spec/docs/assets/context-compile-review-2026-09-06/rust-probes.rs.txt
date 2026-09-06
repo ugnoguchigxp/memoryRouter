@@ -1,0 +1,62 @@
+
+// BEGIN CONTEXT COMPILE REVIEW PROBES 20260906
+#[test]
+fn review_probe_japanese_query_and_alignment() {
+    use super::super::native_common::{normalized_query_tokens, score_text};
+    let query = "バックアップの保存期間を変更する";
+    let evidence = "バックアップの保存期間は30日です。";
+    let score = score_text(evidence, query);
+    let aligned = looks_goal_aligned("## 料理手順\n野菜を切る。", query);
+    println!("REVIEW japanese tokens={:?}, related_score={}, unrelated_output_aligned={}", normalized_query_tokens(query), score, aligned);
+    assert_eq!(score, 0);
+    assert!(aligned);
+}
+
+#[test]
+fn review_probe_history_crowds_out_relevant_knowledge() {
+    let connection = Connection::open_in_memory().unwrap();
+    create_minimal_compile_schema(&connection);
+    for index in 0..8 {
+        connection.execute("insert into knowledge_items(id,type,status,title,body,dynamic_score) values (?1,'rule','active','Cooking','Boil vegetables',100)", [format!("noise-{index}")]).unwrap();
+    }
+    connection.execute("insert into knowledge_items(id,type,status,title,body,dynamic_score) values ('correct','rule','active','Backup retention','Keep backup for 30 days',0)", []).unwrap();
+    let identity = resolve_compile_project_identity(&CompileProjectIdentityInput::default(), CompileProjectIdentityTrust::RequestHint, None).unwrap();
+    let legacy = search_knowledge_items(&connection, "backup retention", 8, &identity, &RepositoryRequestFacets::default(), false);
+    let candidates = search_knowledge_items(&connection, "backup retention", 256, &identity, &RepositoryRequestFacets::default(), true);
+    let foundation = retrieval::rank_foundation_knowledge(&candidates);
+    println!("REVIEW history legacy={:?}, foundation={:?}", legacy.iter().map(|x|x.id.as_str()).collect::<Vec<_>>(), foundation.iter().map(|x|x.id.as_str()).collect::<Vec<_>>());
+    assert!(!legacy.iter().any(|x|x.id == "correct"));
+    assert!(foundation.iter().any(|x|x.id == "correct"));
+}
+
+#[test]
+fn review_probe_fallback_drops_constraints() {
+    let mut knowledge = sample_knowledge();
+    knowledge.truncate(1);
+    knowledge[0].title = "バックアップ運用".to_string();
+    knowledge[0].body = "保存期間は30日。削除前に復元確認を必須とする。".to_string();
+    let result = composition::compose_context_response_with_settings(None, "バックアップ運用を変更する", &knowledge, &[]);
+    println!("REVIEW fallback retains_30_days={}, retains_restore_check={}, error={:?}, used_ids={:?}", result.markdown.contains("30日"), result.markdown.contains("復元"), result.error, result.used_knowledge.iter().map(|x|x.id.as_str()).collect::<Vec<_>>());
+    assert!(!result.markdown.contains("30日"));
+    assert!(!result.markdown.contains("復元"));
+    assert!(result.error.is_none());
+    assert_eq!(result.used_knowledge.len(), 1);
+}
+
+#[test]
+fn review_probe_sql_error_is_successful_no_content() {
+    let path = temp_db_path();
+    let mut connection = Connection::open(&path).unwrap();
+    create_minimal_compile_schema(&connection);
+    connection.execute("alter table knowledge_items rename column body to broken_body", []).unwrap();
+    let context = NativeToolContext::for_test(std::env::temp_dir(), path.clone());
+    let result = context_compile_on_connection(&json!({"arguments":{"goal":"backup retention"}}), &context, &mut connection);
+    let (status, reasons): (String, String) = connection.query_row("select status, degraded_reasons from context_compile_runs", [], |row| Ok((row.get(0)?,row.get(1)?))).unwrap();
+    println!("REVIEW schema_error text={}, status={}, reasons={}", result["content"][0]["text"], status, reasons);
+    assert_eq!(result["content"][0]["text"], "No Content");
+    assert_eq!(status, "ok");
+    assert_eq!(reasons, "[]");
+    drop(connection);
+    let _ = std::fs::remove_file(path);
+}
+// END CONTEXT COMPILE REVIEW PROBES 20260906

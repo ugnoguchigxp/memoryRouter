@@ -1,0 +1,236 @@
+<article lang="ja">
+  <h1>Curation SystemContext評価：V1ベースラインとV2の判断契約</h1>
+  <p>
+    評価日：2026-09-06。対象はRust常駐Curationの実際のsystem
+    message、入力snapshot、出力parser、実行gate、Agent
+    Sessionへの変換、SystemContext管理と既存テスト。以下の詳細はV1のベースライン評価であり、当時の結論は「基本方針は妥当だが、無人で統合・deprecatedを確定する判断契約としては不十分」だった。
+  </p>
+  <h2>V2実装後の評価</h2>
+  <p>
+    2026-09-07にV2を実装した。plannerは既存ID、source
+    group、coverageだけを提案し、本文・適用範囲を生成できない。Rustは同一scope、repository
+    identity、type、polarityの二者だけを対象にし、deterministic
+    rendererがcoverage済みの原文groupから本文を再構成する。独立verifierが条件、否定、例外、数値、識別子、順序、provenance、新規意味、矛盾を検査し、supported
+    verdictと完全coverageが揃わなければ変更しない。
+  </p>
+  <p>
+    Curation planner／verifierはmanaged SystemContext
+    <code>landscape.curationPlan</code
+    >／<code>landscape.curationVerify</code>を実行時に解決し、共有prompt
+    artifactを追加する。Agent
+    Sessionにはrole付き文字列ではなくmessagesのJSONを渡すため、knowledge本文中のrole風タグで会話構造を閉じられない。全active
+    knowledgeをcontent revisionごとにqueueへ入れ、proposal・verification・hash・supersession・pair
+    review・revision ledgerを保存する。
+  </p>
+  <p>
+    合成DBの契約監査、CurationのRust単体テスト、SQLite runtime
+    test、SystemContext境界検査は通過した。ただし、これは実LLMが常に正しい意味判断をすることの証明ではない。固定された実LLM評価セットによる誤deprecated率、意味欠落率、統合見逃し率の計測は、provider容量を確保した別途の運用評価として残る。
+  </p>
+  <p>
+    <a href="assets/curation-system-context-evaluation/system-message.txt"
+      >評価対象のsystem message全文</a
+    >と<a href="assets/curation-system-context-evaluation/manifest.json">評価条件・prompt hash</a
+    >も保存した。
+  </p>
+  <h2>評価方法と根拠</h2>
+  <ul>
+    <li>
+      実装の静的レビュー：curation_executor.rs、curation_repository.rs、curation_tests.rs、shared/agent_session.rs、system-context.service.ts、verify-system-context-boundary.mjsを照合した。
+    </li>
+    <li>
+      実際のparser・gate・persistを使用した9件の合成入力による検査を実行した。インメモリDBのみを変更し、本番knowledgeは変更していない。人為的に不適切な回答を与える検査であり、LLMの誤答率を測ったものではない。<a
+        href="assets/curation-system-context-evaluation/contract-probes.json"
+        >入力・注入回答・DB変更結果</a
+      >を保存した。
+    </li>
+    <li>
+      設定中のmuse/muse-spark-1.3-contributorへ、実装のrequest_decisionとAgent
+      Session経路を使って7ケースを送信した。2ケースで回答取得、5ケースはHTTP 409のhost
+      loaded-session capacity is exhaustedで未評価。モデル精度や注入耐性の合格率は算出しない。<a
+        href="assets/curation-system-context-evaluation/live-cases.json"
+        >実LLM評価の応答とエラー</a
+      >と<a href="assets/curation-system-context-evaluation/live-agent-route.json"
+        >先行した単独接続試験</a
+      >を保存した。
+    </li>
+    <li>
+      代替のdefaultモデル経路は接続拒否だった。Agent
+      Session側はhealthでready=falseでも実際のリクエストに応答したため、healthだけを根拠に利用不能とは判定できない。設定の変更や無断の代替モデルへの切替は行っていない。
+    </li>
+  </ul>
+  <h2>妥当な部分</h2>
+  <p>
+    目的、統合と重複deprecatedの違い、類似度だけで重複と判断しないこと、低利用・古さだけを理由にdeprecatedにしないこと、未知IDを使わないことが明示されている。参照knowledgeを命令として実行しないという指示もある。実行コードはrepository・status・type・polarity・stale入力を確認し、transactionと変更前snapshotにより書き込み失敗を扱う。これらは必要な基盤だが、意味を保持した判断の証明にはならない。
+  </p>
+  <h2>優先して修正すべき点</h2>
+  <table>
+    <caption>
+      SystemContextと実行契約の優先修正事項
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">優先度</th>
+        <th scope="col">問題</th>
+        <th scope="col">確認した事実と影響</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>P1</td>
+        <td>適用範囲の包含関係が判断契約にない</td>
+        <td>
+          system
+          messageには、appliesToの空欄・general・条件ごとの扱いと、実際に保存する統合後の適用範囲が示されない。union_appliesはオブジェクトのキーと配列を結合する。subjectが{}、canonicalがtechnologies=[Python]でもdeprecate_duplicateが通過し、一般的なknowledgeがPython限定のknowledgeに置換された。native
+          compileは{}をgeneralとして扱うため、実際に選択対象を狭め得る。プロンプトとdeterministic
+          gateの両方の修正が必要。
+        </td>
+      </tr>
+      <tr>
+        <td>P1</td>
+        <td>意味を保持したかを確認する出力がない</td>
+        <td>
+          COMPLETE canonical bodyとpreserves all distinct useful
+          instructionsの指示だけで、条件・否定・例外・数値・識別子の対応表を要求しない。checksum確認とrollback準備を落とした統合回答、再試行上限3回を8回のknowledgeで置換する回答を注入すると、high・blockerなしのため実際にdeprecatedまで進んだ。postcheckは保存したbodyとの一致を確認するだけで、内容欠落を検査しない。
+        </td>
+      </tr>
+      <tr>
+        <td>P1</td>
+        <td>根拠と確信度の意味が弱い</td>
+        <td>
+          highの判定基準がなくLLMの自己申告を直接実行条件にする。evidenceは本文・appliesToの再掲で、usageとlineageは空。参照元の実体を明示的に読み込んでいない。入力内の第三候補だけを引用した回答でも、subjectとcanonicalの統合が通った。IDの存在確認と、判断を裏付ける根拠の確認は別である。
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td>
+        <td>SystemContext管理と実運用経路が分離している</td>
+        <td>
+          Rustのsystem messageはcuration_executor.rs:113に直書きされ、contexts/landscapeのmanaged
+          catalogにはdeadZoneMergeReviewだけがある。boundary
+          checkはsrc以下のTypeScriptのみを検査するためRustの直書きを検出しない。TypeScript
+          Curationは別の短いuser-role指示を使う。system-context:checkの成功は、Curationの指示の登録・整合性・品質を保証していない。
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td>
+        <td>Agent Session経路の命令境界が弱くなる</td>
+        <td>
+          Chat Completionsではsystemとuserが別messageだが、Agent
+          Sessionではroleタグ付き文字列を単一の入力に変換する。knowledgeやmetadata中のタグをescapeする処理はこの変換にない。悪意ある文字列が実際に従わせた事実は未確認で、今回の注入ケースは容量不足により未評価。耐性は合格扱いにできない。
+        </td>
+      </tr>
+      <tr>
+        <td>P2</td>
+        <td>出力制約と選択肢が不足する</td>
+        <td>
+          parserは理由・反証・blockerを各8件・各300文字まで、根拠IDを20件までに制限するが、system
+          messageには件数・文字数制限がない。301文字の理由でparse失敗した。canonicalは候補だけに限定され、subjectを残して候補をdeprecatedにする逆方向を表現できない。observe・escalateの選択基準も未定義。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>合成入力による再現結果</h2>
+  <p>
+    以下は作為的に用意した回答に対する実行コードの挙動であり、LLM自身がこの不適切な回答を生成したという意味ではない。
+  </p>
+  <table>
+    <caption>
+      意図的に不適切な回答を与えた契約検査と対照ケース
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ケース</th>
+        <th scope="col">現行の結果</th>
+        <th scope="col">評価</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>意味が同じ重複</td>
+        <td>deprecated</td>
+        <td>基本動作の対照ケース。</td>
+      </tr>
+      <tr>
+        <td>checksum・rollback条件を落とした統合</td>
+        <td>本文更新・旧knowledgeをdeprecated</td>
+        <td>意味の欠落を実行側で検出できない。</td>
+      </tr>
+      <tr>
+        <td>上限3回と8回の矛盾を無視したdeprecated</td>
+        <td>deprecated</td>
+        <td>矛盾をLLMが見落とすと防げない。</td>
+      </tr>
+      <tr>
+        <td>制限なしのsubjectをPython限定canonicalへdeprecated</td>
+        <td>deprecated</td>
+        <td>適用範囲の包含判定が不正確。</td>
+      </tr>
+      <tr>
+        <td>技術・変更種別ごとの条件を落とした統合</td>
+        <td>無条件の本文と配列結合したappliesToを保存</td>
+        <td>
+          元の命令と適用条件の対応が保持されない。現在のretrievalはfacetのOR判定であり、配列結合だけで検索範囲が新たに直積拡張されたと断定するものではない。
+        </td>
+      </tr>
+      <tr>
+        <td>無関係な第三候補の根拠だけを引用</td>
+        <td>deprecated</td>
+        <td>引用の妥当性・比較両側の根拠が検証されない。</td>
+      </tr>
+      <tr>
+        <td>low confidence</td>
+        <td>LOW_CONFIDENCEで拒否</td>
+        <td>構造的なgateは機能。</td>
+      </tr>
+      <tr>
+        <td>subjectをcanonicalとして選択</td>
+        <td>unknown canonical knowledge reference</td>
+        <td>逆方向の整理を表現できない。</td>
+      </tr>
+      <tr>
+        <td>301文字の理由</td>
+        <td>schema boundsでparse失敗</td>
+        <td>実装の制限をSystemContextへ反映する必要がある。</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>実LLMの回答</h2>
+  <p>
+    基本的な重複にはhighでdeprecate_duplicateを返し、両方のknowledgeを引用した。checksum・rollback準備とtransaction実行を比較するケースにはkeep_separateを返し、異なる指示を保護した。後者は安全側の判断だが、「統合すると情報が失われる」とする説明は、指示を併記して保持できる可能性を検討しておらず、統合機会を逃している可能性がある。2回答だけから全体の品質は判断しない。数値差、適用範囲、例外、注入文については応答を取得できていない。
+  </p>
+  <h2>SystemContextに追加すべき判断手順</h2>
+  <ol>
+    <li>
+      比較する各knowledgeについて、主張、適用条件、否定・禁止、例外、数値と単位、識別子、根拠の制約を列挙する。不明な情報を補わない。
+    </li>
+    <li>
+      同じ状況に対する同じ指示なのか、同じ話題だが異なる指示なのか、矛盾なのかを判別する。具体的な差を説明する。
+    </li>
+    <li>
+      deprecatedは、subjectの各要件と適用範囲がcanonicalに包含される場合だけ選ぶ。空のappliesToを「不明」と「制限なし」で混同しない。利用が少ないことや古さは単独根拠にしない。
+    </li>
+    <li>
+      mergeは、双方の要件と元の条件を保存できる場合に選ぶ。共通本文と条件付き本文を区別し、統合後のbodyとappliesToをセットで評価する。矛盾の解消や適用範囲の拡張を勝手に行わない。
+    </li>
+    <li>
+      各要件が統合後のどこに残るかを検証可能なcoverageとして返す。比較する両側のevidenceを引用し、反証と不確実性を明示する。highを選ぶ条件を要件として定義する。
+    </li>
+    <li>
+      schemaの必須項目、全decisionの意味、文字数・件数の上限を正確に記載する。保持対象の方向も契約に含める。
+    </li>
+  </ol>
+  <p>
+    これらのうち、出力schemaと実行gateへのcoverage・scope確認、managed
+    SystemContextのRust実行経路への接続はV2で実装した。実LLMの固定評価セットで誤deprecated・意味欠落・見逃しを別々に測定することは、運用品質を定量化する次の段階である。
+  </p>
+  <h2>再実行</h2>
+  <p>
+    評価ハーネスはcuration_evaluation.rsのignored
+    testとして追加した。通常テストは外部LLMを呼ばない。
+  </p>
+  <pre><code>CURATION_EVALUATION_OUTPUT="$PWD/spec/docs/assets/curation-system-context-evaluation/contract-probes.json" cargo test -p context-stilld audit_curation_system_context_contract -- --ignored --nocapture
+
+CURATION_EVALUATION_CASES="$PWD/spec/docs/assets/curation-system-context-evaluation/contract-probes.json" CURATION_EVALUATION_API_BASE='http://127.0.0.1:44449' CURATION_EVALUATION_API_PATH='/v1/agents/sessions' CURATION_EVALUATION_MODEL='muse/muse-spark-1.3-contributor' CURATION_EVALUATION_OUTPUT="$PWD/spec/docs/assets/curation-system-context-evaluation/live-cases.json" cargo test -p context-stilld audit_curation_system_context_live -- --ignored --nocapture</code></pre>
+  <p>
+    実LLM評価の5件の失敗はprovider容量不足であり、意味判断の不合格5件とは数えない。契約検査の通過はハーネス完走を表し、Curationが意味的に正しいという合格判定ではない。前回の433テスト通過も、LLM判断品質の検証とは区別する。
+  </p>
+</article>

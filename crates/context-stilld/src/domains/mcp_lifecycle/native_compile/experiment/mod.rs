@@ -78,7 +78,10 @@ fn run_with_settings(
             for offset in 0..3 {
                 let condition = CONDITIONS[(index + repetition + offset) % 3];
                 let mut row = if failed_streak >= 3
-                    || total_calls + if condition == "no_memory" { 1 } else { 3 }
+                    // A memory condition performs one bounded selection/composition call and
+                    // one answer call. Keep this estimate aligned with the runtime so the
+                    // experiment cap cannot admit a row that exceeds its declared budget.
+                    || total_calls + if condition == "no_memory" { 1 } else { 2 }
                         > data.max_provider_calls
                 {
                     json!({"status": "not_attempted", "errorCategory": "experiment_circuit_open",

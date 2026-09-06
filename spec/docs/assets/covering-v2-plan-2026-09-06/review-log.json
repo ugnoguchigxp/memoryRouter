@@ -1,0 +1,118 @@
+{
+  "method": "同一エージェントによる自己レビュー。実装品質の実測や第三者評価ではない。",
+  "rubric": [
+    {
+      "name": "課題対応",
+      "max": 15
+    },
+    {
+      "name": "契約と根拠",
+      "max": 20
+    },
+    {
+      "name": "状態と並行性",
+      "max": 15
+    },
+    {
+      "name": "移行と切戻し",
+      "max": 15
+    },
+    {
+      "name": "実装可能性",
+      "max": 10
+    },
+    {
+      "name": "試験と品質評価",
+      "max": 15
+    },
+    {
+      "name": "観測",
+      "max": 5
+    },
+    {
+      "name": "明確さ",
+      "max": 5
+    }
+  ],
+  "reviews": [
+    {
+      "revision": 1,
+      "documentSha256": "d967780135864a53c95dcf9a0ffa2878dcd5c362d615a7edcd7be5effc452781",
+      "scores": [
+        15,
+        17,
+        11,
+        4,
+        9,
+        12,
+        3,
+        5
+      ],
+      "total": 76,
+      "blockers": [
+        "immutable revisionの具体schemaと一意制約が未定義",
+        "paused/completed/非ready再評価と新旧Finalizeの競合処理が不足",
+        "migrationのschema revisionチェックにより旧binaryへ単純に戻せない点が未記載",
+        "quality gateの母数・分割・信頼区間と実行予算が不足"
+      ],
+      "nextChanges": [
+        "DDLと入力generation・claim token・Finalize遷移表を追加",
+        "互換reader先行導入と同schema対応binaryへの切戻しを固定",
+        "固定データセット、指標、canary停止・再開条件、予算と観測を追加"
+      ]
+    },
+    {
+      "revision": 2,
+      "documentSha256": "5a003cc425de4b30e09ed3d9b6299e3f02fad8947f63f39a2b7af4d9d6db5ade",
+      "scores": [
+        15,
+        18,
+        14,
+        15,
+        9,
+        13,
+        4,
+        5
+      ],
+      "total": 93,
+      "blockers": [
+        "初回source snapshot固定と後段外部根拠追加の関係が曖昧",
+        "Finalizeの匿名化後本文が検証済み本文と異なる場合の扱いが不足",
+        "excerpt上限と本文主張数、任意の近似関係stageのresponse契約が不足"
+      ],
+      "nextChanges": [
+        "初期inputと各attemptの実提示EvidenceBundleを区別",
+        "匿名化を支持検証前に共通化しartifact hashを保存直前まで固定",
+        "stage契約、制限のエラー分類、既存source削除と観測の具体性を追加"
+      ]
+    },
+    {
+      "revision": 3,
+      "documentSha256": "8c7e76b39a40275fa24a047df8d4fbd3b81f06f436a8b552cfcbd1d6fb5672c8",
+      "scores": [
+        15,
+        20,
+        15,
+        15,
+        10,
+        13,
+        4,
+        5
+      ],
+      "total": 97,
+      "blockers": [],
+      "resolved": [
+        "初期入力と各attemptの外部資料snapshotを区別",
+        "匿名化と本文整形を支持検証前へ統合し最終artifact hashを固定",
+        "任意relation stage、入力制限、保持・削除、レビュー解決の契約を具体化",
+        "Finalizeのprotocol_versionを明示しNULL pointerをv1へ誤認しない",
+        "失敗更新にもclaim_tokenとrevision fenceを要求"
+      ],
+      "remaining": [
+        "実装工程で600ケースのラベル監査と費用計測が必要（2点留保）",
+        "保存量の実測が必要（1点留保）"
+      ],
+      "interpretation": "実装着手可能性と設計整合性の自己評価。実装結果や第三者の採点ではない。"
+    }
+  ]
+}

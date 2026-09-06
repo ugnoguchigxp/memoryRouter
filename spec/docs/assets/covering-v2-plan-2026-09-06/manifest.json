@@ -1,0 +1,21 @@
+{
+  "planSha256": "8c7e76b39a40275fa24a047df8d4fbd3b81f06f436a8b552cfcbd1d6fb5672c8",
+  "validation": {
+    "root": "article[lang=ja]",
+    "h1": 1,
+    "localLinksChecked": 7,
+    "scores": [
+      76,
+      93,
+      97
+    ],
+    "wilsonLower150of150": 0.9750288608542813
+  },
+  "codeFiles": {
+    "crates/context-stilld/src/domains/queue_lifecycle/finalize_executor.rs": "0097cc11b5eb4e1e1b853231badfd024533bbc3b8a0401e698579bb0c5335ed0",
+    "crates/context-stilld/src/domains/queue_lifecycle/state.rs": "a96c6486b52b9f5432cb0815217faf947c811d1d2421e1a012a3433e4b2cd616",
+    "crates/context-stilld/src/domains/sqlite_writer/schema.rs": "886b3708fe26df6ff780700d66e4c13ba64802617e63e40ef5d905eea210c245",
+    "src/db/sqlite/core-schema.ts": "44027711079aadd9bc61956f20ddee523fc94afe399d974db4f793ed689a518d",
+    "src/shared/schemas/landscape-review.schema.ts": "9890c699ff46c9c7005ec38adc1d55a29cd1ac6e798e0725258e41a760e52452"
+  }
+}

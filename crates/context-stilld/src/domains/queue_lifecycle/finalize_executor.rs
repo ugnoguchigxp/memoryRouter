@@ -992,8 +992,10 @@ fn is_retryable_embedding_error(error: &str) -> bool {
     .iter()
     .any(|needle| error.contains(needle))
 }
-
-fn embed_one(config: &FinalizeEmbeddingConfig, text: &str) -> Result<Vec<f64>, CliError> {
+pub(super) fn embed_one(
+    config: &FinalizeEmbeddingConfig,
+    text: &str,
+) -> Result<Vec<f64>, CliError> {
     let provider = config.provider.trim().to_ascii_lowercase();
     if provider == "disabled" {
         return Err(CliError::io("embedding provider is disabled"));
@@ -1137,8 +1139,7 @@ fn validate_vector(
     }
     Ok(vector)
 }
-
-fn refresh_fts(connection: &Connection, knowledge_id: &str) -> Result<(), CliError> {
+pub(super) fn refresh_fts(connection: &Connection, knowledge_id: &str) -> Result<(), CliError> {
     connection
         .execute(
             "delete from knowledge_items_fts where id = ?1",
@@ -1153,8 +1154,7 @@ fn refresh_fts(connection: &Connection, knowledge_id: &str) -> Result<(), CliErr
         .map_err(|error| CliError::io(format!("failed to refresh knowledge FTS: {error}")))?;
     Ok(())
 }
-
-fn upsert_embedding(
+pub(super) fn upsert_embedding(
     connection: &Connection,
     knowledge_id: &str,
     title: &str,

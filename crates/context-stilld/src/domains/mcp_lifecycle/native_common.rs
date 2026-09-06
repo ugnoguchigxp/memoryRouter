@@ -173,7 +173,7 @@ pub(super) fn score_text(value: &str, query: &str) -> i64 {
 }
 
 pub(super) fn normalized_query_tokens(query: &str) -> Vec<String> {
-    query
+    let tokens = query
         .trim()
         .to_lowercase()
         .split(|character: char| {
@@ -181,9 +181,35 @@ pub(super) fn normalized_query_tokens(query: &str) -> Vec<String> {
         })
         .map(str::trim)
         .filter(|token| token.chars().count() >= 2)
-        .take(12)
         .map(ToString::to_string)
-        .collect()
+        .collect::<Vec<_>>();
+    let mut normalized = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut push = |token: String| {
+        if seen.insert(token.clone()) {
+            normalized.push(token);
+        }
+    };
+
+    for token in &tokens {
+        push(token.clone());
+    }
+    // Japanese, Chinese, and Korean queries usually have no word delimiters. Add compact
+    // character n-grams so a relevant phrase can match even when the full sentence differs.
+    // Whole-token matching is retained above for languages that do use delimiters.
+    for token in &tokens {
+        let characters = token.chars().collect::<Vec<_>>();
+        if !characters.iter().any(|character| !character.is_ascii()) {
+            continue;
+        }
+        for width in [3, 2] {
+            for window in characters.windows(width) {
+                push(window.iter().collect());
+            }
+        }
+    }
+    normalized.truncate(48);
+    normalized
 }
 
 pub(super) fn parse_json_or_empty(value: &str) -> Value {
@@ -232,4 +258,16 @@ pub(super) fn pseudo_uuid() -> String {
         &hex[16..20],
         &hex[20..32]
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::score_text;
+
+    #[test]
+    fn scores_japanese_phrase_overlap_without_whitespace_tokenization() {
+        let query = "本番のデータベース移行を安全に行う";
+        assert!(score_text("データベースをバックアップしてから移行する", query) >= 2);
+        assert_eq!(score_text("UIのボタン文言を変更する", query), 0);
+    }
 }

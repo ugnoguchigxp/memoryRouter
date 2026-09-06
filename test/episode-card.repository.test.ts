@@ -6,6 +6,7 @@ import {
   getEpisodeCard,
   getEpisodeCardBySource,
   searchEpisodeCards,
+  listEpisodeCardsForAdmin,
 } from "../src/modules/episodic-memory/episode-card.repository.js";
 
 vi.mock("../src/db/index.js", () => {
@@ -277,5 +278,45 @@ describe("episode-card.repository (PostgreSQL)", () => {
     });
 
     expect(results.map((episode) => episode.id)).toEqual(["newest-low-score", "older-high-score"]);
+  });
+  test("admin listing includes all repositories and unresolved records without widening retrieval", async () => {
+    const rows = [
+      dummyEpisode,
+      {
+        ...dummyEpisode,
+        id: "unresolved",
+        classificationStatus: "unresolved",
+        repoKey: null,
+        createdAt: new Date("2026-06-27T00:00:00.000Z"),
+      },
+      { ...dummyEpisode, id: "other-repo", repoKey: "other-key" },
+      { ...dummyEpisode, id: "deprecated", status: "deprecated" },
+    ];
+    mockDb.select.mockImplementation(() => ({
+      from: vi.fn().mockReturnThis(),
+      where: vi.fn().mockImplementation(() => {
+        const result = Promise.resolve([]) as any;
+        result.orderBy = vi.fn().mockResolvedValue(rows);
+        return result;
+      }),
+    }));
+
+    const listed = await listEpisodeCardsForAdmin({ status: "active", limit: 100 });
+    expect(listed.map((episode) => episode.id)).toEqual(["unresolved", "test-id", "other-repo"]);
+    expect(await searchEpisodeCards({ status: "active" })).toEqual([]);
+    expect((await searchEpisodeCards({ repoKey: "key" })).map((episode) => episode.id)).toEqual([
+      "test-id",
+    ]);
+    expect(
+      (await listEpisodeCardsForAdmin({ repoKey: "other-key" })).map((episode) => episode.id),
+    ).toEqual(["other-repo"]);
+    expect(await listEpisodeCardsForAdmin({ technologies: ["missing"] })).toEqual([]);
+    expect(await listEpisodeCardsForAdmin({ query: "does-not-match" })).toEqual([]);
+    expect(
+      (await listEpisodeCardsForAdmin({ status: "deprecated" })).map((episode) => episode.id),
+    ).toEqual(["deprecated"]);
+    expect((await listEpisodeCardsForAdmin({ limit: 1 })).map((episode) => episode.id)).toEqual([
+      "unresolved",
+    ]);
   });
 });

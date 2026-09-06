@@ -57,7 +57,7 @@ import { groupedConfig } from "../src/config.js";
 import {
   fetchEpisode,
   registerEpisode,
-  searchEpisodes,
+  listEpisodesForAdmin,
 } from "../src/modules/episodic-memory/episode-card.service.js";
 import {
   recordVibeMemoryWithDiffEntries,
@@ -189,7 +189,7 @@ vi.mock("../src/modules/vibe-memory/vibe-memory.service.js", () => ({
 vi.mock("../src/modules/episodic-memory/episode-card.service.js", () => ({
   fetchEpisode: vi.fn(),
   registerEpisode: vi.fn(),
-  searchEpisodes: vi.fn(),
+  listEpisodesForAdmin: vi.fn(),
 }));
 
 const buildApp = () => {
@@ -328,7 +328,7 @@ describe("API route contract tests", () => {
       diffEntries: [],
     });
     vi.mocked(retrieveVibeMemoryContext).mockResolvedValue([]);
-    vi.mocked(searchEpisodes).mockResolvedValue([]);
+    vi.mocked(listEpisodesForAdmin).mockResolvedValue([]);
     vi.mocked(fetchEpisode).mockResolvedValue(null);
     vi.mocked(registerEpisode).mockResolvedValue({
       id: "episode-created",
@@ -365,7 +365,7 @@ describe("API route contract tests", () => {
   });
 
   test("GET /api/episodes returns searched episode cards", async () => {
-    vi.mocked(searchEpisodes).mockResolvedValue([
+    vi.mocked(listEpisodesForAdmin).mockResolvedValue([
       {
         id: "episode-1",
         title: "Episode title",
@@ -408,7 +408,7 @@ describe("API route contract tests", () => {
     expect(response.status).toBe(200);
     const json = await response.json();
     expect(json.items[0].id).toBe("episode-1");
-    expect(searchEpisodes).toHaveBeenCalledWith(
+    expect(listEpisodesForAdmin).toHaveBeenCalledWith(
       expect.objectContaining({
         query: "Episode",
         technologies: ["typescript"],

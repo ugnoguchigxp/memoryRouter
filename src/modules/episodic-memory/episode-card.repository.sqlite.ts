@@ -301,6 +301,25 @@ function matchesSearchInput(episode: EpisodeCard, input: ReturnType<typeof norma
   return true;
 }
 
+// Admin browsing includes records that are intentionally ineligible for AI retrieval.
+function matchesAdminListInput(
+  episode: EpisodeCard,
+  input: ReturnType<typeof normalizeSearchInput>,
+) {
+  const { matchBasis, matchValue } = input.projectIdentity;
+  if (matchBasis === "project_ref" && episode.projectRef !== matchValue) return false;
+  if (matchBasis === "repo_key" && episode.repoKey !== matchValue) return false;
+  if (matchBasis === "repo_path" && episode.repoPath !== matchValue) return false;
+  return (
+    input.statuses.includes(episode.status) &&
+    (input.outcomeKinds.length === 0 || input.outcomeKinds.includes(episode.outcomeKind)) &&
+    intersects(input.domains, episode.domains) &&
+    intersects(input.technologies, episode.technologies) &&
+    intersects(input.changeTypes, episode.changeTypes) &&
+    intersects(input.tools, episode.tools)
+  );
+}
+
 function scoreEpisode(
   episode: EpisodeCard,
   input: ReturnType<typeof normalizeSearchInput>,
@@ -517,6 +536,19 @@ export async function getEpisodeCardBySourceSqlite(params: {
 export async function searchEpisodeCardsSqlite(
   rawInput: EpisodeCardSearchInput,
 ): Promise<EpisodeCard[]> {
+  return queryEpisodeCardsSqlite(rawInput, "retrieval");
+}
+
+export async function listEpisodeCardsForAdminSqlite(
+  rawInput: EpisodeCardSearchInput,
+): Promise<EpisodeCard[]> {
+  return queryEpisodeCardsSqlite(rawInput, "admin");
+}
+
+async function queryEpisodeCardsSqlite(
+  rawInput: EpisodeCardSearchInput,
+  purpose: "retrieval" | "admin",
+): Promise<EpisodeCard[]> {
   const input = normalizeSearchInput(rawInput);
   const sqlite = await getSqliteCoreDatabase();
   const statusPlaceholders = input.statuses.map(() => "?").join(", ");
@@ -533,22 +565,54 @@ export async function searchEpisodeCardsSqlite(
   if (matchColumn && input.projectIdentity.matchValue) {
     bindings.push(input.projectIdentity.matchValue);
   }
+  // Limit the default admin list before loading full bodies, metadata and refs.
+  // Stored timestamps include both ISO/SQL dates and Rust's unix-ms format.
+  const recentAdminList = purpose === "admin" && !hasRankingCriteria(input);
+  const recentIdsClause = recentAdminList
+    ? `and id in (
+        select id from episode_cards
+        where status in (${statusPlaceholders})
+        order by coalesce(
+          case when trim(created_at) like 'unix-ms:%'
+            then cast(substr(trim(created_at), 9) as integer)
+            else round((julianday(created_at) - 2440587.5) * 86400000)
+          end, 0
+        ) desc,
+        ((importance * 0.6 + confidence * 0.4) / 100.0
+          + case when outcome_kind = 'unknown' then 0 else 1 end) desc
+        limit ?
+      )`
+    : "";
+  const queryBindings: Array<string | number> = recentAdminList
+    ? [...bindings, ...input.statuses, input.limit]
+    : bindings;
   const rows = sqlite.db
-    .query<SqliteEpisodeCardRow, string[]>(
+    .query<SqliteEpisodeCardRow, Array<string | number>>(
       `
       select *
       from episode_cards
       where status in (${statusPlaceholders})
-        and classification_status = 'classified'
-        and ((scope = 'global' and project_ref is null and repo_key is null and repo_path is null)${repoClause})
+        ${
+          purpose === "admin"
+            ? matchColumn
+              ? `and ${matchColumn} = ?`
+              : ""
+            : `and classification_status = 'classified'
+        and ((scope = 'global' and project_ref is null and repo_key is null and repo_path is null)${repoClause})`
+        }
+      ${recentIdsClause}
       order by created_at desc
     `,
     )
-    .all(...bindings);
+    .all(...queryBindings);
   const refs = await refsByEpisodeIds(rows.map((row) => row.id));
   return rows
     .map((row) => mapEpisode(row, refs.get(row.id) ?? []))
-    .filter((episode) => matchesSearchInput(episode, input))
+    .filter((episode) =>
+      purpose === "admin"
+        ? matchesAdminListInput(episode, input)
+        : matchesSearchInput(episode, input),
+    )
     .map((episode) => ({ episode, score: scoreEpisode(episode, input) }))
     .filter(({ score }) => !input.query || score > 0)
     .sort((left, right) => {

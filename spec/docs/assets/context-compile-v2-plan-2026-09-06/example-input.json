@@ -1,0 +1,25 @@
+{
+  "goal": "バックアップの保存期間を変更する",
+  "candidates": [
+    {
+      "id": "k1",
+      "kind": "knowledge",
+      "polarity": "positive",
+      "protected": false,
+      "evidenceGroupIds": [
+        "k1:whole"
+      ],
+      "body": "保存期間は30日。削除前に復元確認を必須とする。"
+    },
+    {
+      "id": "k2",
+      "kind": "knowledge",
+      "polarity": "negative",
+      "protected": true,
+      "evidenceGroupIds": [
+        "k2:whole"
+      ],
+      "body": "復元確認前の削除は禁止。"
+    }
+  ]
+}

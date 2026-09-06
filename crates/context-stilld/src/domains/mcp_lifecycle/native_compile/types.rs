@@ -62,6 +62,10 @@ pub(super) struct ComposeResult {
     pub(super) error: Option<String>,
     pub(super) used_knowledge: Vec<UsedKnowledge>,
     pub(super) used_episodes: Vec<UsedEpisode>,
+    pub(super) provider_calls: Vec<super::call_metrics::ProviderCall>,
+    /// Renderer omissions are a degraded/partial outcome even when a deterministic fallback
+    /// can return some valid evidence.
+    pub(super) partial_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

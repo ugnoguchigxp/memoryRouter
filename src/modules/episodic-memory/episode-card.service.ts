@@ -18,6 +18,7 @@ import {
   getEpisodeCard,
   getEpisodeCardBySource,
   incrementEpisodeUsageCounts,
+  listEpisodeCardsForAdmin,
   searchEpisodeCards,
 } from "./episode-card.repository.js";
 
@@ -53,6 +54,10 @@ export async function registerEpisode(input: EpisodeCardCreateInput) {
 
 export async function fetchEpisode(id: string) {
   return getEpisodeCard(id);
+}
+
+export async function listEpisodesForAdmin(input: EpisodeCardSearchInput) {
+  return listEpisodeCardsForAdmin(input);
 }
 
 export async function searchEpisodes(input: EpisodeCardSearchInput) {

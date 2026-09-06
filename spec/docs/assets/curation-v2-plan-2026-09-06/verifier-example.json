@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "curation-verification-v2",
+  "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "proposalHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "verdict": "supported",
+  "findings": [
+    {
+      "sourceGroupId": "a:g1",
+      "targetGroupIds": [
+        "a:g1"
+      ],
+      "checks": {
+        "obligations": "preserved",
+        "conditions": "preserved",
+        "negation": "preserved",
+        "exceptions": "preserved",
+        "numbersAndUnits": "preserved",
+        "identifiers": "preserved",
+        "ordering": "preserved",
+        "provenance": "preserved"
+      }
+    },
+    {
+      "sourceGroupId": "b:g1",
+      "targetGroupIds": [
+        "b:g1"
+      ],
+      "checks": {
+        "obligations": "preserved",
+        "conditions": "preserved",
+        "negation": "preserved",
+        "exceptions": "preserved",
+        "numbersAndUnits": "preserved",
+        "identifiers": "preserved",
+        "ordering": "preserved",
+        "provenance": "preserved"
+      }
+    }
+  ],
+  "noNewMeaning": "preserved",
+  "noUnresolvedContradiction": "preserved",
+  "rationale": "両方の元groupと条件が順序を保って残り、新しい指示や矛盾はない。"
+}

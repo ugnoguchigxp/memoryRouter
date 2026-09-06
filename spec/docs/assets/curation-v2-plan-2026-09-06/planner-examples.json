@@ -1,0 +1,93 @@
+[
+  {
+    "schemaVersion": "curation-proposal-v2",
+    "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "action": "merge",
+    "survivorId": "knowledge-a",
+    "deprecatedIds": [
+      "knowledge-b"
+    ],
+    "retainedGroupIds": [
+      "a:g1",
+      "b:g1"
+    ],
+    "coverage": [
+      {
+        "sourceGroupId": "a:g1",
+        "disposition": "retained",
+        "targetGroupIds": [
+          "a:g1"
+        ]
+      },
+      {
+        "sourceGroupId": "b:g1",
+        "disposition": "retained",
+        "targetGroupIds": [
+          "b:g1"
+        ]
+      }
+    ],
+    "reasonCodes": [
+      "COMPLEMENTARY"
+    ],
+    "rationale": "同一条件のchecksum確認とtransaction実行を元の文脈ごと保持する。"
+  },
+  {
+    "schemaVersion": "curation-proposal-v2",
+    "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "action": "deprecate_duplicate",
+    "survivorId": "knowledge-a",
+    "deprecatedIds": [
+      "knowledge-b"
+    ],
+    "retainedGroupIds": [
+      "a:g1"
+    ],
+    "coverage": [
+      {
+        "sourceGroupId": "a:g1",
+        "disposition": "retained",
+        "targetGroupIds": [
+          "a:g1"
+        ]
+      },
+      {
+        "sourceGroupId": "b:g1",
+        "disposition": "entailed",
+        "targetGroupIds": [
+          "a:g1"
+        ]
+      }
+    ],
+    "reasonCodes": [
+      "COMPLETE_DUPLICATE"
+    ],
+    "rationale": "b:g1の全指示と条件は既存a:g1に含まれる。"
+  },
+  {
+    "schemaVersion": "curation-proposal-v2",
+    "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "action": "keep_separate",
+    "survivorId": null,
+    "deprecatedIds": [],
+    "retainedGroupIds": [],
+    "coverage": [],
+    "reasonCodes": [
+      "CONFLICT"
+    ],
+    "rationale": "同一条件で再試行上限が3回と8回に異なる。"
+  },
+  {
+    "schemaVersion": "curation-proposal-v2",
+    "inputHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "action": "needs_evidence",
+    "survivorId": null,
+    "deprecatedIds": [],
+    "retainedGroupIds": [],
+    "coverage": [],
+    "reasonCodes": [
+      "MISSING_EVIDENCE"
+    ],
+    "rationale": "出典の例外条件が未取得。"
+  }
+]

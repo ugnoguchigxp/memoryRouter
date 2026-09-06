@@ -1,0 +1,616 @@
+<article lang="ja">
+  <h1>context compile v2：根拠保持と共通SystemContextの実装計画</h1>
+  <p>
+    2026年9月6日。Plan ID:
+    <code>context-compile-evidence-v2</code
+    >。状態：設計・実装計画。製品コード、稼働設定、DBは本作業では変更しない。今回の95点は計画書の実装準備度であり、未実装の製品精度ではない。
+  </p>
+  <p>
+    採用案は「Rustが所有する検索・選択・根拠保持パイプライン」と「静的SystemContextに基づく最大1回の選択処理」。自由要約を標準経路から外し、根拠本文を改変しないrendererをLLMあり／なしで共用する。速さ、取得率、禁止事項の保持、余分な情報の少なさを同じ評価セットで測る。Foundationは移行の土台として使う。
+  </p>
+  <h2 id="authority">1. 適用範囲と既存計画との関係</h2>
+  <p>
+    本書は<a href="context-compile-multifaceted-review.html">多角評価F01〜F09</a
+    >への実装計画である。<a href="context-compile-repository-isolation-improvement-plan.html"
+      >repository identity契約</a
+    >と<a href="rust-runtime-closeout-implementation-plan.html">runtime・DB契約</a>を優先する。<a
+      href="repository-isolation-first-product-hardening-plan.html"
+      >Rustへの意味論集約</a
+    >を具体化する。
+  </p>
+  <p>
+    <a href="contextstill-utility-rag-foundation-implementation-plan.html">Foundation計画</a
+    >の「FTSなし・2回生成・現在の順位保持」はFoundationの互換段階に残す。本書のv2に限り、日本語FTS、生成1回、証拠中心の出力を後続の独立機能として追加する。Foundationの受入結果やlive昇格を完了扱いにしない。旧文書は全体を置換せず、固有の契約を維持する。
+  </p>
+  <ul>
+    <li>
+      対象：native compile、SystemContextのcompile用catalog、SQLite検索projection、TS compile
+      adapter、評価CLI・fixture・必要最小限の診断。
+    </li>
+    <li>
+      対象外：context_decisionの判断規則、queueの業務ロジック、Knowledge蒸留方式の全面変更、オンライン効用学習、Graph、新規の外部検索。writer/schemaに必要な更新はcompile索引の原子的維持に限定する。
+    </li>
+    <li>
+      検索時embedding呼出しは追加しない。既存vectorは後続shadow実験に限定し、この計画の必須工程や95点の条件にはしない。
+    </li>
+    <li>
+      UIの見た目変更は不要。partial・failedと根拠参照を既存run詳細に表示できる最低限のDTO対応は含む。
+    </li>
+    <li>
+      コード実装を依頼されたらoffline工程を進められる単位で記述する。live移行は既存runtimeのentry
+      gateを適用する。今回の依頼の成果物は計画書と設計用SystemContextである。
+    </li>
+  </ul>
+  <h2 id="rubric">2. 先に固定する95点の基準</h2>
+  <p>
+    各観点5点、20観点で100点。5点＝採用判断・実装契約・異常系・受入証拠が具体化し、他節と矛盾しない。4点＝実装可能だが、実測による校正または補助的詳細が1点残る。3点＝方針はあるが境界の決定が実装者に残る。2点＝方向のみ、1点＝言及のみ、0点＝欠落。採点後に尺度を緩めない。
+  </p>
+  <table>
+    <caption>
+      計画の採点項目
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ID</th>
+        <th scope="col">観点</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>C01</td>
+        <td>所有権・経路・互換性</td>
+      </tr>
+      <tr>
+        <td>C02</td>
+        <td>repository境界と権威</td>
+      </tr>
+      <tr>
+        <td>C03</td>
+        <td>日本語・短語・長goal検索</td>
+      </tr>
+      <tr>
+        <td>C04</td>
+        <td>ランキングとノイズ抑制</td>
+      </tr>
+      <tr>
+        <td>C05</td>
+        <td>禁止事項・矛盾・重複</td>
+      </tr>
+      <tr>
+        <td>C06</td>
+        <td>根拠本文・長文・version</td>
+      </tr>
+      <tr>
+        <td>C07</td>
+        <td>SystemContextと出力schema</td>
+      </tr>
+      <tr>
+        <td>C08</td>
+        <td>LLM不使用・失敗fallback</td>
+      </tr>
+      <tr>
+        <td>C09</td>
+        <td>token・候補・時間上限</td>
+      </tr>
+      <tr>
+        <td>C10</td>
+        <td>Writer分離・キャンセル</td>
+      </tr>
+      <tr>
+        <td>C11</td>
+        <td>失敗状態と外部契約</td>
+      </tr>
+      <tr>
+        <td>C12</td>
+        <td>telemetry・利用feedback</td>
+      </tr>
+      <tr>
+        <td>C13</td>
+        <td>DB索引・migration・rollback</td>
+      </tr>
+      <tr>
+        <td>C14</td>
+        <td>TS caller移行</td>
+      </tr>
+      <tr>
+        <td>C15</td>
+        <td>品質評価・holdout</td>
+      </tr>
+      <tr>
+        <td>C16</td>
+        <td>負荷評価・統計</td>
+      </tr>
+      <tr>
+        <td>C17</td>
+        <td>実装unitと依存順</td>
+      </tr>
+      <tr>
+        <td>C18</td>
+        <td>受入テストと実行コマンド</td>
+      </tr>
+      <tr>
+        <td>C19</td>
+        <td>canary・停止・回復</td>
+      </tr>
+      <tr>
+        <td>C20</td>
+        <td>実例・検証可能な成果物</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    95点以上かつ重大矛盾0件が完了条件。scope漏れ、禁止事項の不可視な消失、エラーを正常0件にする経路、schema
+    rollbackの不整合、根拠のない品質達成宣言が残る場合は点数にかかわらず未達。自己評価の点数は第三者審査や製品測定の代替にしない。
+  </p>
+  <h2 id="architecture">3. 採用するロジックと責務</h2>
+  <pre><code class="language-text">CompileRequest
+ → resolve identity + validate bounds
+ → read-only snapshot / eligible candidates
+ → lexical retrieval lanes + deterministic fusion
+ → polarity-aware exact dedupe + evidence groups
+ → protected set + candidate/input budget
+ → optional one-call selection
+ → validate IDs, goal anchors, protected coverage
+ → deterministic evidence renderer + output budget
+ → revalidate versions/eligibility + atomic Writer persistence
+ → MCP text / internal CompileEnvelope</code></pre>
+  <table>
+    <caption>
+      実装の所有者
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">領域</th>
+        <th scope="col">配置・責務</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>compile core</td>
+        <td>
+          crates/context-stilld/src/domains/context_compile/engine/（新規）。transportを知らず、型付き入力・結果を返す。現在native_compile配下のretrieval・composition・persistenceを段階的に移す。
+        </td>
+      </tr>
+      <tr>
+        <td>MCP</td>
+        <td>native_compile/mod.rsは引数解析、session伝播、出力変換に縮小。</td>
+      </tr>
+      <tr>
+        <td>SystemContext</td>
+        <td>
+          contexts/contextCompiler/selectEvidence.context.toml（新規）が編集元。生成された静的メッセージをRust/TSが共有する。
+        </td>
+      </tr>
+      <tr>
+        <td>TS</td>
+        <td>
+          CLI/API/init-projectはRust内部compile endpointのclientへ。TSに新しいrankingを複製しない。
+        </td>
+      </tr>
+      <tr>
+        <td>Writer</td>
+        <td>
+          DBの実体決定、migration、書込serial化は既存Writerが所有。外部HTTPと索引backfill全体を1ジョブに閉じ込めない。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="retrieval">4. 検索契約</h2>
+  <ul>
+    <li>
+      identityは既存のprojectRef→明示repoKey→正規化repoPathのmatch
+      basisをそのまま使う。pathからrepoKeyを生成しない。active・classified・scopeおよび既存facet
+      eligibilityを各laneの上限より前に適用し、候補hydrateと外部送信直前にも確認する。
+    </li>
+    <li>
+      goalとfacetを別々に保存する。facet語への一致だけでgoalに関連すると判定しない。goalはUnicode
+      scalar単位で処理し、先頭12語だけを使う制限を除く。原文は一切変更せず、検索用のlowercase・空白正規化写像だけを作る。
+    </li>
+    <li>
+      lane A：ASCII識別子・単語を既存unicode61 FTSで取得。lane B：CJK文字列の3文字gramをtrigram
+      FTSで取得。文字gramは意味的関連を保証しないため、後段のgoal coverageと選択で絞る。
+    </li>
+    <li>
+      短い1〜2文字のCJK語はtrigram
+      MATCHへ流さず、eligible集合に対するliteral部分一致をdeadline付きで実行する。途中打切りは検索成功0件にしない。引用された識別子、パス、数値は完全一致の特徴として保持する。
+    </li>
+    <li>
+      SQLへ渡すMATCHはコードが作る。入力をFTS構文として直結しない。引用符をescapeしたphraseをORで接続し、SQL値はbindする。NOT、NEAR、括弧、引用符だけのgoalをfixtureにする。
+    </li>
+    <li>
+      関連性候補の採用にはgoal由来の一致が必要。初期閾値は、識別子の完全一致、または異なる内容gram2個以上かつgoal内容gramのcoverage
+      0.35以上。停止語リストはversion付きで固定する。数値だけの一致は単独採用条件にしない。これはv2初期設定であり、developmentセットで校正しholdout前に凍結する。
+    </li>
+  </ul>
+  <p>
+    laneごとの候補はpositive/neutral最大192、negative最大64、Episode最大96。正負laneを分け、融合後Knowledge合計256、Episode96を上限にする。各laneの同順位はID順。FTSのBM25は昇順で良い一致を先にする。最終順位はRRF（k=60、lane重み1）→goal
+    coverage→有界utility→IDの辞書順。utilityは[0,1]へclampし、無一致の候補を復活させない。
+  </p>
+  <p>
+    既存FTSテーブルは標準tokenizerであり、日本語の語尾違いを救うにはそのままでは足りない。trigramの3文字未満の制限とBM25の並び順はSQLite公式仕様を確認した。参照情報は<a
+      href="assets/context-compile-v2-plan-2026-09-06/sources.json"
+      >調査根拠</a
+    >に置く。
+  </p>
+  <h3 id="query-bounds">4.1 上限・長goal・2文字語の具体化</h3><p>v2入力はgoal最大4,000 Unicode scalar、facet各32件・各128 scalar、JSON body最大64KiB。超過は明示validation errorとし切り詰めない。既存の7引数名は変えないが、v2での上限追加はclient contractの変更としてmigration fixtureに含める。</p><p>goalを句点・改行・ASCII sentence境界で最大16節へ分割し、短い節は順序を保って結合する。16節を超える場合も隣接結合で原文全域を保持する。各節の検索termは最大32、先頭だけでなく等間隔の位置から選ぶ。引用identifierと短語は優先枠に含め、優先枠が上限を超える場合はpartial=query_terms_limitedを記録する。coverageはgoal全体ではなく最良一致節で計算し、補助的に他節のcoverageを保存する。</p><p>1〜2文字CJKだけのgoalはそのliteral一致を採用条件とし、3gram2個条件の例外とする。数字だけのgoalは引用指定の識別子として一致する場合を除き不十分とする。短語laneにもscope・facet条件と100ms検索deadlineを適用する。途中走査を上位結果として断定せずpartialにする。</p><p>各candidate capはcap+1件取得してoverflowを検出する。positive上限超過は通常のtop-k選択として件数を記録、negative上限超過はprotected集合が不完全なのでpartialにする。K=256/E=96からselectorへ送るのは最大24件（Knowledge最大16、Episode最大8）。protectedは最優先、入力予算に収まらないprotectedはselectorを省略してpartial rendererへ。通常pack上限K8/E3は保ち、protectedだけで8を超えた場合も不足を可視化する。</p><h2 id="evidence">5. 証拠・禁止事項・矛盾の契約</h2>
+  <p>
+    EvidenceGroupはKnowledge本文全体、または独立して読めることがproducer
+    metadataで検証済みの範囲を単位とする。既存Knowledgeは本文全体を1groupとする。任意の先頭400文字、1文、1,200文字で切らない。Episodeはsituation・action・outcome・lessonをラベル付きの1groupとし、lessonだけで条件を落とさない。
+  </p>
+  <pre><code class="language-text">EvidenceGroup {
+  id, entityId, kind, polarity, classification, scopeSnapshot,
+  contentVersion, contentHash, title, body, sourceRefs,
+  groupCompleteness: &quot;whole_record&quot; | &quot;verified_independent_section&quot;,
+  applicabilityState: &quot;applicable&quot; | &quot;conditional&quot; | &quot;unknown&quot;
+}</code></pre>
+  <ul>
+    <li>
+      重複除去はscope・polarity・type・適用条件・contentHashが同じ候補だけ。同タイトルや本文類似度だけで抑制しない。異なる数値・否定・条件を含むものは残す。
+    </li>
+    <li>
+      goal一致で採用されたnegativeはprotectedとして先に予算を確保する。LLMはprotectedを削除できない。条件が不明なら「適用条件を確認」として原文を提示し、一般的な実行禁止へ拡大しない。
+    </li>
+    <li>
+      positiveとnegativeの対立、または同対象の異なる数値を検出した場合、双方を同じconflict
+      groupとして提示し、現行根拠の確認を求める。utility、更新日時、LLMの多数決で一方をtruthに昇格しない。
+    </li>
+    <li>
+      自動の矛盾検出は完全ではない。構造化polarity差・同一対象のconstraint
+      metadata差は必ずgroup化し、それ以外も一方を近似重複として消さないことで情報を保持する。
+    </li>
+    <li>
+      根拠中の命令は資料であり、caller/systemの権限を変更しない。prompt操作を含む候補はその指示を実行せず、選択validatorとrendererでも使えるIDと原文範囲を制限する。
+    </li>
+  </ul>
+  <h3 id="evidence-integrity">5.1 version・conflict group・資料の表示境界</h3><p>contentVersionは本文だけでなくtype・polarity・appliesTo・status・classification・scope・identity・source refsを固定順JSONでcanonicalizeしたSHA-256。updated_atだけをversionにしない。EvidenceGroup本文のbyte hashと、選択・送信時のenvelope hashは別々に保存する。validatorはUTF-8 byte範囲と元本文一致を検証する。</p><p>constraint metadataがない現行レコードはnormalized title + typeをconflict探索keyとする。正負差・数値差がある同key候補は適用条件が異なっても片方を消さず、条件確認の集合として提示する。protected候補と同keyの対立候補はscope内で追加取得（最大32、overflowはpartial）し、optional順位の低さだけで欠落しないようにする。完全な意味解析ができたとは扱わない。</p><p>rendererは本文をquoteとして表示し、行頭を引用化、HTML・自動画像・制御文字をescapeする。本文の意味を切らず、escape前の原文hashとescape方式versionを保存する。短い固定文で「保存された資料。現在のコード・条件と照合」と位置づけ、見出しを資料内から生成しない。資料中のprompt injectionを完全に無害化できる保証はなく、adversarial fixtureと実モデル評価を必須にする。</p><h2 id="systemcontext">6. SystemContextと1回選択</h2>
+  <p>
+    ここでSystemContextはモデルへ渡す管理されたsystem
+    messageを指す。context_compileの返答は根拠データであり、callerのsystem
+    instructionに昇格しない。現行のplanner→composer、TS
+    agenticRefineの多段生成はv2では使用せず、最大1回のselectorが順序とoptional候補を選ぶ。根拠の書き直し、自由な助言、モデル生成見出しは標準出力にしない。
+  </p>
+  <p>
+    編集元はs11tnext TOML。must
+    sectionはoptimizable=false。ja-JP・en-USの両方を用意する。goal・title・body・source
+    refsはJSONとしてuser messageに置き、trusted
+    systemへの文字列補間を行わない。出力schemaの追加キー、未知ID、重複ID、空の必要フィールドを拒否する。confidence自己申告を採用閾値に使わない。
+  </p>
+  <pre><code class="language-json">{
+  &quot;schemaVersion&quot;: 1,
+  &quot;decisions&quot;: [
+    {&quot;candidateId&quot;:&quot;k1&quot;, &quot;verdict&quot;:&quot;include&quot;, &quot;reasonCode&quot;:&quot;direct&quot;,
+     &quot;goalAnchors&quot;:[&quot;バックアップ&quot;], &quot;evidenceGroupIds&quot;:[&quot;k1:whole&quot;]}
+  ],
+  &quot;orderedOptionalIds&quot;: [&quot;k1&quot;]
+}</code></pre>
+  <p>
+    全入力候補にdecisionsを1件ずつ要求し、verdictはinclude / conditional / omit、reasonCodeはdirect
+    / prerequisite / conflict / precedent / unrelated /
+    insufficient_evidenceのenum。includeとconditionalにはgoal内の実在substringと候補group
+    IDが必要。protected候補をomitする応答、全件omitでもprotectedがある応答は採用せず決定的fallbackへ戻す。文字一致validatorは意味的正しさを証明しないため、独立fixtureの人手ラベルと併用する。
+  </p>
+  <p>
+    SystemContext全文、JSON
+    Schema、入力・出力例を設計artifactとして添付し、プロンプトの自然言語だけを変えてvalidatorの契約を変えない。
+  </p>
+  <h3 id="catalog-bridge">6.1 RustとTSで共有するSystemContext生成物</h3><p>Rustにs11tnextの汎用interpreterを新規実装しない。ビルド時に既存TypeScript libraryのcreateCatalog/bind/verifyRenderedHash/verifyPromptMessageHashで静的selectEvidenceをja/enともrenderし、<code>.s11tnext/compile-prompts.generated.json</code>（新規）へexportする。値を持たない静的promptなのでruntime interpolationは不要。</p><p>exportにはkey・locale・role・text・s11tnext manifest・rawUtf8Sha256・selectorSchemaSha256を保存し、Rustはinclude_str!で同じartifactを埋め込む。rawUtf8Sha256をsha2で確認し、role=system・許可key・schemaHashを照合する。s11tnext独自hashをRustで別解釈しない。TS exporterがmanifest hashを検証した証拠とgolden byte一致をCIで固定する。provider送信はこのmessage constructorだけを通す。</p><p>既存system-context:boundaryはsrcのTSだけを見る。Rust compileのsystem literal再導入とgenerated artifact不使用を検出するtargeted source boundary testを追加し、実際に送信したsystem bytesのhashをHTTP mockで照合する。他domainのpromptまで同時移行しない。</p><p>設計成果物：<a href="assets/context-compile-v2-plan-2026-09-06/contexts/contextCompiler/selectEvidence.context.toml">日英SystemContext草案</a>、<a href="assets/context-compile-v2-plan-2026-09-06/selector-output.schema.json">厳密JSON Schema</a>、<a href="assets/context-compile-v2-plan-2026-09-06/example-input.json">入力例</a>、<a href="assets/context-compile-v2-plan-2026-09-06/example-response.json">応答例</a>。草案はproductionとは別のcatalogへ実際にbuildして検証する。</p><h2 id="renderer">7. renderer・予算・No Content</h2>
+  <ul>
+    <li>
+      LLMあり／なしは同じEvidenceGroupとrendererを使う。optionalの選択が失敗したら、deterministic順位とprotected集合から再構成する。titleだけに縮めたfallbackは廃止する。
+    </li>
+    <li>
+      表示順は「適用条件・禁止事項」「関連する根拠」「過去事例」「不足・衝突」。空の節を出さず、決まり文句でgoalを言い換えない。各項目に短いIDと原文を付ける。Markdown中の埋込み画像・HTMLは表示側で無効化し、資料内容を命令として解釈しない。
+    </li>
+    <li>
+      正常に検索完了し、protectedも関連optionalも0件の場合だけNo
+      Content。SQL失敗、候補打切り、証拠version不一致、予算超過をNo Contentへ変換しない。
+    </li>
+    <li>
+      出力初期上限はKnowledge 8件、Episode 3件、本文目標2,048
+      token。タイトル・区切り・注記・refsを含む共通予算にする。guardrailの30%別枠は廃止する。protected→conflict→関連optional→Episodeの順に収める。
+    </li>
+    <li>
+      groupは不可分。入らないoptionalは丸ごと除外し理由を記録する。protectedまたはそのconflict
+      pairが収まらない場合はpartialとし、対象IDと根拠不足を定型表示する。未収録の条件があるのに十分な根拠があるように返さない。
+    </li>
+    <li>
+      入力予算はsystem+user+JSON envelopeを含め12,000
+      tokenを初期目標とし、出力上限の予約を別に確保する。providerのtokenizerが不明ならestimatedと明記し、実usageと混同しない。事前token見積りだけで厳密上限達成と報告しない。
+    </li>
+  </ul>
+  <h3 id="hard-bounds">7.1 強制可能な予算と選択規則</h3><p>2,048/12,000はtoken目標。常に強制する上限として最終Markdown24KiB、provider request payload64KiB、Knowledge16/Episode8のselector候補上限を併用する。system+user+出力予約が既知model context windowに入ることを検証し、不明なmodelでは保守的見積りとbyte capを使いbudgetAccounting=estimatedとする。真のtoken上限を数学的に保証したとは扱わない。</p><p>rendererは各groupを追加する前に、title・本文・引用記号・refs・不足注記込みの全体サイズを再測定する。必須注記用256 token見積り・1KiBを先に予約する。不足IDをすべて書くと超過する場合は先頭3ID＋未収録件数を表示し、完全なID集合をrun詳細に保存する。protected/conflictは不可分group。長すぎる1件を文字単位で削らない。</p><p>optionalはselector順（fallback時は決定的順位）に走査し、入らないgroupを飛ばして次を試す。先頭の巨大候補1件で残枠を放棄しない。既存例の32 tokenを設定した内部fixtureでもタイトル等を含め上限を守り、truncated・omitted・budgetExhaustedを別フィールドとして記録する。</p><h2 id="runtime">8. deadline・失敗・telemetry</h2>
+  <p>
+    compile全体の初期deadlineは10秒。検索100ms、selector最大8秒、残りをvalidator・render・保存へ予約する。これは目標設定であり達成済み数値ではない。deadlineはmonotonic
+    clockで残量を伝播し、providerごとにリセットしない。最大1 logical call、最大2 provider
+    attempts。2回目は接続失敗・HTTP障害時のみ残予算内で許可し、JSON修復の追加callは行わない。
+  </p>
+  <table>
+    <caption>
+      内部状態と公開挙動
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">条件</th>
+        <th scope="col">状態</th>
+        <th scope="col">応答・保存</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>検索成功・有効候補あり</td>
+        <td>ok / complete</td>
+        <td>原文根拠を返す。</td>
+      </tr>
+      <tr>
+        <td>検索成功・該当なし</td>
+        <td>ok / empty</td>
+        <td>No Content。runは保存。</td>
+      </tr>
+      <tr>
+        <td>selector失敗・無効・無効化</td>
+        <td>degraded / complete</td>
+        <td>本文保持fallback。provider理由を保存。意図的無効化はfailureと分ける。</td>
+      </tr>
+      <tr>
+        <td>候補打切り・protected未収録</td>
+        <td>degraded / partial</td>
+        <td>不足注記と収録できた根拠。</td>
+      </tr>
+      <tr>
+        <td>Knowledge検索失敗・identity不整合</td>
+        <td>failed</td>
+        <td>tool error。Episodeだけで成功へ置換しない。</td>
+      </tr>
+      <tr>
+        <td>Episodeだけの失敗</td>
+        <td>degraded</td>
+        <td>Knowledgeを返しEpisode失敗を明記。</td>
+      </tr>
+      <tr>
+        <td>保存失敗</td>
+        <td>failed</td>
+        <td>tool error。未commitを成功と返さない。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    read
+    transactionは候補とcontentVersionを同じsnapshotで読む。ネットワーク前にconnectionを閉じる。persistで選択IDのstatus・scope・contentHashを再確認し、変化があれば新しい本文へ差し替えずstale_snapshotとして失敗させる。自動再compileはしない。run・items・trace・usageは1
+    transactionで保存する。
+  </p>
+  <p>
+    ProviderCallをComposeResultへ保持し、実attempt数、成否、timeout、使用量、model、latencyを保存する。unknown
+    usageはnull。eligible / retrieved / presented / model_selected / rendered /
+    task_appliedを分け、renderedをtask_appliedと呼ばない。モデルがIDを返しただけでは利用価値を加点しない。最終task
+    outcomeはcompile_eval側で扱う。
+  </p>
+  <h3 id="cancellation">8.1 deadlineとcommitの境界</h3><p>runIdを受付時に決める。queue投入時とWriterジョブ開始時に残deadlineを確認し、開始前のcancelは保存しない。job開始後は短いtransactionを完了またはrollbackする。SQL busy timeoutとprogress handlerも残量以内に設定し、処理後に元設定を復元する。共有connectionのhandlerを次のjobへ残さない。</p><p>selectorはdeadline対応HTTP経路だけで有効にする。local agent-session経路には作成・送信・stream読取・後処理を横断するdeadlineが必要で、非対応ならprovider_not_deadline_capableとして生成を使わず本文fallbackへ。client切断後に新規provider attemptを開始しない。途中結果や失敗したretryを成功件数から除かない。</p><p>commit後の応答切断は失敗rollbackと異なる。内部clientはoperationIdとしてrunIdを事前共有し、応答不明ならget-runで確かめ、別operationIdで自動再compileしない。同ID再送は既存runのinputHash・identityFingerprintが一致すれば保存結果を返し、不一致ならconflict。MCPでは新たな公開引数を増やさず、再送同一性を保証できない場合は自動retryしない。</p><p>Knowledge検索または必要なidentity queryの失敗はfailed。source refsだけの取得失敗はdegradedで本文を返せるが、出典を捏造しない。意図的agentic offはok+compositionRoute=deterministic、HTTP失敗のfallbackはdegradedと分ける。複数エラーは配列で保持し、severity最大値とpartialを併記する。</p><h2 id="schema">9. 索引とschema</h2>
+  <p>
+    既存knowledge_items_fts・episode_cards_ftsは保持し、別名のcompile用trigram
+    projectionを追加する。索引は派生データでありscopeの権威ではない。取得時は必ず基表のactive・classification・identityへJOINする。採番は実装時の最新schema
+    revisionの次を取得し、現在の6を固定前提にしない。
+  </p>
+  <ul>
+    <li>
+      SQL
+      triggerで基表INSERT/UPDATE/DELETEとtrigram行を同じtransaction内で更新する。全producerに個別の二重書込コードを増やさない。scope変更・deprecate・削除もテストする。
+    </li>
+    <li>
+      既存行backfillは新しいprojectionへchunk書込みし、read経路でDDLをしない。readyになるまでv2索引を使用しない。readyには件数・content
+      hash・FTS integrity検査が必要。
+    </li>
+    <li>
+      old
+      readerは新索引を無視できるが、現在のmigrateは将来revisionを拒否する。先に互換releaseを配布し、同じschema
+      revisionを読めるrollback binaryを確保する。未知revisionを無条件許可する変更は行わない。
+    </li>
+    <li>
+      索引未readyまたはcorruptはdiagnosticsへ記録し、同じscope・goal条件を持つscan
+      fallbackをdeadline内で使う。打切りはpartial。通常検索と異なる選択を成功として隠さない。
+    </li>
+  </ul>
+  <h3 id="index-consistency">9.1 移行中の更新・再開・互換性</h3><p>trigramは通常contentありFTS5表とし、entity IDをUNINDEXEDで保存する。基表triggerでDELETE WHERE id→INSERTを行い、id重複の有無も検証する。派生projectionの作成とtrigger installは短いschema transaction、過去行backfillは最大500行のWriter jobに分割する。各chunkはそのtransaction内で現在の基表を読み、古いread snapshotから本文を戻さない。</p><p>新規compile_index_stateにindexVersion・generation・cursor・state・mutationSequenceを保存する。triggerはmutationSequenceを更新する。完了チェックはread snapshotで件数・行hash・FTS integrityを確認し、そのsequenceが変わっていないことをWriterで再確認してreadyへ。変わった場合は検査をやり直し、期限内に一致しなければnot_readyのまま。途中killはcursorから再開でき、DELETE済み行を復活させない。</p><p>schema追加前の互換releaseは新revisionを認識するが検索modeはFoundationを維持する。新projectionを使うreleaseはその後。rollbackは互換release以降へ限定し、互換binaryがない場合はschema移行のlive entryが不成立。基表のDROP/書換えやold binaryのrevision検査を緩める変更は不要。</p><h2 id="migration">10. TSからRustへの移行</h2>
+  <p>
+    新規の内部CompileEnvelopeをRust
+    engineが返す。MCP公開7引数は維持し、textは根拠rendererの結果を返す。TS向け内部endpointは同じeffective
+    DB bindingを利用し、引数として任意DB
+    pathを受けない。既存CLI/API/init-projectのcallerごとにschemaと戻り値を契約テストする。
+  </p>
+  <p>
+    TS専用のretrievalMode、tokenBudget、includeDraft、queryEmbedding、securityIntelligenceShadow等を黙って無視しない。呼出し実績を確認し、supported
+    / rejected /
+    legacy-onlyの対応表を固定する。必要なUI表示pack・runId・source・sessionIdは内部DTOで保持する。fallbackとして別DBのTS
+    engineを自動起動しない。Postgres互換経路は明示legacy-onlyとして残し、この計画のRust/SQLite製品保証と分ける。
+  </p>
+  <h3 id="internal-api">10.1 内部transportと旧引数の固定対応</h3><p>既存endpoint_server.rsにlocal profile専用の<code>POST /internal/context-compile</code>を追加する。既存writer bearer tokenと同じ比較・owner-only token file、Host/Origin検査、JSON body64KiB上限を用い、typed-memory profileでは公開しない。endpointではengineを通常workerで起動し、/writer/queryのSQLジョブにcompileを載せない。</p><p>clientはendpoint stateのeffectiveDatabaseFingerprintと自身が解決したDB fingerprintを一致確認する。不一致はcompileを拒否し、別DBへ切替えない。tokenをログやrunへ保存しない。読取用get-runも同じ認証とDB bindingを使う。</p><table><caption>内部adapterの引数契約</caption><thead><tr><th scope="col">旧フィールド</th><th scope="col">v2扱い</th></tr></thead><tbody><tr><td>goal / facets / identity</td><td>既存schema正規化＋明示されたv2長さ上限。</td></tr><tr><td>source / sessionId</td><td>内部metadataとして伝播。MCP公開引数ではない。</td></tr><tr><td>retrievalMode / intent</td><td>retrievalMode指定優先、なければ現行deriveFromChangeTypes。intentは診断用legacy値。</td></tr><tr><td>tokenBudget</td><td>内部callerから128〜8,192の整数を受け、runtime上限との小さい方。byte capは常に適用。</td></tr><tr><td>includeDraft</td><td>false/未指定のみv2対応。trueはunsupported error。</td></tr><tr><td>files / queryEmbedding</td><td>v2は未対応。値が渡された場合unsupported error、黙って捨てない。</td></tr><tr><td>securityIntelligenceShadow</td><td>明示legacy-only adapterへ分離し、v2の通常根拠へ混ぜない。</td></tr><tr><td>Postgres caller</td><td>明示legacy-only。Rust/SQLiteとの同等品質を宣言しない。</td></tr></tbody></table><p>CompileEnvelopeはrunId・status・contentStatus・markdown・typed pack・diagnosticsを持つ。typed packは現行ContextPackを拡張するversion付きDTOで、rules/procedures/guardrailsとEpisode項目を維持する。UIのraw shape castを使わずZodとRust serdeの共通JSON fixtureを通す。CLI --jsonとinit-projectが使用するpack項目のgoldenをU0で固定し、init-projectはdegraded/partial時に自動設定への適用を止めて根拠不足を表示する。</p><h2 id="units">11. 実装順と変更単位</h2>
+  <table>
+    <caption>
+      unitごとの成果物とexit
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">unit</th>
+        <th scope="col">変更</th>
+        <th scope="col">成果物</th>
+        <th scope="col">exit</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>U0</td>
+        <td>baseline・固定fixture・実装入口</td>
+        <td>
+          現行build、モード、DB fingerprint、prompt hash、F01〜F09再現を固定。既存変更を保護。
+        </td>
+        <td>判定artifact作成、未確認を記録。</td>
+      </tr>
+      <tr>
+        <td>U1</td>
+        <td>共通Result・Writer分離・実測</td>
+        <td>検索Result、ProviderCall、短いpersistへ分割。rankはまだ変えない。</td>
+        <td>並行書込・rollback・SQL失敗テスト。</td>
+      </tr>
+      <tr>
+        <td>U2</td>
+        <td>SystemContext共有adapter</td>
+        <td>静的catalogをRustへexportしTSとhash照合。</td>
+        <td>両locale同一bytes、改ざんと欠落を拒否。</td>
+      </tr>
+      <tr>
+        <td>U3</td>
+        <td>本文保持・重複・予算</td>
+        <td>EvidenceGroup、protected、rendererを実装。</td>
+        <td>F03/F04/F09と長文条件の保持。</td>
+      </tr>
+      <tr>
+        <td>U4</td>
+        <td>日本語索引・query-first</td>
+        <td>migration、backfill、FTS lane、RRFを追加。</td>
+        <td>F01/F02、短語、敵対候補、索引整合。</td>
+      </tr>
+      <tr>
+        <td>U5</td>
+        <td>1回selectorとvalidator</td>
+        <td>schema・ID・goal anchor検証と本文fallback。</td>
+        <td>F06、prompt injection、mock failover。</td>
+      </tr>
+      <tr>
+        <td>U6</td>
+        <td>TS caller adapter</td>
+        <td>内部endpoint、CLI/API/init-projectの接続。</td>
+        <td>二重生成・DB違い・引数消失0。</td>
+      </tr>
+      <tr>
+        <td>U7</td>
+        <td>独立評価と負荷</td>
+        <td>新旧・LLMなし・1回・2回を同条件比較。</td>
+        <td>品質、予算、遅延、必須保持gate。</td>
+      </tr>
+      <tr>
+        <td>U8</td>
+        <td>shadow・canary・運用移行</td>
+        <td>明示mode、互換rollback、観測。</td>
+        <td>安全0違反、24時間と件数条件。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    U0→U1→U2→U3→U4→U5→U6→U7→U8。各unitを独立したレビュー可能なcommit/PR単位にする。現行Foundationのscaffoldやentry
+    gateを流用できる箇所は再実装しない。offline実装にlive前提を混ぜず、未配線のhelperだけで完了にしない。
+  </p>
+  <h2 id="quality">12. 製品品質の受入条件</h2>
+  <p>
+    development 60課題と、修正に未使用のholdout
+    60課題を、repository・類似goal・同一原文のfamily単位で分割する。ja/en、検索空結果、否定・矛盾、長文中間条件、他repo、履歴ノイズ、Episode、障害を含める。期待IDだけでなく、必要な事実・禁止すべき事実・許容No
+    Contentを付ける。
+  </p>
+  <table>
+    <caption>
+      評価の合格値（提案値。実測ではない）
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">指標</th>
+        <th scope="col">条件</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>repository・未分類・送信違反</td>
+        <td>0件。1件でも停止。</td>
+      </tr>
+      <tr>
+        <td>protected条件の消失・改変</td>
+        <td>0件。予算不足の明示を消失の成功扱いにしない。</td>
+      </tr>
+      <tr>
+        <td>正解情報Recall@8</td>
+        <td>全体95%以上、各言語90%以上。candidate recallとrendered recallを別々に報告。</td>
+      </tr>
+      <tr>
+        <td>採用precision</td>
+        <td>関連ラベルが完全な課題で90%以上。ラベルなしはnull。</td>
+      </tr>
+      <tr>
+        <td>回答の正確さ</td>
+        <td>課題family単位のpaired差の95%下限が記憶なし以上、Foundationに対し-2ポイント以上。</td>
+      </tr>
+      <tr>
+        <td>No Content</td>
+        <td>正解が空の課題の95%以上で空、正解ありの誤空5%以下。failed/partialは別集計。</td>
+      </tr>
+      <tr>
+        <td>provider calls</td>
+        <td>通常1回、最大2 attempts。修復call0。</td>
+      </tr>
+      <tr>
+        <td>性能</td>
+        <td>
+          同一hardware・corpusでretrieval p95≤100ms、Writer待ちp95≤20ms、保存p95≤25ms、end-to-end
+          p95はFoundation比1.02以下。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    製品の95点を別に付ける場合は、受入値を測るまで未採点とする。今回の計画書95点と、Recall95%や製品品質の数値を同一視しない。
+  </p>
+  <h3 id="experiment-contract">12.1 評価の分母・凍結・比較費用</h3><p>120課題は要求分解とfamily clusteringを先に行い、各splitにja30/en30を置く。複数条件が同じfixtureに重複してよい。利用していないholdoutのラベルは評価担当者がexpected facts・許容根拠・禁止factsとして確定し、候補sourceと採点labelのファイルを分ける。単独実装者しかいない場合は機械的分割と封印hashまで行い、人手審査未完をlive昇格の未充足として記録する。</p><p>比較条件は記憶なし、現在Foundation、v2決定的選択、v2一回selectorの4群。各課題3反復、順番を固定seedでランダム化し同じモデル・corpus snapshotを使う。confidence intervalは課題familyで平均した差へpaired bootstrap10,000回（seed1337）を適用し、反復数を独立課題数に水増ししない。</p><p>全120課題で全4群を3反復する上限は1,440回答観測。Foundationのplanner+composer+回答、v2 selector+回答などを含めると追加attemptなしで2,520 logical calls。実測枠を一括使用する必要はなく、development smoke→development→holdoutの各stage開始前にcapをmanifestへ固定し、失敗で未実行になった課題も予定分母に残す。価格表がない場合は通貨費用null、tokenとcallで上限管理する。</p><p>Recall/precisionはgold labelsがある検索可能課題に対して計算し、failedまたは必要条件を含まないpartialは回答品質で0とする。No Contentの正解率だけで全件空の実装を合格にしない。語別・言語別の下限、必須条件の完全保持、baseline差を同時に満たす。学習用の閾値変更をholdout結果に合わせたら旧holdoutをdevelopmentへ移し、新しいholdoutを用意する。</p><p>性能はLLMを呼ばないreplayとローカルdelay mockで測る。各corpusサイズ・同時数に50 warmup＋500観測、coldは別ラベル、成功とtimeoutの両方を記録する。p95は同条件で比較し、中央値だけで昇格しない。実LLM評価は別にcaller-observed wall time・実attempt・tokenを保存する。</p><h2 id="verification">13. テスト・コマンド</h2>
+  <ul>
+    <li>
+      既存F01〜F09プローブを「望ましい結果」をassertする恒久テストに変更し、修正前は失敗、修正後は成功させる。本文中間の数値、500文字後のnegative、短語、異なるlanguageのgoal、重複とconflictを加える。
+    </li>
+    <li>
+      実providerなしのmockで：遅延、timeout、429、5xx、途中JSON、未知ID、protected
+      omit、変造prompt、client切断、保存中content更新を検証する。
+    </li>
+    <li>
+      generated catalogの再現性、Rust/TS message
+      bytes/hash、ja/en、実際のprovider送信内容、labels非送信をテストする。
+    </li>
+    <li>
+      1千・1万・10万件、同時compile
+      1/4/16と他writer負荷を固定する。件数、cold/warm、ハードウェア、メモリ、失敗・timeoutを記録し、速い成功だけを集計しない。
+    </li>
+  </ul>
+  <pre><code class="language-text">bun run system-context:lint
+bun run system-context:build
+bun run system-context:check
+bun run system-context:boundary
+bunx vitest run test/system-context.service.test.ts test/context-compile-tool-contract.test.ts test/context-compiler.service.test.ts test/cli.compile.e2e.test.ts
+cargo test -p context-stilld native_compile
+cargo test -p context-stilld context_compile
+bun run typecheck
+bun run verify
+bun run spec:fix
+bun run spec:check</code></pre>
+  <p>
+    上記は実装時の既存gate。U0で新規v2 contract
+    suiteと評価CLIを追加し、DBを必要とするintegration/e2eはisolated test
+    DBの明示設定で実行する。ここに書いたことを実行済みとは報告しない。
+  </p>
+  <h2 id="rollout">14. rollout・停止・回復</h2>
+  <p>
+    v2はversioned modeとして既定offで配線する。既存legacy / split /
+    foundationは再定義しない。shadowではv2検索・validatorをoffline比較し、shadow専用候補を外部providerへ送らない。canaryはidentityあり100呼出し以上かつ24時間以上、先に50件shadow比較を完了する。件数不足は未完了とする。
+  </p>
+  <p>
+    別repo混入、protected無告知欠落、hash不一致、Writer内network、DB
+    binding違い、call増加、性能gate不達のいずれかで昇格停止。互換binaryを用い、同じschema上の検証済みFoundationモードへ戻す。schemaをdown-migrateせず、直前の書込みを消すようなDB
+    backup復元を通常rollbackにしない。索引は無効化して後で再buildできる。
+  </p>
+  <h3 id="rollout-mode">14.1 modeと観測責任</h3><p>新runtime設定<code>CONTEXT_STILL_COMPILE_ENGINE=foundation|evidence_v2_shadow|evidence_v2</code>を追加し、未指定は既存foundation-mode解決をそのまま利用する。明示engineはこの切替えだけに使用し、同時に矛盾するfoundation-mode指定があればstartup error。state/health/runにeffective engine・rankingVersion・promptHash・schema revisionを記録する。</p><p>U1〜U7はoffline検証可能。U8は既存Foundationのlive-entryと観測条件を満たしてから、互換build→shadow→小さいcanary→100件/24時間の順に行う。常時監視が別途設定されていなければ実行担当者がcohortの開始・停止・集計を所有する。本計画作成でautomationやdaemon再起動を行わない。</p><p>rollback先はscope分離済み・Writer分離済みの互換Foundation。影響の原因が共通rendererやschemaであればmodeだけでは戻せないため、互換binaryへ戻し同じDBでsmokeする。停止後の未完runはrunIdで状態を照合し、結果不明のcompileをまとめて再実行しない。</p><h2 id="examples">15. 期待する返答の例</h2>
+  <p>
+    goal「バックアップの保存期間を変更する」、根拠「保存期間は30日。削除前に復元確認を必須とする。」の場合、LLMの成功・無効化・timeoutで共通して以下の条件が残る。
+  </p>
+  <pre><code class="language-text">## 適用条件・禁止事項
+[k2] 削除の前提（適用条件を確認）
+&gt; 復元確認前の削除は禁止。
+
+## 関連する根拠
+[k1] バックアップ運用
+&gt; 保存期間は30日。削除前に復元確認を必須とする。</code></pre>
+  <p>
+    実装ではprotectedを先に表示する。根拠が対立する場合は双方の原文と「条件が一致するか確認が必要」を付ける。元資料にない保存期間や実装手順を足さない。
+  </p>
+</article>

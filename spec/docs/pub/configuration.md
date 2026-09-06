@@ -141,7 +141,7 @@ This protects against network and browser-origin access and accidental overexpos
 | `CONTEXT_STILL_RUST_QUEUE_EXECUTOR_MAX_CLAIMS` | `2` (LaunchAgent) / `1` (binary fallback) | Maximum Covering jobs claimed per tick; actual concurrency remains bounded by provider-pool capacity |
 | `CONTEXT_STILL_RUST_FINDING_EXECUTION_MODE` | `split` (LaunchAgent) / `legacy` (binary fallback) | `split` keeps Finding claim, heartbeat, and persistence on the single writer while LocalLLM runs outside it; `legacy` is the rollback mode |
 | `CONTEXT_STILL_RUST_EPISODE_EXECUTION_MODE` | `split` (LaunchAgent) / `legacy` (binary fallback) | `split` uses query-only reads and fenced writer jobs around Episode LocalLLM execution; `legacy` is the rollback mode |
-| `CONTEXT_STILL_COMPILE_FOUNDATION_MODE` | `split_legacy_rank` (LaunchAgent) / `legacy` (binary fallback) | Moves Context Compile composition outside the writer without changing legacy ranking; set `legacy` for rollback |
+| `CONTEXT_STILL_COMPILE_FOUNDATION_MODE` | `split_legacy_rank` | Moves Context Compile composition outside the writer without changing legacy ranking; set `legacy` for rollback |
 | `CONTEXT_STILL_RUST_FINALIZE_MAX_CLAIMS` | `100` | Maximum local Finalize jobs drained before provider-pool work in one resident tick |
 | `CONTEXT_STILL_QUEUE_STALE_SECONDS` | `120` | Stale threshold for Rust queue maintenance to recover active leases and running jobs |
 | `CONTEXT_STILL_AGENT_LOG_SYNC_INTERVAL_SECONDS` | `3600` | Resident daemon / legacy LaunchAgent scheduled sync interval |

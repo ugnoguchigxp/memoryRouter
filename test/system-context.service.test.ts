@@ -1,4 +1,6 @@
 import { verifyPromptMessageHash, verifyRenderedHash } from "s11tnext";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -16,6 +18,7 @@ describe("system-context.service", () => {
       "contextCompiler.agenticRefine",
       "contextCompiler.compose",
       "contextCompiler.plan",
+      "contextCompiler.selectEvidence",
       "contextDecision.answer",
       "contextDecision.judge",
       "contextDecision.repair",
@@ -34,6 +37,8 @@ describe("system-context.service", () => {
       "findCandidate.extract",
       "findCandidate.vibeMemory",
       "findCandidate.wiki",
+      "landscape.curationPlan",
+      "landscape.curationVerify",
       "landscape.deadZoneMergeReview",
       "provider.codex.finalResponse",
       "shared.jsonOnly",
@@ -51,9 +56,32 @@ describe("system-context.service", () => {
       "contextDecision.judge",
       "contextDecision.repair",
       "findCandidate.codexEscalation",
+      "landscape.curationPlan",
+      "landscape.curationVerify",
       "landscape.deadZoneMergeReview",
       "provider.codex.finalResponse",
     ]);
+  });
+
+  it("exports static evidence-selector system bytes for both locales", async () => {
+    const artifact = JSON.parse(
+      await readFile(new URL("../.s11tnext/compile-prompts.generated.json", import.meta.url), "utf8"),
+    ) as { messages: Array<{ locale: string; role: string; text: string; rawUtf8Sha256: string }> };
+
+    expect(artifact.messages.map((message) => message.locale)).toEqual(["ja-JP", "en-US"]);
+    for (const message of artifact.messages) {
+      const binding = {
+        instructionLocale: message.locale,
+        fallbackLocales: message.locale === "ja-JP" ? ["en-US"] : ["ja-JP"],
+        trailingNewline: false,
+      } as const;
+      const invocation = renderPrompt("contextCompiler.selectEvidence", {}, binding);
+      expect(invocation.role).toBe("system");
+      expect(invocation.content.text).toBe(message.text);
+      expect(createHash("sha256").update(message.text).digest("hex")).toBe(
+        message.rawUtf8Sha256,
+      );
+    }
   });
 
   it("renders untrusted task data with enforced delimiters and escaping", () => {

@@ -1,0 +1,118 @@
+{
+  "apiBase": "http://127.0.0.1:44449",
+  "apiPath": "/v1/agents/sessions",
+  "behavioralAccuracyMeasured": false,
+  "error": null,
+  "input": {
+    "candidates": [
+      {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "1ea3de699a714f683be68a937315e641207d8da9af10bf5f05d07985b8a0823a",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "createdAt": "2026-09-06T14:00:07.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "scopeOverlap": 1,
+        "similarity": 0.999948988700964,
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T14:00:07.000Z"
+      }
+    ],
+    "capabilities": {
+      "directDeprecation": true,
+      "mode": "autonomous_policy"
+    },
+    "capturedAt": "unix-ms:1788703207355",
+    "evidence": [
+      {
+        "id": "knowledge:subject",
+        "kind": "knowledge_content",
+        "knowledgeId": "subject",
+        "observedAt": "unix-ms:1788703207355",
+        "source": "knowledge_items",
+        "value": {
+          "appliesTo": {},
+          "body": "Use a transaction for related writes."
+        }
+      },
+      {
+        "id": "knowledge:canonical",
+        "kind": "knowledge_content",
+        "knowledgeId": "canonical",
+        "observedAt": "unix-ms:1788703207355",
+        "source": "knowledge_items",
+        "value": {
+          "appliesTo": {},
+          "body": "Commit related updates atomically."
+        }
+      }
+    ],
+    "finding": {
+      "evidenceHash": "8ba72132c045bdf694219bb86c268db6ac20828c3c899eeb8e2bc3d4f8abc7ec",
+      "reviewItemId": null,
+      "type": "duplicate_candidate"
+    },
+    "lineage": {},
+    "reviewItem": null,
+    "schemaVersion": 1,
+    "subject": {
+      "appliesTo": {},
+      "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "body": "Use a transaction for related writes.",
+      "bodyHash": "01d7fcdecc080f7e1d5940b8ba388793981af954b89b0d93b6c4df46e498cf51",
+      "classificationStatus": "unresolved",
+      "confidence": 70.0,
+      "createdAt": "2026-09-06T14:00:07.000Z",
+      "id": "subject",
+      "importance": 70.0,
+      "lastVerifiedAt": null,
+      "metadata": {},
+      "polarity": "positive",
+      "projectRef": null,
+      "repoKey": null,
+      "repoPath": null,
+      "scope": "global",
+      "status": "active",
+      "title": "Subject",
+      "type": "rule",
+      "updatedAt": "2026-09-06T14:00:07.000Z"
+    },
+    "usage": {},
+    "versions": {
+      "detector": "landscape-curation-rust-v1",
+      "policy": "curation-policy-v1",
+      "prompt": "landscape-curation-rust-v1"
+    }
+  },
+  "kind": "live_smoke_only",
+  "model": "muse/muse-spark-1.3-contributor",
+  "response": {
+    "blockers": [],
+    "canonicalKnowledgeId": "canonical",
+    "confidence": "high",
+    "counterEvidence": [],
+    "decision": "deprecate_duplicate",
+    "proposedCanonicalBody": null,
+    "rationale": [
+      "Subject 'Use a transaction for related writes.' and canonical 'Commit related updates atomically.' express the same atomicity requirement for related updates with no additional scope or constraint differences.",
+      "Both items share identical global scope and empty appliesTo, so no contextual distinction justifies separate retention.",
+      "Canonical wording fully entails the subject mechanism; deprecating the subject loses no distinct useful instruction."
+    ],
+    "supportingEvidenceIds": [
+      "knowledge:subject",
+      "knowledge:canonical"
+    ]
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "maximum": 100,
+  "pass": 95,
+  "hardBlockers": [
+    "repository boundary gap",
+    "silent protected loss",
+    "failure mislabeled as empty",
+    "incompatible schema rollback",
+    "unmeasured product quality claimed achieved"
+  ],
+  "criteria": [
+    {
+      "id": "C01",
+      "title": "所有権・経路・互換性",
+      "maximum": 5
+    },
+    {
+      "id": "C02",
+      "title": "repository境界と権威",
+      "maximum": 5
+    },
+    {
+      "id": "C03",
+      "title": "日本語・短語・長goal検索",
+      "maximum": 5
+    },
+    {
+      "id": "C04",
+      "title": "ランキングとノイズ抑制",
+      "maximum": 5
+    },
+    {
+      "id": "C05",
+      "title": "禁止事項・矛盾・重複",
+      "maximum": 5
+    },
+    {
+      "id": "C06",
+      "title": "根拠本文・長文・version",
+      "maximum": 5
+    },
+    {
+      "id": "C07",
+      "title": "SystemContextと出力schema",
+      "maximum": 5
+    },
+    {
+      "id": "C08",
+      "title": "LLM不使用・失敗fallback",
+      "maximum": 5
+    },
+    {
+      "id": "C09",
+      "title": "token・候補・時間上限",
+      "maximum": 5
+    },
+    {
+      "id": "C10",
+      "title": "Writer分離・キャンセル",
+      "maximum": 5
+    },
+    {
+      "id": "C11",
+      "title": "失敗状態と外部契約",
+      "maximum": 5
+    },
+    {
+      "id": "C12",
+      "title": "telemetry・利用feedback",
+      "maximum": 5
+    },
+    {
+      "id": "C13",
+      "title": "DB索引・migration・rollback",
+      "maximum": 5
+    },
+    {
+      "id": "C14",
+      "title": "TS caller移行",
+      "maximum": 5
+    },
+    {
+      "id": "C15",
+      "title": "品質評価・holdout",
+      "maximum": 5
+    },
+    {
+      "id": "C16",
+      "title": "負荷評価・統計",
+      "maximum": 5
+    },
+    {
+      "id": "C17",
+      "title": "実装unitと依存順",
+      "maximum": 5
+    },
+    {
+      "id": "C18",
+      "title": "受入テストと実行コマンド",
+      "maximum": 5
+    },
+    {
+      "id": "C19",
+      "title": "canary・停止・回復",
+      "maximum": 5
+    },
+    {
+      "id": "C20",
+      "title": "実例・検証可能な成果物",
+      "maximum": 5
+    }
+  ]
+}

@@ -1,0 +1,2003 @@
+{
+  "kind": "deterministic_contract_probe",
+  "llmInvoked": false,
+  "observations": [
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "valid_duplicate",
+      "expectation": "Equivalent guidance may be consolidated.",
+      "gateError": "VERIFICATION_MISSING",
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962563",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962563",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962563",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Commit related updates atomically."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "4de7c1bdf7655bd3911fe93622f8c1412042418be17379408b34a58bf023c7e9",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": null,
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Run the migration in a transaction.",
+        "bodyHash": "1cd083f0baa414c761b8ce7ac3f90428d2f850a6b116f7d0605776ee8f5b31f9",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "00e8e8947ffdc80f741fd59943c9420cd9f1c456853757e75f85a0d48e7b45ed",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "1cd083f0baa414c761b8ce7ac3f90428d2f850a6b116f7d0605776ee8f5b31f9",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Run the migration in a transaction."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "lossy_merge",
+      "expectation": "The omitted rollback and checksum requirements must survive, or mutation must be rejected.",
+      "gateError": "VERIFICATION_MISSING",
+      "injectedResponse": {
+        "action": "merge",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLEMENTARY"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Run the migration in a transaction.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962578",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962578",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Before migration, verify the backup checksum and prepare a rollback procedure."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962578",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Run the migration in a transaction."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "c926643e3d6d16a5f8719acda18c6802a12fa698eb013a0fd8a070aff721890e",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Before migration, verify the backup checksum and prepare a rollback procedure.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": null,
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Before migration, verify the backup checksum and prepare a rollback procedure.",
+        "bodyHash": "b409752395e8c0d34a29cc841b2d445eb2c60587a988e0b05490480cf11c10b2",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "8c05ace1ae7cc1d1a9b37652f4fc955852b87f1ab1c8475b3395c3f2f4a74c7a",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "b409752395e8c0d34a29cc841b2d445eb2c60587a988e0b05490480cf11c10b2",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Before migration, verify the backup checksum and prepare a rollback procedure."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Retry a failed export at most 8 times.",
+        "bodyHash": "286fe6644157be07a7eab8c382c69ca4dff94ff2ac397d093de2ba6a2713d06e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "1a32f8e01ecc0a0e24b4204efabaa93be1d16da96958944ec3d3139742ad0e31",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "286fe6644157be07a7eab8c382c69ca4dff94ff2ac397d093de2ba6a2713d06e",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Retry a failed export at most 8 times."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "numeric_conflict",
+      "expectation": "Conflicting numeric requirements need resolution before deprecation.",
+      "gateError": "VERIFICATION_MISSING",
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Retry a failed export at most 8 times.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962593",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962593",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Retry a failed export at most 3 times."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962593",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Retry a failed export at most 8 times."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "371754eeb761bbf281269ff8cb22d8976a6d71ff3042fbaca02ae1f606ec1012",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Retry a failed export at most 3 times.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": null,
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Retry a failed export at most 3 times.",
+        "bodyHash": "59e18a1484692fc3864fb2fce03de87165d1bbeba878b1e5d732332065103867",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "81238438b7cb3a06278593b96f077d17ebe4cbf81b5e8d5054f9ef848997d100",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "59e18a1484692fc3864fb2fce03de87165d1bbeba878b1e5d732332065103867",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Retry a failed export at most 3 times."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {
+          "technologies": [
+            "Python"
+          ]
+        },
+        "appliesToHash": "daeff190de15393d4c83014a37aabc98c61e0a2a8da07b508230fa6b1932cbc5",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "e92924a2f201fb514ef70a027c6971aec3410ee0f8b2ec81a327d2e35966f547",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "unrestricted_subject_deprecation",
+      "expectation": "A Python-only canonical must not replace a knowledge with no technology restriction.",
+      "gateError": "SCOPE_OVERLAP_BELOW_THRESHOLD",
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {
+              "technologies": [
+                "Python"
+              ]
+            },
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962607",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962607",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962607",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {
+                "technologies": [
+                  "Python"
+                ]
+              },
+              "body": "Commit related updates atomically."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "1d5c9a9df99b48953e80af3c4a289fc56236f82ee22a03fd252711a65da6527a",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": null,
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {
+          "changeTypes": [
+            "migration"
+          ],
+          "technologies": [
+            "Python"
+          ]
+        },
+        "appliesToHash": "356e81a0f9ac9d8d5bea2bdf1f3a84507e14d7c0adb4d875cde4a37566968b53",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "6057ed389b25d440a20507e8633524b761aa58998871b13a6b8274cd6830e3ad",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "scope_union_cross_product",
+      "expectation": "Union must not invent TypeScript migration or Python feature applicability.",
+      "gateError": "SCOPE_OVERLAP_BELOW_THRESHOLD",
+      "injectedResponse": {
+        "action": "merge",
+        "coverage": [
+          {
+            "disposition": "retained",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "subject:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLEMENTARY"
+        ],
+        "retainedGroupIds": [
+          "subject:g0",
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {
+              "changeTypes": [
+                "migration"
+              ],
+              "technologies": [
+                "Python"
+              ]
+            },
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962621",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962621",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {
+                "changeTypes": [
+                  "feature"
+                ],
+                "technologies": [
+                  "TypeScript"
+                ]
+              },
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962621",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {
+                "changeTypes": [
+                  "migration"
+                ],
+                "technologies": [
+                  "Python"
+                ]
+              },
+              "body": "Commit related updates atomically."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "ea11fefb129d1a27d6bcfa91bc5efda32542d35bce2fecfb8b1e1daa3d642a1e",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {
+            "changeTypes": [
+              "feature"
+            ],
+            "technologies": [
+              "TypeScript"
+            ]
+          },
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": null,
+      "subjectAfter": {
+        "appliesTo": {
+          "changeTypes": [
+            "feature"
+          ],
+          "technologies": [
+            "TypeScript"
+          ]
+        },
+        "appliesToHash": "e565befa2c559bcad05b82fc87c2e38226719e5ea36722b7d8929a3e7989391c",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "c9cccdd287f8a07cb6e212353ec354539dbf63b2b8000362779398033d0f42c9",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "unrelated_evidence",
+      "expectation": "Mutation must cite evidence about both compared knowledge items.",
+      "gateError": null,
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "third:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          },
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Unrelated guidance",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "third",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962636",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962636",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962636",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Commit related updates atomically."
+            }
+          },
+          {
+            "id": "unrelated",
+            "kind": "knowledge_content",
+            "knowledgeId": "third",
+            "value": {
+              "appliesTo": {},
+              "body": "Unrelated guidance"
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "c30d6a4810e71fc7257e0964d15d4ce43b384b8ac7f253e96157899cd3b8983a",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": "incomplete or invalid source group coverage",
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "low_confidence",
+      "expectation": "An unsupported verification must be blocked.",
+      "gateError": "VERIFICATION_MISSING",
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962650",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962650",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962650",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Commit related updates atomically."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "3103007fc5784ae1522d3ec9b2c9c6298f85d859078ac7dce0fdc09d60aabe80",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": null,
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "subject_as_canonical",
+      "expectation": "A curator should be able to choose the better source as survivor, or explicitly represent reverse direction.",
+      "gateError": null,
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "canonical"
+        ],
+        "rationale": "Both express atomicity of related updates.",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "subject"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962664",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962664",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962664",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Commit related updates atomically."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "f3773c3b36a1bf1e0af3901f6a027c76808778eca1c1d48ebdc185f25b60d706",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": "duplicate deprecation must retain only survivor groups",
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    },
+    {
+      "canonicalAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Commit related updates atomically.",
+        "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "canonical",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "id": "canonical:g0",
+            "order": 0,
+            "text": "Commit related updates atomically."
+          }
+        ],
+        "status": "active",
+        "title": "Canonical",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      },
+      "case": "undocumented_output_limit",
+      "expectation": "The prompt must disclose the 1200-code-point rationale limit enforced by the parser.",
+      "gateError": null,
+      "injectedResponse": {
+        "action": "deprecate_duplicate",
+        "coverage": [
+          {
+            "disposition": "entailed",
+            "sourceGroupId": "subject:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          },
+          {
+            "disposition": "retained",
+            "sourceGroupId": "canonical:g0",
+            "targetGroupIds": [
+              "canonical:g0"
+            ]
+          }
+        ],
+        "deprecatedKnowledgeIds": [
+          "subject"
+        ],
+        "rationale": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "reasonCodes": [
+          "COMPLETE_DUPLICATE"
+        ],
+        "retainedGroupIds": [
+          "canonical:g0"
+        ],
+        "schemaVersion": 2,
+        "survivorKnowledgeId": "canonical"
+      },
+      "input": {
+        "candidates": [
+          {
+            "appliesTo": {},
+            "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "body": "Commit related updates atomically.",
+            "bodyHash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+            "classificationStatus": "unresolved",
+            "confidence": 70.0,
+            "contentRevision": "5769020018aa766480a91b31671e4f51547c2921dd14c162e1f6c85093a57766",
+            "createdAt": "2026-09-06T15:02:42.000Z",
+            "id": "canonical",
+            "importance": 70.0,
+            "lastVerifiedAt": null,
+            "metadata": {},
+            "polarity": "positive",
+            "projectRef": null,
+            "repoKey": null,
+            "repoPath": null,
+            "scope": "global",
+            "scopeOverlap": 1,
+            "similarity": 0.999948988700964,
+            "sourceGroups": [
+              {
+                "hash": "04e0a2ec70d808e805dd22c27b4ba5afe2a7075f0029a7ca5480614a708b0ed4",
+                "id": "canonical:g0",
+                "order": 0,
+                "text": "Commit related updates atomically."
+              }
+            ],
+            "status": "active",
+            "title": "Canonical",
+            "type": "rule",
+            "updatedAt": "2026-09-06T15:02:42.000Z"
+          }
+        ],
+        "capabilities": {
+          "directDeprecation": true,
+          "mode": "autonomous_policy"
+        },
+        "capturedAt": "unix-ms:1788706962678",
+        "evidence": [
+          {
+            "id": "knowledge:subject",
+            "kind": "knowledge_content",
+            "knowledgeId": "subject",
+            "observedAt": "unix-ms:1788706962678",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Use a transaction for related writes."
+            }
+          },
+          {
+            "id": "knowledge:canonical",
+            "kind": "knowledge_content",
+            "knowledgeId": "canonical",
+            "observedAt": "unix-ms:1788706962678",
+            "source": "knowledge_items",
+            "value": {
+              "appliesTo": {},
+              "body": "Commit related updates atomically."
+            }
+          }
+        ],
+        "finding": {
+          "evidenceHash": "853e0aceeca4504bc512bf1568161baddc593a06dd3f95e143aa29eb3a445343",
+          "reviewItemId": null,
+          "type": "duplicate_candidate"
+        },
+        "lineage": {},
+        "reviewItem": null,
+        "schemaVersion": 1,
+        "subject": {
+          "appliesTo": {},
+          "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+          "body": "Use a transaction for related writes.",
+          "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+          "classificationStatus": "unresolved",
+          "confidence": 70.0,
+          "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+          "createdAt": "2026-09-06T15:02:42.000Z",
+          "id": "subject",
+          "importance": 70.0,
+          "lastVerifiedAt": null,
+          "metadata": {},
+          "polarity": "positive",
+          "projectRef": null,
+          "repoKey": null,
+          "repoPath": null,
+          "scope": "global",
+          "sourceGroups": [
+            {
+              "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+              "id": "subject:g0",
+              "order": 0,
+              "text": "Use a transaction for related writes."
+            }
+          ],
+          "status": "active",
+          "title": "Subject",
+          "type": "rule",
+          "updatedAt": "2026-09-06T15:02:42.000Z"
+        },
+        "usage": {},
+        "versions": {
+          "detector": "landscape-curation-rust-v2",
+          "policy": "curation-policy-v1",
+          "prompt": "landscape-curation-rust-v2"
+        }
+      },
+      "mutationEligible": false,
+      "parserError": "invalid curation decision or rationale",
+      "subjectAfter": {
+        "appliesTo": {},
+        "appliesToHash": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "body": "Use a transaction for related writes.",
+        "bodyHash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+        "classificationStatus": "unresolved",
+        "confidence": 70.0,
+        "contentRevision": "0d8458cd2a71e68c70c108c5489f192364cb93a5eab6704cededaef7307b6877",
+        "createdAt": "2026-09-06T15:02:42.000Z",
+        "id": "subject",
+        "importance": 70.0,
+        "lastVerifiedAt": null,
+        "metadata": {},
+        "polarity": "positive",
+        "projectRef": null,
+        "repoKey": null,
+        "repoPath": null,
+        "scope": "global",
+        "sourceGroups": [
+          {
+            "hash": "fe302f3310edbd91dfee20f80ff31457296af5f96661d92f19ee082d2ffb536e",
+            "id": "subject:g0",
+            "order": 0,
+            "text": "Use a transaction for related writes."
+          }
+        ],
+        "status": "active",
+        "title": "Subject",
+        "type": "rule",
+        "updatedAt": "2026-09-06T15:02:42.000Z"
+      }
+    }
+  ],
+  "scope": "in-memory synthetic database only"
+}

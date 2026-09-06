@@ -1,0 +1,93 @@
+{
+  "designOnly": true,
+  "productionCodeChanged": false,
+  "schemaCases": [
+    {
+      "name": "valid Japanese input and response",
+      "expected": true,
+      "actual": true
+    },
+    {
+      "name": "unknown candidate",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "duplicate decision ID",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "protected omitted",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "foreign evidence group",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "fabricated goal anchor",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "missing decision",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "missing optional ordering",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "unknown output key",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "confidence field forbidden",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "protected placed in optional list",
+      "expected": false,
+      "actual": false
+    },
+    {
+      "name": "empty candidate set",
+      "expected": true,
+      "actual": true
+    },
+    {
+      "name": "protected multi-group omission",
+      "expected": false,
+      "actual": false
+    }
+  ],
+  "locales": [
+    {
+      "locale": "ja-JP",
+      "rawUtf8Sha256": "737452254b1a5a76ee491ec5f66c7c9cc3c256f7d959c42f3c5a844d4eda15f2",
+      "utf8Bytes": 2832
+    },
+    {
+      "locale": "en-US",
+      "rawUtf8Sha256": "680844ec487b45c161ffaadeb23d983caf3d4269595c69b6f9739f1f4a809e62",
+      "utf8Bytes": 2387
+    }
+  ],
+  "checks": [
+    "both locales built without fallback",
+    "rendered and message hashes verified",
+    "tampered text rejected"
+  ],
+  "limitations": [
+    "No live model invocation",
+    "Semantic goal relevance is not guaranteed by exact anchor validation",
+    "Native Rust adapter is planned, not implemented"
+  ]
+}

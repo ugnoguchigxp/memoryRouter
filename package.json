@@ -103,6 +103,7 @@
     "system-context:lint": "s11tnext lint --release-profile production",
     "system-context:build": "s11tnext build --release-profile production",
     "system-context:check": "s11tnext build --release-profile production --check",
+    "system-context:export-compile-prompts": "bun scripts/export-compile-prompts.mjs",
     "system-context:boundary": "bun scripts/verify-system-context-boundary.mjs",
     "lint": "biome lint .",
     "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",

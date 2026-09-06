@@ -1,0 +1,57 @@
+{
+  "rust": {
+    "build_status_eligible_score": 50,
+    "empty_object_accepted_count": 0,
+    "invalid_candidate_accepted_count": 0,
+    "malformed_bracket_order_panics": true,
+    "preference_eligible_score": null,
+    "rerun": {
+      "index_zero_body": "A different body after rerun.",
+      "new_result_count": 1,
+      "pending_covering_count": 0,
+      "persisted_candidate_count": 2
+    },
+    "role_prefixed_instructions_retained": true,
+    "secret_fixture_unchanged": true,
+    "short_preference_eligible_score": 75,
+    "single_line_middle_evidence_retained": false,
+    "valid_candidate_after_20_invalid_accepted_count": 0,
+    "whole_source_middle_evidence_retained": false
+  },
+  "typescript": {
+    "preference": {
+      "eligible": false,
+      "score": 40,
+      "signals": [
+        "mixed_roles",
+        "preference_terms"
+      ],
+      "rejectReasons": [
+        "below_min_score"
+      ]
+    },
+    "short": {
+      "eligible": false,
+      "score": 75,
+      "signals": [
+        "verification_or_failure_terms",
+        "mixed_roles",
+        "runtime_or_queue_terms",
+        "command_terms",
+        "preference_terms"
+      ],
+      "rejectReasons": [
+        "content_too_short"
+      ]
+    },
+    "status": {
+      "eligible": true,
+      "score": 50,
+      "signals": [
+        "verification_or_failure_terms",
+        "command_terms"
+      ],
+      "rejectReasons": []
+    }
+  }
+}

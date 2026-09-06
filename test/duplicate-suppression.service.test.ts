@@ -69,4 +69,30 @@ describe("suppressNearDuplicateKnowledge", () => {
     expect(result.items.map((item) => item.id)).toEqual(["k-active", "k-deprecated"]);
     expect(result.suppressedById.size).toBe(0);
   });
+
+  test("preserves a negative guardrail even when its positive counterpart is textually identical", () => {
+    const result = suppressNearDuplicateKnowledge([
+      {
+        id: "k-positive",
+        type: "rule",
+        status: "active",
+        polarity: "positive" as const,
+        title: "Use the production database during final verification",
+        content: "Use the production database during final verification after approval.",
+        sourceRefs: ["runbook://verification"],
+      },
+      {
+        id: "k-negative",
+        type: "rule",
+        status: "active",
+        polarity: "negative" as const,
+        title: "Use the production database during final verification",
+        content: "Use the production database during final verification after approval.",
+        sourceRefs: ["runbook://verification"],
+      },
+    ]);
+
+    expect(result.items.map((item) => item.id)).toEqual(["k-positive", "k-negative"]);
+    expect(result.suppressedById.size).toBe(0);
+  });
 });

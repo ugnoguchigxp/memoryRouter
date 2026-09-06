@@ -62,6 +62,7 @@ pub(crate) struct FindingExecution {
 pub(crate) enum FindingWorkerResult {
     Candidates(Vec<Candidate>),
     SelfIngestionBlocked,
+    UnsupportedInput(String),
     ProviderUnavailable(String),
     Failed(String),
 }
@@ -114,8 +115,8 @@ pub(crate) fn execute_finding(
     timeout_seconds: u64,
 ) -> FindingWorkerResult {
     if execution.job.input_kind != "source_target" || execution.job.source_kind != "vibe_memory" {
-        return FindingWorkerResult::Failed(format!(
-            "unsupported findingCandidate input: {}/{}",
+        return FindingWorkerResult::UnsupportedInput(format!(
+            "worker_capability_missing: {}/{}",
             execution.job.input_kind, execution.job.source_kind
         ));
     }
@@ -237,6 +238,15 @@ pub(crate) fn persist_finding_result(
             None,
             "worker_finished",
             "skipped",
+        ),
+        FindingWorkerResult::UnsupportedInput(error) => (
+            FindingPersistStatus::Paused,
+            "paused",
+            "worker_capability_missing",
+            Some(error.as_str()),
+            None,
+            "worker_capability_missing",
+            "paused",
         ),
         FindingWorkerResult::ProviderUnavailable(error) if next_attempt_count >= 8 => (
             FindingPersistStatus::Paused,
@@ -623,8 +633,15 @@ fn read_filtered_vibe_source(
 fn filter_source_text(input: &str) -> String {
     let mut result = Vec::new();
     let mut skipped_tag: Option<&str> = None;
+    let mut skipped_private_key = false;
     for line in input.lines() {
         let lower = line.trim().to_ascii_lowercase();
+        if skipped_private_key {
+            if lower.contains("-----end") && lower.contains("private key-----") {
+                skipped_private_key = false;
+            }
+            continue;
+        }
         if let Some(tag) = skipped_tag {
             if lower.contains(&format!("</{tag}>")) {
                 skipped_tag = None;
@@ -640,17 +657,37 @@ fn filter_source_text(input: &str) -> String {
             }
             continue;
         }
+        if lower.contains("-----begin") && lower.contains("private key-----") {
+            skipped_private_key = true;
+            result.push("[REDACTED SENSITIVE LINE]".to_string());
+            continue;
+        }
+        if lower.contains("\"apikey\"") || lower.contains("\"api_key\"") {
+            result.push(redact_json_sensitive_value(line));
+            continue;
+        }
         let sensitive = lower.contains("authorization: bearer ")
+            || lower.contains("authorization:")
+            || lower.contains("bearer ")
             || lower.contains("api_key=")
             || lower.contains("api_key:")
             || lower.contains("apikey=")
+            || lower.contains("apikey:")
+            || lower.contains("\"apikey\"")
             || lower.contains("access_token=")
             || lower.contains("access_token:")
+            || lower.contains("database_url=")
+            || lower.contains("database_url:")
             || lower.contains("password=")
             || lower.contains("password:")
-            || lower
-                .split_whitespace()
-                .any(|part| part.starts_with("sk-") && part.len() > 12);
+            || lower.contains("--token ")
+            || lower.contains("--token=")
+            || lower.contains("--api-key ")
+            || lower.contains("--api-key=")
+            || (lower.contains("://") && lower.contains('@'))
+            || lower.split_whitespace().any(|part| {
+                (part.starts_with("sk-") || part.starts_with("ghp_")) && part.len() > 12
+            });
         if sensitive {
             result.push("[REDACTED SENSITIVE LINE]".to_string());
         } else {
@@ -658,6 +695,30 @@ fn filter_source_text(input: &str) -> String {
         }
     }
     result.join("\n")
+}
+
+fn redact_json_sensitive_value(line: &str) -> String {
+    let Some(separator) = line.find(':') else {
+        return "[REDACTED SENSITIVE LINE]".to_string();
+    };
+    let prefix = &line[..=separator];
+    let value_and_suffix = line[separator + 1..].trim_start();
+    let whitespace_len = line[separator + 1..].len() - value_and_suffix.len();
+    let whitespace = &line[separator + 1..separator + 1 + whitespace_len];
+    if let Some(quote) = value_and_suffix
+        .chars()
+        .next()
+        .filter(|quote| *quote == '\"' || *quote == '\'')
+    {
+        if let Some(end) = value_and_suffix[quote.len_utf8()..].find(quote) {
+            let suffix_index = quote.len_utf8() + end + quote.len_utf8();
+            return format!(
+                "{prefix}{whitespace}{quote}[REDACTED SENSITIVE VALUE]{quote}{}",
+                &value_and_suffix[suffix_index..]
+            );
+        }
+    }
+    "[REDACTED SENSITIVE LINE]".to_string()
 }
 
 fn request_candidates(
@@ -753,14 +814,22 @@ fn parse_candidates(content: &str) -> Result<Vec<Candidate>, CliError> {
         .map_err(|error| CliError::io(format!("finding candidate parse failed: {error}")))?;
     let values = if value.is_array() {
         value.as_array().cloned().unwrap_or_default()
+    } else if let Some(candidates) = value.get("candidates").and_then(Value::as_array) {
+        candidates.clone()
     } else {
         vec![value]
     };
+    if values.len() > MAX_CANDIDATES_PER_JOB {
+        return Err(CliError::io(format!(
+            "finding candidate output_limit_exceeded: received {} candidates (limit {MAX_CANDIDATES_PER_JOB})",
+            values.len()
+        )));
+    }
     let mut candidates = Vec::new();
-    for value in values.into_iter().take(MAX_CANDIDATES_PER_JOB) {
-        let Ok(mut candidate) = serde_json::from_value::<Candidate>(value) else {
-            continue;
-        };
+    for value in values {
+        let mut candidate = serde_json::from_value::<Candidate>(value).map_err(|error| {
+            CliError::io(format!("finding candidate output_schema_invalid: {error}"))
+        })?;
         candidate.kind = candidate.kind.trim().to_ascii_lowercase();
         candidate.polarity = candidate.polarity.trim().to_ascii_lowercase();
         candidate.title = candidate.title.trim().to_string();
@@ -772,7 +841,9 @@ fn parse_candidates(content: &str) -> Result<Vec<Candidate>, CliError> {
             || (candidate.kind == "procedure" && candidate.polarity == "negative")
             || (candidate.kind == "procedure" && !has_skill_like_procedure_body(&candidate.content))
         {
-            continue;
+            return Err(CliError::io(
+                "finding candidate output_schema_invalid: candidate violates the canonical contract",
+            ));
         }
         candidates.push(candidate);
     }
@@ -1292,6 +1363,107 @@ mod tests {
                 "provider_unavailable_exhausted".to_string(),
                 "provider_unavailable_retry".to_string(),
                 2
+            )
+        );
+    }
+
+    #[test]
+    fn unsupported_input_is_paused_without_consuming_an_attempt() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                create table finding_candidate_queue (
+                  id text primary key, status text, attempt_count integer not null default 0,
+                  locked_by text, locked_at text, heartbeat_at text, next_run_at text,
+                  completed_at text, last_error text, last_outcome_kind text,
+                  metadata text not null default '{}', updated_at text
+                );
+                create table llm_provider_leases (
+                  id text primary key, pool_id text, target_id text, queue_name text,
+                  queue_job_id text, worker_id text, status text, locked_at text,
+                  heartbeat_at text, expires_at text, released_at text, release_reason text,
+                  metadata text, created_at text, updated_at text
+                );
+                create table distillation_queue_events (
+                  id text primary key, queue_name text, queue_job_id text, event_type text,
+                  message text, metadata text not null default '{}', created_at text
+                );
+                insert into finding_candidate_queue (
+                  id, status, attempt_count, locked_by, locked_at, heartbeat_at, metadata, updated_at
+                ) values ('finding-job', 'running', 3, 'finding-worker', CURRENT_TIMESTAMP,
+                  CURRENT_TIMESTAMP, '{}', CURRENT_TIMESTAMP);
+                insert into llm_provider_leases (
+                  id, pool_id, target_id, queue_name, queue_job_id, worker_id, status,
+                  locked_at, heartbeat_at, expires_at, metadata, created_at, updated_at
+                ) values ('finding-lease', 'pool', 'local-a', 'findingCandidate', 'finding-job',
+                  'finding-worker', 'active', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  datetime(CURRENT_TIMESTAMP, '+120 seconds'), '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                "#,
+            )
+            .unwrap();
+        let execution = FindingExecution {
+            job: FindingJob {
+                id: "finding-job".to_string(),
+                input_kind: "source_target".to_string(),
+                source_kind: "wiki_file".to_string(),
+                source_key: "rules.md".to_string(),
+                source_uri: "wiki:rules.md".to_string(),
+                distillation_version: "v1".to_string(),
+                priority: 1,
+                attempt_count: 3,
+                metadata: json!({}),
+            },
+            source: None,
+            self_ingestion_blocked: false,
+            provider_lease: ProviderLeaseAssignment {
+                id: "finding-lease".to_string(),
+                pool_id: "pool".to_string(),
+                target_id: "local-a".to_string(),
+                queue_name: "findingCandidate".to_string(),
+                queue_job_id: "finding-job".to_string(),
+                worker_id: "finding-worker".to_string(),
+            },
+            target: LocalLlmTargetConfig {
+                target_id: "local-a".to_string(),
+                api_base_url: "http://127.0.0.1:1".to_string(),
+                api_path: "/v1/chat/completions".to_string(),
+                model: "qwen".to_string(),
+            },
+            api_key: None,
+        };
+
+        assert!(matches!(
+            execute_finding(&execution, 30),
+            FindingWorkerResult::UnsupportedInput(_)
+        ));
+        assert_eq!(
+            persist_finding_result(
+                &mut connection,
+                &execution,
+                &FindingWorkerResult::UnsupportedInput(
+                    "worker_capability_missing: source_target/wiki_file".to_string()
+                ),
+            )
+            .unwrap(),
+            FindingPersistStatus::Paused
+        );
+        let row: (String, i64, String, String) = connection
+            .query_row(
+                "select q.status, q.attempt_count, q.last_outcome_kind, coalesce(l.release_reason, '')
+                 from finding_candidate_queue q join llm_provider_leases l on l.queue_job_id = q.id
+                 where q.id = 'finding-job'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            (
+                "paused".to_string(),
+                3,
+                "worker_capability_missing".to_string(),
+                "worker_capability_missing".to_string()
             )
         );
     }

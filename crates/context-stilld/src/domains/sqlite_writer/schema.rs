@@ -8,11 +8,19 @@ use crate::domains::vector_index;
 // additive schema revision, so keeping this at v1 allows a v1 binary to open a database after a
 // rollback. Additive revisions are tracked independently in `schema_migrations`.
 pub const CURRENT_SCHEMA_VERSION: i64 = 1;
-pub const CURRENT_SCHEMA_REVISION: i64 = 6;
+pub const CURRENT_SCHEMA_REVISION: i64 = 8;
 
 const TYPESCRIPT_SCHEMA_SOURCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../src/db/sqlite/core-schema.ts"
+));
+const CURATION_V2_SCHEMA_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../src/db/sqlite/curation-v2-schema.ts"
+));
+const CURATION_QUEUE_SCHEMA_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../src/db/sqlite/curation-queue-schema.ts"
 ));
 
 pub fn configure_writer_connection(connection: &Connection) -> Result<(), String> {
@@ -71,7 +79,11 @@ pub fn migrate(connection: &mut Connection, vector_dimension: usize) -> Result<i
             INSERT OR IGNORE INTO schema_migrations(version, name)
             VALUES (5, 'security_candidate_item_provenance_v1');
             INSERT OR IGNORE INTO schema_migrations(version, name)
-            VALUES ({CURRENT_SCHEMA_REVISION}, 'finalize_retry_schedule_v1');
+            VALUES (6, 'finalize_retry_schedule_v1');
+            INSERT OR IGNORE INTO schema_migrations(version, name)
+            VALUES (7, 'curation_v2_ledger_v1');
+            INSERT OR IGNORE INTO schema_migrations(version, name)
+            VALUES ({CURRENT_SCHEMA_REVISION}, 'covering_v2_revision_ledger_v1');
             PRAGMA user_version = {CURRENT_SCHEMA_VERSION};
             "#
         ))
@@ -126,7 +138,27 @@ fn rendered_core_schema(vector_dimension: usize) -> Result<String, String> {
         .find(end_marker)
         .map(|index| start + index)
         .ok_or_else(|| "failed to locate SQLite schema template end".to_string())?;
-    Ok(TYPESCRIPT_SCHEMA_SOURCE[start..end].replace("${dimension}", &vector_dimension.to_string()))
+    let curation_start = "export const curationV2SchemaSql = `";
+    let curation = CURATION_V2_SCHEMA_SOURCE
+        .trim()
+        .strip_prefix(curation_start)
+        .and_then(|source| source.strip_suffix(';'))
+        .and_then(|source| source.strip_suffix('`').map(str::trim_end))
+        .ok_or_else(|| "failed to locate Curation v2 SQLite schema template".to_string())?;
+    let queue_start = "export const curationQueueSchemaSql = `";
+    let queue_start_index = CURATION_QUEUE_SCHEMA_SOURCE
+        .find(queue_start)
+        .map(|index| index + queue_start.len())
+        .ok_or_else(|| "failed to locate Curation queue SQLite schema template".to_string())?;
+    let queue = CURATION_QUEUE_SCHEMA_SOURCE[queue_start_index..]
+        .trim()
+        .strip_suffix(';')
+        .and_then(|source| source.strip_suffix('`').map(str::trim_end))
+        .ok_or_else(|| "failed to locate Curation queue SQLite schema template".to_string())?
+        .replace("${curationV2SchemaSql}", curation);
+    Ok(TYPESCRIPT_SCHEMA_SOURCE[start..end]
+        .replace("${dimension}", &vector_dimension.to_string())
+        .replace("${curationQueueSchemaSql}", &queue))
 }
 
 fn apply_legacy_migrations(connection: &Connection) -> Result<(), String> {
@@ -214,6 +246,52 @@ fn apply_legacy_migrations(connection: &Connection) -> Result<(), String> {
             "finalize_distille_queue",
             "next_run_at",
             "ALTER TABLE finalize_distille_queue ADD COLUMN next_run_at TEXT",
+        )?;
+        add_column_if_missing(
+            connection,
+            "finalize_distille_queue",
+            "protocol_version",
+            "ALTER TABLE finalize_distille_queue ADD COLUMN protocol_version INTEGER NOT NULL DEFAULT 1",
+        )?;
+        add_column_if_missing(
+            connection,
+            "finalize_distille_queue",
+            "requested_revision_id",
+            "ALTER TABLE finalize_distille_queue ADD COLUMN requested_revision_id TEXT",
+        )?;
+        add_column_if_missing(
+            connection,
+            "finalize_distille_queue",
+            "claimed_revision_id",
+            "ALTER TABLE finalize_distille_queue ADD COLUMN claimed_revision_id TEXT",
+        )?;
+        add_column_if_missing(
+            connection,
+            "finalize_distille_queue",
+            "claim_token",
+            "ALTER TABLE finalize_distille_queue ADD COLUMN claim_token TEXT",
+        )?;
+    }
+    if table_exists(connection, "covering_evidence_queue")? {
+        add_column_if_missing(
+            connection,
+            "covering_evidence_queue",
+            "input_generation",
+            "ALTER TABLE covering_evidence_queue ADD COLUMN input_generation INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            connection,
+            "covering_evidence_queue",
+            "protocol_version",
+            "ALTER TABLE covering_evidence_queue ADD COLUMN protocol_version INTEGER NOT NULL DEFAULT 1",
+        )?;
+    }
+    if table_exists(connection, "evidence_coverage_results")? {
+        add_column_if_missing(
+            connection,
+            "evidence_coverage_results",
+            "current_revision_id",
+            "ALTER TABLE evidence_coverage_results ADD COLUMN current_revision_id TEXT",
         )?;
     }
     Ok(())

@@ -39,21 +39,52 @@ pub(crate) fn load_claimed_negative_execution(
 ) -> Result<NegativeCoveringExecution, CliError> {
     let claimed_id = claimed.id.clone();
     let provider_lease = claimed.provider_lease;
+    // Older databases can be read by the resident during a rolling migration.  Do not
+    // reference an additive column until it is present in that database.
+    let queue_columns = connection
+        .prepare("select name from pragma_table_info('covering_evidence_queue')")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| {
+            CliError::io(format!("failed to inspect covering queue schema: {error}"))
+        })?;
+    let input_generation = if queue_columns
+        .iter()
+        .any(|column| column == "input_generation")
+    {
+        "coalesce(cq.input_generation, 0)"
+    } else {
+        "0"
+    };
+    let protocol_version = if queue_columns
+        .iter()
+        .any(|column| column == "protocol_version")
+    {
+        "coalesce(cq.protocol_version, 1)"
+    } else {
+        "1"
+    };
     let mut execution = connection
         .query_row(
-            "
+            &format!(
+                "
             select
               cq.id,
               cq.found_candidate_id,
               cq.distillation_version,
               cq.attempt_count,
               cq.max_attempts,
+              {input_generation},
+              {protocol_version},
               coalesce(cq.provider_policy, 'default'),
               fc.title,
               fc.content,
               coalesce(fc.type, 'rule'),
-              coalesce(fc.origin, '{}'),
-              coalesce(fc.metadata, '{}'),
+              coalesce(fc.origin, '{{}}'),
+              coalesce(fc.metadata, '{{}}'),
               coalesce(fq.source_key, ''),
               coalesce(fq.source_uri, ''),
               coalesce(fq.source_kind, ''),
@@ -63,8 +94,8 @@ pub(crate) fn load_claimed_negative_execution(
                 else ''
               end,
               case
-                when fq.source_kind = 'vibe_memory' then coalesce((select metadata from vibe_memories where id = fq.source_key limit 1), '{}')
-                else '{}'
+                when fq.source_kind = 'vibe_memory' then coalesce((select metadata from vibe_memories where id = fq.source_key limit 1), '{{}}')
+                else '{{}}'
               end
             from covering_evidence_queue cq
             join found_candidates fc on fc.id = cq.found_candidate_id
@@ -72,7 +103,8 @@ pub(crate) fn load_claimed_negative_execution(
             where cq.id = ?1
               and cq.status = 'running'
             limit 1
-            ",
+            "
+            ),
             [&claimed_id],
             |row| {
                 Ok(NegativeCoveringExecution {
@@ -81,17 +113,19 @@ pub(crate) fn load_claimed_negative_execution(
                     distillation_version: row.get(2)?,
                     attempt_count: row.get(3)?,
                     max_attempts: row.get(4)?,
-                    provider_policy: row.get(5)?,
-                    candidate_title: row.get(6)?,
-                    candidate_content: row.get(7)?,
-                    candidate_type: row.get(8)?,
-                    candidate_origin: parse_json(row.get::<_, String>(9)?),
-                    candidate_metadata: parse_json(row.get::<_, String>(10)?),
-                    source_key: row.get(11)?,
-                    source_uri: row.get(12)?,
-                    source_kind: row.get(13)?,
-                    source_content: row.get(14)?,
-                    source_metadata: parse_json(row.get::<_, String>(15)?),
+                    input_generation: row.get(5)?,
+                    protocol_version: row.get(6)?,
+                    provider_policy: row.get(7)?,
+                    candidate_title: row.get(8)?,
+                    candidate_content: row.get(9)?,
+                    candidate_type: row.get(10)?,
+                    candidate_origin: parse_json(row.get::<_, String>(11)?),
+                    candidate_metadata: parse_json(row.get::<_, String>(12)?),
+                    source_key: row.get(13)?,
+                    source_uri: row.get(14)?,
+                    source_kind: row.get(15)?,
+                    source_content: row.get(16)?,
+                    source_metadata: parse_json(row.get::<_, String>(17)?),
                     provider_lease,
                     target,
                     api_key,

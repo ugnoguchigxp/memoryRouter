@@ -16,6 +16,27 @@ pub(super) const EPISODE_CANDIDATE_LIMIT: usize = 96;
 pub(super) const KNOWLEDGE_PACK_LIMIT: usize = 8;
 pub(super) const EPISODE_PACK_LIMIT: usize = 3;
 
+/// Detect an incompatible retrieval schema before treating a failed query as an empty result.
+/// Missing optional tables remain a degraded condition for backward compatibility; a table that
+/// exists but cannot satisfy the compile projection is a failed compile request.
+pub(super) fn validate_retrieval_schema(connection: &Connection) -> Result<(), String> {
+    if table_exists(connection, "knowledge_items") {
+        connection
+            .prepare(
+                "select id, type, polarity, title, body, dynamic_score, applies_to, scope, project_ref, repo_key, repo_path, importance from knowledge_items limit 0",
+            )
+            .map_err(|error| format!("knowledge retrieval schema is incompatible: {error}"))?;
+    }
+    if table_exists(connection, "episode_cards") {
+        connection
+            .prepare(
+                "select id, title, situation, lesson, importance, technologies, change_types, domains, applicability, scope, project_ref, repo_key, repo_path from episode_cards limit 0",
+            )
+            .map_err(|error| format!("episode retrieval schema is incompatible: {error}"))?;
+    }
+    Ok(())
+}
+
 pub(super) fn search_text(
     goal: &str,
     technologies: &[String],

@@ -39,7 +39,7 @@ type AgenticLlmOutput = {
   reasoning?: string;
 };
 
-function buildUserPrompt(candidates: AgenticCandidate[]): string {
+function buildUserPrompt(goal: string, candidates: AgenticCandidate[]): string {
   const items = candidates.map((item) => ({
     id: item.id,
     type: item.type,
@@ -56,7 +56,7 @@ function buildUserPrompt(candidates: AgenticCandidate[]): string {
           ? "procedures"
           : "rules"),
   }));
-  return `## Knowledge 候補一覧\n\n\`\`\`json\n${JSON.stringify(items, null, 2)}\n\`\`\``;
+  return JSON.stringify({ goal, candidates: items });
 }
 
 function parseAgenticOutput(raw: string): AgenticLlmOutput | null {
@@ -89,6 +89,25 @@ function normalizeAgenticOutput(value: unknown): AgenticLlmOutput | null {
   }
   if (typeof value !== "object" || value === null) return null;
   const obj = value as Record<string, unknown>;
+  const decisions = Array.isArray(obj.decisions) ? obj.decisions : null;
+  if (decisions) {
+    const selected = new Set(
+      decisions.flatMap((decision) => {
+        if (typeof decision !== "object" || decision === null) return [];
+        const entry = decision as Record<string, unknown>;
+        return (entry.verdict === "include" || entry.verdict === "conditional") &&
+          typeof entry.candidateId === "string"
+          ? [entry.candidateId]
+          : [];
+      }),
+    );
+    const ordered = normalizeStringArray(obj.orderedOptionalIds) ?? [];
+    const selectedIds = [
+      ...ordered.filter((id) => selected.delete(id)),
+      ...selected,
+    ];
+    return { selectedIds };
+  }
   const selectedIds =
     normalizeStringArray(obj.selectedIds) ??
     normalizeStringArray(obj.ids) ??
@@ -195,14 +214,8 @@ export async function agenticRefine(
   const fallbackErrors: string[] = [];
   let attempted = 0;
 
-  const systemContext = renderPrompt("contextCompiler.agenticRefine", {
-    goal: input.goal,
-    retrievalMode,
-    ...(input.technologies?.length ? { technologies: input.technologies.join(", ") } : {}),
-    ...(input.changeTypes?.length ? { changeTypes: input.changeTypes.join(", ") } : {}),
-    ...(input.domains?.length ? { domains: input.domains.join(", ") } : {}),
-  });
-  const userPrompt = buildUserPrompt(candidates);
+  const systemContext = renderPrompt("contextCompiler.selectEvidence", {});
+  const userPrompt = buildUserPrompt(input.goal, candidates);
 
   for (const provider of providers) {
     if (!provider.isConfigured()) {

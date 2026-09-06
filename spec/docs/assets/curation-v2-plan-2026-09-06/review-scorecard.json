@@ -1,0 +1,252 @@
+{
+  "rubricVersion": "curation-plan-readiness-1",
+  "reviewer": "Codex /root, single-author self-review",
+  "notIndependentReview": true,
+  "productScore": null,
+  "reviews": [
+    {
+      "revision": 1,
+      "scores": [
+        5,
+        4,
+        4,
+        3,
+        4,
+        4,
+        4,
+        3,
+        3,
+        3,
+        4,
+        4,
+        3,
+        3,
+        3,
+        4,
+        2,
+        4,
+        4,
+        2
+      ],
+      "total": 70,
+      "status": "revise",
+      "hardVetoes": [
+        "Scope or condition preservation unspecified"
+      ],
+      "critique": [
+        "原文をそのままコピーしても親見出しや先行条件から切り離すと意味が変わる。",
+        "自身のmerge結果を再審査するか不明で、抑止すると残候補を見逃し、無制限だとループする。",
+        "評価の分母・holdout・provider枯渇・migrationの具体条件が不足。"
+      ]
+    },
+    {
+      "revision": 2,
+      "scores": [
+        5,
+        4,
+        5,
+        5,
+        5,
+        4,
+        4,
+        3,
+        5,
+        5,
+        5,
+        5,
+        4,
+        4,
+        3,
+        4,
+        3,
+        4,
+        4,
+        3
+      ],
+      "total": 84,
+      "status": "revise",
+      "hardVetoes": [],
+      "critique": [
+        "prompt全文とschemaがなく、実装時に出力契約が再び分岐する。",
+        "600件評価だけではprovider失敗や全件保留を分母から落として高得点にできる。",
+        "資源解放、上限attempt、fairness、canary停止条件が実装可能な粒度でない。",
+        "source fragmentだけが更新されたときの再審査とCAS条件が漏れている。"
+      ]
+    },
+    {
+      "revision": 3,
+      "scores": [
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        4,
+        4,
+        5,
+        4,
+        5,
+        5,
+        5
+      ],
+      "total": 97,
+      "status": "ready_for_implementation_not_qualified_for_production",
+      "hardVetoes": [],
+      "critique": [
+        "C14: gold作成体制と層別件数を実装初期に確保する必要がある。",
+        "C15: 現在のproviderでsession枠が確実に解放されることは未確認。",
+        "C17: latencyと容量・費用の数値は採用目標であり、実測値ではない。"
+      ]
+    }
+  ],
+  "finalCriteria": [
+    {
+      "id": "C01",
+      "name": "Goal and non-goals",
+      "anchor": "goal",
+      "score": 5,
+      "reason": "全active審査、自動変更の目的、非対象を区別した。"
+    },
+    {
+      "id": "C02",
+      "name": "Baseline failures traced to closure",
+      "anchor": "traceability",
+      "score": 5,
+      "reason": "既知9 probeに加え、条件脱落・資源枯渇をW1〜W8と拒否/成功条件へ対応した。"
+    },
+    {
+      "id": "C03",
+      "name": "Repository and applicability semantics",
+      "anchor": "scope",
+      "score": 5,
+      "reason": "現行ORとgeneralを共有し、初期版は全appliesToの正規化一致。未知metadata差も阻止。"
+    },
+    {
+      "id": "C04",
+      "name": "Source and contextual preservation",
+      "anchor": "evidence",
+      "score": 5,
+      "reason": "原文byte coverageだけでなく親条件・順序・参照をgroupで保持。抽出要件だけの検証を禁止。"
+    },
+    {
+      "id": "C05",
+      "name": "Useful actions and survivor direction",
+      "anchor": "schema",
+      "score": 5,
+      "reason": "双方向survivor、補完merge、完全包含deprecated、保留の使い分けと成功正例を定義。"
+    },
+    {
+      "id": "C06",
+      "name": "Grounded verification and gate",
+      "anchor": "architecture",
+      "score": 5,
+      "reason": "planner説明を隠すverifierとhostによる全group照合。自己確信度をgateから除去。"
+    },
+    {
+      "id": "C07",
+      "name": "Managed SystemContext and boundaries",
+      "anchor": "system-context",
+      "score": 5,
+      "reason": "二つのprompt全文、catalog/hash契約、全transportの境界と認定失効を規定。"
+    },
+    {
+      "id": "C08",
+      "name": "Strict schema and examples",
+      "anchor": "schema",
+      "score": 5,
+      "reason": "二つのJSON Schema、4 actionの例、verifier例、schema外の意味制約まで明記。"
+    },
+    {
+      "id": "C09",
+      "name": "Candidate recall and bounded retrieval",
+      "anchor": "retrieval-contract",
+      "score": 5,
+      "reason": "FTS/vector/完全一致のbounded union、欠損vector、長文、recall測定と調整splitを規定。"
+    },
+    {
+      "id": "C10",
+      "name": "Queue coverage, revisions and convergence",
+      "anchor": "queue-contract",
+      "score": 5,
+      "reason": "revision/evidence/retrieval/policy key、全件anti-join、自己merge後審査、有限収束を明記。"
+    },
+    {
+      "id": "C11",
+      "name": "Atomicity, concurrency and migration",
+      "anchor": "transaction-contract",
+      "score": 5,
+      "reason": "Rust writer CAS、加算migration、旧workerの停止、crashと二重実行の検証を規定。"
+    },
+    {
+      "id": "C12",
+      "name": "Lineage, indexes and rollback",
+      "anchor": "transaction-contract",
+      "score": 5,
+      "reason": "出典差分、alias、FTS/vector revision、後続更新を保護する逆transactionを規定。"
+    },
+    {
+      "id": "C13",
+      "name": "Adversarial and metamorphic regression",
+      "anchor": "traceability",
+      "score": 5,
+      "reason": "順序/ID変更で不変、否定/数値変更で変化する評価とharness自身の失格対照を規定。"
+    },
+    {
+      "id": "C14",
+      "name": "Gold, holdout and quality statistics",
+      "anchor": "quality-gates",
+      "score": 4,
+      "reason": "gold作成・split・統計・欠測・実測昇格基準は明確。ただし独立gold作成体制と実コーパスの層別件数が未確定。"
+    },
+    {
+      "id": "C15",
+      "name": "Provider lifecycle and qualification",
+      "anchor": "provider-contract",
+      "score": 4,
+      "reason": "capacity解放試験、retry上限、route別認定を規定。ただしmuse hostの解放API/再利用契約の適合は未確認。"
+    },
+    {
+      "id": "C16",
+      "name": "Autonomous rollout and recovery",
+      "anchor": "rollout-contract",
+      "score": 5,
+      "reason": "100→500 mutation、監査と24時間観測、自動停止・復元・再認定の条件を固定。"
+    },
+    {
+      "id": "C17",
+      "name": "Cost, latency and capacity",
+      "anchor": "performance",
+      "score": 4,
+      "reason": "8k負荷、latency/throughput/token、fairness、最悪attempt上限を定義。ただし実機容量と予算額は未校正。"
+    },
+    {
+      "id": "C18",
+      "name": "Work packages and ownership",
+      "anchor": "work",
+      "score": 5,
+      "reason": "W1〜W8の所有file、依存順、完了証拠、shared schema sourceまで照合。"
+    },
+    {
+      "id": "C19",
+      "name": "Compatibility and reproducibility",
+      "anchor": "reproducibility",
+      "score": 5,
+      "reason": "Rustのみwriter、TS adapter、compile互換replay、artifact manifestと再実行contractを規定。"
+    },
+    {
+      "id": "C20",
+      "name": "Revision evidence and residual uncertainty",
+      "anchor": "readiness",
+      "score": 5,
+      "reason": "固定rubric、改訂snapshotとhash、各採点と批判、計画/製品点の分離を保存。"
+    }
+  ]
+}

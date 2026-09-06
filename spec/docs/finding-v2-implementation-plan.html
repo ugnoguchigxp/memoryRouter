@@ -1,0 +1,1169 @@
+<article lang="ja">
+  <h1>Finding改善実装計画：候補の整合性と抽出品質</h1>
+  <p>
+    作成日：2026年9月6日。実装前の計画書。
+    <a href="finding-logic-review-2026-09-06.html">Findingロジック評価</a>のF1〜F7を解消する。
+    最初に誤claim、不正出力、秘匿化の欠陥を止め、次に候補を世代単位で不変に保存し、Covering／Finalizeまで世代を照合する。
+    その土台の上で入力の読み落としと選別条件を改善し、同一の評価集合で品質を比較する。
+  </p>
+  <p>
+    本書の品質点は計画の実装準備度の自己評価であり、LLMの抽出精度ではない。実装・本番移行・実LLM評価の完了を意味しない。
+  </p>
+
+  <h2 id="scope">1. 目的、対象範囲、完了条件</h2>
+  <p>
+    対象はFindingのenqueue、source準備、抽出、保存、再試行と、その候補を参照する下流の世代検証。
+    SQLiteはRust residentの単一writerを正本とし、PostgreSQLはTypeScript
+    workerのtransactionで同じ契約を実現する。 DB
+    schema、管理一覧の世代情報、retry／resumeの内部意味を必要範囲で変更する。認証、Knowledgeの採用基準、検索順位、Curationの自動統合規則は変更しない。
+  </p>
+  <p>
+    完了は、全7課題の回帰試験、対応入力のE2E、移行・復旧試験、品質比較、段階導入の各gateを満たした時点。
+    safety修正が済んでも、wiki／webが対応workerに届かない状態や、抽出品質未計測の状態を全体完了としない。
+    本計画では新規外部サービスやモデルの固定的な変更を必要としない。既存のserde、regex、sha2、rusqlite、Zod、Drizzleと管理対象contextを使う。
+  </p>
+  <table>
+    <caption>
+      元評価との対応
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">課題</th>
+        <th scope="col">実装契約</th>
+        <th scope="col">合格の証拠</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>F1 未対応入力のclaim</td>
+        <td>入力の組とworker能力を同じ表で照合</td>
+        <td>対応入力は最後まで処理、未対応入力は理由付きpaused</td>
+      </tr>
+      <tr>
+        <td>F2 再抽出の不整合</td>
+        <td>世代別の不変候補、原子的なactive世代切替</td>
+        <td>旧本文上書き0件、旧世代の新規採用0件</td>
+      </tr>
+      <tr>
+        <td>F3 秘密値の通過</td>
+        <td>Rust／TypeScript共通の送信境界fixture</td>
+        <td>全秘密値fixtureがrequestと診断から消える</td>
+      </tr>
+      <tr>
+        <td>F4 parser異常</td>
+        <td>型付きoutcomeと限定した修復</td>
+        <td>panic0件、形式不正をno_candidateにしない</td>
+      </tr>
+      <tr>
+        <td>F5 入力喪失</td>
+        <td>不変snapshot、範囲座標、window checkpoint</td>
+        <td>中央の根拠回収、未読ありの0件確定0件</td>
+      </tr>
+      <tr>
+        <td>F6 選別の偏り</td>
+        <td>有用signalの独立通過と共通判定</td>
+        <td>好み・短文fixture回収、holdoutで回収率確認</td>
+      </tr>
+      <tr>
+        <td>F7 経路差</td>
+        <td>共通context、schema、診断manifest</td>
+        <td>両言語の契約fixture完全一致</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="routing">2. 入力の配送と実行能力</h2>
+  <p>
+    現行の<code>dynamic_provider.rs::push_finding_plan</code>と<code>executor.rs::queue_spec_for_pool</code>はsource_kindだけで配送する。
+    <code>finding_executor.rs</code>はsource_target/vibe_memoryのみ対応する。
+    <code>input_kind × source_kind × backend × executor capability version</code>を照合してからclaimする設計へ変更する。
+    providerの空き枠選択と入力能力判定を分離し、provided_candidateにはLLM leaseを取得しない。
+  </p>
+  <table>
+    <caption>
+      完成時の入力能力表。sourceは現行schema enumに含まれない
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">入力</th>
+        <th scope="col">SQLite resident</th>
+        <th scope="col">PostgreSQL worker</th>
+        <th scope="col">途中の扱い</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>source_target / vibe_memory</td>
+        <td>Rust snapshot＋LLM</td>
+        <td>TypeScript snapshot＋LLM</td>
+        <td>既存経路を維持</td>
+      </tr>
+      <tr>
+        <td>source_target / wiki_file</td>
+        <td>Rustの制限付きローカルreader＋LLMを追加</td>
+        <td>既存readFileを共通snapshotへ接続</td>
+        <td>Rust reader完成まではpaused/worker_capability_missing</td>
+      </tr>
+      <tr>
+        <td>source_target / web_ingest</td>
+        <td>Rustの制限付きfetch＋snapshot＋LLMを追加</td>
+        <td>既存web researchの保存資料をsnapshot化</td>
+        <td>対応reader完成までは同上。停止を完了とはしない</td>
+      </tr>
+      <tr>
+        <td>provided_candidate / knowledge_candidate</td>
+        <td>native登録とキュー再開を共通保存関数へ接続</td>
+        <td>既存登録とworkerを共通保存関数へ接続</td>
+        <td>LLM不要。payload検証失敗はfailed/invalid_provided_candidate</td>
+      </tr>
+      <tr>
+        <td>provided_candidate / その他3種</td>
+        <td>sourceを根拠参照として保持しpayloadを登録</td>
+        <td>同じ契約</td>
+        <td>現行workerの許容を維持し、形式とidentityを検証</td>
+      </tr>
+      <tr>
+        <td>source_target / knowledge_candidate</td>
+        <td>paused/invalid_input_combination</td>
+        <td>同じ契約</td>
+        <td>payloadを推測してprovided_candidateへ変換しない</td>
+      </tr>
+      <tr>
+        <td>sourceという旧値・未知値</td>
+        <td>paused/unsupported_source_kind</td>
+        <td>入口でvalidation error</td>
+        <td>legacy行は棚卸しと明示的な修復対象</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    claim
+    APIの<code>ProviderQueueClaimSpec</code>とTypeScript側の型へ許可される入力の組を追加する。
+    Rustのsplit／serial／dynamicすべてに適用し、queue nameだけの対応判定を最終判定にしない。
+    ルート変更で処理能力が失われた行はleaseとattemptを消費せず理由付きpausedにし、能力回復時だけ選別して再開する。
+    未対応行をpendingに残して「別workerが拾うはず」と仮定しない。
+  </p>
+  <p>
+    Rustのwiki readerはCoveringの<code>read_bounded_local_source</code>、web
+    readerは<code>fetch_guarded_external_url_with_text_limit</code>を責務ごとにsharedへ抽出して再利用する。
+    path正規化・symlink後のroot検証・redirectごとのURL検証・timeout・body上限を維持する。
+    Coveringの本文先頭切り詰めやmarkdown平坦化まで再利用せず、Finding用snapshotはコード・見出し・検証結果を保つ。
+    webの取得内容は一次資料として記録し、TypeScriptのweb
+    researchで生成された要約は別の変換履歴として識別する。
+  </p>
+
+  <h2 id="generation">3. 再抽出と保存再試行を分ける</h2>
+  <p>
+    finding_jobはsourceとdistillation_versionで重複排除される従来の親ジョブとして残す。
+    その中にgenerationを設ける。provider
+    retry・writerの保存retry・プロセス復旧は同じgenerationを使い、完了後の明示的な再抽出は新generationにする。
+    candidate_indexはgeneration内だけの表示順とし、知識同一性のキーにしない。
+  </p>
+  <ol>
+    <li>
+      親行をロックしrequested_generationと実行runを確定する。処理済みのretry要求をpendingで再度受けても世代を増やさない。
+    </li>
+    <li>
+      秘匿済みsource
+      snapshotとprompt／filter／selectorの版をrunへ固定する。自動再試行で最新sourceへすり替えない。
+    </li>
+    <li>windowごとの完了をcheckpointに保存する。候補はまだCoveringへ渡さない。</li>
+    <li>
+      全windowの評価が終わったら候補を正規化・完全一致重複排除し、同一transactionで候補挿入、Covering
+      enqueue、active_generation切替、Finding終端化、event、lease解放を行う。
+    </li>
+    <li>正常な0件も新generationとしてpublishする。旧候補は履歴に残り、現行候補一覧から外れる。</li>
+  </ol>
+  <p>
+    新generationが失敗・未完了の間は前のactive_generationを維持する。旧世代の本文は上書きしない。
+    candidate
+    fingerprintはtype、polarity、title、contentを固定順JSONにし、CRLFをLFへ統一し、外側の空白だけを除いてSHA-256化する。
+    lowercase化、否定語除去、コード内空白の圧縮、別sourceを跨ぐ近似重複排除はしない。
+    同じgenerationの再保存は同じfingerprint集合でなければ<code>result_conflict</code>として止める。
+  </p>
+  <p>
+    新規IDはRust／TypeScriptともUUID文字列表現を使い、PostgreSQLのuuid列とSQLiteのtext列に保存可能にする。
+    SQLite既存のprefix付きIDは変更しない。Rustの現在のjob/index hashを新規IDの互換前提にはしない。
+    DBの一意キーで同じrun／candidateを取得し、再試行時のIDを再生成して別行にしない。
+  </p>
+
+  <h3 id="retry-idempotency">3.1 再抽出要求の冪等性とrun状態</h3>
+  <p>
+    管理APIのretry／resumeへoptionalの<code>idempotencyKey</code>と<code>expectedGeneration</code>を追加する。
+    新UIとCLIは操作開始時にUUIDを生成し、通信retryで同じkeyを使う。runにreprocess_keyを保存し、unique(finding_job_id,reprocess_key)で同一操作を同一generationに対応させる。
+    処理がすでに終端化していても同keyなら同じrunを返す。expectedGeneration不一致は409とし、別操作による世代更新を上書きしない。
+    旧clientのkeyなし呼び出しは互換として受けるが、別々の終端後呼び出しは別の明示操作として扱う。通信重複を厳密に排除する保証はkey付き操作に限る。
+  </p>
+  <table>
+    <caption>
+      要求に対するrun選択
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">現在のrun</th>
+        <th scope="col">操作</th>
+        <th scope="col">遷移</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>queued／executing／ready</td>
+        <td>通常retryまたは同じkey</td>
+        <td>同runを返す。runningには新claimを作らない</td>
+      </tr>
+      <tr>
+        <td>failed、snapshotあり</td>
+        <td>retry</td>
+        <td>同runをqueuedへ。成功済みwindowは再要求しない。消費予算は保持</td>
+      </tr>
+      <tr>
+        <td>published／legacy_published</td>
+        <td>新しいkeyの明示再抽出</td>
+        <td>親lock内でrequested+1、新runをqueuedへ。activeは旧世代を維持</td>
+      </tr>
+      <tr>
+        <td>未publish、sourceを読み直したい</td>
+        <td>明示reprocess</td>
+        <td>旧runをabandoned、新世代を作る。epochを無効化して古い応答をdiscard</td>
+      </tr>
+      <tr>
+        <td>snapshot期限切れ</td>
+        <td>retry</td>
+        <td>409 snapshot_expired。新keyのreprocessへ誘導し、同runへ最新sourceを注入しない</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    runのstate遷移はqueued→executing→ready→published、失敗時はexecuting→failed、明示破棄はqueued/executing/ready/failed→abandonedとする。
+    failed→queuedは失敗原因解消と予算残ありの場合だけ。published→executingは存在しない。
+    active_generationのpublishは<code>requested_generation = execution.generation</code>もCASで確認し、前の要求を遅れてactiveにしない。
+  </p>
+
+  <h2 id="schema">4. 永続化契約と変更対象</h2>
+  <p>
+    同runのretryで固定manifestを変更しない。prompt／parser／sourceを修正して再抽出する場合と、形式修復1回を使い切った場合の再評価は新generationを要求する。
+    終端前でもrequest
+    budgetの追加だけは監査付き管理操作として許可するが、消費済み回数を0へ戻さない。
+  </p>
+  <p>
+    以下は追加する契約であり、現行の列ではない。新規テーブル名は既存のcompile
+    runと区別してFindingを明示する。
+  </p>
+  <table>
+    <caption>
+      追加・変更するDB要素
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">対象</th>
+        <th scope="col">追加内容</th>
+        <th scope="col">制約・用途</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>finding_candidate_queue</td>
+        <td>
+          requested_generation integer default 0、active_generation nullable integer、claim_epoch
+          integer default 0
+        </td>
+        <td>requestedとclaim_epochは単調増加。activeはpublish済みrunだけを参照</td>
+      </tr>
+      <tr>
+        <td>finding_extraction_runs（新規）</td>
+        <td>
+          id、finding_job_id、generation、reprocess_key、state、source_hash、snapshot_json、trusted_identity、manifest_json、result_hash、診断、時刻
+        </td>
+        <td>
+          unique(job,generation)、unique(job,reprocess_key)。stateはqueued/executing/ready/published/failed/abandoned/legacy_published
+        </td>
+      </tr>
+      <tr>
+        <td>finding_extraction_windows（新規）</td>
+        <td>run_id、window_index、ranges_json、status、attempts、result_json、diagnostics_json</td>
+        <td>
+          unique(run_id,window_index)。source本文はrun snapshot参照。チェックポイントはlease付きCAS
+        </td>
+      </tr>
+      <tr>
+        <td>found_candidates</td>
+        <td>extraction_generation default 0、candidate_fingerprint nullable、polarity nullable</td>
+        <td>
+          v2ではfingerprintとpolarityを必須。既存(job,index)
+          uniqueを(job,generation,index)へ変更。v2に(job,generation,fingerprint) uniqueを追加
+        </td>
+      </tr>
+      <tr>
+        <td>covering_evidence_queue／evidence_coverage_results／finalize_distille_queue</td>
+        <td>
+          expected_generationとexpected_candidate_fingerprintを既存payloadまたはmetadataへ保存
+        </td>
+        <td>旧行は候補joinで解決。新行は欠落を不正として扱う</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    runとwindowは親へのFKを持つ。published
+    runは結果を変更できず、候補のtype／polarity／title／content／fingerprintも不変にする。
+    identity補完などの既存metadata更新は、知識本文やtrusted_identityを変更しない範囲で許容する。
+    queueにgenerationを追加するだけでは不十分で、現行PostgreSQLの<code>found_candidates_finding_candidate_unique_idx</code>を変更しないと世代2以降が衝突する。
+    SQLiteの実DBで同名・同等制約を棚卸しして差分migrationし、bootstrap用core-schemaだけの修正で終えない。
+  </p>
+  <p>
+    索引はrun(job,generation)、window(run_id,status,window_index)、candidate(job,generation)、Covering(found_candidate_id)、Finalize(evidence_result_id)を確認する。
+    SQLの世代判定はJSONの全件scanではなくcandidate→finding_job joinを使う。
+  </p>
+  <table>
+    <caption>
+      更新すべき書き込み経路。Finding workerだけでは移行を完了できない
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">経路</th>
+        <th scope="col">変更</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Rust finding_executor／TypeScript queue/core/worker</td>
+        <td>共通の世代保存契約へ接続</td>
+      </tr>
+      <tr>
+        <td>Rust mcp_lifecycle/native_knowledge.rs</td>
+        <td>provided candidateのrun、候補、Coveringを原子的に登録</td>
+      </tr>
+      <tr>
+        <td>src/modules/registerCandidate/register-candidate.service.ts</td>
+        <td>SQLite／PostgreSQL両分岐を対応。返却IDの形は維持</td>
+      </tr>
+      <tr>
+        <td>security-intelligence/candidate-batch-ingress.service.ts</td>
+        <td>batchの各候補についてprovided runを作り、既存のtransaction境界を維持</td>
+      </tr>
+      <tr>
+        <td>enqueue-pending-candidates-to-covering.ts／migrate-provided-candidates.ts</td>
+        <td>旧行を同じIDのままgeneration0へadopt。本文変更は新世代へ送る</td>
+      </tr>
+      <tr>
+        <td>findCandidate/repository.tsのlegacy find_candidate_results</td>
+        <td>互換出力として維持。found_candidatesへの取り込み時に一度だけadopt</td>
+      </tr>
+      <tr>
+        <td>Finalizeのidentity backfill</td>
+        <td>不変本文・polarity・source identityを壊さないmetadata更新のみ</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>
+    candidate(finding_job_id,extraction_generation)はrun(finding_job_id,generation)への複合FKで結ぶ。
+    active_generationの参照先がpublishedまたはlegacy_publishedであることは同一transactionのstate検証と制約triggerで保証し、存在だけのFKで代用しない。
+    candidateのv2列を必須にするCHECKはgeneration&gt;0へ適用する。legacy
+    generation0には不明polarityを許し、型変換で架空のpositiveを埋めない。
+    all_windows_completeはsource_targetに必須。provided_candidateはvalidated
+    payloadをsnapshotとし、window0件でも検証成功をreadyにできる専用分岐を持つ。
+  </p>
+
+  <h2 id="downstream">5. Covering／Finalizeとの競合を防ぐ</h2>
+  <p>
+    candidateの有効性は<code>candidate.extraction_generation == finding_job.active_generation</code>で判定する。 Covering
+    claim、snapshot load、結果保存の3箇所と、Finalize load、Knowledge保存transaction直前で確認する。
+    leaseを所有していても世代が古い場合は<code>superseded_generation</code>として下流の新規書き込みを行わない。
+  </p>
+  <p>
+    PostgreSQLではFinding親行のrow lockを世代切替と下流commitの共通の直列化点にする。
+    下流はcommit時に親行→自ジョブ→leaseの順でロックし、世代・fingerprint・所有権を再確認する。
+    SQLiteでは同じチェックを単一writerのtransaction内で行う。LLM、source
+    fetch、embeddingはtransaction外で実行する。
+    claim時の一度きりのチェックで保存まで保証したことにしない。
+  </p>
+  <p>
+    世代切替後の旧pending／pausedジョブはclaim対象から外し、冪等maintenanceでskippedへ整理する。
+    runningの旧処理はcancelを試みるが、成功に依存せずcommit側の検証で止める。
+    旧世代ですでに保存されたKnowledgeとEvidenceは履歴として保持し、自動削除・自動失効しない。
+    新しい評価が既存Knowledgeを否定する場合は別のCuration／review責務とする。
+  </p>
+  <h3 id="commit-order">5.1 保存の直列化とLLM不要経路</h3>
+  <p>
+    publish transactionの順序は、候補挿入→Covering
+    enqueue→runをpublishedへ更新→active_generation切替→Finding終端化→event記録→lease解放→commitに固定する。
+    どこか1つが失敗したら全体をrollbackする。run結果の不変性はsource／manifest／result_hashを対象とし、期限後のsnapshot本文消去とpurged_atの記録は保持方針で許可する例外とする。
+  </p>
+  <p>
+    Findingの全claimでclaim_epochを増やし、返されたepoch、generation、worker IDをexecution
+    snapshotへ固定する。
+    publishとcheckpointはqueueがrunningで、この3値が一致することをCASで確認する。
+    LLM経路はさらにactive provider
+    lease所有権も要求する。provided_candidateは同じepochを使う汎用claimで排他し、架空のprovider
+    leaseを作らない。 native
+    register等の同期登録は親・run・candidate・Coveringを同一transactionで新規作成するため、queue
+    claimを経由しなくても同じ不変条件を満たす。
+  </p>
+  <p>
+    PostgreSQLでclaim時にSKIP
+    LOCKEDを使う場合はcandidate取得transactionを短く完了し、外部I/O後のcommit
+    transactionでは必ずFinding親→自ジョブ→leaseの順へ揃える。
+    publishは親行以外の既存下流行を一括更新しない。旧下流の整理は別maintenanceで同じlock順を使い、親と子を逆順に待つdeadlockを作らない。
+  </p>
+  <table>
+    <caption>
+      世代と保存の競合結果
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">競合</th>
+        <th scope="col">許可する結果</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>旧Finalizeが親lockを先に取得</td>
+        <td>旧世代としてKnowledge保存完了後に新世代がpublish。履歴上の先後が確定する</td>
+      </tr>
+      <tr>
+        <td>新Findingのpublishが先に親lockを取得</td>
+        <td>
+          旧Finalizeは再確認で不一致となり、Knowledge・FTS・vector・origin linkを一切保存しない
+        </td>
+      </tr>
+      <tr>
+        <td>lease失効後に古いFindingがcheckpoint</td>
+        <td>claim_epochまたはlease不一致でdiscard。新workerのcheckpointを上書きしない</td>
+      </tr>
+      <tr>
+        <td>commit後に応答が失われる</td>
+        <td>
+          runのpublished状態とresult_hashを読み戻し、同じ結果を成功として返す。再enqueueしない
+        </td>
+      </tr>
+      <tr>
+        <td>異なる結果で同じrunを再送</td>
+        <td>result_conflict。active世代と既存本文は変更しない</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    result_hashは重複排除後のfingerprintをバイト順でsortした配列のSHA-256とする。
+    LLMが順序だけを変えても結果同一と判定する。candidate_indexは初回publishで固定し、再送で表示順を再割当しない。
+    APIが表示するsupersededはactive_generationとの比較から導出し、別の可変フラグを第二の正本として維持しない。
+  </p>
+
+  <h2 id="redaction">6. 秘匿化と指示文の分離</h2>
+  <p>
+    TypeScriptの<code>secret-redaction.ts</code>を現在の検出範囲の基準として、両言語共通JSON
+    fixtureを作る。 JSONキー、環境変数、URL
+    query、資格情報付きURL、Bearer、CLI引数、秘密鍵、代表的token形式を含める。
+    文字列を同一に変換することだけでなく、秘密値が消え、非秘密のコマンドや因果説明が残ることも期待値にする。
+  </p>
+  <p>
+    適用点はsnapshot作成前、provider request組立後、provider response/errorを診断へ保存する前。
+    diff、tool metadata、HTTPエラー本文も含める。runには秘匿済みsnapshotのみを保存し、raw
+    responseは永続化せず、型付き理由と件数を残す。
+    redactionエラー時は送信せずpaused/redaction_failed。元sourceに同じ秘密値があるかを診断ログへ出力しない。
+    source内の指示やschemaは信頼できるsystem instructionとして結合しない。
+  </p>
+
+  <h2 id="output">7. 出力契約と異常時の回復</h2>
+  <p>
+    canonical
+    outputはtype、polarity、title、contentを持つ候補配列とする。既存互換として単体objectと<code>{"candidates": [...]}</code>をadapterで明示的に受理し、使用回数を記録する。
+    空成功は配列が明示的に空である場合だけ。空文字、null、{}、未知enum、本文欠落を空成功へ変換しない。
+    procedureはpositiveのみ、4見出しの順序と2つ以上の具体的stepを要求する。
+  </p>
+  <table>
+    <caption>
+      出力判定の返値
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">outcome</th>
+        <th scope="col">条件</th>
+        <th scope="col">処理</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>valid_candidates</td>
+        <td>全候補がschema適合、応答終端を確認</td>
+        <td>window checkpoint。全window完了後にpublish</td>
+      </tr>
+      <tr>
+        <td>valid_empty</td>
+        <td>明示的な空配列、応答終端を確認</td>
+        <td>windowのみ0件。入力全体が終わるまでno_candidateにしない</td>
+      </tr>
+      <tr>
+        <td>schema_invalid</td>
+        <td>JSONまたは候補形式が不正</td>
+        <td>同じwindowで形式修復を1回。再失敗はfailed/output_schema_invalid</td>
+      </tr>
+      <tr>
+        <td>output_truncated</td>
+        <td>finish_reason=length、または切断を確認</td>
+        <td>windowを二分して再開。分割不能・予算超過はpaused</td>
+      </tr>
+      <tr>
+        <td>provider_unavailable</td>
+        <td>接続・timeout・429・5xx</td>
+        <td>既存backoff。内容の棄却とは区別</td>
+      </tr>
+      <tr>
+        <td>source_incomplete</td>
+        <td>未読・取得制限・window予算超過</td>
+        <td>paused/input_incomplete。旧active世代を維持</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    JSON復旧はコードフェンス全体の除去と、string／escapeを考慮したbalanced JSON
+    scannerに限定し、範囲検証なしでsliceしない。 候補内のcode
+    fenceは削除しない。入力byte数・JSON深さ・raw候補数に上限を設ける。
+    一部候補だけ不正でも診断を残して形式修復する。初回の有効候補はstagingに保持するが、修復未完了のrunを部分publishしない。
+    有効候補上限は検証後に適用し、超過を黙って先頭N件に切り捨てない。
+  </p>
+  <p>
+    agent-session経路は現在content文字列だけを返すため、shared
+    adapterの内部返値をcontent、finishReason、usage、requestIdを含むenvelopeへ拡張する。
+    providerが終端理由を提供しない場合はunknownとして記録し、その経路のcutoff検知canaryが合格するまで自動publishを有効にしない。
+    既存callerにはcontentを返す互換wrapperを用意し、関連しないqueueの挙動を変更しない。
+  </p>
+
+  <p>
+    形式修復は同じsource
+    windowと正しいschemaを使って全配列を再生成する。修復応答が全件validなら、その応答だけをwindowの正本にする。
+    初回のstaging結果とunionしない。初回結果は診断件数のみ残して破棄し、同じ知識の言い換えを二重保存しない。
+    2回目も不正ならrunをfailedにして旧active世代を維持する。raw候補数上限は100、応答body上限は1MiB、JSON深さ上限は32を初期値とする。
+    上限超過はoutput_limit_exceededで分割またはpausedにし、途中のvalid subsetを成功結果にしない。
+  </p>
+
+  <h2 id="input">8. source snapshotと読み取り範囲</h2>
+  <p>
+    snapshotはversion、source kind/key/URI、trusted identity、取得時刻、秘匿済みmessage／diff／tool
+    block、source hashを含む。
+    新しいログではroleと本文を別に保持する。既存の平文transcriptは既知のrole
+    prefixを認識する互換parserで処理し、境界を推測した場合はroleConfidenceを付ける。
+    role付きINSTRUCTIONS、environment_context、filesystemのブロックを除去し、不完全な閉じタグは診断付きで隔離する。
+    block除去後に残った指示だけからcandidateを作らない。
+  </p>
+  <p>
+    行2,000文字切り詰めと全体中央削除を廃止する。windowはmessage／diff境界を優先して決定し、長い単独blockも分割する。
+    snapshot内のblock IDと半開区間を保存し、何をLLMに見せたかを後から復元できるようにする。
+    windowの重複範囲は候補の完全一致fingerprintで重複排除し、最終windowに原因・修正・検証が分かれているケースをfixtureにする。
+  </p>
+  <p>
+    元資料は既存保持方針に従う。run snapshotとwindow
+    stagingはrun終端後30日を初期保持期間とし、pending／runningと下流が未終端の参照は削除しない。
+    期限後は本文を削除し、hash、範囲、版、件数、採否、lineageを残す。source再取得が必要なretryは新generationとして扱う。
+    期限切れsnapshotから同じgenerationを復元したふりをしない。
+  </p>
+  <p>
+    cleanupはrunがpublished／abandoned、下流にpending／running／paused／failedの再開可能参照がなく、保持期限超過の場合だけ本文を消去する。
+    failed runのsnapshotは自動削除せず、abandonまたは明示的な保持終了操作が必要。published
+    runはsnapshot_purged_atを記録する。 Evidence／Knowledgeからたどれるrun ID、source
+    hash、fingerprint、context digestは本文削除後も維持する。
+    消去後に旧Covering／Finalizeをretryする操作はsource_missingとして拒否し、現在sourceを新generationで処理する手順を示す。
+    バックアップ内のコピーの保持は既存backup
+    retentionに従い、本文削除だけでバックアップからも消えたとは扱わない。
+  </p>
+
+  <h3 id="coordinates">8.1 snapshot作成と座標の互換契約</h3>
+  <p>
+    vibe本文・diff・必要metadataは短いread transactionで同じ時点から取得してreaderを閉じる。 Rust
+    workerはそのowned valueを秘匿化し、claim
+    CASでsnapshotを一度だけ保存する。snapshot保存前にsourceを読み直した場合は未固定として扱うが、保存後のsource更新は同runへ混ぜない。
+    web／wikiはread完了後の内容をhash化し、source準備中にwriter transactionを保持しない。
+  </p>
+  <p>
+    v2の座標は<code>{snapshotHash, blockId, coordinateSystem:"unicode-scalar-v1", from, toExclusive}</code>に固定する。
+    normalizationと秘匿化が終わったsnapshot上の半開区間であり、raw sourceのoffsetではない。
+    TypeScriptのUTF-16 index、RustのUTF-8 byte
+    offset、既存readRangesの空白区切りtoken番号と混ぜない。
+    emoji、結合文字、日本語の空白なし長文、CRLFの共通fixtureでRustとTypeScriptが同一抜粋を復元する。
+  </p>
+  <p>
+    v2 sourceWindowRefsは新しいorigin
+    fieldへ保存する。Coveringはv2参照があればsnapshotから抜粋を復元し、legacy readRanges
+    readerへ変換せず直接渡す。
+    v2参照のsnapshotがない場合に現行ファイルを同じ根拠として代用しない。snapshot_missingとして再取得を必要とする新世代へ誘導する。
+    legacy候補のみ従来readerを使い、根拠が最新sourceであることを診断に明示する。
+    FTSやembeddingに保存する候補本文の座標とは独立した契約である。
+  </p>
+  <p>
+    長いblockは6,000 scalar以下、重なり400
+    scalarで分割する。window範囲の和集合が、boilerplateと秘匿値を除いた全blockを覆う場合のみread
+    coverage=1とする。
+    分割境界にまたがるcause／fix／verificationは境界fixtureで評価する。独立windowから根拠を補って結論を創作するreduceは実装しない。
+    追加の隣接windowを読む必要があれば範囲を明示した再要求として同じ予算に算入する。
+  </p>
+
+  <h2 id="eligibility">9. 入口の選別</h2>
+  <p>
+    preprocessingの後に判定する。自己取り込み、内容なし、boilerplateのみはhard reject。
+    継続的な好み・禁止事項、原因と修正と検証、diffに支えられた不変条件をそれぞれ通過理由として評価し、120文字未満を一律にrejectしない。
+    同じ単語を検証とcommandの両方に加点しない。混合roleは補助情報であり、単独で再利用価値を証明しない。
+  </p>
+  <p>
+    selectorの返値をeligible、reasonCodes、features、selectorVersionへ統一する。 Rust
+    agent_log_sync/store.rsとTypeScript vibe-finding-eligibility.tsは同じfixtureと定数仕様に従う。
+    原語のscoreは旧版比較の診断として残すが、新版の通過条件とは混在させない。
+    backfillで再評価する対象はsource hashとselector
+    versionで識別し、旧rejectを永久に再走査できない構造にしない。
+  </p>
+
+  <h3 id="selector-rules">9.1 v2判定とbackfill互換</h3>
+  <p>
+    初期判定は次の順に固定し、文字数や語句scoreの組合せに戻さない。user
+    roleが信頼できる継続的な方針表現、原因＋修正＋検証のまとまり、生成物以外の実質的diff、再利用する操作＋成功確認のいずれかでeligibleとする。
+    方針表現は「今後／以後／毎回／常に／禁止／always／never」等の持続性と具体的な対象・操作を必要とし、「してください」だけでは通過理由にしない。
+    「build
+    succeeded」だけは採用signalにしない。role不明・複数blockにまたがる弱いsignalはuncertainとして小さなLLM評価枠へ回し、根拠なしの確定rejectと分ける。
+  </p>
+  <p>
+    文字列が条件を満たすことは真偽の保証ではない。通過後のpromptで未検証仮説、引用された指示、提案と採用の違いを評価する。
+    signal定義、正規表現、diff対象外path、reason
+    codeは<code>shared/finding/selector-v2.json</code>（新規）を正本にし、両言語で読めるfixtureにする。
+    uncertain枠は通常enqueue上限の10%を初期値とし、整数切り上げ、最大5件/runで制限する。棄却側からの評価sampleはこの枠とは別に取り、gateの回収率を有利にしない。
+  </p>
+  <p>
+    CLIは<code>--selector-version legacy-v1|finding-selector-v2</code>を追加する。既存<code>--min-score</code>はlegacy-v1でのみ有効とし、v2への明示指定はエラーで説明する。
+    optionのdefault値とユーザーによる明示指定を区別して移行する。source
+    filter、since-days、limit、dry-run／writeの意味は維持する。 verdictはsource hashとselector
+    version付きでvibe metadataへ保存し、rejectが新しい版で再評価できるようにする。
+    backfillは正規化したcreatedAtとIDのcursorでbounded
+    pageを走査し、最近のrejectだけを繰り返し読んで古い未評価行へ到達できなくなることを避ける。
+    jobがすでにある場合、新selectorの評価だけでcompleted
+    jobを再抽出しない。再抽出は3.1の明示操作へ渡す。
+  </p>
+
+  <h2 id="prompts">10. 管理対象contextとprovenance</h2>
+  <p>
+    Rust
+    Coveringの<code>render_catalog_prompt</code>と埋め込み<code>.s11tnext/catalog.json</code>が既に存在する。
+    rendererをsharedに移し、Findingも<code>findCandidate.vibeMemory/wiki/extract</code>を同じcatalogから読む。
+    固定文字列をもう1つ追加する方式は採らない。locale、context digest、schema
+    versionをmanifestへ記録する。
+    promptで許される出力とparserが受理する出力を共通fixtureで照合する。
+  </p>
+  <p>
+    source hash、input filter版、selector版、prompt digest、parser版、モデル、provider
+    target、generation、window IDを1つのrun manifestで結ぶ。 trusted
+    identityはsource由来で固定し、LLM出力から生成・上書きしない。
+    Candidateは知識候補であり、真偽と最終的な採用はCoveringへ委ねる。
+    source範囲は候補ごとの引用による証明と混同せず、まず「この抽出に使用したwindow」として保持する。
+  </p>
+
+  <h2 id="states">11. 状態、retry、管理表示</h2>
+  <p>
+    queueの既存status enumは維持し、細かな理由をlast_outcome_kindとrun診断で表す。
+    no_candidate、output_schema_invalid、output_truncated、input_incomplete、worker_capability_missing、redaction_failed、result_conflict、superseded_generationを区別する。
+    retryは未publish runの続行、completed／正常skippedの再実行は新generation作成とする。
+    provider回復で再開するpausedと、予算・形式・能力の修正が必要なpausedをreasonで分ける。
+  </p>
+  <p>
+    管理一覧はactive世代の候補数とrequested世代の進捗を分けて表示する。旧世代は履歴から参照可能にする。
+    詳細にgeneration、read coverage、受理／棄却件数、原因、次の操作を表示し、raw
+    promptや秘密値を含む本文を診断欄へ出さない。 API responseへの情報追加はoptional
+    fieldで行い、statusの既存利用者を壊さない。
+  </p>
+
+  <h2 id="migration">12. 移行と既存データ</h2>
+  <p>
+    実装時に最新のschema revisionとDrizzle migration末尾を再確認して採番する。現行Rust
+    revisionは調査時6だが番号を本書で予約しない。 migrationはRust sqlite_writer/schema.rs、bootstrap
+    core-schema.ts、TypeScript schema-distillation.ts、Drizzle migrationに反映する。
+    SQLiteでは旧tableのCREATE IF NOT EXISTSだけでは列が追加されないため、PRAGMA
+    table_infoで確認する差分migrationを実装する。
+  </p>
+  <ol>
+    <li>
+      Finding／Covering／Finalizeの新規claimを停止し、active
+      leaseをdrainする。バックアップと復元検証を行う。
+    </li>
+    <li>
+      新schemaをtransactionで作り、既存job／candidateをgeneration0として登録する。既存IDとEvidence／Knowledge参照を維持する。
+    </li>
+    <li>
+      completedかつ既存候補があるjobはlegacy_published
+      runとactive_generation=0を作る。正常no_candidateも0件runとして登録する。
+    </li>
+    <li>
+      本文、候補数、一意制約、参照整合性、FK違反の有無を移行前後で比較する。snapshotを遡って捏造せずlegacy
+      provenanceを明示する。
+    </li>
+    <li>
+      世代対応consumerを先に有効にし、世代対応producerを後から有効にする。旧binaryのwriter再起動を禁止するversion
+      gateを確認する。
+    </li>
+  </ol>
+  <p>
+    移行前の不整合は自動的に直ったことにしない。既存候補本文が既に上書きされてEvidenceと食い違っている可能性がある行はaudit
+    manifestへ隔離する。 元本文を復元できない場合は新世代で再抽出・再評価する。大量再実行をschema
+    migration内で行わない。
+  </p>
+  <h3 id="legacy-adoption">12.1 generation0の取り込みとwriter gate</h3>
+  <p>
+    completedまたは確認済みno_candidateの親だけをlegacy_publishedとしてactive=0にする。
+    failed／pending親に部分的なfound_candidatesがある場合、publishedと推定せずrun=failed、active=nullで隔離し、未完了下流を停止対象にする。
+    既にKnowledge化された参照は保持し、要再評価としてauditに残す。polarity不明の旧候補も推測補完せずlegacy扱いにする。
+  </p>
+  <p>
+    新規writerがgeneration0のdefaultを使って移行を回避しないよう、migration後のwriter capability
+    gateとrun FK相当の整合検証を全producer入口に適用する。 native、API、CLI、backfill、security
+    batchを対象にする。新規runはgeneration1から、generation0作成はmigration/adoption専用APIに限る。
+    candidate immutabilityはDB
+    triggerまたは同等の制約でtype/polarity/title/content/fingerprintの更新を拒否し、アプリ側CASと併用する。
+    SQLite／PostgreSQLでtriggerとFKの挙動を実DBテストし、古い更新SQLが黙って通らないことを確認する。
+  </p>
+  <p>
+    SQLiteのschema互換水準は新旧binaryの書き込み互換性を根拠に更新する。
+    現行の古いbinaryが新revisionを拒否するテストを維持し、既に起動中の旧writerもmigration前に停止する。
+    PostgreSQLにはFinding writer contract versionのstartup
+    checkを追加し、旧workerを停止してから切り替える。
+    migrationはDDLだけの段階とadoption段階を区別し、adoptionは親ID順のbounded
+    batchとcheckpointで再開可能にする。cutoverは全adoption成功後とする。
+  </p>
+
+  <p>
+    adoptionの入力manifestはjob ID、元status／outcome、候補数、candidate
+    hash、Evidence／Finalize／Knowledge参照数、polarity欠損、競合IDを記録する。
+    正常空runは<code>status=skipped AND last_outcome_kind=no_candidate AND candidate_count=0</code>を必要条件にするが、旧parserに診断がなく真の空と形式不正を分けられない場合はlegacy_empty_unverifiedと診断する。
+    再抽出の優先対象へ入れ、v2のvalid_empty率へ集計しない。候補0件なのにcompleted、no_candidateなのに候補あり等は自動publishせずmigration_quarantineへ分類する。
+    quarantine件数が0でない場合もcutover対象から明示的に除外し、残った件数と復旧計画をacceptance
+    evidenceへ載せる。未分類行は0を必須とする。
+  </p>
+
+  <h3 id="migration-order">12.2 schema適用順と破損検出</h3>
+  <p>
+    orphan参照、同一(job,index)の構造的重複、壊れたJSONをpreflightで検出した場合はDDLを開始せず停止する。
+    これらは単なる候補の意味的不整合と違い、quarantineだけでは一意制約やFKを満たせない。IDを削除・再採番して隠さず、修復manifestで対応を確定して再検査する。
+    candidate本文とEvidenceが意味的に一致するか不明な行は、構造検査通過後の意味的quarantineとして扱える。
+  </p>
+  <p>
+    migration順は、run/window table作成→queue/candidateの互換列追加→generation0
+    run採取→候補FKとindex適用→全件検証→writer contract有効化とする。 PostgreSQLはFKをNOT
+    VALIDで追加してadoption後にVALIDATEし、unique indexは重複0を確認して適用する。
+    SQLiteで既存tableのFK／CHECK変更にrebuildが必要な場合は、residentの保守connectionだけで全writer停止を確認し、transaction開始前にforeign_keysを一時解除する。
+    transaction内で新tableへのcopy・ID/hash照合・旧table置換・索引／trigger再作成を実施し、foreign_key_checkが空でなければrollbackする。
+    commitまたはrollback後にforeign_keysをONへ必ず復帰する。FKをONにしたまま親tableをDROPして子行へcascadeする手順は使わない。
+    このrebuildは既存の参照tableを含む移行fixtureで検証し、通常workerへforeign_keys解除を持ち込まない。
+  </p>
+  <p>
+    SQLiteのTypeScript API／CLIによる新規書き込みはresidentのwriter
+    command経路に集約するため、新しいFinding操作dispatcherを実装する。
+    正規のwriter所有者がない場合はworker_unavailableで停止し、Bunの直接writeへfallbackしない。standaloneの専用テストDBだけはテスト所有者として許可する。
+    PostgreSQLのTypeScript transactionはそのまま維持する。新機能のために2つのSQLite
+    writerを並走させない。
+  </p>
+
+  <h2 id="work">13. 実装パッケージと依存順</h2>
+  <table>
+    <caption>
+      PR単位の作業。担当は実装する責務であり、別タスクへの自動委譲ではない
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">WP</th>
+        <th scope="col">主な変更場所</th>
+        <th scope="col">成果物とgate</th>
+        <th scope="col">依存</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>WP0 基準値とfixture</td>
+        <td>test/fixtures/finding-v2、Rust／TSテスト、評価assets</td>
+        <td>既存58テストの再確認、7課題の回帰fixture、コードhash</td>
+        <td>なし</td>
+      </tr>
+      <tr>
+        <td>WP1 safety修正</td>
+        <td>finding_executor、dynamic_provider、executor、parser、secret-redaction</td>
+        <td>誤claim抑止、panic除去、秘密値fixture合格、型付き失敗</td>
+        <td>WP0</td>
+      </tr>
+      <tr>
+        <td>WP2 世代schemaと保存</td>
+        <td>sqlite_writer/schema、core-schema、schema-distillation、finding repository新設</td>
+        <td>immutable run、candidate保存、全producer対応、migration試験</td>
+        <td>WP0</td>
+      </tr>
+      <tr>
+        <td>WP3 下流と再実行</td>
+        <td>covering_executor/persistence、finalize_executor、TS worker/state、API</td>
+        <td>世代CAS、旧結果discard、atomic publish、履歴表示</td>
+        <td>WP2。WP2 producer切替前に有効化</td>
+      </tr>
+      <tr>
+        <td>WP4 sourceとcontext</td>
+        <td>shared reader／catalog renderer、finding source、domain、filter</td>
+        <td>wiki/web E2E、snapshot、window checkpoint、共通prompt</td>
+        <td>WP1〜3</td>
+      </tr>
+      <tr>
+        <td>WP5 selectorと品質比較</td>
+        <td>agent_log_sync/store、vibe selector/planner、評価runner</td>
+        <td>共通判定、holdout結果、予算計測</td>
+        <td>WP4</td>
+      </tr>
+      <tr>
+        <td>WP6 canaryと運用</td>
+        <td>queue設定、doctor、運用CLI、spec/docs/pub</td>
+        <td>段階導入、rollback演習、closeout evidence</td>
+        <td>WP1〜5と全gate</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    小さなpure
+    moduleを抽出してRustのfinding_executor.rsとTypeScriptのworker.tsへ責務を増やし続けない。全体のqueue再設計は行わない。
+  </p>
+
+  <h2 id="tests">14. 必須の回帰試験</h2>
+  <table>
+    <caption>
+      合格は期待状態とDB不変条件の両方で確認する
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ID</th>
+        <th scope="col">ケース</th>
+        <th scope="col">期待結果</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>T01</td>
+        <td>能力表の全入力、providerルート変更</td>
+        <td>未対応の誤claim0、対応入力はCovering enqueueまで完了</td>
+      </tr>
+      <tr>
+        <td>T02</td>
+        <td>同一run再送、応答喪失後retry</td>
+        <td>同じ候補ID、Covering重複0、eventの二重終端0</td>
+      </tr>
+      <tr>
+        <td>T03</td>
+        <td>2件→1件→0件、順序変更、polarity反転</td>
+        <td>active候補数が一致、旧候補本文hash不変</td>
+      </tr>
+      <tr>
+        <td>T04</td>
+        <td>旧Covering／FinalizeがLLM中に世代切替</td>
+        <td>古い結果をcommitしない。lease解放とdiscard理由を残す</td>
+      </tr>
+      <tr>
+        <td>T05</td>
+        <td>候補挿入／enqueue／active切替／eventで障害注入</td>
+        <td>全rollbackまたは全commit。片側だけの成功0</td>
+      </tr>
+      <tr>
+        <td>T06</td>
+        <td>DATABASE_URL、JSON apiKey、CLI token、秘密鍵、diff</td>
+        <td>送信・snapshot・error・診断への秘密値流出0</td>
+      </tr>
+      <tr>
+        <td>T07</td>
+        <td>] explanation [、Unicode、括弧を含む文字列、切れたJSON、20不正＋1正当</td>
+        <td>panic0、不正を空成功にしない、検証前capによる欠落0</td>
+      </tr>
+      <tr>
+        <td>T08</td>
+        <td>procedure見出し順序、step数、negative procedure</td>
+        <td>prompt契約と両parser判定が一致</td>
+      </tr>
+      <tr>
+        <td>T09</td>
+        <td>role付き指示タグ、長い行中央、長文中央、最後の検証結果</td>
+        <td>指示混入除去、必要window到達、未読の0件確定0</td>
+      </tr>
+      <tr>
+        <td>T10</td>
+        <td>短い好み、120文字超の好み、build succeededのみ、diff中心</td>
+        <td>有用source通過、経路判定一致、二重加点なし</td>
+      </tr>
+      <tr>
+        <td>T11</td>
+        <td>source編集・削除、snapshot期限切れ</td>
+        <td>同runはsnapshot固定、snapshot欠落時は理由付き停止</td>
+      </tr>
+      <tr>
+        <td>T12</td>
+        <td>旧DB、新規DB、migration再実行、backup restore</td>
+        <td>IDと本文保存、FK整合、繰り返し安全、復元後読み出し可能</td>
+      </tr>
+      <tr>
+        <td>T13</td>
+        <td>全直接producer、legacy取り込み、security batch、identity補完</td>
+        <td>run欠落0、trusted identity変化0</td>
+      </tr>
+      <tr>
+        <td>T14</td>
+        <td>403／429／5xx／timeout／stream切断／終端理由unknown</td>
+        <td>意味的棄却と区別、bounded retry、費用二重計上なし</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2 id="verification">15. 検証コマンドと成果物</h2>
+  <p>
+    以下は実装時に実行する。新規テスト名は計画上の名前であり、現在存在するコマンドと混同しない。
+  </p>
+  <pre><code>cargo test -p context-stilld finding_executor
+cargo test -p context-stilld queue_lifecycle
+cargo test -p context-stilld sqlite_writer
+bunx vitest run test/find-candidate.test.ts test/find-candidate-vibe-memory-filter.test.ts test/vibe-finding-eligibility.test.ts test/finding-codex-escalation.test.ts
+bun run test:sqlite-runtime
+bun run test:integration
+bun run typecheck
+cargo clippy --workspace --all-targets -- -D warnings
+bun run system-context:build
+bun run system-context:check
+bun run system-context:boundary
+bun run spec:fix
+bun run spec:check</code></pre>
+  <p>
+    WPごとに関連targeted testsを先に実行し、完了前に変更対象に対応する全gateを実行する。
+    test:integrationは専用PostgreSQLの接続先を確認して実行し、本番DBへmigrationを流さない。
+    新規のcross-language fixture runner、世代競合integration、migration
+    replay、品質比較runnerの実行方法を各PRに記載する。 証拠にはcommitとdirty-file
+    hash、設定、seed、fixture版、provider/model、実行コマンド、exit code、結果JSONを残す。
+    前回レビューの58テスト成功は基準情報であり、今回の実装が通った証拠として流用しない。
+  </p>
+
+  <h3 id="planned-test-entrypoints">15.1 追加するテストの入口と証拠ファイル</h3>
+  <p>
+    WP0／WP2／WP5で以下を新設する。実装前の本書作成時点では未実行・未存在であり、現行テスト名ではない。
+  </p>
+  <pre><code>cargo test -p context-stilld finding_v2
+bunx vitest run test/finding-v2-contract.test.ts test/finding-v2-selector.test.ts
+bun test test/finding-v2-sqlite.bun.ts
+CONTEXT_STILL_RUN_DB_TESTS=1 bun test test/finding-v2.integration.test.ts
+bun scripts/verify-finding-v2.mjs --fixtures test/fixtures/finding-v2 --output &lt;evidence-dir&gt;
+bun scripts/evaluate-finding-v2.mjs --manifest &lt;dataset-manifest&gt; --output &lt;evidence-dir&gt;</code></pre>
+  <p>
+    integrationは既存test:integrationと同じ専用DB初期化を前提とし、DATABASE_URLを明示したfixture
+    DBでだけ実行する。
+    verify-finding-v2はRust／TSの正規化JSON比較、migration前後不変条件、race結果を集約し、1件でも不一致なら非0で終了する。
+    quality
+    runnerは初期値dry-run、外部providerを使う場合のみ明示オプションを要求し、固定manifestのbudgetを超えない。
+  </p>
+  <p>
+    evidence-dirにはmanifest.json（コード・設定・dataset・prompt各hash）、contract-results.json、migration-results.json、race-results.json、quality-results.json、rollout-events.jsonを置く。
+    quality-resultsはversion、sourceCount、usefulSourceCount、candidateCount、precision、recall、confidenceIntervals、perStratum、tokens、latency、gateResultsを必須にし、未測定はnullとreasonで記録する。
+    migration-resultsはbefore/afterのID・hash・FK・quarantine件数を含む。race-resultsはcommit順とactive世代、Knowledge新規行数を含む。
+    機械検証だけでなく人手labelの作成者と判断不一致の解消履歴も保存する。
+  </p>
+
+  <h2 id="quality">16. 抽出品質の比較</h2>
+  <p>
+    同じsource集合で旧版と新版を比較する。通過sourceだけでなく旧selectorが落としたsourceも対象にする。
+    session単位で開発用とholdoutを分離し、同じ会話の別chunkが両方に混入しないようにする。
+    7層は継続的な好み、原因・修正・検証、否定された方針、diff中心、単発報告、boilerplate、長文とする。
+    人手の正解には知識単位、根拠範囲、polarity、適用条件、候補化不要の理由を含める。
+  </p>
+  <p>
+    入口での有用source通過率、候補の根拠適合率、有用知識単位の回収率、重複率、採用候補あたりtokenと遅延を集計する。
+    parser受理率を知識品質と同一視しない。Findingが正常でもCoveringの独立した不具合で棄却される可能性があるため、Finding単体評価と下流採用率を別に報告する。
+  </p>
+  <h3 id="quality-gate">16.1 比較集合と数値gate</h3>
+  <p>
+    初期評価集合は420
+    source、各層60件を目安とする。主たる層を1つ割り当て、210件を開発用、210件を封印holdoutとする。
+    session／source内容hashを跨いだ重複を除去し、分割後も各層30件以上、holdoutの有用source100件以上を確保する。不足時はsession単位で追加収集する。
+    これは本計画の評価設計値であり、収集・ラベル付け済みの件数ではない。
+    人手のreviewerがモデル名を隠した出力を採点し、曖昧例と少なくとも20%の例は二人目が照合する。reviewer確保前は本番品質gate未達とする。
+  </p>
+  <table>
+    <caption>
+      WP5の初期合格基準。実装開始時に基準値と併記し、結果を見て緩めない
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">指標</th>
+        <th scope="col">gate</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>F1〜F7の決定的fixture</td>
+        <td>すべて合格。秘密値流出・panic・stale commit・誤claimは0</td>
+      </tr>
+      <tr>
+        <td>入口の有用source通過率</td>
+        <td>点推定95%以上。好み／短文の必須fixtureは100%</td>
+      </tr>
+      <tr>
+        <td>候補の根拠適合率</td>
+        <td>点推定95%以上、session bootstrapの95%区間下限90%以上</td>
+      </tr>
+      <tr>
+        <td>知識単位の回収率</td>
+        <td>旧版比の点推定が非負、差の95%区間下限が−2 percentage points以上</td>
+      </tr>
+      <tr>
+        <td>層別回収率</td>
+        <td>各層で旧版比−5 percentage points未満の悪化なし。小標本は合格扱いせず追加採取</td>
+      </tr>
+      <tr>
+        <td>効率</td>
+        <td>採用候補あたりtokenが旧版の1.25倍以下、同負荷でrun p95時間が1.5倍以下</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    sessionをclusterとしてseed固定で10,000回のpaired bootstrapを行い、両版に同じsourceを対応させる。
+    APIモデルは同一versionと設定を固定し、非決定的な経路は各sourceで3回実行してsession内へまとめる。独立標本として水増ししない。
+    候補数0ならprecisionは未定義として扱い、recallとvalid_empty内訳を必ず確認する。旧版採用数0の費用比は未定義として、絶対予算を満たしたうえで別途判断する。
+    失敗したholdoutを見て調整した場合、その集合は開発用に移し、新しいsessionのholdoutで再試験する。
+    基準値未測定またはCIが広すぎる場合は未合格であり、自己評価95点を代替証拠にしない。
+  </p>
+
+  <h2 id="budgets">17. 費用とリソースの上限</h2>
+  <p>
+    初期値は秘匿済みsnapshot最大1MiB、window最大6,000 Unicode scalar、overlap400
+    scalar、通常run最大8 windows、管理された再開で最大64 windows。 outputは1要求4,000
+    tokens、run候補は最大100件。上限到達をsilent
+    truncateにせずpaused/budget_exceededとし、旧active世代を保つ。
+    形式修復はwindowあたり1回。出力途切れによるwindow分割も同じ総要求予算に含める。
+    これらは初期提案値で、実測済み最適値ではない。
+  </p>
+  <p>
+    1tickでは原則1windowを実行してcheckpointする。既存provider
+    lease、heartbeat、backoffを維持し、Findingによる他queueの長時間占有を避ける。 source
+    fetch、LLM、embeddingをSQLite writer内で実行しない。
+    計測する項目はwriter占有時間、runの最大RSS、queue待ち時間、input/output
+    token、再要求数、snapshot容量。
+  </p>
+  <h3 id="budget-accounting">17.1 予算計上と継続実行</h3>
+  <p>
+    run manifestへmaxRequests、maxInputTokens、maxOutputTokens、maxWallSecondsを固定する。
+    通常runの初期値は総request16回、input128,000 tokens、output64,000 tokens、外部処理累計1,800秒。
+    transport retry、形式修復、分割、Codex escalation、shadow評価もそれぞれのrun予算へ計上する。
+    送信前にrequest予約をcheckpointへ保存し、応答が失われても予約分を未課金として戻さない。usage欠落は送信見積りとoutput上限で保守的に計上する。
+  </p>
+  <p>
+    max64
+    windowsへの再開は通常値を暗黙に拡大せず、管理操作で指定した新予算と理由をrun監査へ追記する。
+    上限変更がない自動再試行でbudget_exceededを解除しない。
+    未完windowが残る正常なcheckpointはqueueをpendingへ戻し、provider
+    leaseを解放し、next_run_atを1秒後にする。
+    これは障害retryではないのでattempt_countを増やさず、providerAttemptsとwindowAttemptsを別に持つ。
+  </p>
+  <p>
+    routeのモデルcontext上限からsystem prompt、出力予約、tool
+    envelopeを引いた入力容量でwindowをさらに縮める。 Unicode
+    scalar数をモデルtoken数とみなさない。既存の空白tokenizerをcontext容量保証へ流用しない。
+    context上限未登録のtargetはqualificationで上限を確定するまでcanaryのみに留める。
+    continuationが他queueを押しのけないよう既存schedulerのlane／優先度を維持し、混合負荷試験でEpisode／Covering待ち時間p95が旧版比1.25倍以下であることをgateにする。
+  </p>
+
+  <p>
+    snapshot用領域は初期総量4GiBを上限とし、DBを置くvolumeの空き容量が1GiB未満なら新規snapshot予約を停止する。
+    これはdisk全体の利用制限ではなくFinding追加保存分の上限。上限時はpaused/snapshot_capacityとして既存activeを保持し、必要なsnapshotを勝手に削除しない。
+    実測後の変更はruntime設定とmanifestへ残す。writer時間やRSSの絶対値はWP0で採取し、導入前にp95と最大値をevidenceへ固定する。
+  </p>
+
+  <h2 id="rollout">18. 導入、停止、復旧</h2>
+  <p>
+    新規のfinding-v2 modeはoff／shadow／canary／onを予定する。
+    shadowは別runに結果を保存するだけでactive世代やCoveringを変更しない。 canaryはDB識別子と許可job
+    IDに結び付け、限定した入力でgeneration publishを有効にする。
+    schema、consumer、producer、selectorの順に有効化する。
+  </p>
+  <p>
+    generation違いのKnowledge新規保存、候補本文hash変化、秘密値fixture通過、panic、未対応誤claimのどれか1件でcanaryを停止する。
+    modeをoffへ戻しても世代検証と不変候補保存は無効にしない。新schemaのまま動く直前の互換binaryへ戻すことを第一選択とする。
+    Evidence／Knowledgeを削除して旧候補へ合わせるrollbackは行わない。
+  </p>
+  <h3 id="mode-semantics">18.1 modeの意味と段階導入</h3>
+  <p>
+    modeは入力window／selectorの新方針を制御する機能flagであり、schemaや保存安全性を切り替えるflagではない。
+    offでもWP1の安全修正とWP2〜3の世代検証を使う。v1の中央削除やparserへの無条件復帰はしない。
+    shadow runは別の評価領域に保存し、通常finding_extraction_runsのactive候補にできない。source
+    hashとmanifestで通常runへ比較リンクだけを付ける。
+  </p>
+  <ol>
+    <li>
+      事前：専用DBでmigration、全fixture、競合、復旧を合格。全workerが世代対応していることをdoctorで確認する。
+    </li>
+    <li>
+      shadow：各対応source種別を含む100件以上で型付きoutcomeとsource
+      coverageを照合する。提供済み候補はLLM呼出0も確認する。
+    </li>
+    <li>canary第1段階：DBに紐づいた10 job IDでpublish。24時間かつ10件完了を観測する。</li>
+    <li>
+      canary第2段階：100 job
+      IDへ拡大。48時間かつ100件完了、全対応種別の通過、p95費用／待ち時間gateを確認する。
+    </li>
+    <li>
+      on：holdoutと運用gateを満たしてから拡大する。低流量で必要件数が未達なら観測期間を延長し、時間経過だけでは昇格しない。
+    </li>
+  </ol>
+  <p>
+    停止時は新規Finding claimを止め、run/window checkpointとactive
+    pointerを保持し、旧in-flight結果をepoch／世代で拒否する。
+    修復した互換binaryで同じsnapshotから未完runを再開する。 旧schemaへ戻すbackup
+    restoreは最終手段であり、DB全体のwriter停止、バックアップ以降の他domainを含む差分manifestと再適用手順、別ディレクトリへの復元検証を必須とする。
+    差分を再適用できない場合は破壊的restoreを実行せず、書き込み停止を維持してforward fixする。
+  </p>
+
+  <h2 id="compatibility">19. 周辺作業との境界</h2>
+  <p>
+    <a href="covering-logic-evaluation.html">Covering評価</a>の採否・identity・重複判定は独立課題。
+    本計画が変更するCovering／Finalizeは世代とfingerprintの検証、snapshot参照の受け渡しに限定する。
+    shared renderer／readerの抽出は既存Covering
+    fixtureの出力一致を確認し、Findingの都合で既存採否を変えない。
+    context-compile、Episode管理、Curationの並行変更は最新差分を再確認して統合し、他のタスクへ無断でメッセージを送らない。
+  </p>
+
+  <h2 id="readiness">20. 計画レビュー</h2>
+  <p>
+    <a href="assets/finding-v2-plan-2026-09-06/review-rubric.json">固定した採点基準</a
+    >で20項目を各5点、計100点として自己レビューする。
+    95点以上かつveto該当0件を完成条件とする。既知P1の未対処、未対応入力の放置、旧Evidenceによる変更本文の評価、履歴を壊すmigration、競合writer、自己評価と実精度の混同があれば点数に関係なく不合格。
+    revisionごとの指摘、修正、点数、本文hashをreview historyへ保存する。
+  </p>
+  <h3 id="review-result">20.1 自己レビューの結果</h3>
+  <table>
+    <caption>
+      採点基準を固定したまま行った3回のレビュー
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">版</th>
+        <th scope="col">点数</th>
+        <th scope="col">不足と修正</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>r1</td>
+        <td>78 / 100</td>
+        <td>
+          LLM不要経路の排他、座標、競合commit、品質数値gate、非破壊rollback、総予算が不足。5.1、8.1、12.1、16.1、17.1、18.1で補完
+        </td>
+      </tr>
+      <tr>
+        <td>r2</td>
+        <td>93 / 100</td>
+        <td>
+          終端後の重複再抽出要求、legacy分類、修復応答の正本、selector互換、新規検証コマンド、snapshot期限切れの扱いを具体化
+        </td>
+      </tr>
+      <tr>
+        <td>r3</td>
+        <td>96 / 100</td>
+        <td>
+          migrationの制約適用順、構造破損時の停止、SQLite writer経路、容量上限まで照合。veto該当0件
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    最終採点は20項目中16項目が5点、4項目が4点。
+    減点はC06移行（実DBの不整合分布未確認）、C10selector（自然言語signalの校正未実施）、C16品質評価（人手label未作成）、C17性能（実測基準値未採取）に各1点とした。
+    これらを実装開始・展開時のgateへ明示的に残し、計画上の95点達成で省略しない。
+    <a href="assets/finding-v2-plan-2026-09-06/review-history.json">採点・指摘・修正履歴</a
+    >を参照できる。 本書作成では実装コードと本番データを変更せず、計画とレビュー証拠を追加した。
+  </p>
+</article>

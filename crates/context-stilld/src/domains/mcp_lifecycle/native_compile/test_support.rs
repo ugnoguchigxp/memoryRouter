@@ -310,34 +310,18 @@ pub(super) fn spawn_composer_mock(
     let used_ids = used_ids.to_vec();
     let handle = std::thread::spawn(move || {
         let mut requests = Vec::new();
-        for index in 0..2 {
+        for _ in 0..1 {
             let (mut stream, _) = listener.accept().unwrap();
             requests.push(read_http_request(&mut stream));
-            let content = if index == 0 {
-                json!({
-                    "headings": {
-                        "focus": "実装フォーカス",
-                        "steps": "実装手順",
-                        "verification": "検証観点",
-                        "avoid": "注意点"
-                    },
-                    "includeAvoidSection": false,
-                    "responseStyle": "narrative",
-                    "styleConfidence": 0.9,
-                    "candidateSufficiency": "enough"
+            let content = json!({
+                    "markdown": format!("## 実装フォーカス\n- {goal}\n\n## 実装手順\n1. fixture\n\n## 検証観点\n- ids"),
+                    "usedKnowledge": used_ids
+                        .iter()
+                        .map(|id| json!({"id": id, "confidence": 0.8}))
+                        .collect::<Vec<_>>(),
+                    "usedEpisodes": []
                 })
-                .to_string()
-            } else {
-                json!({
-                        "markdown": format!("## 実装フォーカス\n- {goal}\n\n## 実装手順\n1. fixture\n\n## 検証観点\n- ids"),
-                        "usedKnowledge": used_ids
-                            .iter()
-                            .map(|id| json!({"id": id, "confidence": 0.8}))
-                            .collect::<Vec<_>>(),
-                        "usedEpisodes": []
-                    })
-                    .to_string()
-            };
+                .to_string();
             let response_body = json!({
                 "choices": [{"message": {"content": content}}]
             })

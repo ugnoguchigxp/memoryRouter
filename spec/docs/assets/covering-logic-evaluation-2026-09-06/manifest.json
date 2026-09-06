@@ -1,0 +1,22 @@
+{
+  "snapshot": "/var/folders/mx/jbv8qfwd52z14q0mby_273lhlp5gd2/T/contextstill-covering-review-n8a1qwlf",
+  "head": "8e0b050e5a00aa991fa503663e80729f25fd7c5b",
+  "files": {
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/applicability.rs": "e599b7e177d509e8fe1efbdc33f5b973b14461793e653f552707b04cecf5f0f3",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/deduplication.rs": "cce0bf24da2d6fe8db45a66db6cd139ad2a47e65e25e4ed2bc31d348619ee9ea",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/execution.rs": "b6053f007d0df1783e0ade405de84ee449dab677911e6f9ee7fdcb7a17a15cba",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/external_evidence.rs": "f98d95baf13060dbf6b990dcbf458dfc734a3a77b1e62a170fe1e90562a01a82",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/external_fetch.rs": "b5ba75c918a9bfd56ba150b7eca089c1dacbbc972f4945e9b70998f8ab992fa9",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/heartbeat.rs": "c573cd62bf0ec3945b37a6984828f8fcb9089ab1039decff619c1111d0577f16",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/helpers.rs": "a2ad44782e790c9cdd1bfa91ac02b33b05d45fcfe0fdd9487fee11beda831c99",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/mod.rs": "019426d4548fb88651a4c7ea2b5cf8ea4295d17f207f00757b2038bc06c86c8d",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/negative_response.rs": "4a6414794f2d31f0ef2d9429a6c5c2df4bdcd9e8d3cc9548f6716feaaf6179d1",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/persistence.rs": "1cb0eb56a2e7d6acdeb9dc17fd391581220152cd65f66b3c394d130291953e3a",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/positive_response.rs": "be48f8f99a187783be4b4e36254e369b28445198bc7638fce4b6decbf1b5bbcd",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/provider.rs": "815312b17a6cd7f348fac6317c97db31a9e0ae5f01796b2be34840fde0565ae0",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/source.rs": "b6c9729a8e364b60fe5771336c4aeb56fd91fa4d8dc4c23a618ccff795a1d941",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/tests.rs": "8241da2fc0a766fd9d976a4d2d44951b0035e57210a04ef2d7a5ad8a77985149",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/types.rs": "5a496d763672db9eef261e94eeba1c820bc58c6450f160e8ee050655f02df511"
+  },
+  "probeSemantics": "Passing tests reproduce current behavior; they are not acceptance tests."
+}

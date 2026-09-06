@@ -1,0 +1,126 @@
+{
+  "rubric": "rubric.json",
+  "rounds": [
+    {
+      "revision": "v1",
+      "score": 72,
+      "scores": [
+        4,
+        5,
+        3,
+        4,
+        4,
+        4,
+        3,
+        4,
+        3,
+        3,
+        4,
+        4,
+        3,
+        3,
+        3,
+        3,
+        4,
+        4,
+        4,
+        3
+      ],
+      "snapshot": "plan-v1.html.snapshot",
+      "findings": [
+        "SystemContext本文とschemaが未添付",
+        "Rustでcatalogを使う実装方式が未確定",
+        "長goal・候補上限とprotected overflowが曖昧",
+        "tokenizer不明時の強制上限が未定義",
+        "Writer deadline後のcommitと再送が曖昧",
+        "索引backfillの更新競合とrollback binaryの具体策不足",
+        "TS内側transport・旧引数対応表が未確定",
+        "holdoutのラベル作成と失敗分母・予算が不足"
+      ]
+    },
+    {
+      "revision": "v2",
+      "score": 92,
+      "scores": [
+        5,
+        5,
+        4,
+        4,
+        5,
+        5,
+        5,
+        5,
+        4,
+        4,
+        5,
+        5,
+        4,
+        5,
+        4,
+        4,
+        5,
+        5,
+        4,
+        5
+      ],
+      "snapshot": "plan-v2.html.snapshot",
+      "improvements": [
+        "日英TOMLとstrict schemaを添付しisolated build成功",
+        "静的exportとnative hash検証を採用",
+        "query bounds/protected overflow/whole-record保持を具体化",
+        "byte capと注記予約、cancel/commit境界を定義",
+        "trigger+chunk+mutation sequenceとcompatible binaryを指定",
+        "内部endpoint認証・DB binding・旧引数対応表を固定",
+        "holdout凍結・分母・family統計・call上限を追加"
+      ],
+      "remaining": [
+        "live engine設定のfoundationとの条件表をさらに固定",
+        "unitごとの実装ファイルと全9指摘のテスト対応が必要",
+        "prompt schemaとruntime semantic validatorの実例検証が必要",
+        "planned integrationコマンドのDB隔離手順を具体化"
+      ]
+    },
+    {
+      "revision": "v3",
+      "score": 96,
+      "scores": [
+        5,
+        5,
+        4,
+        4,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        5,
+        4,
+        4,
+        5,
+        5,
+        5,
+        5
+      ],
+      "snapshot": "plan-v3.html.snapshot",
+      "improvements": [
+        "U0-U8変更先とF01-F09期待結果を1対1対応",
+        "新旧modeの全組合せとshadow outboundの境界を確定",
+        "semantic design validator13ケース・hash検証・SQL probe6ケース成功",
+        "DB integrationの隔離条件と未実施範囲を明記",
+        "source refsのscope再検証・snapshot判定時点・最終status優先順を補足"
+      ],
+      "hardBlockersRemaining": [],
+      "residualDeductions": {
+        "C03": "日本語・長goal検索の閾値はdevelopmentデータで校正予定。",
+        "C04": "RRFとprotected優先のノイズ/取得率tradeoffは実コーパス比較が残る。",
+        "C15": "独立holdoutの人手ラベル確定と実モデル評価は実装工程。",
+        "C16": "本番規模のp95と同時実行は未測定。"
+      },
+      "qualification": "Self-reviewed implementation-plan readiness, not production effectiveness."
+    }
+  ]
+}

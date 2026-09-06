@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "decisions": [
+    {
+      "candidateId": "k1",
+      "verdict": "include",
+      "reasonCode": "direct",
+      "goalAnchors": [
+        "バックアップ"
+      ],
+      "evidenceGroupIds": [
+        "k1:whole"
+      ]
+    },
+    {
+      "candidateId": "k2",
+      "verdict": "conditional",
+      "reasonCode": "prerequisite",
+      "goalAnchors": [
+        "バックアップ"
+      ],
+      "evidenceGroupIds": [
+        "k2:whole"
+      ]
+    }
+  ],
+  "orderedOptionalIds": [
+    "k1"
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "date": "2026-09-06",
+  "head": "8e0b050e5a00aa991fa503663e80729f25fd7c5b",
+  "scope": "Working tree review; unrelated existing changes retained; no production code changes",
+  "sourceSha256": {
+    "crates/context-stilld/src/domains/context_compile/runtime.rs": "01297bbb9a75eded0796feae1c49990bd313aa715292e0dfd961f2a68282d099",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_common.rs": "fdd19bf607f080c122ab1658a14a72cf1417f15e75fe025a334eff999ef0c6d0",
+    "crates/context-stilld/src/domains/mcp_lifecycle/repository_scope.rs": "5f9a32417bf292220d1dab9e022c146874b45cdd93178e3ec52a7970fa7985fb",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/mod.rs": "8b5c6a17bec9d03fbd3b834b82c4c579579f14da5569139670efa72f56ca6c08",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/retrieval.rs": "48184b743f0ca8bb849cb992cd60c66022a575db32dd8d7efe7636b1b2035554",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/composition.rs": "cbea2dc4f557931a5d2dd2d4bff39bd6cb30a93ae2cf19c15740e2fe66211127",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/prompts.rs": "1c87cd00e7bd496a7fd8dcadf93429da260cb4087a3ffe19dfff623d60fd2003",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/providers.rs": "9c36c45b7e0428059fc9e24a15e7cc55731f233e2d0b16870798515350da6a34",
+    "crates/context-stilld/src/domains/mcp_lifecycle/native_compile/tests.rs": "fe6e609b04e46ef257b116ce97e9a05e45c790a2f2870f88b268d93e4d24deb5",
+    "src/modules/context-compiler/context-compiler.service.ts": "949742ec3e77a6f494237aefcdba151d53b834793c21349e6069b8ab0f13220f",
+    "src/modules/context-compiler/duplicate-suppression.service.ts": "78da709d08066550d90928038c26ad9f45ade8d65d3de8905468a13bd62f9f59",
+    "src/modules/context-compiler/token-budget.ts": "e912b79b6147c04906dc5c7af16720a9471e6faae23e7d13871c98e2287b978a",
+    "src/modules/context-compiler/compiler-contracts.ts": "f38fd5d1d9232634e07c52dfe7283117fe79a4f9153d4efd42c6546a186b7eed"
+  },
+  "tests": [
+    {
+      "command": "cargo test -p context-stilld native_compile -- --test-threads=2",
+      "passed": 20
+    },
+    {
+      "command": "cargo test -p context-stilld foundation -- --test-threads=2",
+      "passed": 5,
+      "overlapWithNativeCompile": 1
+    },
+    {
+      "command": "bunx vitest run test/context-compiler*.test.ts test/context-compile*.test.ts test/context-response-composer.service.test.ts test/query-context.test.ts test/compile-project-identity.test.ts --exclude 'test/*.integration.test.ts'",
+      "passed": 147,
+      "files": 14
+    },
+    {
+      "command": "bunx vitest run test/duplicate-suppression.service.test.ts test/context-eval*.test.ts test/cli.eval-context.test.ts test/ranking.service.test.ts --exclude 'test/*.integration.test.ts'",
+      "passed": 30,
+      "files": 6
+    },
+    {
+      "command": "cargo test -p context-stilld review_probe -- --nocapture --test-threads=1",
+      "passed": 4,
+      "kind": "temporary characterization probes assert current problematic behavior; removed and original source hash checked"
+    },
+    {
+      "command": "bun /tmp/context-compile-review-20260906/probes.ts",
+      "passed": 2,
+      "kind": "characterization cases assert current problematic behavior"
+    }
+  ],
+  "contextCompileRunId": "00000000-0000-0000-18d2-bf710a39a88e",
+  "compileEvalId": "00000000-0000-0000-18d2-bfa0a8b5e9f8",
+  "limitations": [
+    "No new external-model benchmark or production-load benchmark",
+    "No full integration suite",
+    "Running daemon mode not inspected; legacy is the source default when environment is absent"
+  ],
+  "documentChecks": {
+    "bun run spec:fix": "passed; only the new review HTML was formatted",
+    "bun run spec:check": "passed"
+  }
+}

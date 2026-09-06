@@ -1,0 +1,313 @@
+<article lang="ja">
+  <h1>context compileの多角評価：検索・情報保持・運用信頼性</h1>
+  <p>
+    評価日：2026年9月6日。対象は作業ツリーのRust native
+    MCPとTypeScriptのcompile実装。総合評価は「分離・保存の基盤には強みがあるが、関連情報を取得し、条件を落とさず返す保証には不足がある」。見出しの整った回答や既存テストの合格だけで、実務上の有効性は判断できない。
+  </p>
+  <p>
+    この文書は現行コードの評価であり、新たに混入した回帰だけを扱うレビューではない。製品コード・設定は変更していない。既存の未コミット変更を維持し、再現用の一時Rustテストは実行後に削除して元ファイルのSHA-256一致を確認した。検証は隔離fixtureとローカルmockを使用した。
+  </p>
+  <h2>対象経路と評価の前提</h2>
+  <table>
+    <caption>
+      同じcompileでも経路により適用されるロジックが異なる
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">経路</th>
+        <th scope="col">主な処理</th>
+        <th scope="col">注意点</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Rust MCP：legacy</td>
+        <td>
+          scope・facetで絞る→文字列一致と履歴値で順位付け→Knowledge 8件・Episode
+          3件→planner・composer→一括保存
+        </td>
+        <td>環境変数未指定時のコード既定値。検索と外部生成をWriterジョブ内で実行する。</td>
+      </tr>
+      <tr>
+        <td>Rust MCP：split_legacy_rank / split_shadow_rank</td>
+        <td>読取準備→外部生成→短いWriter保存。shadowではFoundation順位も記録</td>
+        <td>返す候補はlegacy順位。Writer分離と検索品質改善を同一視しない。</td>
+      </tr>
+      <tr>
+        <td>Rust MCP：foundation</td>
+        <td>文字列一致がある候補を優先し、履歴値・重要度は同点時に使用</td>
+        <td>日本語の分割と文字列一致自体の限界は残る。</td>
+      </tr>
+      <tr>
+        <td>TypeScript CLI/API等</td>
+        <td>
+          正負Knowledge・Source・Episodeの並行検索→重み付け→重複抑制→agentic
+          refine→セクション予算→planner・composer
+        </td>
+        <td>Rustと意味論が完全一致していない。TSテストの成功をnative MCPの保証には使えない。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    今回のMCP呼出しで使われた稼働daemonのモードは確認していない。「既定legacy」はソースの初期値を指す。根拠：<code>crates/context-stilld/src/domains/context_compile/runtime.rs</code>、<code>native_compile/mod.rs</code>、<code>src/cli/compile.ts</code>、<code>api/modules/context-compiler/context-compiler.repository.ts</code>。
+  </p>
+  <h2>観点別の評価</h2>
+  <table>
+    <caption>
+      確認できた強みと残る不足
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">観点</th>
+        <th scope="col">評価</th>
+        <th scope="col">根拠と限界</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>検索・ランキング</td>
+        <td>legacyは改善優先、Foundationは前進</td>
+        <td>
+          無関係な高履歴8件が正解1件を押し出す再現に対し、Foundationは正解を取得。ただし日本語の言い換え、類義語、否定、重複候補の多様性は別問題。
+        </td>
+      </tr>
+      <tr>
+        <td>情報保持</td>
+        <td>生成入力は改善、fallbackは不足</td>
+        <td>
+          通常composerは本文最大1,200文字と省略表示を持つ。fallbackはrule本文を出さず、重要条件が落ちる。長文の中間部分の欠落も残る。
+        </td>
+      </tr>
+      <tr>
+        <td>repository分離</td>
+        <td>評価対象内では強い</td>
+        <td>
+          active・classified・scopeの条件を候補上限より前に適用。identityなしはglobal-only。別project・未分類・大量の非対象候補のテストが成功。request
+          hintによる選択分離であり、認証・アクセス制御の保証ではない。
+        </td>
+      </tr>
+      <tr>
+        <td>障害・保存</td>
+        <td>保存の原子性は良いが検索失敗の可視化に欠陥</td>
+        <td>
+          Rustはrun・pack・usage・identity traceをtransactionで保存し、identity
+          trace保存失敗を拒否。一方SQL検索エラーを正常な空結果として返せる。
+        </td>
+      </tr>
+      <tr>
+        <td>性能・コスト</td>
+        <td>legacyのWriter占有を優先改善</td>
+        <td>
+          既定経路は外部生成中もWriterジョブを占有。全対象行の走査と候補ごとのsource参照取得もある。今回、大規模データの負荷試験は未実施。
+        </td>
+      </tr>
+      <tr>
+        <td>安全な知識利用</td>
+        <td>禁止事項の保持に不足</td>
+        <td>
+          TSの重複抑制は構造化polarityを使わず、禁止事項を落とせる。生成プロンプトには未信頼資料の境界とEpisodeを現行truthにしない指示があるが、内容の正しさを検証する仕組みではない。
+        </td>
+      </tr>
+      <tr>
+        <td>保守性</td>
+        <td>責務分割は良いが二重実装の負担が残る</td>
+        <td>
+          retrieval・composition・providers・persistence等への分割は読みやすい。一方、既定値、fallback、候補数、負の知識、レート制限時の返答、トークン予算に経路差がある。
+        </td>
+      </tr>
+      <tr>
+        <td>評価・観測</td>
+        <td>fixture評価は整備、本番の効果証明は未完</td>
+        <td>
+          対象の既存テストは全件成功。未採点と失敗の区別、禁止ID、実HTTP
+          mock、採点ラベル非送信の検証は良い。productionのLLM試行数は実測値を捨てており、運用比較には不足。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>優先度付き指摘</h2>
+  <p>
+    P1は実務の回答品質・禁止事項・共有Writerの可用性へ直接影響するもの。P2は条件付きの誤判定、障害診断、予算と計測の不正確さ。再現済みの問題と、コードから確認した運用リスクを区別する。
+  </p>
+  <h3 id="f01">F01 / P1：legacyは関連性より履歴値を優先できる</h3>
+  <p>
+    <code>native_compile/retrieval.rs:104</code
+    >で<code>query_score + dynamic_score.round()</code>を順位と採用条件に使う。文字列一致0でもdynamic_scoreが正なら候補に残る。Knowledgeは上位8件なので、再現fixtureでは関連知識「backup
+    retention」1件が、dynamic_score=100の料理知識8件に完全に押し出された。Episodeにも<code>query_score + importance / 10</code>で同様の構造がある。
+  </p>
+  <p>
+    Foundationはこのfixtureで正解を取得した。関連性による採用条件と効用による同点処理を分ける方針は妥当。ただし昇格は日本語、独立課題、負荷、空結果率も含めて判断する。既知の問題でも、既定経路に残る限り利用者への影響は続く。
+  </p>
+  <h3 id="f02">F02 / P1：日本語の関連情報を文字列検索で取り逃がす</h3>
+  <p>
+    <code>native_common.rs:160</code
+    >のscore_textとnormalized_query_tokensは英数字以外ではなく、Unicodeの文字・数字以外で分割する。そのため「バックアップの保存期間を変更する」が1トークンとなり、「バックアップの保存期間は30日です。」への一致スコアが0だった。Foundationの<code>query_score &gt; 0</code>でも救えない。facetが同じ場合は候補に入り得るが、facet語への一致とgoalへの関連性を混同する危険がある。
+  </p>
+  <p>
+    日本語の短い名詞句・文字n-gram等を含む検索契約を定め、語尾違い、言い換え、長いgoalの後半条件をfixtureに加える。単純に採用閾値を下げるとF01のノイズを戻すため、取得率と誤採用率を同時に測る。
+  </p>
+  <h3 id="f03">F03 / P1：TS重複抑制で禁止事項を削除できる</h3>
+  <p>
+    <code>src/modules/context-compiler/duplicate-suppression.service.ts:100</code
+    >以降はtype・statusを比較するが、構造化polarityを比較しない。逆の意味の検出も本文先頭400文字と正規表現だけで行う。正負Knowledgeを合わせてこの関数へ渡すため、同じタイトル・共通の長い前文を持ち、後半で「復元確認は不要」と「復元確認前の削除は禁止」に分かれる候補を与えると、negative側がconfidence=1で重複抑制された。
+  </p>
+  <p>
+    polarityが異なる候補を統合対象から外す。条件、数値、否定、適用範囲が異なる知識を、類似度だけで同一視しない。共通前文の後ろに制約があるケースを恒久テストにする。
+  </p>
+  <h3 id="f04">F04 / P1：fallbackが本文の条件を落とし、利用済みとして記録する</h3>
+  <p>
+    <code>native_compile/composition.rs:205</code
+    >以降ではruleをタイトル中心で返す。本文が「保存期間は30日。削除前に復元確認を必須とする。」でも、生成設定なしのfallbackでは「30日」「復元」がともに消え、errorはNone、usedKnowledgeにはそのIDが残った。生成を無効にした運用とprovider失敗時に影響する。
+  </p>
+  <p>
+    fallbackにも根拠本文の条件・数値・否定を保持する出力を用意し、タイトルへの言及と本文を利用したことを区別する。通常composerの1,200文字化だけではこの経路は直らない。
+  </p>
+  <h3 id="f05">F05 / P1：legacyは外部LLM応答をWriterの中で待つ</h3>
+  <p>
+    コードで確認した運用リスク。<code>native_compile/mod.rs:109</code>でcompile全体をwith_writerへ渡し、その中で同期HTTPのplannerとcomposerを呼ぶ。<code>sqlite_writer/service.rs</code>は同じDBのWriterジョブを順番に実行するため、生成待ちが他の保存処理の待ち時間になる。transaction開始前でもWriterジョブの占有は続く。
+  </p>
+  <p>
+    HTTP
+    timeoutは呼出し単位で、providerごとに2呼出しがあり、fallback先も順番に試す。10秒設定で3経路がそれぞれtimeoutするなら、通常HTTP経路では約60秒の待ちが生じ得る。これは構造からの見積もりであり、今回測った本番遅延ではない。split経路への段階移行と遅いprovider・並行書込みfixture、compile全体のdeadlineを優先する。
+  </p>
+  <h3 id="f06">F06 / P2：日本語goalでは出力整合性チェックが素通りする</h3>
+  <p>
+    <code>native_compile/prompts.rs:329</code
+    >のlooks_goal_alignedはASCII語だけを取り出し、語がなければtrueにする。「バックアップの保存期間を変更する」に対して「料理手順：野菜を切る。」がtrueだった。生成後の受理条件なので、F02の検索失敗を最後の段階でも検出できない。ASCII語がある場合も、1語含まれるだけで十分となる。
+  </p>
+  <p>
+    同じ語があることと根拠に沿っていることを分けて検証する。少なくとも純日本語を無条件合格にせず、言語に依存しない候補利用・根拠整合の検証と誤採用fixtureを設ける。
+  </p>
+  <h3 id="f07">F07 / P2：SQL検索失敗がstatus=okのNo Contentになる</h3>
+  <p>
+    <code>native_compile/retrieval.rs:51</code
+    >ではprepare/query_mapエラーを空配列へ変換し、行エラーもflattenで捨てる。degraded_reasonsが確認するのは主にテーブル有無だけ。隔離DBでknowledge_itemsのbody列を改名してSQLエラーを起こすと、MCP本文はNo
+    Content、保存runはstatus=ok、degraded_reasons=[]だった。
+  </p>
+  <p>
+    検索関数からResultと段階別の理由を返し、正常な0件、部分読取失敗、全件検索失敗を区別する。No
+    Contentとして呼出し側に見せる場合でも、内部のstatusと原因を正しく記録する。
+  </p>
+  <h3 id="f08">F08 / P2：本番用のLLM試行数が実測ではない</h3>
+  <p>
+    コードで確認。<code>native_compile/composition.rs:43</code>でProviderCallを一時Vecへ記録して捨て、<code>native_compile/mod.rs:519</code>ではagentic_usedからlogicalCallsとproviderAttemptsを2または0にし、failovers=0、attempts=[]を保存する。全provider失敗で実際は呼出しがあっても0となり、fallback成功時の追加試行も2へ縮む。
+  </p>
+  <p>
+    実験runnerには実測収集経路がある。これをproductionのComposeResultへ渡し、失敗・fallback・usage不明をそのまま記録する。snapshotComplete=trueは保存完了を表すだけで、これらの数値が実測である保証にはならない。
+  </p>
+  <h3 id="f09">F09 / P2：TSトークン予算の上限と切詰め診断が不正確</h3>
+  <p>
+    <code>src/modules/context-compiler/token-budget.ts:110</code
+    >では最初の候補が大きい場合、タイトルとrankingReasonを差し引かずに本文だけを予算まで縮める。32トークンの予算に対して、同じ推定器で合計54となり、1件を切り詰めてもdropped=falseだった。セクション比率はrules=0.55、procedures=0.45、guardrails=0.3で合計1.3。
+  </p>
+  <p>
+    これは候補パックの予算制御の問題であり、LLMの実トークン使用量を54と測ったものではない。共通の残予算からタイトル・理由・本文を控除し、切詰めと件数減少を別々に記録する。guardrailの追加枠が意図的なら総予算とは別の契約として明示する。
+  </p>
+  <h2>性能・保守性で追加検証すべき点</h2>
+  <p>
+    Rust検索はscopeで許可された全行を取得して本文を走査する。256件・96件のcandidate
+    limitはDB走査上限ではない。Knowledgeでは選択前の各候補についてsource_refs取得SQLも実行する。データ量に伴う本文処理、メモリ保持、ソート、参照取得の増加を、1千・1万・10万件などの固定データで測り、選択後の参照取得と索引検索を検討する。安易なSQL
+    LIMITをscope・facet・関連性評価より前に入れると取得率を悪化させる。
+  </p>
+  <p>
+    Rust plannerのquery
+    hintsは現在の候補選択では利用されず、select_prompt_knowledge_candidatesのplan引数も未使用。2回の生成が品質改善にどれだけ寄与するかを、同じ候補・同じ課題でcomposer単独と比較する価値がある。ただし本評価では効果も時間短縮も未測定で、planner削除を結論にはしない。
+  </p>
+  <p>
+    機能追加より先に、RustとTSが共有すべき契約を固定する。repository分離、負の知識の保持、No
+    Contentと失敗、使用IDの意味、証拠本文の保持、予算の定義を共通fixtureで検証し、意図的な経路差は明示する。
+  </p>
+  <h2>既存の実モデル評価をどう読むか</h2>
+  <p>
+    <a href="maintainability-and-context-effectiveness-results.html">既存の効果実証レポート</a
+    >では、固定12課題で正答率が記憶なし62.5%、legacy検索47.9%、Foundation検索100%、Recall@8がlegacy
+    0%、Foundation
+    100%と報告されている。平均時間はそれぞれ1.12秒、5.07秒、6.69秒。今回の独立した小さな履歴偏重fixtureは、その失敗の仕組みと整合した。
+  </p>
+  <p>
+    これらの実モデル数値は既存レポートの引用であり、今回再実行していない。改善に使った小規模課題での100%は、未知のコード変更作業、利用者の修正時間、本番の日本語入力全体への一般化を証明しない。次は独立holdout、反復試行、検索前後の必須条件保持率、禁止事項消失率、No
+    Contentの適否、writer待ちp95、総provider試行数を合わせて測る。
+  </p>
+  <h2>検証結果と再現資料</h2>
+  <table>
+    <caption>
+      今回実行した検証
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">対象</th>
+        <th scope="col">結果</th>
+        <th scope="col">解釈</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>cargo test native_compile</td>
+        <td>20件成功</td>
+        <td>既存の分離・生成・保存・実験テスト。</td>
+      </tr>
+      <tr>
+        <td>cargo test foundation</td>
+        <td>5件成功</td>
+        <td>上記と1件重複。Rust既存テストは重複除外24件。</td>
+      </tr>
+      <tr>
+        <td>Vitest compile関連</td>
+        <td>14ファイル147件成功</td>
+        <td>サービス、契約、composer、identity等。</td>
+      </tr>
+      <tr>
+        <td>Vitest重複抑制・評価・ランキング関連</td>
+        <td>6ファイル30件成功</td>
+        <td>TS合計177件。</td>
+      </tr>
+      <tr>
+        <td>一時Rust再現プローブ</td>
+        <td>4件成功</td>
+        <td>
+          履歴偏重、日本語検索とalignment、fallback欠落、SQLエラー誤分類という現在の問題挙動をassert。
+        </td>
+      </tr>
+      <tr>
+        <td>TS再現プローブ</td>
+        <td>2ケース成功</td>
+        <td>予算超過とnegative抑制という現在の問題挙動をassert。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    再現プローブの成功は製品品質の合格を意味せず、指摘した問題が再現したことを意味する。全体integration、外部モデルによる新たな品質比較、本番負荷試験は実施していない。
+  </p>
+  <ul>
+    <li>
+      <a href="assets/context-compile-review-2026-09-06/verification.json"
+        >実行コマンド・件数・対象コードのSHA-256</a
+      >
+    </li>
+    <li>
+      <a href="assets/context-compile-review-2026-09-06/rust-probes.rs.txt">Rustプローブ</a>と<a
+        href="assets/context-compile-review-2026-09-06/rust-probes.log"
+        >実行ログ</a
+      >。native_compile/tests.rsの末尾へ一時追加して実行する形で採取した。
+    </li>
+    <li>
+      <a href="assets/context-compile-review-2026-09-06/typescript-probes.ts.txt"
+        >TypeScriptプローブ</a
+      >と<a href="assets/context-compile-review-2026-09-06/typescript-probes.log">実行ログ</a
+      >。実行環境に合わせてimport先のworkspace rootを置換して利用する。
+    </li>
+  </ul>
+  <h2>推奨する着手順</h2>
+  <ol>
+    <li>
+      負の知識と必須条件の消失を防ぐ。F03・F04を恒久fixtureにし、検索成功後の情報破壊を先に止める。
+    </li>
+    <li>F01・F02・F06の検索と受理条件を改善し、日本語を含む独立課題で誤採用と取り逃がしを測る。</li>
+    <li>F07・F08を直して失敗・試行数を正しく観測し、F05のsplit経路を段階的に検証する。</li>
+    <li>F09の予算契約を整理し、候補件数増加とplannerの費用対効果を測定する。</li>
+  </ol>
+  <p>
+    作業用MCP利用：context_compile 1回、compile_eval
+    1回。対象runIdは<code>00000000-0000-0000-18d2-bf710a39a88e</code>。返されたcontextは一般的な評価手順が中心であり、現行コードの具体的根拠が不足していたためpartialとして記録した。
+  </p>
+</article>

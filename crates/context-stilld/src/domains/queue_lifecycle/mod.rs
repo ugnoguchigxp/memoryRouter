@@ -1,6 +1,8 @@
 mod claim;
 mod common;
 mod covering_executor;
+mod curation_executor;
+mod curation_repository;
 mod dynamic_provider;
 mod episode_executor;
 mod events;

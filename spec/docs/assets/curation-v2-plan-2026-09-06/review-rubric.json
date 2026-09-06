@@ -1,0 +1,29 @@
+{
+  "version": "curation-plan-readiness-1",
+  "fixedBeforeScoring": true,
+  "scope": "Single-author design-readiness review, not measured model quality or independent review.",
+  "anchors": {"0":"Absent", "1":"Intent only", "2":"Approach identified; essential contract absent", "3":"Contract identified; failure handling or acceptance incomplete", "4":"Implementable contract, owner and evidence; one bounded uncertainty", "5":"Contract, owner, adverse case, measurable acceptance and dependencies explicit"},
+  "hardVetoes": ["Known destructive gate unaddressed", "Scope or condition preservation unspecified", "Atomicity or stale handling absent", "Self-score replaces empirical quality", "Full active queue coverage absent", "Conflicting authoritative writers"],
+  "criteria": [
+    {"id":"C01","name":"Goal and non-goals","anchor":"goal"},
+    {"id":"C02","name":"Baseline failures traced to closure","anchor":"traceability"},
+    {"id":"C03","name":"Repository and applicability semantics","anchor":"scope"},
+    {"id":"C04","name":"Source and contextual preservation","anchor":"evidence"},
+    {"id":"C05","name":"Useful actions and survivor direction","anchor":"schema"},
+    {"id":"C06","name":"Grounded verification and gate","anchor":"architecture"},
+    {"id":"C07","name":"Managed SystemContext and boundaries","anchor":"system-context"},
+    {"id":"C08","name":"Strict schema and examples","anchor":"schema"},
+    {"id":"C09","name":"Candidate recall and bounded retrieval","anchor":"retrieval-contract"},
+    {"id":"C10","name":"Queue coverage, revisions and convergence","anchor":"queue-contract"},
+    {"id":"C11","name":"Atomicity, concurrency and migration","anchor":"transaction-contract"},
+    {"id":"C12","name":"Lineage, indexes and rollback","anchor":"transaction-contract"},
+    {"id":"C13","name":"Adversarial and metamorphic regression","anchor":"traceability"},
+    {"id":"C14","name":"Gold, holdout and quality statistics","anchor":"quality-gates"},
+    {"id":"C15","name":"Provider lifecycle and qualification","anchor":"provider-contract"},
+    {"id":"C16","name":"Autonomous rollout and recovery","anchor":"rollout-contract"},
+    {"id":"C17","name":"Cost, latency and capacity","anchor":"performance"},
+    {"id":"C18","name":"Work packages and ownership","anchor":"work"},
+    {"id":"C19","name":"Compatibility and reproducibility","anchor":"reproducibility"},
+    {"id":"C20","name":"Revision evidence and residual uncertainty","anchor":"readiness"}
+  ]
+}

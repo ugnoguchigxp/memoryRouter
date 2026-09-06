@@ -1,5 +1,11 @@
-import { evaluateVibeFindingEligibility } from "./vibe-finding-eligibility.js";
+import {
+  evaluateVibeFindingEligibility,
+  findingSelectorV2UncertainLimit,
+  type VibeFindingSelectorVersion,
+} from "./vibe-finding-eligibility.js";
 import { isCodexFindingEscalationMetadata } from "./self-ingestion-guard.js";
+
+export type { VibeFindingSelectorVersion } from "./vibe-finding-eligibility.js";
 
 export type VibeFindingEnqueueMode = "dry-run" | "write";
 export type VibeFindingEnqueueSource = "codex_logs" | "antigravity_logs" | "claude_logs" | "all";
@@ -10,6 +16,7 @@ export type VibeFindingEnqueueOptions = {
   sinceDays: number;
   limit: number;
   minScore: number;
+  selectorVersion: VibeFindingSelectorVersion;
   scanLimit?: number;
 };
 
@@ -31,6 +38,8 @@ export type VibeFindingEnqueueReportItem = {
   score: number;
   signals: string[];
   rejectReasons: string[];
+  reasonCodes: string[];
+  selectorVersion: VibeFindingSelectorVersion;
   findingJobId?: string;
 };
 
@@ -40,6 +49,7 @@ export type VibeFindingEnqueueReport = {
   sinceDays: number;
   limit: number;
   minScore: number;
+  selectorVersion: VibeFindingSelectorVersion;
   scanned: number;
   eligible: number;
   rejected: number;
@@ -75,6 +85,7 @@ export function normalizeVibeFindingEnqueueOptions(
     sinceDays: Math.max(0, Math.floor(options.sinceDays ?? 7)),
     limit: Math.max(1, Math.floor(options.limit ?? 10)),
     minScore: Math.max(0, Math.floor(options.minScore ?? 50)),
+    selectorVersion: options.selectorVersion ?? "finding-selector-v2",
     scanLimit: Math.max(
       1,
       Math.floor(options.scanLimit ?? Math.max(100, (options.limit ?? 10) * 20)),
@@ -113,6 +124,7 @@ export function planVibeFindingEnqueueRows(
     sinceDays: normalized.sinceDays,
     limit: normalized.limit,
     minScore: normalized.minScore,
+    selectorVersion: normalized.selectorVersion,
     scanned: rows.length,
     eligible: 0,
     rejected: 0,
@@ -123,6 +135,11 @@ export function planVibeFindingEnqueueRows(
 
   const maxReportedItems = normalized.limit * 2;
 
+  let uncertainCount = 0;
+  const uncertainLimit = Math.min(
+    findingSelectorV2UncertainLimit.maximumPerRun,
+    Math.ceil(normalized.limit * findingSelectorV2UncertainLimit.fraction),
+  );
   for (const row of rows) {
     if (!isVibeMemoryWithinSinceDays(row.createdAt, normalized.sinceDays)) continue;
 
@@ -139,6 +156,8 @@ export function planVibeFindingEnqueueRows(
           score: 0,
           signals: [],
           rejectReasons: ["codex_finding_escalation_self_ingestion"],
+          reasonCodes: ["codex_finding_escalation_self_ingestion"],
+          selectorVersion: normalized.selectorVersion,
         });
       }
       continue;
@@ -151,9 +170,12 @@ export function planVibeFindingEnqueueRows(
       metadata: row.metadata,
       agentDiffCount: row.agentDiffCount,
       minScore: normalized.minScore,
+      selectorVersion: normalized.selectorVersion,
     });
 
-    if (!eligibility.eligible) {
+    const canUseUncertain =
+      eligibility.verdict === "uncertain" && uncertainCount < uncertainLimit;
+    if (!eligibility.eligible && !canUseUncertain) {
       report.rejected += 1;
       if (report.items.length < maxReportedItems) {
         report.items.push({
@@ -165,12 +187,15 @@ export function planVibeFindingEnqueueRows(
           score: eligibility.score,
           signals: eligibility.signals,
           rejectReasons: eligibility.rejectReasons,
+          reasonCodes: eligibility.reasonCodes,
+          selectorVersion: eligibility.selectorVersion,
         });
       }
       continue;
     }
 
     if (report.eligible >= normalized.limit) continue;
+    if (canUseUncertain) uncertainCount += 1;
     report.eligible += 1;
     report.items.push({
       vibeMemoryId: row.id,
@@ -180,7 +205,9 @@ export function planVibeFindingEnqueueRows(
       action: normalized.mode === "write" ? "enqueued" : "would_enqueue",
       score: eligibility.score,
       signals: eligibility.signals,
-      rejectReasons: [],
+      rejectReasons: eligibility.eligible ? [] : eligibility.rejectReasons,
+      reasonCodes: eligibility.reasonCodes,
+      selectorVersion: eligibility.selectorVersion,
     });
   }
 

@@ -7,12 +7,11 @@ use serde_json::Value;
 
 use super::super::native_common::single_line;
 use super::call_metrics::ProviderCall;
+use super::evidence::{render as render_evidence, DEFAULT_OUTPUT_MAX_BYTES};
 
 use super::prompts::{
-    build_composer_system_prompt, build_composer_user_prompt, build_plan_system_prompt,
-    build_plan_user_prompt, first_sentence, looks_goal_aligned, looks_like_json_payload,
-    max_tokens_with_json_headroom, normalize_composer_output, planner_max_tokens, sanitize_heading,
-    section_lines,
+    build_composer_system_prompt, build_composer_user_prompt, looks_goal_aligned,
+    looks_like_json_payload, max_tokens_with_json_headroom, normalize_composer_output,
 };
 use super::providers::{chat_json, load_runtime_settings, provider_route};
 use super::types::{
@@ -57,8 +56,12 @@ pub(super) fn compose_context_response_observed(
             error: None,
             used_knowledge: Vec::new(),
             used_episodes: Vec::new(),
+            provider_calls: calls.clone(),
+            partial_reasons: Vec::new(),
         };
     }
+    let fallback_partial_reasons =
+        render_evidence(knowledge, episodes, DEFAULT_OUTPUT_MAX_BYTES).partial_reasons;
     let fallback_used_knowledge =
         fallback_used_knowledge(knowledge, episodes, &ComposePlan::default());
     let fallback_used_episodes = fallback_used_episodes(episodes);
@@ -72,9 +75,35 @@ pub(super) fn compose_context_response_observed(
                 error: None,
                 used_knowledge: fallback_used_knowledge,
                 used_episodes: fallback_used_episodes,
+                provider_calls: calls.clone(),
+                partial_reasons: fallback_partial_reasons,
             }
         }
     };
+    let evidence_chars = knowledge
+        .iter()
+        .map(|item| item.title.chars().count() + item.body.chars().count())
+        .sum::<usize>()
+        + episodes
+            .iter()
+            .map(|item| {
+                item.title.chars().count()
+                    + item.situation.chars().count()
+                    + item.lesson.chars().count()
+            })
+            .sum::<usize>();
+    let input_budget_chars = usize::try_from(settings.max_tokens.max(128)).unwrap_or(128) * 4;
+    if evidence_chars > input_budget_chars {
+        return ComposeResult {
+            markdown: fallback,
+            agentic_used: false,
+            error: Some("CONTEXT_RESPONSE_INPUT_EVIDENCE_BUDGET_EXCEEDED".to_string()),
+            used_knowledge: fallback_used_knowledge,
+            used_episodes: fallback_used_episodes,
+            provider_calls: calls.clone(),
+            partial_reasons: fallback_partial_reasons,
+        };
+    }
     let route = provider_route(&settings);
     if route.is_empty() {
         return ComposeResult {
@@ -83,6 +112,8 @@ pub(super) fn compose_context_response_observed(
             error: Some("CONTEXT_RESPONSE_COMPOSER_NO_CONFIGURED_PROVIDER".to_string()),
             used_knowledge: fallback_used_knowledge,
             used_episodes: fallback_used_episodes,
+            provider_calls: calls.clone(),
+            partial_reasons: fallback_partial_reasons,
         };
     }
 
@@ -98,29 +129,18 @@ pub(super) fn compose_context_response_observed(
                 error: Some(format!("CONTEXT_RESPONSE_COMPOSE_FAILED: {error}")),
                 used_knowledge: fallback_used_knowledge,
                 used_episodes: fallback_used_episodes,
+                provider_calls: calls.clone(),
+                partial_reasons: fallback_partial_reasons,
             }
         }
     };
-    let default_plan = ComposePlan::default();
+    // Headings and evidence sections are deterministic. Keeping planning local removes a
+    // second provider call without changing the evidence supplied to the composer.
+    let plan = ComposePlan::default();
+    let system_prompt = build_composer_system_prompt(settings.max_tokens, &plan);
+    let user_prompt = build_composer_user_prompt(goal, knowledge, episodes, &plan);
     let mut errors = Vec::new();
-    for provider in route {
-        let plan = match chat_json(
-            &client,
-            &settings,
-            &provider,
-            &build_plan_system_prompt(),
-            &build_plan_user_prompt(goal, knowledge, episodes),
-            planner_max_tokens(settings.max_tokens),
-            calls,
-        ) {
-            Ok(raw) => parse_compose_plan(&raw).unwrap_or_else(|| default_plan.clone()),
-            Err(error) => {
-                errors.push(format!("{provider}:CONTEXT_RESPONSE_PLAN_FAILED: {error}"));
-                default_plan.clone()
-            }
-        };
-        let system_prompt = build_composer_system_prompt(settings.max_tokens, &plan);
-        let user_prompt = build_composer_user_prompt(goal, knowledge, episodes, &plan);
+    for provider in route.into_iter().take(2) {
         match chat_json(
             &client,
             &settings,
@@ -139,6 +159,8 @@ pub(super) fn compose_context_response_observed(
                             error: None,
                             used_knowledge: Vec::new(),
                             used_episodes: Vec::new(),
+                            provider_calls: calls.clone(),
+                            partial_reasons: Vec::new(),
                         };
                     }
                     if looks_goal_aligned(&markdown, goal) {
@@ -148,6 +170,8 @@ pub(super) fn compose_context_response_observed(
                             error: None,
                             used_knowledge,
                             used_episodes,
+                            provider_calls: calls.clone(),
+                            partial_reasons: Vec::new(),
                         };
                     }
                     errors.push(format!("{provider}:COMPOSER_GOAL_ALIGNMENT_FAILED"));
@@ -175,6 +199,8 @@ pub(super) fn compose_context_response_observed(
         )),
         used_knowledge: fallback_used_knowledge,
         used_episodes: fallback_used_episodes,
+        provider_calls: calls.clone(),
+        partial_reasons: fallback_partial_reasons,
     }
 }
 
@@ -184,126 +210,27 @@ pub(super) fn build_fallback_compose(
     episodes: &[PackEpisode],
     plan: &ComposePlan,
 ) -> String {
-    let rules = knowledge
-        .iter()
-        .filter(|item| item.kind != "procedure" && item.polarity != "negative")
-        .collect::<Vec<_>>();
-    let procedures = knowledge
-        .iter()
-        .filter(|item| item.kind == "procedure" && item.polarity != "negative")
-        .collect::<Vec<_>>();
-    let guardrails = knowledge
-        .iter()
-        .filter(|item| item.polarity == "negative")
-        .collect::<Vec<_>>();
-
+    let evidence = render_evidence(knowledge, episodes, DEFAULT_OUTPUT_MAX_BYTES);
+    if evidence.markdown == "No Content" {
+        return evidence.markdown;
+    }
     let mut lines = vec![
         format!("## {}", plan.focus),
         String::new(),
         format!("- {}", single_line(goal, 220)),
     ];
-    for rule in rules.iter().take(2) {
-        lines.push(format!(
-            "- {} を考慮して取り組む。",
-            single_line(&rule.title, 120)
-        ));
-    }
-
     lines.push(String::new());
-    lines.push(format!("## {}", plan.steps));
-    lines.push(String::new());
-    if !procedures.is_empty() {
-        for (index, item) in procedures.iter().take(3).enumerate() {
-            let workflow = section_lines(&item.body, "Workflow");
-            let detail = workflow
-                .first()
-                .map(|line| format!("（{}）", single_line(line, 140)))
-                .unwrap_or_default();
-            lines.push(format!(
-                "{}. {}{}",
-                index + 1,
-                single_line(&item.title, 120),
-                detail
-            ));
-        }
-    } else {
-        for (index, rule) in rules.iter().take(3).enumerate() {
-            lines.push(format!(
-                "{}. {} を反映する。",
-                index + 1,
-                single_line(&rule.title, 120)
-            ));
-        }
-    }
-    for episode in episodes.iter().take(2) {
-        lines.push(format!(
-            "- 過去事例として {} を参照し、現在のコードで適用可否を確認する。",
-            single_line(&episode.title, 120)
-        ));
-    }
-
+    lines.push(
+        evidence
+            .markdown
+            .replacen("## 関連する根拠", &format!("## {}", plan.steps), 1),
+    );
     lines.push(String::new());
     lines.push(format!("## {}", plan.verification));
     lines.push(String::new());
-    let verification = procedures
-        .iter()
-        .flat_map(|item| section_lines(&item.body, "Verification"))
-        .take(3)
-        .collect::<Vec<_>>();
-    if verification.is_empty() {
-        for item in rules.iter().chain(procedures.iter()).take(2) {
-            lines.push(format!(
-                "- {} の要件が成立していることを確認する。",
-                single_line(&item.title, 120)
-            ));
-        }
-        if !episodes.is_empty() {
-            lines.push(
-                "- EpisodeCard precedent をそのまま根拠にせず、現在のコード・DB状態で適用可否を確認する。"
-                    .to_string(),
-            );
-        }
-    } else {
-        for item in verification {
-            lines.push(format!("- {}", single_line(&item, 180)));
-        }
-    }
-
-    let avoid = guardrails
-        .iter()
-        .flat_map(|item| section_lines(&item.body, "Avoid"))
-        .chain(
-            procedures
-                .iter()
-                .flat_map(|item| section_lines(&item.body, "Avoid")),
-        )
-        .take(3)
-        .collect::<Vec<_>>();
-    if plan.include_avoid_section
-        || !guardrails.is_empty()
-        || !avoid.is_empty()
-        || !episodes.is_empty()
-    {
-        lines.push(String::new());
-        lines.push(format!("## {}", plan.avoid));
-        lines.push(String::new());
-        for guardrail in guardrails.iter().take(3) {
-            lines.push(format!(
-                "- {}: {}",
-                single_line(&guardrail.title, 100),
-                first_sentence(&guardrail.body, 160)
-            ));
-        }
-        for item in avoid {
-            lines.push(format!("- {}", single_line(&item, 180)));
-        }
-        if !episodes.is_empty() {
-            lines.push(
-                "- EpisodeCard precedent を現在の source truth や Knowledge rule として扱わない。"
-                    .to_string(),
-            );
-        }
-    }
+    lines.push(
+        "- 引用した根拠の適用条件と、現在のコード・DB状態が一致することを確認する。".to_string(),
+    );
     lines.join("\n").trim().to_string()
 }
 
@@ -312,57 +239,22 @@ pub(super) fn fallback_used_knowledge(
     episodes: &[PackEpisode],
     plan: &ComposePlan,
 ) -> Vec<UsedKnowledge> {
-    let rules = knowledge
+    let _ = (episodes, plan);
+    knowledge
         .iter()
-        .filter(|item| item.kind != "procedure" && item.polarity != "negative")
-        .collect::<Vec<_>>();
-    let procedures = knowledge
-        .iter()
-        .filter(|item| item.kind == "procedure" && item.polarity != "negative")
-        .collect::<Vec<_>>();
-    let guardrails = knowledge
-        .iter()
-        .filter(|item| item.polarity == "negative")
-        .collect::<Vec<_>>();
-    let mut used_ids = Vec::<String>::new();
-    let mut push = |item: &PackKnowledge| {
-        if !used_ids.iter().any(|id| id == &item.id) {
-            used_ids.push(item.id.clone());
-        }
-    };
-
-    for item in rules.iter().take(2) {
-        push(item);
-    }
-    if !procedures.is_empty() {
-        for item in procedures.iter().take(3) {
-            push(item);
-        }
-    } else {
-        for item in rules.iter().take(3) {
-            push(item);
-        }
-    }
-    for item in rules.iter().chain(procedures.iter()).take(2) {
-        push(item);
-    }
-    if plan.include_avoid_section || !guardrails.is_empty() || !episodes.is_empty() {
-        for item in guardrails.iter().take(3) {
-            push(item);
-        }
-        for item in procedures.iter().take(2) {
-            push(item);
-        }
-    }
-
-    used_ids
-        .into_iter()
-        .map(|id| UsedKnowledge {
-            id,
+        .map(|item| UsedKnowledge {
+            id: item.id.clone(),
             confidence: 0.35,
-            evidence: None,
-            output_section: None,
-            reason: Some("fallback_compose_reference".to_string()),
+            evidence: Some(single_line(&item.body, 240)),
+            output_section: Some(
+                if item.polarity == "negative" {
+                    "適用条件・禁止事項"
+                } else {
+                    "実装手順"
+                }
+                .to_string(),
+            ),
+            reason: Some("fallback_evidence_rendered".to_string()),
         })
         .collect()
 }
@@ -370,51 +262,14 @@ pub(super) fn fallback_used_knowledge(
 pub(super) fn fallback_used_episodes(episodes: &[PackEpisode]) -> Vec<UsedEpisode> {
     episodes
         .iter()
-        .take(2)
         .map(|episode| UsedEpisode {
             id: episode.id.clone(),
             confidence: 0.35,
-            evidence: None,
-            output_section: None,
-            reason: Some("fallback_compose_reference".to_string()),
+            evidence: Some(single_line(&episode.lesson, 240)),
+            output_section: Some("過去事例".to_string()),
+            reason: Some("fallback_evidence_rendered".to_string()),
         })
         .collect()
-}
-
-pub(super) fn parse_compose_plan(raw: &str) -> Option<ComposePlan> {
-    let normalized = normalize_composer_output(raw);
-    let parsed = serde_json::from_str::<Value>(&normalized).ok()?;
-    let headings = parsed.get("headings").unwrap_or(&Value::Null);
-    let default = ComposePlan::default();
-    let response_style = match parsed.get("responseStyle").and_then(Value::as_str) {
-        Some("skill") => "skill",
-        _ => "narrative",
-    };
-    let candidate_sufficiency = parsed
-        .get("candidateSufficiency")
-        .and_then(Value::as_str)
-        .unwrap_or("limited");
-    let confidence = parsed
-        .get("styleConfidence")
-        .and_then(Value::as_f64)
-        .unwrap_or(0.5);
-    let response_style =
-        if response_style == "skill" && confidence >= 0.7 && candidate_sufficiency == "enough" {
-            "skill"
-        } else {
-            "narrative"
-        };
-    Some(ComposePlan {
-        focus: sanitize_heading(headings.get("focus"), &default.focus),
-        steps: sanitize_heading(headings.get("steps"), &default.steps),
-        verification: sanitize_heading(headings.get("verification"), &default.verification),
-        avoid: sanitize_heading(headings.get("avoid"), &default.avoid),
-        include_avoid_section: parsed
-            .get("includeAvoidSection")
-            .and_then(Value::as_bool)
-            .unwrap_or(default.include_avoid_section),
-        response_style: response_style.to_string(),
-    })
 }
 
 pub(super) fn parse_composer_payload(

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "database-url",
+    "input": "DATABASE_URL=postgres://user:super-secret-password@db.example/app\nbunx vitest run test/finding-v2-contract.test.ts",
+    "secret": "super-secret-password",
+    "safeText": "bunx vitest run"
+  },
+  {
+    "name": "json-api-key",
+    "input": "{\"apiKey\": \"sk-abcdefghijklmnopqrstuvwxyz123456\", \"task\": \"verify queue\"}",
+    "secret": "sk-abcdefghijklmnopqrstuvwxyz123456",
+    "safeText": "verify queue"
+  },
+  {
+    "name": "cli-token",
+    "input": "tool sync --token ghp_abcdefghijklmnopqrstuvwxyz123456 --dry-run\nverify the migration",
+    "secret": "ghp_abcdefghijklmnopqrstuvwxyz123456",
+    "safeText": "verify the migration"
+  },
+  {
+    "name": "private-key",
+    "input": "-----BEGIN PRIVATE KEY-----\nvery-secret-material\n-----END PRIVATE KEY-----\nkeep the post-migration verification",
+    "secret": "very-secret-material",
+    "safeText": "keep the post-migration verification"
+  }
+]

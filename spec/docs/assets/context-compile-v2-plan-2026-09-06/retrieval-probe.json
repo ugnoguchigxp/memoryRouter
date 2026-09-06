@@ -1,0 +1,18 @@
+{
+  "designOnly": true,
+  "sqliteVersion": "3.51.0",
+  "checks": [
+    "Japanese trigram recall",
+    "scope and classification before LIMIT with 500 distractors",
+    "two-character literal fallback",
+    "FTS syntax treated as literal",
+    "update trigger removes old index content",
+    "delete trigger removes index content"
+  ],
+  "passed": 6,
+  "limitations": [
+    "Bun SQLite in-memory; Rust bundled SQLite capability still requires U0 test",
+    "No full ranking/recall benchmark",
+    "No online migration or concurrency benchmark"
+  ]
+}

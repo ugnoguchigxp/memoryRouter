@@ -59,6 +59,7 @@ import { setEpisodeDistillerTestHooksForTests } from "../src/modules/episodeDist
 import {
   createEpisode,
   fetchEpisode,
+  listEpisodesForAdmin,
   searchEpisodes,
 } from "../src/modules/episodic-memory/episode-card.service.js";
 import { recordCompileRunKnowledgeFeedback } from "../src/modules/knowledge/knowledge-feedback.service.js";
@@ -659,6 +660,84 @@ describe("sqlite runtime support repositories", () => {
     });
     expect(hits[0]?.id).toBe(episode.id);
     expect(hits[0]?.score).toBeGreaterThan(0);
+  });
+
+  test("admin episode list limits mixed timestamps without excluding repository records", async () => {
+    const sqlite = await getRuntimeSqliteCoreDatabase();
+    const insert = sqlite.db.query(`
+      insert into episode_cards
+        (id, title, situation, source_kind, source_key, scope, repo_key,
+         classification_status, status, created_at, importance, confidence)
+      values (?, ?, 'Admin listing regression', 'manual', ?, 'repo', ?, ?, ?, ?, ?, 50)
+    `);
+    insert.run(
+      "older-unix",
+      "Older",
+      "older-unix",
+      "one",
+      "classified",
+      "active",
+      "unix-ms:1782518400000",
+      100,
+    );
+    insert.run(
+      "newer-sql",
+      "Newer",
+      "newer-sql",
+      "two",
+      "classified",
+      "active",
+      "2026-06-28 00:00:00",
+      50,
+    );
+    insert.run(
+      "newest-unresolved",
+      "Newest",
+      "newest-unresolved",
+      null,
+      "unresolved",
+      "active",
+      "2026-06-29T00:00:00.000Z",
+      50,
+    );
+    insert.run(
+      "same-date-low-score",
+      "Same date",
+      "same-date-low-score",
+      "three",
+      "classified",
+      "active",
+      "2026-06-28T00:00:00.000Z",
+      0,
+    );
+    insert.run(
+      "deprecated",
+      "Deprecated",
+      "deprecated",
+      "one",
+      "classified",
+      "deprecated",
+      "2026-06-30T00:00:00.000Z",
+      100,
+    );
+    sqlite.db
+      .query(`insert into episode_refs (id, episode_card_id, ref_kind, ref_value)
+      values ('ref-newest', 'newest-unresolved', 'file', 'evidence.txt')`)
+      .run();
+
+    const listed = await listEpisodesForAdmin({ status: "active", limit: 2 });
+    expect(listed.map((episode) => episode.id)).toEqual(["newest-unresolved", "newer-sql"]);
+    expect(listed[0]?.refs[0]?.refValue).toBe("evidence.txt");
+    expect(await searchEpisodes({ status: "active", limit: 100 })).toEqual([]);
+    expect((await listEpisodesForAdmin({ repoKey: "one" })).map((episode) => episode.id)).toEqual([
+      "older-unix",
+    ]);
+    expect(
+      (await listEpisodesForAdmin({ query: "Older", limit: 1 })).map((episode) => episode.id),
+    ).toEqual(["older-unix"]);
+    expect(
+      (await listEpisodesForAdmin({ status: "deprecated" })).map((episode) => episode.id),
+    ).toEqual(["deprecated"]);
   });
 
   test("persists and cleans audit logs in sqlite", async () => {

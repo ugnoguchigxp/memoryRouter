@@ -11,7 +11,7 @@ mod memory_recall_context;
 mod memory_recall_contract;
 mod memory_recall_projection;
 mod native_common;
-mod native_compile;
+pub(crate) mod native_compile;
 mod native_decision;
 mod native_episodes;
 mod native_handlers;

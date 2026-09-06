@@ -63,6 +63,8 @@ fn create_persistence_schema(connection: &Connection) {
                   status text not null,
                   attempt_count integer not null,
                   max_attempts integer not null,
+                  input_generation integer not null default 0,
+                  protocol_version integer not null default 1,
                   next_run_at text,
                   completed_at text,
                   locked_by text,
@@ -91,6 +93,7 @@ fn create_persistence_schema(connection: &Connection) {
                   tool_events text not null default '[]',
                   reason text,
                   metadata text not null default '{}',
+                  current_revision_id text,
                   created_at text not null,
                   updated_at text not null
                 );
@@ -104,12 +107,27 @@ fn create_persistence_schema(connection: &Connection) {
                 begin
                   select raise(abort, 'duplicate evidence_coverage_results producer');
                 end;
+                create table covering_evidence_inputs (
+                  id text primary key, covering_job_id text not null, input_generation integer not null,
+                  input_hash text not null, identity_json text not null, evidence_bundle_json text not null,
+                  prompt_version text not null, model_config_hash text not null, created_at text not null default current_timestamp,
+                  unique(covering_job_id, input_generation)
+                );
+                create table covering_evidence_revisions (
+                  id text primary key, evidence_result_id text not null, revision_no integer not null,
+                  input_id text not null, input_generation integer not null, attempt_id text not null unique,
+                  protocol_version integer not null, result_status text not null, result_json text not null,
+                  artifact_hash text, created_at text not null default current_timestamp,
+                  unique(evidence_result_id, revision_no)
+                );
                 create table finalize_distille_queue (
                   id text primary key,
                   evidence_result_id text not null,
                   distillation_version text not null,
                   status text not null,
                   priority integer not null,
+                  protocol_version integer not null default 1,
+                  requested_revision_id text,
                   provider_policy text,
                   metadata text not null,
                   created_at text not null,
@@ -166,6 +184,8 @@ fn execution() -> NegativeCoveringExecution {
             distillation_version: "v-test".to_string(),
             attempt_count: 0,
             max_attempts: 2,
+            input_generation: 0,
+            protocol_version: 1,
             provider_policy: "default".to_string(),
             candidate_title: "SQLite writer ownership regression".to_string(),
             candidate_content: "SQLite writer を複数プロセスから開くと更新が競合する。resident writer 経由に統一し、queue smoke test で確認する。".to_string(),
@@ -648,6 +668,22 @@ fn negative_response_without_required_applicability_is_insufficient() {
 }
 
 #[test]
+fn negative_response_rejects_unknown_status_and_fields() {
+    let mut v2 = execution();
+    v2.protocol_version = 2;
+    let unknown_status = json!({
+        "status": "rejected", "polarity": "negative", "distilled": {"failure":"x"}
+    });
+    assert!(parse_negative_response(&v2, &unknown_status.to_string()).is_err());
+
+    let unknown_field = json!({
+        "status": "ready", "polarity": "negative", "distilled": {"failure":"x"},
+        "unexpected": true
+    });
+    assert!(parse_negative_response(&v2, &unknown_field.to_string()).is_err());
+}
+
+#[test]
 fn persist_negative_knowledge_ready_completes_and_enqueues_finalize_once() {
     let mut connection = Connection::open_in_memory().unwrap();
     create_persistence_schema(&connection);
@@ -712,6 +748,22 @@ fn persist_negative_knowledge_ready_completes_and_enqueues_finalize_once() {
             row.get(0)
         })
         .unwrap();
+    let revision = connection
+        .query_row(
+            "select result_status, input_generation, artifact_hash is not null from covering_evidence_revisions",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?)),
+        )
+        .unwrap();
+    assert_eq!(revision, ("knowledge_ready".to_string(), 0, 1));
+    let finalize_revision: Option<String> = connection
+        .query_row(
+            "select requested_revision_id from finalize_distille_queue",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(finalize_revision.is_some());
     let lease = connection
         .query_row(
             "select status, release_reason from llm_provider_leases where id = 'lease-1'",

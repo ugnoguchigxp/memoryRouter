@@ -203,6 +203,25 @@ function matchesSearchInput(episode: EpisodeCard, input: ReturnType<typeof norma
   return true;
 }
 
+// Admin browsing includes records that are intentionally ineligible for AI retrieval.
+function matchesAdminListInput(
+  episode: EpisodeCard,
+  input: ReturnType<typeof normalizeSearchInput>,
+) {
+  const { matchBasis, matchValue } = input.projectIdentity;
+  if (matchBasis === "project_ref" && episode.projectRef !== matchValue) return false;
+  if (matchBasis === "repo_key" && episode.repoKey !== matchValue) return false;
+  if (matchBasis === "repo_path" && episode.repoPath !== matchValue) return false;
+  return (
+    input.statuses.includes(episode.status) &&
+    (input.outcomeKinds.length === 0 || input.outcomeKinds.includes(episode.outcomeKind)) &&
+    intersects(input.domains, episode.domains) &&
+    intersects(input.technologies, episode.technologies) &&
+    intersects(input.changeTypes, episode.changeTypes) &&
+    intersects(input.tools, episode.tools)
+  );
+}
+
 function scoreEpisode(
   episode: EpisodeCard,
   input: ReturnType<typeof normalizeSearchInput>,
@@ -396,9 +415,24 @@ export async function getEpisodeCardBySource(params: {
 }
 
 export async function searchEpisodeCards(rawInput: EpisodeCardSearchInput): Promise<EpisodeCard[]> {
+  return queryEpisodeCards(rawInput, "retrieval");
+}
+
+export async function listEpisodeCardsForAdmin(
+  rawInput: EpisodeCardSearchInput,
+): Promise<EpisodeCard[]> {
+  return queryEpisodeCards(rawInput, "admin");
+}
+
+async function queryEpisodeCards(
+  rawInput: EpisodeCardSearchInput,
+  purpose: "retrieval" | "admin",
+): Promise<EpisodeCard[]> {
   if (isSqliteBackend()) {
     const sqlite = await sqliteRepository();
-    return sqlite.searchEpisodeCardsSqlite(rawInput);
+    return purpose === "admin"
+      ? sqlite.listEpisodeCardsForAdminSqlite(rawInput)
+      : sqlite.searchEpisodeCardsSqlite(rawInput);
   }
   const input = normalizeSearchInput(rawInput);
   const globalCondition = and(
@@ -420,8 +454,12 @@ export async function searchEpisodeCards(rawInput: EpisodeCardSearchInput): Prom
             : undefined;
   const conditions = [
     inArray(episodeCards.status, input.statuses),
-    eq(episodeCards.classificationStatus, "classified"),
-    repoCondition ? or(globalCondition, repoCondition) : globalCondition,
+    ...(purpose === "admin"
+      ? []
+      : [
+          eq(episodeCards.classificationStatus, "classified"),
+          repoCondition ? or(globalCondition, repoCondition) : globalCondition,
+        ]),
   ];
 
   const rows = await db
@@ -432,7 +470,11 @@ export async function searchEpisodeCards(rawInput: EpisodeCardSearchInput): Prom
   const refs = await refsByEpisodeIds(rows.map((row) => row.id));
   return rows
     .map((row) => mapEpisode(row, refs.get(row.id) ?? []))
-    .filter((episode) => matchesSearchInput(episode, input))
+    .filter((episode) =>
+      purpose === "admin"
+        ? matchesAdminListInput(episode, input)
+        : matchesSearchInput(episode, input),
+    )
     .map((episode) => ({ episode, score: scoreEpisode(episode, input) }))
     .filter(({ score }) => !input.query || score > 0)
     .sort((left, right) => {

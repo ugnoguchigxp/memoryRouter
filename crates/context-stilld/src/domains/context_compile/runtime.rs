@@ -28,7 +28,7 @@ impl CompileFoundationMode {
     pub fn from_env<E: EnvProvider>(env: &E) -> Result<Self, String> {
         Self::parse(
             &env.var("CONTEXT_STILL_COMPILE_FOUNDATION_MODE")
-                .unwrap_or_else(|| "legacy".to_string()),
+                .unwrap_or_else(|| "split_legacy_rank".to_string()),
         )
     }
 
@@ -60,6 +60,7 @@ impl CompileRuntimeContext {
         if database_identity.fingerprint.is_empty() || runtime_identity::build_id().is_empty() {
             return Err("runtime identity/build ID is unavailable".to_string());
         }
+        super::system_context::verify_static_selector_artifact()?;
         std::fs::create_dir_all(logs_dir.join("context-compile-foundation"))
             .map_err(|error| format!("failed to create Foundation telemetry directory: {error}"))?;
         Ok(Self {
@@ -83,5 +84,24 @@ impl CompileRuntimeContext {
                 .unwrap_or_else(|| Path::new("."))
                 .join("logs"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CompileFoundationMode, CompileRuntimeContext};
+    use crate::shared::config::MapEnv;
+
+    #[test]
+    fn defaults_to_split_legacy_rank_to_keep_external_io_outside_the_writer() {
+        assert_eq!(
+            CompileFoundationMode::from_env(&MapEnv::default()).unwrap(),
+            CompileFoundationMode::SplitLegacyRank
+        );
+        assert_eq!(
+            CompileRuntimeContext::for_test(std::path::Path::new("/tmp/context-still-test.db"))
+                .mode,
+            CompileFoundationMode::Legacy
+        );
     }
 }

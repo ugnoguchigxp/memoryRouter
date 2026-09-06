@@ -1,0 +1,326 @@
+<article lang="ja">
+  <h1>Findingロジックの評価と改善候補</h1>
+  <p>
+    2026年9月6日時点のワークスペースを評価した。対象はFindingキューの候補抽出であり、Landscape
+    Curationのfinding生成ではない。
+    結論は、トランザクション・実行権限確認・再試行の基盤はある一方、対応入力の選別、再抽出時の候補と下流評価の整合性、入力の秘匿化、出力異常の扱いに先に修正すべき問題がある、というもの。
+    抽出品質では、入口の語句スコアとRust／TypeScript間の契約差が取りこぼしを生む。
+  </p>
+  <p>
+    実装は変更していない。既存の未コミット変更を含む現在のコードを読み、実装から関数をそのまま抜き出した一時プログラムとメモリ内SQLiteで境界条件を検証した。
+    実稼働DB、外部LLM、他のCodexタスクは操作していない。以下の再現結果は不具合の成立条件を示すものであり、本番での発生件数やLLMの抽出精度を示すものではない。
+  </p>
+
+  <h2>評価範囲と良い点</h2>
+  <p>
+    Agent
+    log取り込み時のenqueue判定、既存ログのbackfill、入力フィルター、LLMへの指示、候補parser、found_candidatesへの保存、Coveringへの引き渡し、再実行を確認した。
+    Rustの常駐executorとTypeScriptのdomain／queue
+    workerには別々の実装がある。利用経路によって評価条件が変わるため、両方を対象とした。
+  </p>
+  <ul>
+    <li>Rust split処理はLLM呼び出しをSQLite writerから切り離し、外部I/O中にwriterを占有しない。</li>
+    <li>Rust splitの保存はprovider leaseの所有権を確認し、古い実行結果をdiscardする。</li>
+    <li>Rustでは候補保存とCoveringへのenqueueを同一トランザクション内で行う。</li>
+    <li>自己取り込み防止、provider障害時のbackoff、procedureの最低限の構造検証がある。</li>
+    <li>
+      TypeScriptにはparser診断、読んだ範囲、フィルター統計と、設定で有効にするCodex再評価の仕組みがある。
+    </li>
+  </ul>
+
+  <h2>優先順位</h2>
+  <table>
+    <caption>
+      確認できた問題と推奨する修正順
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ID</th>
+        <th scope="col">優先度</th>
+        <th scope="col">問題</th>
+        <th scope="col">根拠</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>F1</td>
+        <td>P1</td>
+        <td>Rustが処理できないsourceをclaimできる</td>
+        <td>claim条件とexecutor条件の静的照合</td>
+      </tr>
+      <tr>
+        <td>F2</td>
+        <td>P1</td>
+        <td>再抽出で候補本文と下流評価が食い違う</td>
+        <td>実関数とメモリ内SQLiteで再現</td>
+      </tr>
+      <tr>
+        <td>F3</td>
+        <td>P1</td>
+        <td>Rustの送信前フィルターが複数の秘密値形式を通す</td>
+        <td>架空の秘密値で再現</td>
+      </tr>
+      <tr>
+        <td>F4</td>
+        <td>P1</td>
+        <td>不正出力でpanicする。別の不正出力は「候補なし」になる</td>
+        <td>実parserで再現、保存分岐も照合</td>
+      </tr>
+      <tr>
+        <td>F5</td>
+        <td>P2</td>
+        <td>入力の指示文が残り、重要な本文は復元不能に切り捨てられる</td>
+        <td>実フィルターで再現</td>
+      </tr>
+      <tr>
+        <td>F6</td>
+        <td>P2</td>
+        <td>入口スコアが継続的な好みを落とし、単発報告を通す</td>
+        <td>同じ入力をRust／TypeScriptで比較</td>
+      </tr>
+      <tr>
+        <td>F7</td>
+        <td>P2</td>
+        <td>指示・parser・診断が実行経路間で一致しない</td>
+        <td>prompt、parser、workerの静的照合</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    P1は品質調整より先に修正する項目、P2は抽出の取りこぼしと運用上の判別しにくさを減らす項目としている。発生頻度による順位ではない。
+  </p>
+
+  <h2>F1：処理可能な入力だけをclaimする</h2>
+  <p>
+    <code>dynamic_provider.rs:478–486</code
+    >はsource接続に対し、knowledge_candidate、web_ingest、wiki_file、sourceを許可する。
+    <code>executor.rs</code
+    >の<code>queue_spec_for_pool</code>もsourceルートを候補に含める。
+    しかし<code>finding_executor.rs:116–121</code>の<code>execute_finding</code>はsource_targetかつvibe_memoryだけを処理し、それ以外をFailedにする。
+    非splitの<code>process_job</code>にも同じ制約がある。
+  </p>
+  <p>
+    sourceルートがRust実行対象のproviderに割り当てられていると、wiki、web、提供済み候補のジョブをRustが獲得し、未対応入力として失敗させる。
+    TypeScript
+    workerにはwiki／web／provided_candidateの分岐があるので、パイプライン全体で入力が禁止されているわけではない。
+    実稼働のルート設定と失敗件数は今回確認していない。
+  </p>
+  <p>
+    改善は、まずexecutorの対応能力をinput_kindとsource_kindの組で定義し、claimに同じ条件を適用すること。
+    未対応行を既存の対応workerへ渡す経路まで確認する。provided_candidateはLLM不要の登録経路として扱える。
+    全入力種別について、claimできた行は実行できること、対応workerが存在することを契約テストにする。
+  </p>
+
+  <h2>F2：再抽出の結果を世代で管理する</h2>
+  <p>
+    <code>finding_executor.rs:869–895</code>はjob
+    IDと配列indexから候補IDを作り、同じindexの候補本文を上書きする。
+    一方、Coveringジョブはfound_candidate_idが既存なら作らない。
+    <code>queue_lifecycle/state.rs:90</code
+    >のresumeはcompleted／skippedのジョブもpendingへ戻すので、正常終了後の再抽出も到達可能な操作である。
+  </p>
+  <p>
+    2候補を保存し、Coveringをcompletedにしてから1候補で再抽出すると、候補本文は更新されるが保存候補は2件のまま、pendingのCoveringは0件だった。
+    件数が減ると旧候補が残り、並び順が変わると同じIDが別知識を指す。既に済んだ評価や下流参照と、現在の本文が一致しなくなる。
+    既存テストはCoveringがpendingの間の上書きと件数だけを確認しており、completed後の再抽出を検証していない。
+  </p>
+  <p>
+    改善は、同じ結果の保存再試行と、新しい抽出を区別すること。source hash、抽出run
+    ID、正規化した候補内容のhashを記録し、同じrunは冪等に保存する。
+    新しいrunでは候補を新しい世代として保存し、旧候補をsupersededにし、新しい内容に対するCoveringをenqueueする。
+    最低限でも、評価済み本文を同じIDで上書きしない不変条件を設ける。
+  </p>
+  <p>
+    必要な回帰テストは、同一結果の再送、候補の順序変更、2件から1件、1件から0件、Coveringがrunning／completedの状態での再抽出である。
+  </p>
+
+  <h2>F3：LLMへ渡す直前の秘匿化を共通の契約にする</h2>
+  <p>
+    <code>finding_executor.rs:623–660</code
+    >の判定はapi_key、access_token、passwordなど一部の文字列に限られる。
+    <code>DATABASE_URL=postgres://...</code
+    >、JSONの<code>"apiKey":"..."</code>、CLIの<code>--token ...</code>を含む架空入力は、一切変更されず通過した。
+    この文字列は<code>request_candidates</code>のuser messageへ渡される。
+  </p>
+  <p>
+    TypeScriptの<code>src/shared/utils/secret-redaction.ts</code>は構造化キー、接続文字列、CLI引数、秘密鍵なども対象にしており、実行経路の切替で保護範囲が変わる。
+    実データの漏えいは確認していない。指摘は、未秘匿の値がvibe
+    memoryまたはdiffに含まれる場合の送信境界の欠陥である。
+  </p>
+  <p>
+    改善は、両言語で同じ秘密値fixtureを使い、フィルター契約を一致させること。
+    入力本文、diff、関連metadataを組み立てた後にも秘匿化を適用する。実在する秘密値を検証ログへ残さず、削除形式と削除件数だけを診断に残す。
+  </p>
+
+  <h2>F4：候補なし、形式不正、出力途切れを区別する</h2>
+  <p>
+    <code>finding_executor.rs:745–753</code
+    >はJSON復旧時に最初の開き角括弧と最後の閉じ角括弧でsliceする。
+    <code>] explanation [</code
+    >では開始位置が終了位置より後になり、ResultのErrではなくpanicした。
+    少なくともこの抽出呼び出しが通常の失敗分岐を通らなくなる。daemon全体が終了するかどうかは今回検証していない。
+  </p>
+  <p>
+    同じparserは<code>{}</code>、全候補が不正なJSON配列を正常な0件として返す。
+    さらに、20件の不正候補の後ろに正しい候補を1件置いても、検証前の<code>take(20)</code>で正しい候補が落ち、0件になった。
+    保存側は空のCandidatesを<code>skipped/no_candidate</code>にするため、正しい判断による空配列と出力契約違反を区別できない。
+    TypeScriptも診断値はあるが、通常workerの最終状態は候補なしに集約される場合がある。
+  </p>
+  <p>
+    改善は、parserの返値にvalid_empty、valid_candidates、schema_invalid、truncatedを設け、panicしないJSON復旧にすること。
+    0件成功は明示的な空配列として扱い、不正候補の理由と件数は保存する。
+    providerのfinish_reasonも確認し、出力上限に達した応答は「知識なし」としない。
+    スキーマ違反の再生成は回数を制限し、全候補を検証してから有効候補の上限を適用する。
+  </p>
+
+  <h2>F5：メッセージ境界と根拠を保持して入力を削減する</h2>
+  <p>
+    Rustのフィルターは行頭が<code>&lt;INSTRUCTIONS&gt;</code>等の場合だけブロックを除く。
+    しかしRust agent log
+    syncの<code>build_readable_transcript</code>は各メッセージに<code>USER: </code>等を付けるため、メッセージ冒頭がタグなら<code>USER: &lt;INSTRUCTIONS&gt;</code>になる。
+    この形のブロック内部に置いた架空の指示文は残った。入力自身の指示が再利用可能な知識と誤認される余地を増やす。
+  </p>
+  <p>
+    同じ処理は各行を2,000文字で無表示に切り捨て、本文と全diffを結合後に32,000文字基準で中央を削る。
+    1行の2,100文字目以降に置いた根拠と、長い入力の中央に置いた根拠は、どちらもLLM入力から消えた。
+    Rustにはその続きのreaderがない。通常のRust取り込みは12,000文字を目安にchunk化するが、単独の長いメッセージや追加diffに対する問題は残る。
+  </p>
+  <p>
+    TypeScriptにはtoken window
+    readerがあるが、その前のblock切り詰めで捨てた中央部分は追加readでも戻せない。
+    また長いTOOL／FUNCTIONブロックを全体除外するため、末尾のテスト結果などが失われる可能性は別途実ログfixtureで測る必要がある。
+  </p>
+  <p>
+    改善は、構造化されたroleと本文を保持してboilerplateを除去し、エラー・修正・検証のまとまりを読み取り単位にすること。
+    長いdiffは生成物を除外したうえで分割し、省略範囲と取得可能な参照を残す。 source
+    hash、読んだ範囲、省略量を保存し、候補が0件でも未読部分が残る場合は完全評価済みと区別する。
+  </p>
+
+  <h2>F6：入口の語句スコアを再利用価値の判定と分ける</h2>
+  <p>
+    <code>vibe-finding-eligibility.ts:20–31</code
+    >とRustの<code>agent_log_sync/store.rs:363</code>では、検証・失敗語が40点、混合roleが20点、preference語が20点で、通過点は50点。
+    継続的な好みを明示し、user／assistant両roleがある120文字超の入力は40点で両実装とも落ちた。
+    一方、120文字超の単なる<code>build succeeded</code>報告は、同じbuildが検証語40点とcommand語10点に二重加点され、両実装で通った。
+  </p>
+  <p>
+    通過した単発報告は後段のLLMが棄却できるが、入口で落ちた好みはLLMに届かない。
+    さらに短い高signal入力は、Rustでは75点で通過し、TypeScriptでは同じ75点でも<code>content_too_short</code>で必ず棄却された。
+    TypeScriptにあるdiff加点もRustの判定には存在せず、backfillと通常取り込みの選別が一致しない。
+  </p>
+  <p>
+    改善は、継続的な好み・禁止事項・検証付きの原因と修正・diff根拠を独立した通過理由にし、文字数だけの必須条件を見直すこと。
+    同じ単語による二重加点を避け、評価はboilerplateを除いた内容で行う。
+    軽い入口判定は取りこぼしを減らす用途とし、後段LLMによる再利用価値判定と別の指標で測る。
+    しきい値を変更する前に、両言語共通のfixtureで判定を一致させる。
+  </p>
+
+  <h2>F7：prompt、parser、観測項目を同じ契約から作る</h2>
+  <p>
+    TypeScriptは<code>contexts/findCandidate/extract.context.toml</code>などの管理対象promptを読み込む。
+    Rustの<code>finding_executor.rs:669</code>は別の固定文字列で、procedureの2step以上という条件やnegative
+    procedure禁止を明示しない。 しかしRust
+    parserはその両方を必須にしているため、promptに従って生成できる出力を後段が捨てる不一致がある。
+    procedureを構成できない場合のruleへの整理方針もTypeScriptの指示に比べて省かれている。
+  </p>
+  <p>
+    Rustの候補には根拠の引用・位置がなく、originにはsourceの参照しかない。保存metadataにも入力の省略量、parser棄却理由、prompt
+    digestはない。
+    TypeScriptにはreadRangesとparser診断があり、0件時のCodex再評価もあるが、Rust経路に対応する処理はない。
+    そのため、prompt更新やprovider変更の効果と入力不足・形式不正を分けて分析しにくい。
+  </p>
+  <p>
+    改善は、管理対象contextからRust／TypeScriptの指示を生成し、受理schemaと同時に検証すること。
+    共通の境界fixtureとprompt digestを持たせ、source
+    hash、モデル、raw件数、有効件数、棄却理由、読了率をrun単位で記録する。
+    candidateごとの根拠位置は後段Coveringと責務を合わせて導入し、Findingで最終的な真偽や信頼度まで確定させない。
+    再評価機能を維持するなら対応経路を明示し、まず形式修復や未読部分の補完と、より強いモデルへの再評価を分ける。
+  </p>
+
+  <h2>改善の進め方と受け入れ条件</h2>
+  <ol>
+    <li>
+      F1〜F4を先に修正する。未対応入力を誤claimしない、完了済み評価と本文がずれない、秘密値fixtureが通過しない、不正JSONでもpanicせず原因が残ることを確認する。
+    </li>
+    <li>
+      両言語の入力・出力・promptの共通fixtureを整える。短文、長文、否定ルール、2step未満のprocedure、role付き指示タグ、diff、切れたJSONを含める。
+    </li>
+    <li>
+      F5〜F7の品質調整を行う。同じsource集合で旧方式と新方式を比較し、拒否理由・省略量と後段の結果まで追跡する。
+    </li>
+  </ol>
+  <p>
+    品質評価用には、継続的な好み、原因・修正・検証を含む会話、否定された方針、diff中心の記録、単発報告、boilerplate中心の入力、長文を層別して人手で正解ラベルを付ける。
+    入口で落ちた入力も抽出してラベル付けしなければ、取りこぼし率は測れない。比較集合はsession単位で分け、同じ会話断片が調整用と評価用に重複しないようにする。
+  </p>
+  <table>
+    <caption>
+      品質を測る指標案。現在値は未測定
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">段階</th>
+        <th scope="col">指標</th>
+        <th scope="col">意味</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>入口</td>
+        <td>有用sourceの通過率</td>
+        <td>人手で有用と判定した全sourceのうち、LLMへ渡った割合</td>
+      </tr>
+      <tr>
+        <td>候補抽出</td>
+        <td>根拠のある再利用可能候補の割合</td>
+        <td>形式が正しいだけの候補と区別して精度を測る</td>
+      </tr>
+      <tr>
+        <td>候補抽出</td>
+        <td>有用知識単位の回収率</td>
+        <td>正解の知識単位を何件回収できたか。通過sourceだけを分母にしない</td>
+      </tr>
+      <tr>
+        <td>異常処理</td>
+        <td>真の0件・形式不正・入力不足・出力途切れの内訳</td>
+        <td>0件率だけでは原因を判断しない</td>
+      </tr>
+      <tr>
+        <td>後段</td>
+        <td>Covering支持率、重複率、最終採用率</td>
+        <td>Findingの生産量と利用価値を分けて追う</td>
+      </tr>
+      <tr>
+        <td>費用と遅延</td>
+        <td>採用候補あたりのtoken数・処理時間・再評価回数</td>
+        <td>候補数を増やすだけの改善になっていないかを確認する</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    具体的な目標値は基準値を採取してから決める。現時点で抽出精度や改善率を数値評価できる証拠はない。
+  </p>
+
+  <h2>検証結果と再現資料</h2>
+  <ul>
+    <li>TypeScriptのFinding関連6ファイル：48 tests passed。</li>
+    <li>
+      Rustのfinding_executor：10 tests passed。依存Cコードの既存unused
+      parameter警告が出たが、テストは成功した。
+    </li>
+    <li>
+      追加probe：実関数を抽出し、一時Cargoプロジェクトとメモリ内SQLiteで実行。外部provider呼び出しなし。
+    </li>
+    <li>
+      実LLMによる精度比較、実稼働ルートの確認、PostgreSQL統合テスト、全プロジェクトの回帰テストは未実施。
+    </li>
+  </ul>
+  <pre><code>cargo test -p context-stilld finding_executor -- --nocapture
+bunx vitest run test/find-candidate.test.ts test/find-candidate-vibe-memory-filter.test.ts test/vibe-finding-eligibility.test.ts test/vibe-finding-enqueue.service.test.ts test/find-candidate-repository.test.ts test/finding-codex-escalation.test.ts
+python3 spec/docs/assets/finding-logic-review-2026-09-06/probe.py</code></pre>
+  <p>
+    <a href="assets/finding-logic-review-2026-09-06/probe.py">再現用probe</a>と
+    <a href="assets/finding-logic-review-2026-09-06/probe-results.json">再現結果JSON</a>を保存した。
+    probeは現在のソースから関数を抽出するため、将来の修正後には結果が変わる。主要な観測値は本書にも記載した。
+  </p>
+</article>

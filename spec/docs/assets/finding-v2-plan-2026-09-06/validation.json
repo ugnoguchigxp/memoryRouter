@@ -1,0 +1,32 @@
+{
+  "reviewType": "planning only",
+  "baseCommit": "8e0b050e5a00aa991fa503663e80729f25fd7c5b",
+  "sourceHashes": {
+    "crates/context-stilld/src/domains/queue_lifecycle/finding_executor.rs": "3b46b355782bea914e1aaa47dc4a4dcc93175650e8940202cab68f2073a60264",
+    "crates/context-stilld/src/domains/queue_lifecycle/dynamic_provider.rs": "20b2354e707a816773fca769bb22f2d748c486373de5e6f0a0247d09a08fb1db",
+    "crates/context-stilld/src/domains/queue_lifecycle/covering_executor/persistence.rs": "eb900e0d369b5016792f0e0bde2aa37384fd4a19d0485a7bf1d9fec7ee8e6d1f",
+    "crates/context-stilld/src/domains/queue_lifecycle/finalize_executor.rs": "0097cc11b5eb4e1e1b853231badfd024533bbc3b8a0401e698579bb0c5335ed0",
+    "crates/context-stilld/src/domains/sqlite_writer/schema.rs": "5aa085245e102b090622959e4f8267184065d2a7c36ae86e9a02dddb29a10c15",
+    "src/db/schema-distillation.ts": "8861b736e446d3e37608a0580b0535dd7eb2c4a3c40c53704e3db935912c2048",
+    "src/db/sqlite/core-schema.ts": "b7194bdf1a354b135e7f4e1f7627d9995c25f002203d12bedbdddd0c6a588567",
+    "src/modules/queue/core/worker.ts": "03cbfe20ca039dde29fdf8b8452f0d637cb1bcb41d21b44779609c6fa82bb1f4",
+    "src/modules/queue/core/state.ts": "1e518f5fa972c5e338ec683ec90849b7abadbe636574960c55fd60bdc91894e9",
+    "src/modules/registerCandidate/register-candidate.service.ts": "c67635948427df9c08fb820f1c8fe2463f7a0568f4b0f456b7b27160fe363cbe",
+    "src/modules/findCandidate/vibe-finding-eligibility.ts": "d36fe666e525cb27091be4a96c5213cf6bdc49cb1aeb4219075196a22356c7fc",
+    "spec/docs/finding-logic-review-2026-09-06.html": "4e2ceed63615df5b52c346400feac39a94861caa1954a860df0f06fd0cc68b77"
+  },
+  "mechanicalChecks": {
+    "rubricTotal": 100,
+    "score": 96,
+    "criterionCount": 20,
+    "allCriterionAnchorsPresent": true,
+    "localLinksExist": true,
+    "revisionArithmeticValid": true,
+    "singleArticleAndH1": true
+  },
+  "notExecuted": [
+    "implementation regression tests",
+    "production migration",
+    "live model quality evaluation"
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "version": "finding-plan-readiness-v1",
+  "fixedBeforeScoring": true,
+  "reviewMethod": "Single-author self-review of implementation readiness. Not independent review, implemented quality, or measured extraction accuracy.",
+  "target": 95,
+  "scale": {"0":"Absent", "1":"Intent only", "2":"Approach present, essential contract missing", "3":"Implementable direction, unresolved failure or acceptance case", "4":"Concrete contract, location, verification; bounded uncertainty remains", "5":"Concrete contract, location, adverse cases, measurable acceptance and dependencies are explicit"},
+  "vetoes": ["Known P1 has no closure condition", "Unsupported input silently stranded", "Old evidence can validate changed candidate", "Migration or rollback destroys history", "Two unfenced writers can commit", "Self-score presented as measured extraction quality"],
+  "criteria": [
+    {"id":"C01","name":"Scope and problem traceability","section":"scope"},
+    {"id":"C02","name":"Claim and input capability matrix","section":"routing"},
+    {"id":"C03","name":"Immutable generations and idempotency","section":"generation"},
+    {"id":"C04","name":"Concurrent Covering and Finalize","section":"downstream"},
+    {"id":"C05","name":"Schema and all writers","section":"schema"},
+    {"id":"C06","name":"SQLite and PostgreSQL migration","section":"migration"},
+    {"id":"C07","name":"Redaction and untrusted boundaries","section":"redaction"},
+    {"id":"C08","name":"Strict parsing and bounded recovery","section":"output"},
+    {"id":"C09","name":"Source completeness and coordinates","section":"input"},
+    {"id":"C10","name":"Eligibility recall and calibration","section":"eligibility"},
+    {"id":"C11","name":"Managed prompts and provenance","section":"prompts"},
+    {"id":"C12","name":"Operational state and diagnostics","section":"states"},
+    {"id":"C13","name":"Work packages and dependency order","section":"work"},
+    {"id":"C14","name":"Adverse regression fixtures","section":"tests"},
+    {"id":"C15","name":"Reproducible commands and evidence","section":"verification"},
+    {"id":"C16","name":"Gold set and quality statistics","section":"quality"},
+    {"id":"C17","name":"Cost, latency and resource bounds","section":"budgets"},
+    {"id":"C18","name":"Canary, rollback and recovery","section":"rollout"},
+    {"id":"C19","name":"Compatibility and neighboring work","section":"compatibility"},
+    {"id":"C20","name":"Review evidence and residual limits","section":"readiness"}
+  ]
+}

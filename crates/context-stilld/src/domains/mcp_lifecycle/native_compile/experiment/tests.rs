@@ -92,7 +92,7 @@ fn paired_runner_uses_real_http_usage_and_never_sends_labels() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let server = std::thread::spawn(move || {
-        for _ in 0..14 {
+        for _ in 0..10 {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
@@ -156,10 +156,10 @@ fn paired_runner_uses_real_http_usage_and_never_sends_labels() {
     };
     let report = run_with_settings(&data, bytes.as_bytes(), settings).unwrap();
     server.join().unwrap();
-    assert_eq!(report["providerCallsExecuted"], 14);
+    assert_eq!(report["providerCallsExecuted"], 10);
     assert_eq!(report["results"].as_array().unwrap().len(), 6);
     assert_eq!(report["results"][0]["inputTokens"], 10);
-    assert_eq!(report["results"][1]["inputTokens"], 30);
+    assert_eq!(report["results"][1]["inputTokens"], 20);
     assert!(report["results"][1]["estimatedCost"].is_null());
     assert_eq!(report["promotionEligible"], false);
 }
@@ -222,7 +222,7 @@ fn provider_failure_opens_circuit_and_counts_unattempted_pairs() {
         }),
     };
     let report = run_with_settings(&data, bytes.as_bytes(), settings).unwrap();
-    assert_eq!(report["providerCallsExecuted"], 7);
+    assert_eq!(report["providerCallsExecuted"], 5);
     let rows = report["results"].as_array().unwrap();
     assert_eq!(
         rows.iter()
@@ -245,12 +245,12 @@ fn composer_prompt_preserves_later_conditions_numbers_and_long_goals() {
     assert_eq!(evidence["truncated"], false);
     let long = format!("START {} END do not write", "🙂".repeat(1400));
     let evidence = super::super::prompts::composer_evidence(&long);
-    assert_eq!(evidence["text"].as_str().unwrap().chars().count(), 1200);
+    assert_eq!(evidence["text"].as_str().unwrap().chars().count(), 1423);
     assert!(evidence["text"]
         .as_str()
         .unwrap()
         .ends_with("END do not write"));
-    assert_eq!(evidence["truncated"], true);
+    assert_eq!(evidence["truncated"], false);
     let goal = format!("{} preserve-tail-condition", "task ".repeat(80));
     let prompt = super::super::prompts::build_composer_user_prompt(
         &goal,

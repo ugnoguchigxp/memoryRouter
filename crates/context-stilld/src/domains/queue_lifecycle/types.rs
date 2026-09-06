@@ -15,6 +15,7 @@ pub(crate) const QUEUE_TABLES: &[(&str, &str)] = &[
     ("episodeDistiller", "episode_distiller_queue"),
     ("coveringEvidence", "covering_evidence_queue"),
     ("deadZoneMergeReview", "dead_zone_merge_review_queue"),
+    ("landscapeCuration", "landscape_curation_queue"),
     ("mergeActivationFinalize", "merge_activation_finalize_queue"),
     ("finalizeDistille", "finalize_distille_queue"),
 ];

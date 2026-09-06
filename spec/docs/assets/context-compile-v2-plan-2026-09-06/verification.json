@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-06",
+  "planScore": 96,
+  "scoreMeaning": "Self-reviewed plan readiness, not product performance",
+  "planSha256": "b9ec40f3de6152079d612bed227972e46db18b19f873622bbd52ef4bb314e549",
+  "roundScores": [
+    72,
+    92,
+    96
+  ],
+  "checks": {
+    "specFix": "passed",
+    "specCheck": "passed",
+    "localLinks": 13,
+    "missingLinks": 0,
+    "duplicateIds": 0,
+    "systemContextLocales": 2,
+    "schemaAndSemanticPrototypeCases": 13,
+    "sqlPrototypeCases": 6
+  },
+  "notRun": [
+    "production implementation tests for v2",
+    "live provider quality benchmark",
+    "online index migration",
+    "production rollout"
+  ],
+  "contextCompile": {
+    "countThisTask": 1,
+    "countConversation": 2,
+    "runId": "00000000-0000-0000-18d2-c00736b86f1e"
+  },
+  "compileEval": {
+    "countThisTask": 1,
+    "countConversation": 2,
+    "evaluationId": "00000000-0000-0000-18d2-c11068c6d1f7"
+  },
+  "formattingNote": "Required spec:fix also formatted concurrently present curation-v2-implementation-plan.html; formatter reported layout-only change."
+}

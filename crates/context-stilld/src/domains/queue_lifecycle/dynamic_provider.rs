@@ -25,7 +25,7 @@ use super::types::{
     ProviderQueueClaimSpec,
 };
 
-const STARTUP_LLM_ROUTES: [(&str, &str); 10] = [
+const STARTUP_LLM_ROUTES: [(&str, &str); 11] = [
     ("findCandidate.source", "/taskRouting/findCandidate/source"),
     ("findCandidate.vibe", "/taskRouting/findCandidate/vibe"),
     ("webSourceResearch", "/taskRouting/webSourceResearch"),
@@ -43,6 +43,7 @@ const STARTUP_LLM_ROUTES: [(&str, &str); 10] = [
         "/taskRouting/coverEvidence/mcpEvidence",
     ),
     ("deadZoneMergeReview", "/taskRouting/deadZoneMergeReview"),
+    ("landscapeCuration", "/taskRouting/landscapeCuration"),
     (
         "mergeActivationFinalize",
         "/taskRouting/mergeActivationFinalize",
@@ -427,6 +428,20 @@ fn dynamic_provider_plans(
             &target_id,
             &mut priority_queues,
         );
+        if !paused_queues.contains("landscapeCuration")
+            && route_connection_id(settings, "/taskRouting/landscapeCuration").as_deref()
+                == Some(connection_id.as_str())
+        {
+            priority_queues.push(ProviderQueueClaimSpec {
+                queue_name: "landscapeCuration".into(),
+                preferred_target_ids: vec![target_id.clone()],
+                route_target_column: None,
+                route_target_preferences: Vec::new(),
+                allowed_route_values: None,
+                candidate_polarity_filter: CandidatePolarityFilter::Any,
+                allowed_job_ids: None,
+            });
+        }
         if priority_queues.is_empty() {
             continue;
         }
@@ -635,6 +650,7 @@ fn task_routing_routes(settings: &Value) -> Vec<&Value> {
         "/taskRouting/coverEvidence/externalEvidence",
         "/taskRouting/coverEvidence/mcpEvidence",
         "/taskRouting/deadZoneMergeReview",
+        "/taskRouting/landscapeCuration",
         "/taskRouting/mergeActivationFinalize",
         "/taskRouting/finalizeDistille",
     ]

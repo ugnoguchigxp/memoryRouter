@@ -16,7 +16,7 @@ use super::project_identity::{
 use super::repository_scope::RepositoryRequestFacets;
 
 #[cfg(test)]
-use composition::{build_fallback_compose, parse_composer_payload};
+use composition::{build_fallback_compose, fallback_used_knowledge, parse_composer_payload};
 use composition::{compose_context_response, compose_context_response_with_settings};
 use persistence::{
     increment_compile_counters, insert_candidate_traces, insert_compile_items, insert_compile_run,
@@ -26,7 +26,10 @@ use persistence::{
 #[cfg(test)]
 use prompts::looks_goal_aligned;
 use providers::load_runtime_settings;
-use retrieval::{degraded_reasons, search_episode_cards, search_knowledge_items, search_text};
+use retrieval::{
+    degraded_reasons, search_episode_cards, search_knowledge_items, search_text,
+    validate_retrieval_schema,
+};
 use telemetry::{append_foundation_telemetry, FoundationTelemetryInput};
 #[cfg(test)]
 use types::ComposePlan;
@@ -36,15 +39,24 @@ use types::{
 
 mod call_metrics;
 mod composition;
+mod evidence;
 pub(super) mod experiment;
 mod persistence;
 mod prompts;
 mod providers;
 mod retrieval;
+pub(crate) mod selector;
 mod telemetry;
 mod test_support;
 mod tests;
 mod types;
+
+fn count_provider_failovers(calls: &[call_metrics::ProviderCall]) -> usize {
+    calls
+        .windows(2)
+        .filter(|pair| !pair[0].succeeded && pair[0].provider != pair[1].provider)
+        .count()
+}
 
 fn optional_identity_string_arg(
     args: &serde_json::Map<String, Value>,
@@ -175,6 +187,9 @@ fn context_compile_on_connection(
     if !table_exists(connection, "context_compile_runs") {
         return tool_error("context_compile_runs table is not available");
     }
+    if let Err(error) = validate_retrieval_schema(connection) {
+        return tool_error(&error);
+    }
 
     let search_text = search_text(&goal, &technologies, &change_types, &domains);
     let request_facets = RepositoryRequestFacets {
@@ -204,7 +219,7 @@ fn context_compile_on_connection(
     if let Some(reason) = composed.error.as_ref() {
         degraded_reasons.push(reason.clone());
     }
-    let status = if degraded_reasons.is_empty() {
+    let status = if degraded_reasons.is_empty() && composed.partial_reasons.is_empty() {
         "ok"
     } else {
         "degraded"
@@ -242,6 +257,8 @@ fn context_compile_on_connection(
                 "used": composed.agentic_used,
                 "markdownKind": if markdown == "No Content" { "no-content" } else { "narrative" },
                 "error": composed.error,
+                "partialReasons": composed.partial_reasons,
+                "providerAttempts": composed.provider_calls,
                 "usedKnowledge": used_knowledge,
                 "usedEpisodes": used_episodes
             }
@@ -413,6 +430,7 @@ fn prepare_split_compile(
         if !table_exists(&connection, "context_compile_runs") {
             return Err("context_compile_runs table is not available".to_string());
         }
+        validate_retrieval_schema(&connection)?;
         let knowledge = search_knowledge_items(
             &connection,
             &search_text,
@@ -481,6 +499,14 @@ fn persist_split_compile(
     if let Some(reason) = composed.error.as_ref() {
         prepared.degraded_reasons.push(reason.clone());
     }
+    if !composed.partial_reasons.is_empty() {
+        prepared.degraded_reasons.extend(
+            composed
+                .partial_reasons
+                .iter()
+                .map(|reason| format!("CONTEXT_EVIDENCE_PARTIAL:{reason}")),
+        );
+    }
     let status = if prepared.degraded_reasons.is_empty() {
         "ok"
     } else {
@@ -517,10 +543,10 @@ fn persist_split_compile(
             "compose": prepared.compose_duration.as_micros().min(u64::MAX as u128) as u64
         },
         "llm": {
-            "logicalCalls": if composed.agentic_used { 2 } else { 0 },
-            "providerAttempts": if composed.agentic_used { 2 } else { 0 },
-            "failovers": 0,
-            "attempts": []
+            "logicalCalls": composed.provider_calls.len(),
+            "providerAttempts": composed.provider_calls.len(),
+            "failovers": count_provider_failovers(&composed.provider_calls),
+            "attempts": composed.provider_calls
         },
         "candidates": {
             "eligibleKnowledge": prepared.candidate_knowledge.len(),
@@ -564,6 +590,8 @@ fn persist_split_compile(
                 "used": composed.agentic_used,
                 "markdownKind": if markdown == "No Content" { "no-content" } else { "narrative" },
                 "error": composed.error,
+                "partialReasons": composed.partial_reasons,
+                "providerAttempts": composed.provider_calls,
                 "usedKnowledge": used_knowledge,
                 "usedEpisodes": used_episodes
             }

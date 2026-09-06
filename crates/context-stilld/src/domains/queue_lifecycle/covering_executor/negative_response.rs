@@ -20,11 +20,51 @@ pub(super) fn parse_negative_response(
         .replace("```", "")
         .trim()
         .to_string();
+    if execution.protocol_version >= 2 {
+        let raw: Value = serde_json::from_str(&cleaned).map_err(|error| {
+            CliError::io(format!(
+                "failed to parse negative evidence result JSON: {error}"
+            ))
+        })?;
+        let allowed = [
+            "status",
+            "polarity",
+            "intentTags",
+            "appliesTo",
+            "distilled",
+            "evidence",
+            "originRefs",
+        ];
+        if raw.as_object().map_or(true, |object| {
+            object.keys().any(|key| !allowed.contains(&key.as_str()))
+        }) {
+            return Err(CliError::io(
+                "negative evidence response has an unknown field",
+            ));
+        }
+    }
     let parsed: NegativeEvidenceResponse = serde_json::from_str(&cleaned).map_err(|error| {
         CliError::io(format!(
             "failed to parse negative evidence result JSON: {error}"
         ))
     })?;
+    if execution.protocol_version >= 2
+        && !matches!(parsed.status.as_str(), "ready" | "insufficient")
+    {
+        return Err(CliError::io(
+            "negative evidence response has an unknown status",
+        ));
+    }
+    if execution.protocol_version >= 2
+        && parsed
+            .intent_tags
+            .iter()
+            .any(|tag| !INTENT_TAGS.contains(&tag.trim()))
+    {
+        return Err(CliError::io(
+            "negative evidence response has an unknown intent tag",
+        ));
+    }
     if parsed.distilled.failure.trim().is_empty() {
         return Err(CliError::io(
             "negative evidence response omitted distilled.failure",

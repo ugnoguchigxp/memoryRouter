@@ -1,0 +1,61 @@
+<article lang="ja">
+  <h1>Curation v2 実装計画：根拠を保持してLandscapeを自動整理する</h1>
+  <p>計画ID：landscape-curation-v2。作成日：2026-09-06。対象は全active knowledgeのキュー投入、近似候補の探索、LLMによる統合・deprecated判断、SystemContext、変更と復元、品質評価。これは実装計画であり、製品の判断精度は未測定である。</p>
+  <h2 id="goal">1. 完了条件と現在地</h2>
+  <p>利用者が各件を承認しなくても、整理できるknowledgeをLLMが判断し、根拠と適用条件を保持して統合、または包含された側をdeprecatedにする。Landscapeの全active knowledgeを審査対象にすることと、全件を変更することは区別する。意味のある差や解けない矛盾は残す。低利用・古さ・近似度だけをdeprecatedの理由にしない。</p>
+  <p><a href="curation-system-context-evaluation.html">現行評価</a>では、欠落した統合本文、数値の矛盾、generalから限定scopeへの置換、比較両側を引用しない回答が実行gateを通った。現行promptはRust直書きで、TypeScriptとは異なる。実LLM評価は7件中2回答、5件はprovider容量不足で未評価。これを精度のベースライン値に換算しない。</p>
+  <p>非対象：矛盾する規則の独断での正本判定、根拠のない期限切れ判定、別repository同士の統合、利用頻度を理由にした削除、context_compileの選択アルゴリズム変更。knowledgeの物理削除は行わない。</p>
+  <h2 id="architecture">2. 判断から実行までの構成</h2>
+  <ol>
+    <li>Rustで対象と候補の本文・適用範囲・出典・revisionをsnapshotに固定する。</li>
+    <li>完全一致はdeterministic検査で処理する。意味判断が必要な組だけplanner LLMへ渡す。</li>
+    <li>plannerは比較対象の両側の原文を引用し、残す側、捨てる重複、保持する固有条件を構造化して返す。自由な本文生成は初期版では許可しない。</li>
+    <li>verifierは原文と変更案から欠落・条件変更・矛盾を別途検査する。plannerの説明・自己申告の確信度を渡さない。</li>
+    <li>Rust gateがschema、scope、coverage、revision、検証結果を確認する。LLMのhigh単独では実行しない。</li>
+    <li>Rust SQLite writerの単一transactionで本文・出典・status・検索index・監査を更新する。変更後を検証し、失敗時は全体をrollbackする。</li>
+  </ol>
+  <p>LLMを増やせば安全になるとは仮定しない。同じモデルの二回の回答には相関がある。verifierは防御の一層であり、独立した正解データと実行制約によって有効性を測る。</p>
+  <h2 id="scope">3. 適用範囲と統合方向の契約</h2>
+  <p>repository identityの既存正規化を共有する。globalとrepositoryの混在、identity未解決、type・polarity不一致は変更不可。現行native facets_allowはtechnologies・changeTypes・domainsのORであり、ANDではない。空配列とgeneralの扱いも既存applicability_generalに合わせる。未知のscopeキーを捨てて同一と判定しない。</p>
+  <p>初期の自動変更は同値な適用範囲に限定する。配列のunionは廃止する。元本文中の条件も別に保持する。混合scopeを条件付き節として格納する機能は、reader側まで適用条件の表現を共有できる別拡張として扱い、初期版をそれに依存させない。</p>
+  <p>subjectとcandidateのどちらもsurvivorになれる。選択順は情報保持、既存参照の安定、出典の直接性、最後に固定ID順。同じ話題であることは同じ指示の証拠ではない。数値・単位・否定・例外が異なる場合、両立可能な元条件を保存できるときだけmergeし、同条件での矛盾はkeep_separateとする。</p>
+  <h2 id="evidence">4. 原文と根拠を保持する契約</h2>
+  <p>snapshotにknowledge ID、bodyのSHA-256、title、type、polarity、repository identity、appliesTo、出典linkと取得可否を含める。入力本文を元の段落・リスト・コードblock単位のspanへ分割し、UTF-8 byte offsetとhashを付ける。元の非空白byteが分割から消えていないことをRustで検査する。</p>
+  <p>merge rendererは原文spanをそのままコピーする。指示を言い換えたり新しい条件を足したりしない。あるspanを省略する場合はsurvivorに残るspanへの包含対応を必須にする。条件・否定・例外・数値・識別子を対応表で検査する。決定的なbyte検査は意味的な包含を証明しないため、非同一spanの省略にはverifierの具体的な対応検証が必要になる。</p>
+  <p>deprecate_duplicateはsurvivor本文を変えず、deprecated側の全要件が既存survivorに包含されるときだけ選べる。部分的な包含なら残りをmergeするかkeep_separateにする。出典がないことと証拠が否定されたことは別に記録し、参照先を読んだふりをしない。</p>
+  <h2 id="system-context">5. 管理されたSystemContext</h2>
+  <p>contexts/landscape/curationPlan.context.tomlとcurationVerify.context.tomlを追加する。単一catalogから生成したversion付きartifactをRustとTypeScriptで共有し、requestにcontext key、version、render hash、schema hash、model・routeを記録する。TypeScript独自の判断promptとpolicyは廃止し、Rustの結果を表示するadapterにする。</p>
+  <p>SystemContextは目的、禁止条件、scope契約、全decisionの意味、原文対応、反例、JSON schema、上限を含む。knowledge・title・metadata・出典は全てuntrusted dataである。knowledgeが「この規則を無視せよ」と命令していても、その文を分析対象として扱う。LLMにtool実行やDB更新を許可しない。</p>
+  <p>Chat Completionsではsystemとuserを分離する。Agent Sessionで単一文字列化する場合、タグescapeだけで本物のrole分離と同等だとは扱わず、経路単位で注入耐性を評価する。Rustを含む全送信箇所をsystem-context boundary checkへ追加する。</p>
+  <h2 id="schema">6. 構造化された決定と実行gate</h2>
+  <p>decisionはmerge、deprecate_duplicate、keep_separate、needs_evidenceの4つに絞る。観測・再試行・escalationは実行状態として区別する。出力にはinput hash、survivor ID、deprecated ID、各source spanの保持先または包含先、反証、保留理由を持たせる。未知field、未知ID、重複ID、不完全coverageを拒否する。</p>
+  <p>schemaを一つの正本からRust serdeとTypeScript validatorに共有する。LLMの出力は未信頼の提案としてparseし、gate通過後だけ内部のValidatedMutationへ変換する。型変換前のproposalをwriterが受け付けるAPIを設けない。</p>
+  <h2 id="queue">7. 全件キューと候補探索</h2>
+  <p>全active knowledgeを一度のbackfillだけでなく、新規作成・実質的な本文やscopeの変更後にも対象にする。利用回数更新は再投入理由にしない。jobにreviewed revisionとpolicy versionを記録し、同じpair・revisionの審査を重複させない。候補がない場合も審査済みとして記録する。</p>
+  <p>候補はrepository・type・polarityで絞り、完全一致、既存vector、語彙検索を併用する。近似度は候補選定だけに使う。vectorがないknowledgeを未審査のままにしない。top Kは固定の0.8閾値・5件を引き継がず、正解候補のrecallと費用を測って設定する。AとB、BとCが近いというだけでAとCまで一括統合しない。</p>
+  <h2 id="mutation">8. 変更・lineage・復元</h2>
+  <p>LLM呼び出し中にwriter lockを保持しない。適用直前に関係する両IDを一定順で確認し、body・scope・identity・statusのrevisionを比較する。staleなら古い提案を適用せず、最新snapshotで再評価する。crash後の再開は同じmutation IDでidempotentに行う。</p>
+  <p>survivorの本文、source/origin links、deprecated側の置換先、FTS・embeddingのrevisionを一貫させる。元のIDと出典は履歴に残し、参照が循環しないようにする。復元は変更後revisionが一致するときだけ逆transactionで戻し、後続の正当な変更を上書きしない。</p>
+  <h2 id="evaluation">9. 品質評価と採用条件</h2>
+  <p>現行9件の契約probeを回帰の種にする。正しい重複、補完可能な手順、数値・単位、否定、例外、条件、scope、参照根拠、逆方向、注入、長文を含む正解集合を作る。日本語・英語、実データ由来と合成反例を分けて評価する。</p>
+  <p>変更precision、全要件の保持率、正解mergeのrecall、誤deprecated、候補探索recall、保留率、provider失敗を別々に出す。全件keep_separateでも高得点になる指標にしない。現行、plannerのみ、planner＋verifierを同じsnapshotで比較する。自己申告の確信度や同じLLMの採点だけを正解としない。</p>
+  <h2 id="operations">10. 実行基盤と段階導入</h2>
+  <p>provider容量409、通信失敗、JSON不正、意味判断の誤りを別状態として扱う。retryは有界で、恒久的なprovider占有や無限再試行を許さない。外部呼び出しの間はqueue leaseを更新し、cancel時もprovider資源を返す。</p>
+  <p>最初に危険な現行gateを停止する変更と厳格な完全一致経路を導入し、semantic経路はsnapshot上のshadowから始める。品質条件を満たしたrouteだけ限定件数で実適用し、失敗を検出したrouteを自動停止する。全件キューの投入はsemantic経路の昇格を待たない。</p>
+  <h2 id="work">11. 実装単位と検証</h2>
+  <table>
+    <caption>依存順の作業と完了証拠</caption>
+    <thead><tr><th scope="col">単位</th><th scope="col">主な変更先</th><th scope="col">完了証拠</th></tr></thead>
+    <tbody>
+      <tr><td>W1 安全な入口</td><td>queue_lifecycle/curation_executor.rs、curation_repository.rs</td><td>既知の危険回答が変更不可、完全一致の対照だけ変更可。</td></tr>
+      <tr><td>W2 snapshotとscope</td><td>queue_lifecycle、mcp_lifecycle/repository_scope.rs</td><td>現行scope semanticsの共有、原文byte coverage、出典の取得状況。</td></tr>
+      <tr><td>W3 SystemContextとschema</td><td>contexts/landscape、src/modules/system-context、scripts/verify-system-context-boundary.mjs</td><td>RustとTSのrender/schema hash一致、全routeの境界検査。</td></tr>
+      <tr><td>W4 planner・verifier・gate</td><td>queue_lifecycle/curation_executor.rsから専用moduleへ分割、src/shared/schemas/landscape-curation.schema.ts</td><td>全decision、双方survivor、全spanの対応、反証での拒否。</td></tr>
+      <tr><td>W5 atomic applyと復元</td><td>domains/sqlite_writer/schema.rs、queue_lifecycle、knowledge reader</td><td>途中crash、二重実行、stale、index更新失敗、復元競合の検証。</td></tr>
+      <tr><td>W6 revision queueと探索</td><td>queue_lifecycle/curation_repository.rs、executor.rs、types.rs</td><td>全activeを網羅、候補recall、処理の公平性、自己再投入なし。</td></tr>
+      <tr><td>W7 providerとadapter</td><td>shared/agent_session.rs、dynamic_provider.rs、src/modules/landscape/landscape-curation.service.ts、landscape-curation-policy.ts</td><td>capacity解放、cancel、Rustだけが判断・書き込みを所有。</td></tr>
+      <tr><td>W8 evalと導入</td><td>curation_evaluation.rs、curation_tests.rs、評価CLI、監査表示</td><td>固定holdout、shadow、限定適用、rollback演習を記録。</td></tr>
+    </tbody>
+  </table>
+  <p>Rust側の相対表記はcrates/context-stilld/src/domains/配下。新規module名と評価CLIは計画上の追加物で、現時点で実装済みとは扱わない。queue業務のwriter ownershipをTypeScriptへ戻さない。</p>
+</article>

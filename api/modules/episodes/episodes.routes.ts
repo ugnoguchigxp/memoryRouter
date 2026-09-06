@@ -4,7 +4,7 @@ import { z } from "zod";
 import {
   fetchEpisode,
   registerEpisode,
-  searchEpisodes,
+  listEpisodesForAdmin,
 } from "../../../src/modules/episodic-memory/episode-card.service.js";
 import { episodeCardCreateSchema } from "../../../src/shared/schemas/episode-card.schema.js";
 
@@ -47,7 +47,7 @@ export const episodesRouter = new Hono()
   })
   .get("/", zValidator("query", listEpisodesQuerySchema), async (c) => {
     const query = c.req.valid("query");
-    const items = await searchEpisodes({
+    const items = await listEpisodesForAdmin({
       query: query.query ?? query.q,
       status: query.status,
       domains: query.domains,

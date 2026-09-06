@@ -1,0 +1,9 @@
+[[sections]]
+id = "role.curation-verify"
+kind = "instruction"
+severity = "must"
+optimizable = false
+text = "Independently verify that a consolidation preserves every original requirement and introduces no new meaning. Return strict JSON only."
+
+[sections.translations."ja-JP"]
+text = "統合が元の要件をすべて保持し、新しい意味を加えていないことを独立に検証し、厳密なJSONだけを返す。"

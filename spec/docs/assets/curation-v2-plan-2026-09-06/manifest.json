@@ -1,0 +1,32 @@
+{
+  "date": "2026-09-06",
+  "kind": "design-only",
+  "planReadinessScore": 97,
+  "modelQualityScore": null,
+  "reviewer": "Codex /root self-review",
+  "validation": {
+    "jsonSchemaDraft": "2020-12",
+    "schemaCount": 2,
+    "validExamples": 5,
+    "invalidPlannerExamplesRejected": 6,
+    "unicode1200Boundary": "passed",
+    "rubricSumAndAnchors": "passed",
+    "specFix": "passed",
+    "specCheck": "passed",
+    "newProductionLogicTests": "not implemented; plan-only task"
+  },
+  "finalPlanSha256": "a51ebfbb951059ce87a58b830e958eefe25a31a65a045396b057e80ef1452e93",
+  "sha256": {
+    "planner-examples.json": "3c72368420002214fef84ef6ccc09713304f1964ef0513f98bf04f6efee2da5d",
+    "planner-response.schema.json": "f20f989a964c962e4a05bbcaef01f897c559737c0034f1c8271da9284eb61d67",
+    "planner-system-context.txt": "5070c8a73c98f025d13e26590c79c5c3063eec42b1ac15c310cc3e6cef8cbf66",
+    "review-rubric.json": "f1ebbeeceb0af3a26ce34f897c9d0525ec354cf048be67d40352af0791e16c93",
+    "review-scorecard.json": "c5e60ee13a5b09d35c3bc86e57b514b708e3fa3b4d186d3b2118c684d2bd4c67",
+    "revision-1.txt": "cdae37a4ed3830a39facbd76012be572b82f0c8b5c39f00d7ead0b445d511c17",
+    "revision-2.txt": "75691a4493d84f044eccb3907769fef0cbda75c349c53c38678facf16623cf6d",
+    "revision-3.txt": "a51ebfbb951059ce87a58b830e958eefe25a31a65a045396b057e80ef1452e93",
+    "verifier-example.json": "9d865107b1cf21edad8f087223d9271562cfad1ccce87e2c568517f564b34954",
+    "verifier-response.schema.json": "ccc315efa4ac1c01980cdef191456e7df602236099481576f8bd427c25d15a61",
+    "verifier-system-context.txt": "354085483f0c49ab45a1f9ffcaeff7bf986ba4ec7d3bd0e0d2011d07ed60e07b"
+  }
+}

@@ -5,8 +5,8 @@
   <h2 id="status">Status</h2>
   <ul>
     <li>Status: Approved Implementation Specification / GO</li>
-    <li>Version: 1.2</li>
-    <li>Last updated: 2026-08-27</li>
+    <li>Version: 2.0</li>
+    <li>Last updated: 2026-09-06</li>
     <li>Internal queue name: <code>landscapeCuration</code></li>
     <li>Visible label: Curation</li>
     <li>
@@ -20,6 +20,49 @@
     LANDSCAPEの重複候補、到達不能、陳腐化、適用範囲不良を継続的に整理する第6のvisible
     queueとして、<code>landscapeCuration</code>を実装する。本仕様はプロジェクト開始をGOとし、個々のactionに対する自動実行権限をruntime
     gateで段階解放する。
+  </p>
+  <h2 id="full-landscape-curation">0. 全件投入とRust常駐処理</h2>
+  <p>
+    Version 2.0では、Rust常駐executorが全active knowledgeをCurationへ自動投入する。
+    Landscapeの画面ページ、dead-zone分類、review itemの有無で対象を絞らない。
+    既存knowledgeも投入し、新規active knowledgeは次回tickで追加する。
+    本節は、後続の完全一致限定、手動投入、下流queue委譲必須という旧仕様より優先する。
+  </p>
+  <ul>
+    <li>
+      body、title、type、polarity、repository identity、appliesTo、意味に影響するmetadataのcontent
+      revisionごとに自動投入する。利用回数、時刻、queue状態だけの更新は再投入しない。統合でsurvivorの内容が変わった場合は新revisionとして一度再審査し、source
+      group lineageの重複追加を防ぐ。
+    </li>
+    <li>
+      claim時点の最新本文・適用範囲を取得し、同一repository・scope・type・polarityの近似候補を最大5件集める。本文一致、embedding
+      cosine、Unicode文字bigramの類似を候補選定にだけ使う。embedding未作成のknowledgeも除外しない。候補がないknowledgeもqueueへ投入し、LLMによる記録判断を残す。
+    </li>
+    <li>
+      LLM plannerは本文を自由生成せず、survivor、deprecated側、原文source
+      groupのcoverageだけを提案する。deterministic
+      rendererが元groupを順序付きで構成し、独立verifierが条件、否定、例外、数値、識別子、順序、provenance、新規意味、矛盾を確認する。両方の構造検査とverificationが揃った場合だけ統合またはdeprecatedを実行する。
+    </li>
+    <li>
+      統合bodyのembeddingは書き込み前に取得する。SQLite
+      writerの単一transactionで本文・embedding・FTS・参照元・deprecated化・完了記録を確定する。変更前snapshot、proposal
+      hash、verification hash、supersession、pair review、revision
+      ledgerを保存し、postcheck失敗時はtransaction全体をrollbackする。
+    </li>
+    <li>
+      LLM待機中はwriterを占有せず、provider
+      leaseをheartbeatする。入力変更はskipped、provider・embedding失敗は5分後に再試行し、3回失敗でfailedとする。
+    </li>
+    <li>
+      Rust常駐処理ではCuration内で変更を完結する。既存の手動Merge
+      Review／FinalizeとPostgreSQL向けTypeScript経路は従来どおり維持する。処理量は既存provider
+      poolとqueue pause設定で制御する。
+    </li>
+  </ul>
+  <p>
+    2026-09-06の修正前計測はactive knowledge 7,959件、Curation 0件。 自動投入の呼び出しとRust
+    executor対応の両方が欠けていた。
+    検証では全件投入・再実行・新規追加、近似候補、repository境界、本文とembeddingの統合、参照元保存、stale入力、失敗時rollback、LLM不正出力を対象とする。
   </p>
   <h2 id="autonomous-decision-override">0.1 Autonomous decision override</h2>
   <p>
@@ -66,6 +109,38 @@
     contractと競合する場合はnormative
     contractを優先する。未確定事項を実装担当へ委ねないため、本仕様に記載のない自動mutationはV1へ追加しない。
   </p>
+
+  <h2 id="curation-v2-contract-precedence">0.2 Curation v2 contract precedence</h2>
+  <p>
+    Curationの実装契約はVersion 2.0では本節と0節を正とする。4.1〜4.4節、20節以降に残るV1、exact
+    duplicate、Merge
+    Review／Finalizeへの委譲、本文のLLM生成、appliesToのunion、confidence閾値に基づくmutation許可の記述は、Curation
+    v2には適用しない。これらの節は既存TypeScript経路の履歴としてのみ保持する。
+  </p>
+  <ul>
+    <li>
+      Rust executorがcontent revision単位で全active
+      knowledgeを永続queueへ入れる。候補がなくてもjobを残し、再実行では同じrevisionを重複させない。
+    </li>
+    <li>
+      LLMの出力は既存ID、source group、coverage、reason
+      codeだけを参照するproposalである。本文、scope、repository
+      identity、type、polarityを生成または変更する権限を持たない。
+    </li>
+    <li>
+      mutationは同一scope、repository
+      identity、type、polarityの二者間だけに限定する。survivorとdeprecatedをLLMが明示し、deterministic
+      rendererがcoverage済み原文groupだけから本文を組み立てる。
+    </li>
+    <li>
+      独立verifierが条件、否定、例外、数値、識別子、順序、provenance、新規意味、矛盾を検査し、全groupのcoverageとsupported
+      verdictを返した場合だけSQLiteの単一transactionで更新する。
+    </li>
+    <li>
+      proposal、verification、入力・出力hash、supersession、pair review、revision
+      ledgerと変更前snapshotを保存する。入力stale、不正出力、verifier拒否、embedding失敗、postcheck失敗はmutationせず、失敗またはskipとして記録する。
+    </li>
+  </ul>
 
   <h2 id="goals">1. Goals</h2>
   <ul>

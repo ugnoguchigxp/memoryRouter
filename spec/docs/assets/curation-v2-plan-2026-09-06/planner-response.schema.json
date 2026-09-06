@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "inputHash",
+    "action",
+    "survivorId",
+    "deprecatedIds",
+    "retainedGroupIds",
+    "coverage",
+    "reasonCodes",
+    "rationale"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "curation-proposal-v2"
+    },
+    "inputHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "action": {
+      "enum": [
+        "merge",
+        "deprecate_duplicate",
+        "keep_separate",
+        "needs_evidence"
+      ]
+    },
+    "survivorId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deprecatedIds": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "retainedGroupIds": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      },
+      "uniqueItems": true
+    },
+    "coverage": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sourceGroupId",
+          "disposition",
+          "targetGroupIds"
+        ],
+        "properties": {
+          "sourceGroupId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "disposition": {
+            "enum": [
+              "retained",
+              "entailed"
+            ]
+          },
+          "targetGroupIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "reasonCodes": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "enum": [
+          "COMPLETE_DUPLICATE",
+          "COMPLEMENTARY",
+          "USEFUL_DIFFERENCE",
+          "CONFLICT",
+          "SCOPE_MISMATCH",
+          "IDENTITY_MISMATCH",
+          "MISSING_EVIDENCE",
+          "INPUT_TOO_LARGE",
+          "AMBIGUOUS_CONTEXT",
+          "RENDER_CONFLICT"
+        ]
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "merge",
+              "deprecate_duplicate"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "survivorId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "deprecatedIds": {
+            "minItems": 1
+          },
+          "retainedGroupIds": {
+            "minItems": 1
+          },
+          "coverage": {
+            "minItems": 2
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "survivorId": {
+            "type": "null"
+          },
+          "deprecatedIds": {
+            "maxItems": 0
+          },
+          "retainedGroupIds": {
+            "maxItems": 0
+          },
+          "coverage": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

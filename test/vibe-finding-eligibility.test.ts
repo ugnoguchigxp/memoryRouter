@@ -48,15 +48,37 @@ describe("evaluateVibeFindingEligibility", () => {
     });
 
     expect(result.eligible).toBe(true);
-    expect(result.score).toBeGreaterThanOrEqual(50);
+    expect(result.verdict).toBe("eligible");
     expect(result.signals).toEqual(
       expect.arrayContaining([
-        "verification_or_failure_terms",
-        "has_agent_diff",
-        "mixed_roles",
-        "runtime_or_queue_terms",
-        "command_terms",
+        "causal_resolution_verified",
+        "substantive_agent_diff",
+        "repeatable_operation_verified",
       ]),
     );
+  });
+
+  test("accepts a short, concrete durable user preference without a character threshold", () => {
+    const result = evaluateVibeFindingEligibility({
+      id: "memory-preference",
+      sessionId: "session-1",
+      content: "USER: 今後、queue の retry は原因別に確認してください。",
+      metadata: { roles: ["user"] },
+    });
+
+    expect(result.eligible).toBe(true);
+    expect(result.selectorVersion).toBe("finding-selector-v2");
+    expect(result.features).toContain("persistent_preference");
+  });
+
+  test("does not treat a successful build alone as reusable knowledge", () => {
+    const result = evaluateVibeFindingEligibility({
+      id: "memory-build",
+      sessionId: "session-1",
+      content: "ASSISTANT: build succeeded",
+    });
+
+    expect(result.eligible).toBe(false);
+    expect(result.reasonCodes).toContain("build_succeeded_only");
   });
 });

@@ -1,0 +1,12 @@
+source_dir = "contexts"
+out_dir = "catalog"
+[authoring]
+source_locale = "ja-JP"
+[governance]
+require_owner = true
+[keyspaces.contextCompiler]
+owner = "context-compiler"
+[release_profiles.production]
+required_locales = ["ja-JP", "en-US"]
+[generation]
+typescript_indent = 2

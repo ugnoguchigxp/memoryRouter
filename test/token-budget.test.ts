@@ -168,5 +168,22 @@ describe("Token Budget Utilities", () => {
       expect(result.dropped).toBe(true);
       expect(result.items[0].content.endsWith("...")).toBe(true);
     });
+
+    test("never exceeds the section budget when title and ranking metadata are long", () => {
+      const item: ContextPackItem = {
+        id: "item1",
+        itemKind: "rule",
+        itemId: "r1",
+        section: "rules",
+        title: "A title that consumes the entire section budget by itself".repeat(3),
+        content: "Evidence that must not make the rendered item exceed its budget.",
+        score: 1,
+        rankingReason: "A verbose ranking explanation".repeat(3),
+        sourceRefs: [],
+      };
+
+      const result = applySectionTokenBudget([item], 10);
+      expect(result).toEqual({ items: [], dropped: true });
+    });
   });
 });

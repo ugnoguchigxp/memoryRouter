@@ -1,0 +1,202 @@
+{
+  "rubric": "review-rubric.json",
+  "target": 95,
+  "independentReview": false,
+  "revisions": [
+    {
+      "revision": "r1",
+      "score": 78,
+      "scores": {
+        "C01": 5,
+        "C02": 4,
+        "C03": 4,
+        "C04": 4,
+        "C05": 4,
+        "C06": 3,
+        "C07": 5,
+        "C08": 4,
+        "C09": 3,
+        "C10": 4,
+        "C11": 5,
+        "C12": 4,
+        "C13": 5,
+        "C14": 5,
+        "C15": 4,
+        "C16": 2,
+        "C17": 3,
+        "C18": 2,
+        "C19": 5,
+        "C20": 3
+      },
+      "documentSha256": "d043d154954c4f050a54ccb08da18e54e565ee941259a5d1cf2c387f2e581626",
+      "method": "author self-review",
+      "vetoes": [
+        "Non-LLM provided-candidate fencing incomplete",
+        "Backup rollback could lose post-backup downstream changes"
+      ],
+      "findings": [
+        {
+          "id": "R1-01",
+          "issue": "provided_candidateはprovider leaseを取得しないが保存所有権の定義がない。generic claim tokenが必要。"
+        },
+        {
+          "id": "R1-02",
+          "issue": "scope snapshot座標が未定義で既存readRanges token offsetとの混在を防げない。"
+        },
+        {
+          "id": "R1-03",
+          "issue": "世代切替とFinalize同時commit、checkpoint保存後応答喪失、partial legacy migrationを具体化する。"
+        },
+        {
+          "id": "R1-04",
+          "issue": "品質比較のsample数、統計、合格値が未確定。"
+        },
+        {
+          "id": "R1-05",
+          "issue": "mode=offの意味とschema後の旧binary復元が粗く、他domainの後続書き込みを失う可能性がある。"
+        },
+        {
+          "id": "R1-06",
+          "issue": "総request予算・token予算・tick継続のカウンターと公平性が曖昧。"
+        }
+      ]
+    },
+    {
+      "revision": "r2",
+      "score": 93,
+      "scores": {
+        "C01": 5,
+        "C02": 5,
+        "C03": 4,
+        "C04": 5,
+        "C05": 4,
+        "C06": 4,
+        "C07": 5,
+        "C08": 4,
+        "C09": 5,
+        "C10": 4,
+        "C11": 5,
+        "C12": 5,
+        "C13": 5,
+        "C14": 5,
+        "C15": 4,
+        "C16": 4,
+        "C17": 5,
+        "C18": 5,
+        "C19": 5,
+        "C20": 5
+      },
+      "documentSha256": "b9449904f52bda9105b8ebb76f3f3394d64a553a66dd7fff336c01040b31cbf8",
+      "method": "author self-review; failure-path walkthrough",
+      "vetoes": [],
+      "resolved": [
+        "R1-01",
+        "R1-02",
+        "R1-03",
+        "R1-04",
+        "R1-05",
+        "R1-06"
+      ],
+      "findings": [
+        {
+          "id": "R2-01",
+          "issue": "再抽出APIの応答喪失後、素早く終端化した同一操作を重複して世代更新する余地がある。永続idempotency keyが必要。"
+        },
+        {
+          "id": "R2-02",
+          "issue": "旧jobに非終端部分候補がある場合と正常no_candidate行のmigration分類をSQLで検査できる形にする。"
+        },
+        {
+          "id": "R2-03",
+          "issue": "形式修復後に初回のstaging候補を混ぜるか曖昧。採用する応答を1つに固定する。"
+        },
+        {
+          "id": "R2-04",
+          "issue": "v2 selectorの信号、--min-score互換、reject再評価の走査が具体化不足。"
+        },
+        {
+          "id": "R2-05",
+          "issue": "実装者用の新規test名とcommand、quality出力schemaが必要。"
+        },
+        {
+          "id": "R2-06",
+          "issue": "snapshot消去の参照条件と旧世代rerunを許す操作を一致させる必要がある。"
+        }
+      ]
+    },
+    {
+      "revision": "r3",
+      "score": 96,
+      "scores": {
+        "C01": 5,
+        "C02": 5,
+        "C03": 5,
+        "C04": 5,
+        "C05": 5,
+        "C06": 4,
+        "C07": 5,
+        "C08": 5,
+        "C09": 5,
+        "C10": 4,
+        "C11": 5,
+        "C12": 5,
+        "C13": 5,
+        "C14": 5,
+        "C15": 5,
+        "C16": 4,
+        "C17": 4,
+        "C18": 5,
+        "C19": 5,
+        "C20": 5
+      },
+      "documentSha256": "5d43cc91b27fa8f921d5366876010ead2660cef41e14ea85072c7d40d7f271c1",
+      "method": "author self-review; transaction, migration, retry and compatibility walkthrough",
+      "vetoes": [],
+      "resolved": [
+        "R2-01",
+        "R2-02",
+        "R2-03",
+        "R2-04",
+        "R2-05",
+        "R2-06"
+      ],
+      "additionalCorrections": [
+        "migration前の構造的重複と意味的不整合を区別",
+        "FK適用順とSQLite rebuild時のcascade回避を定義",
+        "全SQLite producerのresident write集約を明示",
+        "request budgetと容量上限を保存",
+        "publish順序と同runで変更不可のmanifestを明記"
+      ],
+      "residualDeductions": {
+        "C06": "実稼働DBの構造不整合・意味的不整合の分布は未確認。preflight停止条件とquarantine後の復旧を計画に明記した。",
+        "C10": "自然言語signalの校正値は未測定。共通fixture、uncertain枠、CLI互換とholdoutで調整する。",
+        "C16": "420件のgoldと人手reviewerは未準備。ラベル・統計・漏洩防止・未達時停止を定義した。",
+        "C17": "RSS、writer時間、混合負荷の基準値は未測定。予算の初期値と採取・比較gateを定義した。"
+      },
+      "criterionEvidence": {
+        "C01": "finding-v2-implementation-plan.html#scope",
+        "C02": "finding-v2-implementation-plan.html#routing",
+        "C03": "finding-v2-implementation-plan.html#generation",
+        "C04": "finding-v2-implementation-plan.html#downstream",
+        "C05": "finding-v2-implementation-plan.html#schema",
+        "C06": "finding-v2-implementation-plan.html#migration",
+        "C07": "finding-v2-implementation-plan.html#redaction",
+        "C08": "finding-v2-implementation-plan.html#output",
+        "C09": "finding-v2-implementation-plan.html#input",
+        "C10": "finding-v2-implementation-plan.html#eligibility",
+        "C11": "finding-v2-implementation-plan.html#prompts",
+        "C12": "finding-v2-implementation-plan.html#states",
+        "C13": "finding-v2-implementation-plan.html#work",
+        "C14": "finding-v2-implementation-plan.html#tests",
+        "C15": "finding-v2-implementation-plan.html#verification",
+        "C16": "finding-v2-implementation-plan.html#quality",
+        "C17": "finding-v2-implementation-plan.html#budgets",
+        "C18": "finding-v2-implementation-plan.html#rollout",
+        "C19": "finding-v2-implementation-plan.html#compatibility",
+        "C20": "finding-v2-implementation-plan.html#readiness"
+      }
+    }
+  ],
+  "finalScore": 96,
+  "accepted": true
+}

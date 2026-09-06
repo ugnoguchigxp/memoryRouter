@@ -1,0 +1,308 @@
+<article lang="ja">
+  <h1>Coveringロジック評価と改善候補</h1>
+  <p>
+    評価日: 2026年9月6日。対象は現行Rust residentの
+    <code>covering_executor</code
+    >、組み込みプロンプト、後続Finalize。ユーザーの「Covring」をCoveringとして評価した。実装変更は行わず、コード読解と隔離コピーでの再現試験を実施した。
+  </p>
+  <h2>評価の結論</h2>
+  <p>
+    <strong
+      >キュー処理と永続化の基盤は堅い一方、知識の採否を保証する境界には改善が必要である。</strong
+    >元資料を見ない負の知識の評価、不明な採否の採用への変換、LLMによる所属プロジェクトの上書き、文字の類似度だけによる棄却、一時障害による候補の終了を優先して直したい。モデルの変更や閾値調整だけでは解消しない。
+  </p>
+  <p>
+    既存のCoveringテスト21件は成功した。隔離コピーに観測用テスト8件を追加し、合計29件が成功した。追加テストの成功は問題挙動の再現を意味し、望ましい仕様への適合を意味しない。本番データでの誤採用率、誤棄却率、発生頻度は未計測であり、ここでは断定しない。
+  </p>
+  <h2>現在の処理</h2>
+  <ol>
+    <li>claim済み候補、元資料、project identity、active/draft知識の重複候補を読み込む。</li>
+    <li>
+      <code>polarity == negative</code
+      >なら負の知識用LLMへ送る。それ以外は元資料の取得、短すぎる候補の排除、重複判定、identity確認を行う。
+    </li>
+    <li>
+      正の知識は語句によって外部検索の要否を分岐し、LLMで根拠と価値を評価する。重要度、適用カテゴリ、identity、手順形式を確認・補完する。
+    </li>
+    <li>
+      Evidence保存、Finalize
+      enqueue、Covering状態遷移、lease解放、イベント記録を同一transactionで確定する。
+    </li>
+    <li>
+      Finalizeは重要度・形式・適用カテゴリ・identity・embeddingを確認し、repo
+      scopeのdraft知識を保存する。主張と根拠の再照合は行わない。
+    </li>
+  </ol>
+  <h2>優先順位</h2>
+  <p>
+    P1は誤採用、誤帰属、有効候補の棄却に直結するため先行修正を推奨する。P2は検索品質、証拠の再現性、再処理の回復性を改善する。優先順位は到達可能な不正状態と影響に基づき、発生頻度を表すものではない。
+  </p>
+  <table>
+    <caption>
+      再現した8件の改善候補
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">項目</th>
+        <th scope="col">優先度</th>
+        <th scope="col">確認できた挙動</th>
+        <th scope="col">改善方向</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>F1 負の知識の根拠</td>
+        <td>P1</td>
+        <td>元資料が空・根拠0件でもhigh-riskタグがあるとknowledge_readyになる。</td>
+        <td>元資料と照合し、根拠の最低条件をリスクタグで免除しない。</td>
+      </tr>
+      <tr>
+        <td>F2 採否応答の受理</td>
+        <td>P1</td>
+        <td>rejected等の未知statusとtitleがある応答をknowledge_readyに変換する。</td>
+        <td>未知statusはparse_failedへ送り、採用に必要な情報を厳密に検証する。</td>
+      </tr>
+      <tr>
+        <td>F3 所属プロジェクト</td>
+        <td>P1</td>
+        <td>正の知識ではLLM応答が元のrepoPathを置換できる。</td>
+        <td>信頼済みidentityを固定し、生成可能なカテゴリと分離する。</td>
+      </tr>
+      <tr>
+        <td>F4 重複の誤判定</td>
+        <td>P1</td>
+        <td>肯定と否定が逆の指示を類似度0.994でduplicateにする。</td>
+        <td>類似度は候補検索に使い、矛盾・適用範囲・追加条件を別途判定する。</td>
+      </tr>
+      <tr>
+        <td>F5 一時障害と棄却</td>
+        <td>P1</td>
+        <td>カテゴリ補完の接続失敗がinsufficientになり、Coveringがcompletedになる。</td>
+        <td>provider/parse障害と内容不足を型で分け、前者は再試行する。</td>
+      </tr>
+      <tr>
+        <td>F6 重複の検索漏れ</td>
+        <td>P2</td>
+        <td>空白正規化後は完全一致でも、SQLの事前絞り込みで検索から漏れる。</td>
+        <td>正規化hashによる一致検索と、FTS・意味検索による候補取得を分ける。</td>
+      </tr>
+      <tr>
+        <td>F7 根拠の切り詰め</td>
+        <td>P2</td>
+        <td>読み取った範囲内の後半にある根拠が、LLM用の先頭1,000文字に残らない。</td>
+        <td>主張に関連する箇所を抽出し、実際に提示した範囲を記録する。</td>
+      </tr>
+      <tr>
+        <td>F8 再処理とFinalize</td>
+        <td>P2</td>
+        <td>再Coveringでknowledge_readyになっても、既存Finalizeがfailedのまま残る。</td>
+        <td>Evidenceの改訂と、失敗済みFinalizeの再開条件を定義する。</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2>根拠と改善の受入条件</h2>
+  <h3>F1: 負の知識が元資料を検証していない</h3>
+  <p>
+    <code>provider.rs:16</code>の
+    <code>request_negative_evidence</code>
+    はcandidateのtitle/contentだけを送信する。読み込まれたsource_contentやdiffは渡されない。<code>negative_response.rs:130</code>以降では、LLMが出したevidence文字列の異なり数を数え、<code
+      >regression / security_risk / data_integrity</code
+    >
+    のタグがあると根拠件数による棄却を免除する。
+  </p>
+  <p>
+    再現試験ではsource_contentを空にし、架空のfailure/trigger/fix、data_integrityタグ、evidence空配列を返した。結果はconfidence
+    74のknowledge_readyで、参照0件のままFinalizeが1件作られた。さらに同じ試験でduplicate_statusを指定しても負の経路では参照されず、duplicate_refsも失われた。これはLLMが常に捏造するという主張ではなく、不正な応答を受理する境界の確認である。
+  </p>
+  <p>
+    改善:
+    元資料の抜粋・位置・資料識別子を渡し、主張ごとの支持／矛盾／不明を返させる。evidenceには元資料に存在する引用または照合可能な位置を要求する。高リスクタグは優先度やレビューの強さを上げる用途に限定する。独立した根拠数と同じ事象の言い換え数を区別する。負の経路にも最終本文を対象とした重複確認を適用する。
+  </p>
+  <p>
+    受入条件:
+    根拠0件、元資料に存在しない引用、同一事象の言い換え、元資料と矛盾するfixを採用しない。高リスクでも同じ最低条件を満たす。
+  </p>
+  <h3>F2: 未知statusが採用へ変換される</h3>
+  <p>
+    <code>positive_response.rs:105</code
+    >のparserは許可されないstatusを捨て、title/body/contentが存在するとknowledge_readyを推定する。<code>{"status":"rejected","title":"Rejected candidate"}</code>、false_positive、not_reusableの3例で採用への変換を再現した。bodyやスコア、適用カテゴリは入力候補から補完される。またstatusだけがknowledge_readyの応答でも候補全体を引き継げる。
+  </p>
+  <p>
+    改善:
+    statusの欠落と不正値を区別し、不正値をparse_failedにする。schemaVersionとstatusごとの必須項目を検証する。旧ラベル形式の互換処理を残す場合でも、その互換処理から根拠のない採用を作らない。confidenceを単に補完するより、判定理由と支持する参照を必須にする。
+  </p>
+  <p>
+    受入条件:
+    不明status、欠落status、誤った型、statusだけの採用応答で意図せずknowledge_readyにならない。明示的なinsufficientは候補本文が付いていても棄却を維持する。
+  </p>
+  <h3>F3: LLMが信頼済みidentityを上書きできる</h3>
+  <p>
+    <code>source.rs</code>で元情報からidentityを組み立てても、正の知識の
+    <code>parse_positive_candidate</code> はdefaultのappliesToとLLM応答を
+    <code>merge_applicability</code>
+    に渡し、後から来るrepoPath等を優先する。再現試験では
+    <code>/work/project-a</code> が
+    <code>/work/project-b</code>
+    に置換された。元のprojectIdentityを再適用する負の経路とは条件が異なる。
+  </p>
+  <p>
+    FinalizeはappliesToのidentityを解決してrepo
+    scopeで保存するため、誤ったrepoPathだけが指定されていれば別プロジェクトへの帰属につながり得る。複数identityが矛盾した場合は後続でエラーになる可能性もあるが、元情報との一致を保証する処理にはなっていない。
+  </p>
+  <p>
+    改善:
+    projectRef/repoPath/repoKeyは実行側が確定し、LLMが編集できるフィールドから除く。カテゴリ補完でも同じルールを使う。受入条件:
+    LLMが別identityを返しても信頼済みの所属が維持されるか、明示的な不整合として停止する。
+  </p>
+  <h3>F4: 文字の近さが意味の同一性として扱われる</h3>
+  <p>
+    <code>deduplication.rs:57</code
+    >以降はbigramの一致からスコアを計算し、0.93以上をduplicate、0.82以上をnear_duplicateにする。<code>execution.rs:228</code>以降でどちらもLLMの確認前に終了する。共通本文に続く
+    <code>Do run the migration automatically.</code> と
+    <code>Do not run the migration automatically.</code> は0.994でduplicateになった。
+  </p>
+  <p>
+    SQLと関数引数にはscope、project
+    identity、polarity、適用カテゴリの比較もない。同文であっても別repoにだけ存在する知識を理由に候補を捨てる可能性がある。近似候補をMerge
+    Reviewへ送る処理は、このRust Coveringのpersist経路にはない。
+  </p>
+  <p>
+    改善:
+    同一scopeと適用条件での完全一致だけを自動終了の基本にする。近似一致はduplicate、complement、contradiction、unrelatedに分けて確認し、数値・否定・版・前提の差分を保護する。受入条件:
+    肯定／否定、上限値、対応バージョン、対象repoが異なる候補を単なるduplicateとして捨てない。
+  </p>
+  <h3>F5: 補完中の一時障害が内容不足になる</h3>
+  <p>
+    <code>execution.rs:393</code>以降はapplicability
+    refinementのエラーをイベントに保存して処理を続け、カテゴリが埋まらなければinsufficientにする。providerへの接続失敗を起こした試験で、reasonはapplies_to_categories_requiredとなり、永続化結果はCompletedになった。<code>persistence.rs</code>が再試行するのはprovider_failed、parse_failed、tool_failed、reprocess_requestedだけである。
+  </p>
+  <p>
+    procedure
+    repairでも通信・parse失敗と根拠不足が同じエラー経路に入り、ruleへの降格またはinsufficientへ進むことをコードで確認した。この追加経路の失敗注入試験は今回実施していない。
+  </p>
+  <p>
+    改善:
+    補完結果を成功、内容不足、一時的失敗、不正応答に分ける。通信や不正応答で型を降格させず、適切なretry状態を返す。受入条件:
+    一時的な接続障害後に再試行でき、復旧後に元の候補を評価できる。
+  </p>
+  <h3>F6: 重複候補の取得と正規化が一致していない</h3>
+  <p>
+    <code>deduplication.rs:26</code>以降のSQLはraw
+    title/bodyのlower一致、または先頭48／64文字の包含で最大40件を取る。後段で空白を正規化しても、前段で外れた候補は戻らない。全空白を3個に増やした既存知識は、正規化後にタイトル・本文とも完全一致するのに検索結果0件となった。更新日時順の40件上限も、類似度を計算する前に候補を落とす。
+  </p>
+  <p>
+    TypeScript版はlexical検索とsemantic検索を併用する一方、現行Rustのこの関数には意味検索がない。したがって旧実装の検索能力を現行実装の説明として使うべきではない。さらに重複判定は清書・repair前の候補に対して行い、最終生成本文では再確認していない。
+  </p>
+  <p>
+    改善: 正規化hashの完全一致検索、scopeを絞ったFTS・意味検索、最終本文の再確認を分ける。受入条件:
+    空白・改行の差による完全一致の取りこぼしをなくし、言い換え候補の再現率を別に測定する。
+  </p>
+  <h3>F7: 読んだ根拠とLLMに提示した根拠が異なる</h3>
+  <p>
+    <code>positive_response.rs:99</code>は元資料を先頭1,000文字に切り詰める。外部評価も
+    <code>external_evidence.rs</code>
+    でsourceを1,000文字にする。一方、source_referenceはそれより大きな読み取り範囲を支持根拠として記録する。試験ではtokens:0-1201の末尾に置いた根拠がsource_contentにはあるが、評価プロンプトには残らなかった。
+  </p>
+  <p>
+    初期の文字重なり判定が不支持でもログを残してLLMへ進む設計自体は、言い換えを許容する点で合理的である。ただし最終受理時に主張単位の根拠が必須でないため、切り詰められた支持根拠・反証をLLMが確認できない問題を補えない。
+  </p>
+  <p>
+    改善:
+    候補に関連する複数箇所と反証を予算内で選ぶ。実際に送った抜粋の位置・hash・切り詰め有無を記録する。受入条件:
+    先頭外の根拠に基づく評価ができ、保存した参照からモデルが見た内容を再現できる。
+  </p>
+  <h3>F8: 再Coveringが失敗済みFinalizeを再開しない</h3>
+  <p>
+    <code>persistence.rs</code>はcandidateごとのEvidenceを上書きするが、Finalize
+    enqueueは同じevidence_result_idの行が存在すれば何もしない。試験では一度knowledge_readyを保存し、Finalizeをfailedにした後、再Coveringをknowledge_readyとして保存してもFinalizeはfailedのままだった。
+  </p>
+  <p>
+    通常の一回処理における重複防止としては正しい。問題は再処理によって根拠や本文が更新された場合の回復条件が、この関数内では定義されていないことである。運用入口がFinalizeも別途resetすれば回避できるため、すべての再処理操作が失敗するとは断定しない。
+  </p>
+  <p>
+    改善:
+    Evidenceに改訂番号を持たせ、既存Finalizeがfailed/skipped/completed/runningの場合の扱いを分ける。処理中のものを無条件resetしない。受入条件:
+    根拠を修正して再評価した候補が、古いfailed状態に阻まれずにFinalizeへ進める。
+  </p>
+  <h2>維持したい点</h2>
+  <ul>
+    <li>
+      Evidence保存とenqueue、状態遷移、lease解放が一つのtransactionにまとまっている。成功扱いだけが先行する構造になっていない。
+    </li>
+    <li>
+      queueとleaseのownershipを検証して古い実行結果をdiscardする。既存の再claim試験が成功した。
+    </li>
+    <li>
+      基本経路のprovider/parse失敗には最大試行回数とbackoffがある。F5ではこの既存機構へ正しく接続すればよい。
+    </li>
+    <li>
+      ローカルファイルのroot制限、外部URLのprivate
+      network遮断、redirect検査、取得量制限があり、該当する既存テストが成功した。
+    </li>
+    <li>
+      外部資料を未信頼データとして渡す指示がある。取得の安全性と、主張を支える根拠の品質は別々に評価すべきである。
+    </li>
+  </ul>
+  <h2>次の品質評価で測りたいこと</h2>
+  <p>
+    まずP1の境界を修正し、その後で匿名化した正解付き候補を使い、モデル・閾値・検索戦略を比較する。今回の8件の観測テストは、修正時に望ましい結果を期待する回帰テストへ書き換える。
+  </p>
+  <ul>
+    <li>
+      採用精度: knowledge_readyの主張が実際の資料で支持される割合。高リスク・負の知識を別集計する。
+    </li>
+    <li>取りこぼし: 有効な候補がinsufficient、duplicate、near_duplicateで終了した割合。</li>
+    <li>
+      重複・矛盾: 同義、補足、矛盾、無関係を分け、否定・数値・版・repo差分を含む評価セットで測る。
+    </li>
+    <li>
+      運用品質: 一時障害からの回復率、Finalizeまでの到達率、再試行回数、LLM呼び出し数、処理時間。
+    </li>
+    <li>根拠の追跡性: 採用した主張に対応する実在の抜粋と位置を再確認できる割合。</li>
+  </ul>
+  <p>
+    追加の設計課題として、外部取得に成功した全URLへ自動でexternal_verificationを付ける処理は、単なる取得と主張の支持を区別したい。importance/confidenceも語句や項目数、LLM自己申告に依存するため、校正前に確率として解釈しない。またMarkdown正規化で改行・手順の箇条書きが失われる点は、procedure
+    repairの根拠抽出と合わせて再評価したい。これらの実データ上の影響は今回未計測である。
+  </p>
+  <h2>検証資料と再現方法</h2>
+  <p>
+    対象は作業中のworkspace
+    snapshotであり、HEADだけでは未コミット変更を表せない。Coveringコードのhashはmanifestに、Finalize・プロンプトを含む確認時点のコードは行番号付き資料に保存した。既存の別作業の変更には手を加えていない。
+  </p>
+  <ul>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/manifest.json"
+        >評価対象のcommitとコードhash</a
+      >
+    </li>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/code-evidence.txt"
+        >行番号付きコード根拠</a
+      >
+    </li>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/review_probes.rs">8件の観測テスト</a>
+    </li>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/probe-results.txt"
+        >29件のテスト実行結果</a
+      >
+    </li>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/run_probes.py"
+        >隔離コピーを作る再現スクリプト</a
+      >
+    </li>
+    <li>
+      <a href="positive-covering-rust-executor-closeout-evidence.html"
+        >Rust移植時の仕様と検証記録</a
+      >
+    </li>
+  </ul>
+  <p>
+    repo rootで
+    <code>python3 spec/docs/assets/covering-logic-evaluation-2026-09-06/run_probes.py</code>
+    を実行する。スクリプトは一時コピーにテストを追加し、offlineのCargoとメモリ内SQLite、localhostの模擬LLMで実行する。アプリの実装・本番DB・実モデルは変更しない。テスト用build
+    cacheを共有し、実行結果とmanifestはこの資料のassets内に更新する。
+  </p>
+</article>

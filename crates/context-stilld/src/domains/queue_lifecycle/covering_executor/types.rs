@@ -44,6 +44,8 @@ pub(crate) struct NegativeCoveringExecution {
     pub(crate) distillation_version: String,
     pub(crate) attempt_count: i64,
     pub(crate) max_attempts: i64,
+    pub(crate) input_generation: i64,
+    pub(crate) protocol_version: i64,
     pub(crate) provider_policy: String,
     pub(crate) candidate_title: String,
     pub(crate) candidate_content: String,

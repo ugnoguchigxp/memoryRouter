@@ -108,8 +108,18 @@ export function applySectionTokenBudget(
       continue;
     }
     if (selected.length === 0) {
-      const remaining = Math.max(24, maxTokens - usedTokens);
-      selected.push({ ...item, content: truncateForBudget(item.content, remaining) });
+      const itemOverhead = estimateTokens(`${item.title}\n\n${item.rankingReason}`);
+      const contentBudget = maxTokens - itemOverhead;
+      if (contentBudget > 0) {
+        const content = truncateForBudget(item.content, contentBudget);
+        const truncated = { ...item, content };
+        if (
+          estimateTokens(`${truncated.title}\n${truncated.content}\n${truncated.rankingReason}`) <=
+          maxTokens
+        ) {
+          selected.push(truncated);
+        }
+      }
     }
     break;
   }

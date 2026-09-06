@@ -10,6 +10,7 @@ type DuplicateSuppressionCandidate = {
   title: string;
   content: string;
   sourceRefs?: string[];
+  polarity?: string;
 };
 
 export type DuplicateSuppressionInfo = {
@@ -104,6 +105,15 @@ function resolveDuplicateMatch(
   if (representative.type !== candidate.type) return null;
   // Keep phase-1 conservative: status mismatch can be supersedes-like, not duplicate.
   if ((representative.status ?? "active") !== (candidate.status ?? "active")) return null;
+  // A negative guardrail and a positive rule may share most of their wording while
+  // imposing opposite operational constraints. Preserve both unless their polarity
+  // is explicitly the same.
+  if (
+    (representative.polarity === "negative" || candidate.polarity === "negative") &&
+    representative.polarity !== candidate.polarity
+  ) {
+    return null;
+  }
 
   const representativeTitle = normalizeTitle(representative.title);
   const candidateTitle = normalizeTitle(candidate.title);

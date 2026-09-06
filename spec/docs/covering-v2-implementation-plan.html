@@ -1,0 +1,1045 @@
+<article lang="ja">
+  <h1>Covering v2 改善実装計画</h1>
+  <p>
+    作成日: 2026年9月6日。状態: 実装着手可能な計画、自己レビュー最終97/100点。対象はRust
+    residentのCoveringと接続するFinalize。<a href="covering-logic-evaluation.html"
+      >現行ロジック評価のF1〜F8</a
+    >を実装可能な変更へ落とす。この文書の作成は実装や本番切替の実施を意味しない。
+  </p>
+  <h2 id="objective">目的と完了条件</h2>
+  <p>
+    元資料で支持されない知識、LLMの不正応答、別プロジェクトのidentityを保存経路に流さない。近似した有効候補を捨てず、一時障害と再評価から回復できるようにする。正負両方の経路で同じ受理条件を使い、既存の単一writer、claim
+    fencing、atomic persistenceを維持する。
+  </p>
+  <p>
+    完了は、F1〜F8の回帰試験、並行実行・移行試験、正解付き品質評価、段階導入の全gateを満たし、失敗・保留の候補に理由と回復経路があること。計画書の自己採点と、実装後の採用精度は別の数値として扱う。
+  </p>
+  <h2 id="scope">実装範囲と前提</h2>
+  <ul>
+    <li>
+      対象:
+      <code>crates/context-stilld/src/domains/queue_lifecycle/covering_executor/</code
+      >、<code>finalize_executor.rs</code>、Coveringのclaim/persist接続、SQLite
+      schema/migration、関連プロンプト、既存retry入口、必要な観測項目。
+    </li>
+    <li>
+      DBは追加テーブルと追加カラムの移行を行う。公開MCP
+      schema、認証、Finding抽出、Compileランキング、Curationの自動統合方針は変更しない。
+    </li>
+    <li>
+      Rustを本番の実行経路とする。TypeScript/PostgreSQLにv2の推論処理を二重実装せず、v2
+      queueを旧workerが処理できない境界とread側の互換性を検証する。
+    </li>
+    <li>
+      polarityが文字列negativeと完全一致する場合だけ負の経路とする既存ingress
+      contractは維持する。LLMにpolarityの変更権限を与えない。
+    </li>
+    <li>
+      Finalizeとqueue
+      executorには他作業の未コミット変更がある。実装開始時に最新コードと差分を確認し、変更箇所を関数単位で統合する。今回の資料の行番号を固定パッチとして使わない。
+    </li>
+  </ul>
+  <h2 id="mapping">課題から実装への対応</h2>
+  <table>
+    <caption>
+      課題、変更箇所、受入試験
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">課題</th>
+        <th scope="col">変更</th>
+        <th scope="col">主なファイル</th>
+        <th scope="col">試験ID</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>F1 根拠のない負の知識</td>
+        <td>正負共通の資料取得、主張と引用の照合、riskタグによる免除撤廃</td>
+        <td>source.rs / provider.rs / negative_response.rs / execution.rs</td>
+        <td>T01〜T04</td>
+      </tr>
+      <tr>
+        <td>F2 不明statusの採用</td>
+        <td>version付き厳密な応答型、採否の推定と危険なdefault補完を廃止</td>
+        <td>types.rs / positive_response.rs / negative_response.rs / contexts/coverEvidence/</td>
+        <td>T05〜T07</td>
+      </tr>
+      <tr>
+        <td>F3 identity上書き</td>
+        <td>TrustedProjectIdentityを実行側で固定</td>
+        <td>applicability.rs / execution.rs / finalize_executor.rs</td>
+        <td>T08〜T10</td>
+      </tr>
+      <tr>
+        <td>F4 意味の異なる知識の棄却</td>
+        <td>完全一致だけ自動棄却。近似は関係を記録し、支持された候補はdraftへ進める</td>
+        <td>deduplication.rs / execution.rs / persistence.rs</td>
+        <td>T11〜T14</td>
+      </tr>
+      <tr>
+        <td>F5 一時障害で終了</td>
+        <td>失敗の型分け、補完・repairの失敗を既存retryに接続</td>
+        <td>types.rs / execution.rs / positive_response.rs / persistence.rs</td>
+        <td>T15〜T18</td>
+      </tr>
+      <tr>
+        <td>F6 重複検索漏れ</td>
+        <td>正規化fingerprintとscope付き検索、最終本文の再検査</td>
+        <td>deduplication.rs / finalize_executor.rs / SQLite schema</td>
+        <td>T19〜T22</td>
+      </tr>
+      <tr>
+        <td>F7 根拠切り詰め</td>
+        <td>複数範囲の抜粋、実際に提示した範囲・hashを保存</td>
+        <td>source.rs / external_evidence.rs / positive_response.rs</td>
+        <td>T23〜T26</td>
+      </tr>
+      <tr>
+        <td>F8 再処理がFinalizeへ届かない</td>
+        <td>不変なEvidence revisionとFinalizeへの要求版、保存前の版照合</td>
+        <td>persistence.rs / finalize_executor.rs / queue retry / SQLite schema</td>
+        <td>T27〜T33</td>
+      </tr>
+    </tbody>
+  </table>
+  <h2 id="pipeline">確定する処理順</h2>
+  <ol>
+    <li>
+      claim時にprotocolVersion、attempt、source
+      provenance、信頼済みidentityを固定する。途中で設定を読み替えない。
+    </li>
+    <li>
+      正負共通でsourceを取得する。元本文とdiffは別sourceとして扱い、候補内容そのものを独立した確認資料として数えない。
+    </li>
+    <li>
+      原資料を保持したまま、関連箇所と前後の条件・反証を抜粋する。prompt内の引用はこの抜粋集合からのみ選択できる。
+    </li>
+    <li>
+      LLMが候補を清書・分類する。カテゴリの補完、procedure
+      repair、既存Finalizeと共通化した決定的な匿名化・本文整形を終えてから、保存予定本文の主張が資料で支持されるかを検証する。
+    </li>
+    <li>
+      identity、型、重要度、主張の支持、根拠の位置、必要な適用カテゴリを実行側で確認する。不足をLLMの自信スコアで代替しない。
+    </li>
+    <li>
+      最終本文の完全一致・近似関係を同一scope内で確認する。近似だけを理由にduplicate/near_duplicateで終了しない。
+    </li>
+    <li>
+      writer transaction内でclaim所有権と入力版・重複相手の版を再確認し、Evidence
+      revision、queue遷移、Finalize要求、イベント、lease解放を確定する。
+    </li>
+    <li>
+      Finalizeは要求された不変revisionを読み、保存直前にもrevisionとclaimを確認する。draft知識、参照、FTS、embedding、完了状態をatomicに保存する。
+    </li>
+  </ol>
+  <h2 id="response">応答とidentityの契約</h2>
+  <p>
+    v2実行では正・負・外部評価を単一のJSON
+    contractにそろえる。<code>schemaVersion=2</code>とstageを必須にし、未知enum、必須項目欠落、余分なidentity、型違い、範囲外スコアをparse_failedにする。大文字小文字の補正、titleの存在による採否推定、statusだけの採用からのbody補完は行わない。
+  </p>
+  <table>
+    <caption>
+      段階ごとの応答型
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">stage</th>
+        <th scope="col">返せる内容</th>
+        <th scope="col">実行側の制約</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>assessment</td>
+        <td>ready候補またはinsufficientと理由</td>
+        <td>
+          readyにはtitle/body/type/importance、3カテゴリの配列キー、claimsが必要。カテゴリ配列はこの段階だけ空を許可して補完へ進む。重要度は整数0〜100。confidenceも返すなら整数0〜100に限定する。
+        </td>
+      </tr>
+      <tr>
+        <td>applicability</td>
+        <td>3カテゴリまたはinsufficient</td>
+        <td>title/body/identityの変更は許可しない。</td>
+      </tr>
+      <tr>
+        <td>procedure_repair</td>
+        <td>title/bodyまたはinsufficient</td>
+        <td>type=procedureを固定。修正本文の最終支持検証を必ずやり直す。</td>
+      </tr>
+      <tr>
+        <td>support_verification</td>
+        <td>最終本文に対する主張一覧、支持／矛盾／不明、引用ID</td>
+        <td>本文を書き換えられない。生成段階の自己評価とは別の呼び出しにする。</td>
+      </tr>
+      <tr>
+        <td>relation_assessment</td>
+        <td>
+          提示済みknowledge IDごとのequivalent/complement/contradiction/unrelated/unknownと理由
+        </td>
+        <td>
+          任意処理。候補本文やscopeは変更不可。失敗時はunknownとして診断を残し、採否を変更しない。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    LLM用enumのreadyは実行側が全gateを満たした後だけ既存永続化statusのknowledge_readyへ変換する。duplicateやprovider_failed等の実行結果はLLMに決めさせない。insufficientは候補が付いていても採用へ変えない。unknown
+    fieldは拒否し、拡張はschemaVersionの変更で行う。
+  </p>
+  <p>
+    responseはRustのserde tagged enumと同じJSON Schema fixtureを持ち、各stageにexpected
+    schemaをbindingする。assessment/repairの自然文を基本は日本語にし、固定見出し・識別子は保持する。titleは1〜200文字、bodyは1〜8,000文字、material
+    claimsは1〜32件を上限とする。超過はparse_failedであり、後半を捨てて採用しない。各claimにはclaim
+    ID、最終本文の範囲、支持判定、引用の配列を持たせる。verificationが追加した未支持claimを無視しない。
+  </p>
+  <p>
+    identityはsource adapterが渡した共通project identity
+    resolverの結果とprovenanceを固定する。優先順位は共通resolverのprojectRef、repoKey、repoPathに従い、別名の同一性は確認済みaliasだけを使う。LLMと候補本文からidentityを新設しない。identity不足・競合はinsufficientと専用reasonで保持し、補正されたsource
+    metadataを使う明示的な再処理を可能にする。
+  </p>
+  <p>
+    v1のラベル形式はv1用parser内だけに残す。v2でv1応答を受けた場合にfallbackして採用しない。v2の負のpromptも
+    <code>contexts/coverEvidence/negative.context.toml</code> を正本とし、旧
+    <code>shared/prompts/cover-negative-evidence-rust-v1.txt</code>
+    はv1専用に固定する。外部finalのラベル形式とJSON指示の混在を解消し、catalogは生成コマンドから更新する。
+  </p>
+  <h2 id="evidence">主張と根拠の契約</h2>
+  <p>
+    SourceEvidenceはsource ID、取得時刻、source kind、原本文hash、提示したexcerpt本文・UTF-8
+    byte範囲、excerpt
+    hash、取得経路を持つ。改行、コードの字下げ、箇条書き、否定、数値を保持し、解析用の正規化textと引用用の原文を分ける。旧token
+    readRangesは既存の正規化規則から原文への対応表で変換し、変換不能なrangeを原文byteとして読まない。
+  </p>
+  <p>
+    最終title/bodyの各判断、条件、手順、fix、検証方法をmaterial claimとして列挙し、支持するexcerpt
+    IDとquote、byte範囲を必須にする。validatorはUTF-8境界、範囲内、quote一致、提示済みexcerptへの所属を確認する。検証LLMは最終本文から主張を再抽出し、生成側が不都合な主張を省略していないか確認する。主張が0件、矛盾または不明のmaterial
+    claimが残る場合は採用しない。
+  </p>
+  <p>
+    引用が実在することは意味的な支持の証明ではない。意味の照合には検証LLMを使い、同一モデルに共通する誤りが残る点を正解付き評価で測る。high-riskタグは重要度・観測の優先度にのみ使う。根拠0件の免除や、同じ事象の言い換えによる件数加点を廃止する。一つの明確な一次資料が全主張を支えるなら、機械的に資料2件を要求しない。
+  </p>
+  <p>
+    匿名化は支持検証前に一度だけ行い、原文から保存予定本文への変換記録を保持する。scope用identityは匿名化して失わず、検索用columnへ保存する。Finalizeは検証済みartifact_hashと保存予定のtitle/body/type/appliesToのhashが一致することを要求し、後段の清書・正規化で意味を変えない。新たな変換が必要なら新generationでCoveringへ戻す。原文引用のlocatorは匿名化後の本文位置と混同しない。
+  </p>
+  <p>
+    knowledge_candidateの本文しかなく独立したsource provenanceがない場合はinsufficient /
+    source_provenance_requiredとする。明示的なユーザー方針は、その方針を述べた元メッセージを一次資料にできる。生成候補をそれ自身の検証根拠にはしない。
+  </p>
+  <p>
+    外部URLは取得済みIDのallowlistからのみ引用可能とする。取得成功をexternal_verificationとして自動付与せず、fetched・supports・contradicts・backgroundを区別する。検索結果のsnippetは根拠に使わない。外部検索の要否を決める既存heuristicは当面残すが、support_verificationで公開仕様の裏付け不足が出た場合は一度だけ外部検索へ進める。元資料が十分なrepo方針に不要な外部検索を強制しない。
+  </p>
+  <h2 id="dedupe">重複の契約</h2>
+  <p>
+    重複で終了できるのは、同一の確認済みscope、polarity、type、適用カテゴリ集合、正規化title/bodyが一致した場合だけである。identity不明の既存知識は自動棄却の根拠にしない。global知識はrepo知識の自動棄却相手にしない。再処理元Evidenceから作られたknowledge自身を比較から除外する。
+  </p>
+  <p>
+    平文は改行コードと連続する横空白を正規化するが、大文字小文字、句読点、否定、数値、コード、インラインコードは保持する。コードを含むblockの字下げと空白は変えない。正規化versionをfingerprintに含める。正規化による完全一致と意味検索のスコアを混同しない。
+  </p>
+  <p>
+    完全一致検索は上限40件や更新順に依存させない。近似候補は同一scopeのFTS最大20件とvector最大20件を統合し、最大8件を関係評価に渡す。vector障害時はlexicalへ縮退し、障害を記録する。近似検索が失敗しても完全一致の正しさと根拠検証を満たす候補を棄却しない。
+  </p>
+  <p>
+    近似関係はequivalent、complement、contradiction、unrelated、unknownとしてduplicate_refsに記録する。exactでない候補は、元資料の支持があればdraftとして保持し、既存知識の自動削除・統合・active化はしない。意味検索による自動棄却は別の品質検証が済むまで導入しない。
+  </p>
+  <h2 id="states">障害と状態遷移</h2>
+  <table>
+    <caption>
+      内部結果と既存queue statusへの対応
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">結果</th>
+        <th scope="col">Covering</th>
+        <th scope="col">Evidence</th>
+        <th scope="col">回復</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>全採用gate成功</td>
+        <td>completed</td>
+        <td>knowledge_ready</td>
+        <td>Finalize要求を同一transactionで保存</td>
+      </tr>
+      <tr>
+        <td>確認済み完全一致</td>
+        <td>completed</td>
+        <td>duplicate</td>
+        <td>比較相手のID・内容hash・scopeを記録</td>
+      </tr>
+      <tr>
+        <td>内容が不支持、カテゴリ根拠なし、identityなし</td>
+        <td>completed</td>
+        <td>insufficient</td>
+        <td>reasonと不足項目を保持。source修正後に明示的再処理</td>
+      </tr>
+      <tr>
+        <td>一時的provider/取得障害</td>
+        <td>pending、上限でfailed</td>
+        <td>provider_failed / tool_failed</td>
+        <td>既存backoff。失敗stageを記録</td>
+      </tr>
+      <tr>
+        <td>schema不正、架空の引用、期待stage不一致</td>
+        <td>pending、上限でfailed</td>
+        <td>parse_failed</td>
+        <td>同じ根拠から再試行し、不正値を自動補正しない</td>
+      </tr>
+      <tr>
+        <td>401/403、無効な設定、禁止されたsource path</td>
+        <td>failed</td>
+        <td>provider_failed / tool_failed</td>
+        <td>retryable=falseとreasonを記録。設定修正後の明示的retry</td>
+      </tr>
+      <tr>
+        <td>claim失効</td>
+        <td>現所有者の状態を変更しない</td>
+        <td>上書きしない</td>
+        <td>discardイベント。新所有者が処理</td>
+      </tr>
+      <tr>
+        <td>自分のclaimを保持したまま候補/provenanceが更新</td>
+        <td>pending</td>
+        <td>旧入力の結果を書かない</td>
+        <td>
+          source_changedを記録し、generationを進めて旧Finalize要求を無効化。3回連続で更新に追いつけなければfailedとし、無限再開を防ぐ。
+        </td>
+      </tr>
+      <tr>
+        <td>入力bytes等の固定予算超過</td>
+        <td>failed</td>
+        <td>tool_failed</td>
+        <td>
+          retryable=false /
+          input_budget_exceeded。根拠を読めたが必要箇所を予算内で覆えない場合だけinsufficient /
+          evidence_budget_exceeded。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    RefinementOutcomeをRefined / Unsupported / RetryableFailure /
+    PermanentFailureとして型で分ける。procedureをruleへ降格できるのはUnsupportedで、ruleの支持検証が成功した場合だけ。通信・parse失敗による降格はしない。max_attemptsを維持し、attemptを増やすのは一つのCovering実行につき一回。backoffは既存30、60、120、240、300秒上限を用い、429のRetry-Afterを最大300秒まで尊重する。
+  </p>
+  <h2 id="revisions">Evidence改訂とFinalize</h2>
+  <p>
+    evidence_coverage_resultsは互換性のため最新結果を示すprojectionとして残し、v2の採否・候補・根拠・identityを不変なcovering_evidence_revisionsへ保存する。Finalizeはprojectionを推論入力にせずrevisionを読む。既存Finalize
+    rowはEvidenceごとに一つを維持し、requested_revisionとclaimed_revisionを区別する。
+  </p>
+  <p>
+    再Coveringが成功したら最新revisionをrequested_revisionへ設定する。Finalizeがpending/failed/skippedならpendingへ戻し、別revisionのattemptと旧errorをresetする。runningの場合はclaimed_revisionとロックを変えず、requested_revisionのみ進める。保存直前にrequestedとclaimedが異なれば旧結果を保存せず、次のrevisionをpendingにする。claim自体を失っていたら一切更新しない。
+  </p>
+  <p>
+    completed済みの知識を同じ内容で再確認した場合は重複保存しない。別内容のrevisionが来た場合は自動でactive知識をdraftへ戻さず、再評価結果を保持してレビュー対象にする。再評価がinsufficientでも既存知識を自動削除しない。
+  </p>
+  <h3 id="schema">追加schemaとデータの責任範囲</h3>
+  <p>
+    実装時に <code>src/db/sqlite/core-schema.ts</code> と
+    <code>crates/context-stilld/src/domains/sqlite_writer/schema.rs</code>
+    のmigrationを同時に更新する。既存columnの追加はtable_infoで検出し、二度適用しても変化しないようにする。現在確認したschema
+    revisionは6だが、番号は実装統合時の未使用な次番号Nを採番する。PR内ではNを実数で固定し、並行作業のmigration番号を上書きしない。
+  </p>
+  <table>
+    <caption>
+      追加データモデル。名前・一意性・NULLの意味を固定する
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">対象</th>
+        <th scope="col">必須fieldと制約</th>
+        <th scope="col">役割</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>covering_evidence_queueの追加column</td>
+        <td>
+          input_generation INTEGER NOT NULL DEFAULT 0、protocol_version INTEGER NOT NULL DEFAULT 1
+        </td>
+        <td>明示的再処理ごとの世代。自動retryでは増やさない。</td>
+      </tr>
+      <tr>
+        <td>covering_evidence_inputs 新設</td>
+        <td>
+          id TEXT PK、covering_job_id、input_generation
+          INTEGER、input_hash、identity_json、evidence_bundle_json、prompt_version、model_config_hash、created_at。UNIQUE(covering_job_id,input_generation)。JSONはobject型をCHECK
+        </td>
+        <td>
+          最初の取得が完了した入力snapshot。候補・provenance・実際に提示する抜粋を固定し、retry時に再利用する。
+        </td>
+      </tr>
+      <tr>
+        <td>covering_evidence_revisions 新設</td>
+        <td>
+          id TEXT PK、evidence_result_id、revision_no
+          INTEGER、input_id、input_generation、attempt_id TEXT UNIQUE、protocol_version
+          INTEGER、result_status、result_json、artifact_hash、created_at。UNIQUE(evidence_result_id,revision_no)。FKはRESTRICT
+        </td>
+        <td>
+          成功・棄却・失敗を含む不変の試行結果。result_jsonに最終候補、claims、validator結果、identity、参照、診断を保持する。
+        </td>
+      </tr>
+      <tr>
+        <td>evidence_coverage_resultsの追加column</td>
+        <td>current_revision_id TEXT NULL</td>
+        <td>最新試行のprojection。NULLはlegacyであり、v2採用済みという意味にしない。</td>
+      </tr>
+      <tr>
+        <td>finalize_distille_queueの追加column</td>
+        <td>
+          protocol_version INTEGER NOT NULL DEFAULT 1、requested_revision_id TEXT
+          NULL、claimed_revision_id TEXT NULL、claim_token TEXT NULL
+        </td>
+        <td>
+          要求版と実行開始版、claimごとに更新する一意token。protocol_versionでv1/v2を区別する。v2でrequested
+          NULLは無効化中であり、両pointerがNULLでもv1へfallbackしない。
+        </td>
+      </tr>
+      <tr>
+        <td>knowledge_covering_fingerprints 新設</td>
+        <td>
+          knowledge_id TEXT
+          PK、scope_key、normalization_version、fingerprint、material_hash。INDEX(scope_key,normalization_version,fingerprint)
+        </td>
+        <td>
+          完全一致用cache。正本はknowledge_items。scope_keyに共通resolverのmatch basisと値を含める。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    revision_noはwriter transactionで最大値+1を割り当てる。attempt_idはCovering lease
+    IDとinput_generationから決定し、同じ結果の再送は新revisionを作らず既存の結果に一致するか確認する。resultを上書きするUPDATEをrepositoryに公開しない。artifact_hashは最終本文・型・polarity・identity・適用カテゴリのcanonical
+    JSON hashとし、入力や引用の変化はinput_hashで別に追跡する。
+  </p>
+  <p>
+    input snapshot取得の外部I/Oはwriter
+    transaction外で実施し、永続化するときにqueueがrunning、lease所有、generation、candidate/provenance
+    hashが一致することを検査する。取得前に落ちた場合は同世代で取り直してよい。inputsのevidence_bundle_jsonには初期sourceのsnapshotを固定する。後段の外部検索で増える資料と各requestで実際に使ったexcerpt集合は、そのattemptのresult_jsonに追記してrevisionとともに不変保存する。これは初期inputを書き換える操作ではない。
+  </p>
+  <p>
+    同世代のretryでは入力snapshotと前回revisionにcommit済みの外部資料を再利用する。commit前のcrashで失われた取得だけは再取得してhashと時刻を新attemptへ記録する。source
+    hashは資料全体、excerpt hashは提示分、request
+    hashは実送信messagesを区別する。forceRefreshEvidenceまたは明示的な再評価は新世代にし、保存済みの古い外部資料を再利用しない。
+  </p>
+  <p>
+    Finalizeの同じevidence_result_idに複数rowがないことをmigration preflightで検査し、partial UNIQUE
+    indexを追加する。既存に重複があれば勝手に削除せず、該当IDを出力してmigrationを停止する。修復は知識ID、完了状態、claim履歴を確認した別の修復手順で実施する。元のEvidence一意triggerは維持する。
+  </p>
+  <p>
+    fingerprint
+    cacheはknowledgeのtitle/body/type/polarity/scope/identity/applies_to/statusの更新・削除で無効化するSQL
+    triggerを持つ。Finalizeの書込みでは同時に再構築する。cache欠落時は同scopeの正本を上限なしで走査し、writer外で正規化して一致を探す。更新中のcacheを信用して候補を捨てず、persist時に相手のmaterial_hashと状態を再検査する。初期backfillは500件単位で行い、hashが一致するrowだけ短いwriter
+    transactionで保存する。
+  </p>
+  <h3 id="finalize-states">Finalizeの状態ごとの再評価</h3>
+  <table>
+    <caption>
+      新しいknowledge_ready revisionを受けたときの遷移
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">既存状態</th>
+        <th scope="col">操作</th>
+        <th scope="col">保存条件</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>rowなし</td>
+        <td>requestedを新revisionにしたpendingを作成</td>
+        <td>UNIQUE(evidence_result_id)で二重enqueueを防止</td>
+      </tr>
+      <tr>
+        <td>pending / failed / skipped</td>
+        <td>requestedを更新しpending。別revisionならattempt、next_run_at、旧errorをreset</td>
+        <td>同revisionの再送だけでattempt上限を解除しない。明示的retryは理由を残す。</td>
+      </tr>
+      <tr>
+        <td>paused</td>
+        <td>requestedだけ更新しpausedを維持</td>
+        <td>利用者のpauseを再評価で解除しない。既存resume操作で進める。</td>
+      </tr>
+      <tr>
+        <td>running</td>
+        <td>requestedだけ更新。claimedとclaim_token、lockは維持</td>
+        <td>旧実行の完了transactionで版の不一致を検出し、知識を保存せずpendingへ戻す。</td>
+      </tr>
+      <tr>
+        <td>completed、artifactが同じ</td>
+        <td>完了とknowledgeを維持。新revisionを検証履歴として関連付ける</td>
+        <td>既存knowledgeのmaterial_hashが前回保存時と一致すること。参照追記も履歴として保持。</td>
+      </tr>
+      <tr>
+        <td>completed、artifactが異なる</td>
+        <td>
+          未編集draftだけをpendingに戻す。activeまたは別作業が編集した知識はpausedとしreview
+          itemを作る
+        </td>
+        <td>既存knowledgeのstatusとmaterial_hashを保存直前にCAS。競合すれば書換えない。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    Coveringの明示的再処理開始時にinput_generationを増やし、既存FinalizeのrequestedをNULLにして旧入力を無効化する。この操作は
+    <code>queue_lifecycle/state.rs::retry_queue_job_for_connection</code>
+    のtransaction内で行い、Coveringがrunningなら現状どおり受理しない。新しい結果がまだ出ていない間はFinalizeをclaimしない。既存runningの旧世代は完了前のgeneration照合でdiscardする。
+  </p>
+  <p>
+    再評価の結論がinsufficient/duplicateなら旧要求を無効のままにし、非running・非pausedの未完Finalizeをskippedへ遷移する。再試行中のprovider/parse失敗なら結果を待ち、上限到達では未完Finalizeをfailedにしてupstream_failedを記録する。既存completed知識は削除・無条件変更しない。pausedは利用者の停止意図を保持する。
+  </p>
+  <p>
+    Finalizeの成功だけでなくmark_failed、mark_retrying、mark_skippedにも同じclaim_token・generation・revision
+    fenceを適用する。旧実行のエラーで新revisionをfailedにしない。古いclaimは更新0件をSupersededとして扱い、所有権を奪い返さない。
+  </p>
+  <p>
+    activeまたは編集済み知識を保護するreview
+    itemは既存schemaのsource=promotion_gate、reason=promotion_gate_review、proposed_action=review_only、status=pendingを使う。idempotency_keyはcovering-v2-review:{knowledgeId}:{revisionId}とし、payloadへ期待material_hash、requested
+    revision、旧新本文の参照を保存する。Curationへの自動enqueueやmergeは行わない。
+  </p>
+  <p>
+    レビュー解決のための管理用writer commandをWP5で追加し、review ID・revision ID・expected
+    material_hash・actionを必須とする。actionはkeep_existingまたはcreate_separate_draft。前者は結果を履歴として残してFinalizeをskipped、後者は承認をCASで記録してpendingへ戻し、revision
+    IDから決定した別knowledge
+    IDへdraftを作る。activeな元知識を変更しない。新generationまたは元知識の編集で承認は無効になる。単にresumeしただけでは承認済みにならない。
+  </p>
+  <h3 id="atomicity">並行実行の順序と冪等性</h3>
+  <ol>
+    <li>
+      Covering persist: 所有権とgenerationを確認 → input/attemptの一致確認 →
+      revision保存とprojection更新 → 完全一致相手の現状態を再確認 → Finalize要求・review item →
+      queue遷移 → lease解放 → event → commit。
+    </li>
+    <li>
+      Finalize claim:
+      v2対応readerだけがrequestedをclaimedへコピーし、新claim_tokenを割り当てる。input
+      generationと有効なknowledge_ready revisionを同時に検査する。
+    </li>
+    <li>
+      Finalize execute: snapshotを読む → 機械的validator再実行 → writer外でembedding →
+      persist直前にclaim_token・generation・requested=claimed・knowledgeの変更有無を再検査。
+    </li>
+    <li>
+      Finalize commit: 最終保存本文に対するscope付き完全一致を再検査 →
+      Knowledge・fingerprint・出典リンク・FTS・embedding → queue完了 →
+      commit。完全一致の既存knowledgeを発見したらcanonicalへの参照を保存し、新Knowledgeを作らず終了する。
+    </li>
+  </ol>
+  <p>
+    2件のCoveringが同時に同じ知識をreadyとしても、最後のFinalize
+    transactionで先行して保存された知識を検出する。この境界で一致相手がないことを確認してからinsertするため、近似検索の時点差に依存しない。embedding等の外部呼び出しをtransaction内へ持ち込まない。staleな結果を持つ実行がqueue更新0件なら、前に行ったKnowledge関連の書込みもrollbackする。
+  </p>
+  <p>
+    自動duplicateの相手はactive、または出典を持ちv2の全gateを通ったdraftに限る。未検証legacy
+    draftや、失敗済みEvidenceしか持たないdraftを理由に有効候補を捨てない。完全一致の比較はhashだけで結論を出さず、canonical内容とscopeの一致も確認する。fingerprint未計算の同scope候補のfallback走査がwriter時間予算を超えるならdiscardせず、index_not_readyとしてretryする。
+  </p>
+  <h2 id="budgets">根拠選択・処理量・観測の上限</h2>
+  <p>
+    以下は初期の実装設定値であり、実測済みの性能を表さない。設定versionとともに評価セットで検証し、変更時には同じgateを再実行する。上限到達を低品質な採用で回避しない。
+  </p>
+  <table>
+    <caption>
+      初期予算と上限到達時の扱い
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">項目</th>
+        <th scope="col">設定</th>
+        <th scope="col">上限時</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>根拠抜粋</td>
+        <td>source全体から最大8抜粋、合計16,000 UTF-8 bytes。前後の段落・条件・反証を保持</td>
+        <td>
+          関連する主張を覆えなければinsufficient /
+          evidence_budget_exceeded。提示していない部分を引用しない。
+        </td>
+      </tr>
+      <tr>
+        <td>資料の読込み</td>
+        <td>既存のlocal 16 MiB、external 4 MiB上限とURL guardを維持</td>
+        <td>サイズ超過はretryable=falseのtool_failed。sourceを分割した再処理へ。</td>
+      </tr>
+      <tr>
+        <td>LLM入力</td>
+        <td>
+          1回48 KiB、1試行の合計256 KiB以下。system・候補・資料・検索結果の全UTF-8 bytesを含む
+        </td>
+        <td>送信前に検査。候補・根拠を暗黙に切り詰めずbudget_exceededを記録。</td>
+      </tr>
+      <tr>
+        <td>LLM呼出し</td>
+        <td>
+          1試行8回まで。通常source-onlyはassessmentとsupportの2回。refinement/repairは各1回、外部昇格1回、近似関係評価は任意の最後の1回
+        </td>
+        <td>
+          必須支持検証の予算を先に確保。任意の関係評価はunknownで省略。内部の無限repairを禁止。
+        </td>
+      </tr>
+      <tr>
+        <td>時間</td>
+        <td>1試行全体240秒、各外部request最大60秒か残時間の小さい方</td>
+        <td>deadline_exceededはretryable失敗。既存clientの最小30秒補正を残時間より長くしない。</td>
+      </tr>
+      <tr>
+        <td>取得と同時実行</td>
+        <td>検索provider試行順・最大3URL・Covering最大2 claim・他queueへのyieldを維持</td>
+        <td>負荷比較でFinding/Episode/Finalizeの進行悪化を監視。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    sourceは見出し・段落・code block境界で区切り、候補語との関連度とorigin
+    readRangesを使って選ぶ。根拠候補の前後段落を優先し、同じ段落の重複を除く。否定語、例外、version条件を含む隣接段落を削らない。tie-breakはsource
+    ID、開始byte順とし、同じsnapshotなら同じexcerpt集合になる。必要な手順を8抜粋に収められない場合は小分け候補への再処理理由を残す。
+  </p>
+  <p>
+    実際にモデルへ送ったmessagesのhash、prompt/catalog hash、model/config、input
+    generation、revision、stage、result/reason、retryable、LLM回数、入力bytes、経過時間、dedupe縮退、claim
+    discard、Finalize
+    requested/claimedを構造化イベントへ記録する。通常ログへ元資料本文やAPIキーを出さない。snapshotの提示抜粋は既存DBのアクセス境界で保存し、URIとhashだけを監視ログへ出す。
+  </p>
+  <p>
+    snapshotとrevisionは原資料を丸ごと複製せず、使用した抜粋とsource
+    hashを保存する。自動削除は今回導入せず、source/knowledge削除に連動する明示的な削除・export経路へ組み込む。復元可能な元資料がなくなっても保存済み抜粋で当時の判断を確認できる。削除要求時にFKを無視した孤児データを残さない。
+  </p>
+  <p>
+    writer transactionの目標はp95
+    100ms以内とし、外部I/Oが含まれないことをtraceで検証する。index_not_readyの上限到達時はfailedとし、診断に対象scopeとcache欠落件数を残す。監視では採用率だけでなくinsufficientのreason別件数、failed、paused、再処理待ちの件数と最古時刻を表示する。canary開始前にこれらの集計SQLまたは既存queue
+    dashboardの表示を実装する。
+  </p>
+  <p>
+    snapshotの削除はsourceを削除しただけでは自動連鎖させない。通常source削除と、保存済み引用を含む完全削除要求を区別する。完全削除では対象inputを参照するrevisionと要求を列挙し、全Finalizeのrequested/claimed
+    pointerをNULLにして未完claimを無効化し、Knowledgeに残る引用を削除・無効化する。その後projectionのcurrent
+    pointerと本文・引用を消去してevidence_deletedにし、revision、inputの順に同一writer
+    transactionで削除する。EvidenceとFinalizeの識別rowはtombstoneとして残す。残存Knowledgeにはevidence_deletedを記録し、検証済みという表示を維持しない。型はFK
+    RESTRICTと整合させ、fixtureで経路を確認する。
+  </p>
+  <h2 id="quality">品質・費用の比較gate</h2>
+  <p>
+    WP0で600ケースをsource
+    family単位で固定し、200件を調整用、400件をholdoutへ分ける。同じログの断片や言い換えを両方へ入れない。holdoutは支持された候補200、非支持候補100、重複・差分ペア100とする。ペアには完全一致20、否定・数値・scope等の重要差分40、言い換え・補足40を含める。正負、日本語・英語、4
+    source kindを含め、high-riskの非支持例は50件以上にする。
+  </p>
+  <p>
+    期待する採否・主張・引用・scope・ペア関係を匿名化した原資料から先に確定し、実装出力を見て正解を合わせない。曖昧なケースは調整用へ移し、holdoutの件数を補充してからhashを固定する。別の実装担当者が根拠とラベルを点検する手順をWP0の成果物に含める。現時点ではデータセット未作成であり、以下の数値は目標である。
+  </p>
+  <table>
+    <caption>
+      実モデルでの合否。旧版と新版を同じ条件で比較する
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">指標</th>
+        <th scope="col">母数</th>
+        <th scope="col">合格条件</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>採用精度</td>
+        <td>支持/非支持300件のうちknowledge_readyにした件数。最低150件</td>
+        <td>
+          正しく支持された採用の割合について、両側95%
+          Wilson区間の下限が95%を超える。母数不足は不合格。
+        </td>
+      </tr>
+      <tr>
+        <td>採用再現率</td>
+        <td>支持された200件</td>
+        <td>
+          90%以上、かつ同条件baselineより2 percentage
+          pointsを超えて悪化しない。全棄却で精度だけを高くしない。
+        </td>
+      </tr>
+      <tr>
+        <td>重大な誤採用・誤棄却</td>
+        <td>high-risk非支持、scope差分、重要差分ペア、F1〜F8 adversarial fixture</td>
+        <td>根拠0・偽引用・identity上書き・重要差分の自動duplicateを0件にする。</td>
+      </tr>
+      <tr>
+        <td>完全一致と引用</td>
+        <td>完全一致20ペア、採用した全material claim</td>
+        <td>完全一致の検出100%。採用claimの引用位置・quote・提示済みIDの機械照合100%。</td>
+      </tr>
+      <tr>
+        <td>一般的な近似関係</td>
+        <td>言い換え・補足40ペア</td>
+        <td>relation正解率とunknown率を報告。自動棄却には使わないので本リリースの合否と分離。</td>
+      </tr>
+      <tr>
+        <td>時間・費用</td>
+        <td>source kind別、同一model・同一入力でのpaired測定</td>
+        <td>
+          source-onlyの中央値LLM回数2以下、全体平均回数・入力bytesはbaselineの2.5倍以内。p95実行時間は各sourceで2.5倍以内。
+        </td>
+      </tr>
+      <tr>
+        <td>他queueの進行</td>
+        <td>同じDB複製、同じ到着列、同じprovider容量</td>
+        <td>
+          Finding/Episode/Finalizeのp95待時間を10%超悪化させず、runnable queueの飢餓を0件にする。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    holdoutは固定model・temperature・source
+    snapshotで3回実行し、各回が合格することを要求する。3回の同一ケースを独立1200サンプルとして信頼区間を狭めない。baselineが0や測定不能の指標は比率を使わず、WP0で絶対上限と理由を固定する。品質と費用のどちらかを満たさなければcanaryへ進めない。
+  </p>
+  <p>
+    実装する比較runnerはbaseline/candidate binary、dataset
+    manifest、model設定、出力先を受け取り、result JSONLと集計JSONを出す。各recordにcase/family
+    ID、expected/actual、references検証、calls/bytes/latency、エラーを含める。外部資料と検索結果をreplay
+    fixtureから供給し、品質比較中のWeb更新による差を混ぜない。実HTTP・guard・provider
+    rate-limitは別のintegration suiteで確認する。
+  </p>
+  <p>
+    採用精度の計算はWilson両側95%区間の下限
+    <code>(p + z²/(2n) − z√(p(1−p)/n + z²/(4n²))) / (1 + z²/n)</code
+    >、<code>z=1.96</code>とする。例えば真に支持された採用150/150件なら下限は約97.50%であり、採用数1件の成功だけでは合格できない。数値を閾値に合わせて丸めず、実数値で判定する。
+  </p>
+  <h2 id="rollout">移行・段階導入・切戻し</h2>
+  <ol>
+    <li>
+      互換reader先行: v1/v2両方を識別し、v2のgeneration/revision/claim_token fenceを持つbinary
+      Bを作る。v2無効で既存queueの回帰試験を行う。旧binary Aは移行後の安全な切戻し先にしない。
+    </li>
+    <li>
+      offline rehearsal: SQLite backup APIで取得した複製へschema
+      Nを適用する。row件数、FK、Finalize重複、revisionとknowledgeの対応、旧pendingの読込みを検査し、2回目適用と途中失敗rollbackを試す。
+    </li>
+    <li>
+      本番移行: 新しいclaimを止め、running
+      jobの完了または所有権を無効化した停止を確認する。writerを一つに限定してbackupを取り、Bでmigrationを適用する。manifestにDB
+      canonical path、backup hash、schema、binary、時刻、queue件数を保存する。
+    </li>
+    <li>
+      legacy処理: v1の完了済みEvidenceをv2検証済みへ昇格しない。既存pending
+      Finalizeのv1処理をBで完了させるか、ID
+      allowlistでCovering再評価へ戻す。両方を同時に同じ候補へ適用しない。
+    </li>
+    <li>
+      比較: 本番DBへ結果を書かない複製上でv1とv2を比較する。本番にshadow
+      LLMを追加して負荷を倍増させない。品質・費用gateが合格してから次へ進む。
+    </li>
+    <li>
+      canary: DB pathにbindingしたjob ID
+      allowlistで20件、続いて100件をv2処理する。正負を含め、取得可能なsource
+      kindを網羅する。各waveを最低24時間観測し、未到着のsourceはoffline試験の結果と区別する。
+    </li>
+    <li>
+      通常運用:
+      canary全件が説明可能なterminal状態または理由付きpauseで、採用内容の確認と運用gateを通った後に新claimのprotocol_version=2を既定にする。過去の棄却候補を無制限に再enqueueしない。
+    </li>
+  </ol>
+  <p>
+    新設定は <code>CONTEXT_STILL_COVERING_PROTOCOL=v1|v2</code> と既存の
+    <code>CONTEXT_STILL_RUST_COVERING_MODE</code> の直交する組合せとして追加する。offは新Covering
+    claimを停止するだけなので、緊急停止ではFinalizeのv2 claimも停止する専用gateを併用する。v2のinput
+    generationを旧workerが処理しようとしたら明示的なunsupported_protocolとして停止する。PostgreSQLにv2要求を送る場合も同様に拒否する。
+  </p>
+  <p>
+    即時停止条件は、根拠0件の採用、identityの変化、旧revisionの保存、二重Knowledge、FK/partial
+    writeのどれか1件。運用停止条件は直近50件でprovider/parse失敗率がbaselineより5 percentage
+    points超悪化、または他queueの待時間が10%超悪化。50件未満でも重大欠陥は待たずに停止する。canaryの各採用は根拠との対応を確認する。
+  </p>
+  <p>
+    切戻しは新claim停止 → runningの完了/失効確認 → queueとrevisionの整合性採取 → schema
+    N対応のBへ切替 → v2 claim停止を維持、の順に行う。新Evidenceをlegacy projectionだけで読むAやv1
+    workerへ流さない。現在のschema readerは新revision番号を拒否するため、schema
+    versionの数字だけを下げる操作は禁止する。
+  </p>
+  <p>
+    full
+    DB復元は最終手段であり、移行後の全writeを失う可能性がある。実施するならwriterを停止し、移行後writeと監査履歴をexportし、対象期間の差分と再投入可否を確認してからbackupを復元する。通常のロールバックはDBを保持するBへの切替で行う。復旧後はsource/identity/queue/revision/knowledgeの整合性と該当不具合の回帰試験を確認し、新しいallowlistでcanaryから再開する。
+  </p>
+  <p>
+    Bはv2
+    producerの新挙動を無効化しても、revisionを読みfenceする能力を必ず残す。schemaを読めるだけの旧仕様binaryをBと呼ばない。v1→v2の有効化後に、障害回避のため候補を自動でv1へ格下げしない。canaryで発生した問題はallowlistのrevision/knowledge単位で追跡し、全DB復元をせず是正できるmanifestを残す。
+  </p>
+  <h2 id="implementation">実装単位と依存関係</h2>
+  <table>
+    <caption>
+      順序付きの作業パッケージ
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">順序</th>
+        <th scope="col">作業</th>
+        <th scope="col">成果物</th>
+        <th scope="col">終了gate</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>WP0</td>
+        <td>baseline固定</td>
+        <td>対象hash、8件の観測試験から回帰fixture、source別入力集合</td>
+        <td>既存21件の結果と現在の差分を区別できる</td>
+      </tr>
+      <tr>
+        <td>WP1</td>
+        <td>contract・identity・型付き失敗</td>
+        <td>v2のresponse型、parser、全stageのprompt、実行設定</td>
+        <td>T05〜T10、T15〜T18。v2は無効のまま</td>
+      </tr>
+      <tr>
+        <td>WP2</td>
+        <td>schemaとrevision readerを先行導入</td>
+        <td>追加migration、Finalize reader/fence、互換性検査</td>
+        <td>T27〜T33。旧pendingの動作を維持</td>
+      </tr>
+      <tr>
+        <td>WP3</td>
+        <td>元資料・抜粋・最終支持検証</td>
+        <td>正負共通source、EvidenceBundle、quote validator</td>
+        <td>T01〜T04、T23〜T26</td>
+      </tr>
+      <tr>
+        <td>WP4</td>
+        <td>重複検索と最終本文の確認</td>
+        <td>fingerprint、scope検索、近似関係記録</td>
+        <td>T11〜T14、T19〜T22</td>
+      </tr>
+      <tr>
+        <td>WP5</td>
+        <td>writer接続と回復入口</td>
+        <td>atomic revision persist、Finalize要求、retry/reprocess接続</td>
+        <td>全回帰と並行実行試験</td>
+      </tr>
+      <tr>
+        <td>WP6</td>
+        <td>品質・負荷比較</td>
+        <td>正解付き比較、障害注入、計測結果</td>
+        <td>品質・費用・処理時間gate</td>
+      </tr>
+      <tr>
+        <td>WP7</td>
+        <td>移行・段階導入</td>
+        <td>rehearsal、canary、切戻し確認、運用手順</td>
+        <td>全項目合格後にv2を通常運用へ</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    WP1とWP2は順に導入できるが、v2の本番有効化はWP5までの全機能がそろってからとする。根拠を検証する前の近似棄却だけを先に本番へ出さない。実装中に必要となる補助moduleはresponse_contract.rs、evidence_bundle.rs、evidence_validation.rs、revision_repository.rsを候補とし、既存moduleからの責務切り出しに限定する。
+  </p>
+  <h2 id="tests">試験計画</h2>
+  <table>
+    <caption>
+      必須の回帰・障害試験
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">ID</th>
+        <th scope="col">入力・操作</th>
+        <th scope="col">期待結果</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>T01〜T04</td>
+        <td>空source、根拠0、架空引用、同一事象の言い換え、矛盾fix、1資料で十分な例</td>
+        <td>前者を不採用。十分な1資料は採用。負の経路も根拠本文をpromptへ渡す</td>
+      </tr>
+      <tr>
+        <td>T05〜T07</td>
+        <td>rejected等の未知status、statusのみ、旧ラベル、null/NaN/小数score、余分なfield</td>
+        <td>parse_failed。insufficientを採用へ変換しない</td>
+      </tr>
+      <tr>
+        <td>T08〜T10</td>
+        <td>LLMが別repoを返す、source identity競合、trusted aliasとuntrusted候補identity</td>
+        <td>上書き不可。競合は隔離。確認済みaliasだけ一致</td>
+      </tr>
+      <tr>
+        <td>T11〜T14</td>
+        <td>否定、数値、版、scope、polarityが異なる近似候補</td>
+        <td>自動duplicateにしない。根拠が十分ならdraftへ</td>
+      </tr>
+      <tr>
+        <td>T15〜T18</td>
+        <td>補完/repairでtimeout・429・5xx・401、parse失敗、試行上限</td>
+        <td>適切なpending/failed。通信失敗で棄却・降格しない</td>
+      </tr>
+      <tr>
+        <td>T19〜T22</td>
+        <td>平文の空白差、コード字下げ差、40件超、最終清書で一致、vector停止</td>
+        <td>完全一致を漏らさず、コード差分は消さず、安全なlexical縮退</td>
+      </tr>
+      <tr>
+        <td>T23〜T26</td>
+        <td>末尾根拠、複数range、UTF-8、原資料更新、切り詰め、偽URL引用</td>
+        <td>提示した根拠を再現可能。偽位置・偽URLを拒否</td>
+      </tr>
+      <tr>
+        <td>T27〜T30</td>
+        <td>Finalize全状態で新旧revision、同一retry、入力更新、旧claim帰還</td>
+        <td>最新要求だけ保存。attemptと所有権が保たれる</td>
+      </tr>
+      <tr>
+        <td>T31〜T33</td>
+        <td>migration中断、重複Finalize legacy row、書込み途中crash、旧readerでv2</td>
+        <td>atomic rollback、明示的停止、部分Knowledgeなし</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    観測テストは望ましくない現在の結果を期待するため、そのまま成功を合格にしない。fixtureを再利用して期待値を修正する。mock試験と実モデル試験を分け、実モデルのquality
+    gateをunit test件数で代替しない。
+  </p>
+  <p>
+    実装時の検証は変更単位で <code>cargo test -p context-stilld covering_executor</code>、Finalize/schema/project
+    identityの該当suiteを実行し、統合時に
+    <code>cargo test -p context-stilld</code>、<code>cargo clippy --workspace --all-targets -- -D warnings</code>、<code
+      >bun run typecheck</code
+    >
+    を実行する。prompt変更時は
+    <code>bun run system-context:lint</code
+    >、<code>bun run system-context:build</code>、<code>bun run system-context:check</code>、<code
+      >bun run system-context:boundary</code
+    >
+    を通す。
+  </p>
+  <p>
+    統合試験にはT34=匿名化後のartifact
+    hash不一致、T35=source-onlyから外部昇格したretryの根拠再利用、T36=完全削除と参照無効化、T37=active知識のreview解決と旧承認の拒否、T38=Finalize失敗応答と新revisionの競合、T39=同一worker
+    IDを再利用した旧claim_token、T40=他queue公平性・予算上限を追加する。実DB
+    schemaを用い、テスト専用の簡略tableだけでmigrationの成功を判定しない。
+  </p>
+  <p>
+    SQLite変更時は <code>bun run test:sqlite-core</code> と
+    <code>bun run test:sqlite-runtime</code>、接続の確認は隔離DBで
+    <code>bun run rust:queue:smoke</code>
+    を行う。TypeScript入口を変更した場合は対応するqueue/API unit testを追加する。schema
+    migration、quote validator、revision fencingの失敗注入は外部サービスなしで再現可能にする。
+  </p>
+  <h2 id="review">計画の採点と改善記録</h2>
+  <p>
+    自己レビューの基準は、課題対応15点、契約と根拠20点、状態と並行性15点、移行と切戻し15点、実装可能性10点、試験と品質評価15点、観測5点、明確さ5点の100点満点。95点超に加えて、根拠・identity・古いrevision・切戻しに未解決の重大欠陥がないことを必須条件とする。
+  </p>
+  <table>
+    <caption>
+      自己レビューの改善履歴。採点主体は同一エージェント
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">版</th>
+        <th scope="col">点数</th>
+        <th scope="col">指摘と修正</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>初稿</td>
+        <td>76/100</td>
+        <td>
+          移行DDL、Finalize全状態、schemaを戻せない制約、品質指標の母数が不足。追加schema・遷移表・互換reader・品質gate・予算を追記。
+        </td>
+      </tr>
+      <tr>
+        <td>改訂2</td>
+        <td>93/100</td>
+        <td>
+          固定snapshotと後段の外部根拠、匿名化後本文の支持、任意stage契約が曖昧。inputとattempt
+          bundleを分離し、匿名化を支持検証前へ移動、hash fence・stage別schemaを明示。
+        </td>
+      </tr>
+      <tr>
+        <td>最終版</td>
+        <td>97/100</td>
+        <td>
+          8課題の実装と試験、失敗時の全出口、移行・切戻し・観測を追跡できる。重大未解決項目0。残る3点は実データのラベル監査・費用測定2点と、保存量の実測1点。
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <table>
+    <caption>
+      最終採点の内訳と根拠
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">項目</th>
+        <th scope="col">得点/配点</th>
+        <th scope="col">評価根拠</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>課題対応</td>
+        <td>15/15</td>
+        <td>F1〜F8が変更箇所、WP、T01〜T40へ対応している。</td>
+      </tr>
+      <tr>
+        <td>契約と根拠</td>
+        <td>20/20</td>
+        <td>正負共通の厳密schema、quote検証、identity固定、支持検証後の本文不変を定義。</td>
+      </tr>
+      <tr>
+        <td>状態と並行性</td>
+        <td>15/15</td>
+        <td>generation、attempt、requested/claimed、claim_token、成功と失敗のfenceを定義。</td>
+      </tr>
+      <tr>
+        <td>移行と切戻し</td>
+        <td>15/15</td>
+        <td>追加migration、重複preflight、互換reader、v2の旧reader拒否、停止・復旧順を定義。</td>
+      </tr>
+      <tr>
+        <td>実装可能性</td>
+        <td>10/10</td>
+        <td>既存関数とschemaへ変更を割り当て、依存順と段階gateを固定。</td>
+      </tr>
+      <tr>
+        <td>試験と品質評価</td>
+        <td>13/15</td>
+        <td>
+          回帰・crash・実モデルの測定方法は具体化済み。600ケースのラベル監査と費用測定は実装工程で実施するため2点留保。
+        </td>
+      </tr>
+      <tr>
+        <td>観測</td>
+        <td>4/5</td>
+        <td>metric・reason・再現hash・削除を定義。長期保存容量の実測は未実施のため1点留保。</td>
+      </tr>
+      <tr>
+        <td>明確さ</td>
+        <td>5/5</td>
+        <td>確認済み事実、設計判断、初期設定、未計測の目標を区別している。</td>
+      </tr>
+    </tbody>
+  </table>
+  <p>
+    <strong
+      >97点は計画の具体性と整合性に対する自己評価であり、第三者評価でも、実装後の精度97%という意味でもない。</strong
+    >本番有効化前にはWP0とWP6の実測gateを満たす必要がある。採点にかかわらず、根拠・identity・revision・rollbackの重大欠陥が一つでも見つかれば実装完了にせず計画を更新する。
+  </p>
+  <h2 id="references">根拠資料</h2>
+  <ul>
+    <li><a href="covering-logic-evaluation.html">Coveringロジック評価</a></li>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/review_probes.rs">8件の観測試験</a>
+    </li>
+    <li>
+      <a href="assets/covering-logic-evaluation-2026-09-06/probe-results.txt"
+        >既存21件と観測8件の結果</a
+      >
+    </li>
+    <li>
+      <a href="positive-covering-rust-executor-closeout-evidence.html">Rust移植時のcontract</a>
+    </li>
+    <li>
+      <a href="sqlite-single-writer-external-io-isolation-implementation-plan.html"
+        >単一writerと外部I/O分離の計画</a
+      >
+    </li>
+    <li>
+      <a href="assets/covering-v2-plan-2026-09-06/review-log.json">各改訂のhash・採点・修正記録</a>
+    </li>
+  </ul>
+</article>

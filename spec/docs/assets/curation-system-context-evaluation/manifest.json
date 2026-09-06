@@ -1,0 +1,12 @@
+{
+  "evaluatedAt": "2026-09-06T14:05:09.633135+00:00",
+  "source": "crates/context-stilld/src/domains/queue_lifecycle/curation_executor.rs:113",
+  "systemMessageSha256": "c2b125fd5ee3545d1aad565dbb01ae1298d9abf7abcb6db20eb39f9cfc1e624a",
+  "productionPromptChanged": false,
+  "syntheticProbeCount": 9,
+  "mainLiveCaseCount": 7,
+  "mainLiveResponses": 2,
+  "mainLiveCapacityFailures": 5,
+  "separateSmokeResponses": 1,
+  "note": "Fixed synthetic inputs. No production knowledge writes. Injected bad answers probe execution gates, not LLM error rate."
+}
