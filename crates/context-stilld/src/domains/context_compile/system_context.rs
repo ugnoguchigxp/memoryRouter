@@ -49,6 +49,7 @@ pub fn verify_static_selector_artifact() -> Result<(), String> {
         "",
         &[],
     )
+    .map(|_| ())
     .map_err(|error| format!("selector validator contract is unavailable: {error}"))
 }
 
