@@ -96,51 +96,16 @@ const tasks = [
     label: "rust agent log sync smoke",
     command: ["bun", "scripts/rust-agent-log-sync-smoke.mjs"],
   },
-  { label: "typescript unit tests", command: ["bun", "run", "test:unit"] },
 ];
 
 function formatDuration(startedAt) {
   return `${((performance.now() - startedAt) / 1000).toFixed(1)}s`;
 }
 
-function runTask(task) {
-  return new Promise((resolve) => {
-    const startedAt = performance.now();
-    const [bin, ...args] = task.command;
-    console.log(`[verify:rust-daemon] ${task.label} ...`);
-    const child = spawn(bin, args, {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        CONTEXT_STILL_APP_DATA_DIR:
-          process.env.CONTEXT_STILL_APP_DATA_DIR ?? ".tmp/context-stilld-verify",
-        ...task.env,
-      },
-      stdio: ["inherit", "pipe", "pipe"],
-    });
-    const stdout = [];
-    const stderr = [];
-    child.stdout.on("data", (chunk) => stdout.push(chunk));
-    child.stderr.on("data", (chunk) => stderr.push(chunk));
-    child.on("error", (error) => {
-      resolve({
-        task,
-        code: 1,
-        duration: formatDuration(startedAt),
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: `${Buffer.concat(stderr).toString("utf8")}${error.message}\n`,
-      });
-    });
-    child.on("close", (code) => {
-      resolve({
-        task,
-        code: code ?? 1,
-        duration: formatDuration(startedAt),
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-      });
-    });
-  });
+async function runTask(task) {
+  console.log(`[verify:rust-daemon] ${task.label} ...`);
+  const result = await runCommand(task.command, { env: task.env });
+  return { ...result, task };
 }
 
 function runCommand(command, options = {}) {

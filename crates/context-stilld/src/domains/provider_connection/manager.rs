@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
 use super::service::{
-    ensure_same_connection_identity, AvailabilityState, ClaimedLarmTarget, LarmConnectionConfig,
-    LarmConnectionStatus, LarmControlClient, LarmControlError, PublicLarmConnection,
+    ensure_same_connection_identity, ClaimedLarmTarget, LarmConnectionConfig, LarmConnectionStatus,
+    LarmControlClient, LarmControlError, LarmServiceActivity, PublicLarmConnection,
+    ServiceActivityState,
 };
 
 const TRANSIENT_BACKOFF_MAX_MS: u64 = 60_000;
@@ -10,7 +11,7 @@ const UNAVAILABLE_BACKOFF_MS: u64 = 300_000;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum LarmConnectionManagerState {
-    WaitingAvailability,
+    WaitingActivity,
     Creating,
     WaitingReady,
     Claiming,
@@ -43,7 +44,7 @@ impl LarmConnectionManager {
     pub fn new(config: LarmConnectionConfig) -> Result<Self, LarmControlError> {
         Ok(Self {
             client: LarmControlClient::new(config)?,
-            state: LarmConnectionManagerState::WaitingAvailability,
+            state: LarmConnectionManagerState::WaitingActivity,
             connection: None,
             target: None,
             next_poll_at: None,
@@ -94,39 +95,33 @@ impl LarmConnectionManager {
             self.next_poll_at = None;
         }
 
-        self.state = LarmConnectionManagerState::WaitingAvailability;
-        let current_connection_id = self.connection_id().map(str::to_string);
-        let availability = match self.client.availability(current_connection_id.as_deref()) {
-            Ok(availability) => availability,
+        self.state = LarmConnectionManagerState::WaitingActivity;
+        let activity = match self.client.service_activity() {
+            Ok(activity) => activity,
             Err(error) => {
                 self.fail_closed(&error);
                 return Err(error);
             }
         };
-        match availability.state {
-            AvailabilityState::Available => {}
-            AvailabilityState::Busy => {
+        match activity.state {
+            ServiceActivityState::Idle => {}
+            ServiceActivityState::Active => {
                 self.release()?;
-                let retry_after_ms = self.schedule_poll(availability.retry_after_ms, false);
-                return Ok(self.waiting_result(&availability.reason_code, retry_after_ms));
+                let retry_after_ms = self.schedule_poll(activity.retry_after_ms, false);
+                return Ok(self.waiting_result("service_active", retry_after_ms));
             }
-            AvailabilityState::Unknown => {
+            ServiceActivityState::Draining => {
                 self.release()?;
-                let retry_after_ms = self.schedule_transient_backoff(availability.retry_after_ms);
-                return Ok(self.waiting_result(&availability.reason_code, retry_after_ms));
-            }
-            AvailabilityState::Unavailable => {
-                self.release()?;
-                let retry_after_ms = self.schedule_unavailable_backoff(availability.retry_after_ms);
-                return Ok(self.waiting_result(&availability.reason_code, retry_after_ms));
+                let retry_after_ms = self.schedule_poll(activity.retry_after_ms, false);
+                return Ok(self.waiting_result("service_draining", retry_after_ms));
             }
         }
 
         self.transient_backoff_ms = 0;
         self.next_poll_at = None;
         if self.connection.as_ref().is_some_and(|connection| {
-            connection.boot_epoch != availability.boot_epoch
-                || connection.catalog_revision != availability.catalog_revision
+            connection.boot_epoch != activity.boot_epoch
+                || connection.catalog_revision != activity.config_revision
         }) {
             self.discard_connection_best_effort();
         }
@@ -143,7 +138,7 @@ impl LarmConnectionManager {
             }
         }
         if self.target.is_none() {
-            if let Err(error) = self.acquire_target(&availability) {
+            if let Err(error) = self.acquire_target(&activity) {
                 self.fail_closed(&error);
                 return Err(error);
             }
@@ -152,7 +147,7 @@ impl LarmConnectionManager {
         Ok(LarmReconcileResult {
             state: self.state,
             ready: true,
-            reason_code: Some(availability.reason_code),
+            reason_code: Some("service_idle".to_string()),
             retry_after_ms: 0,
         })
     }
@@ -213,16 +208,19 @@ impl LarmConnectionManager {
         self.target = None;
         self.pending_create_key = None;
         let Some(connection_id) = self.connection_id().map(str::to_string) else {
-            self.state = LarmConnectionManagerState::WaitingAvailability;
+            self.state = LarmConnectionManagerState::WaitingActivity;
             self.next_poll_at = None;
             self.transient_backoff_ms = 0;
             return Ok(());
         };
         self.state = LarmConnectionManagerState::Releasing;
-        match self.client.release(&connection_id) {
+        let result = self.client.release(&connection_id);
+        // A failed remote cleanup must not leave a locally reusable Connection.
+        // LARM's TTL is the final cleanup mechanism when DELETE cannot be confirmed.
+        self.connection = None;
+        match result {
             Ok(()) => {
-                self.connection = None;
-                self.state = LarmConnectionManagerState::WaitingAvailability;
+                self.state = LarmConnectionManagerState::WaitingActivity;
                 self.next_poll_at = None;
                 self.transient_backoff_ms = 0;
                 Ok(())
@@ -239,21 +237,20 @@ impl LarmConnectionManager {
         }
     }
 
-    fn acquire_target(
-        &mut self,
-        availability: &super::service::LarmAvailability,
-    ) -> Result<(), LarmControlError> {
+    fn acquire_target(&mut self, activity: &LarmServiceActivity) -> Result<(), LarmControlError> {
         let ready = if let Some(connection) = self.connection.clone() {
-            if connection.boot_epoch != availability.boot_epoch
-                || connection.catalog_revision != availability.catalog_revision
+            if connection.boot_epoch != activity.boot_epoch
+                || connection.catalog_revision != activity.config_revision
             {
                 return Err(LarmControlError::protocol(
-                    "LARM connection control-plane identity does not match availability",
+                    "LARM connection control-plane identity does not match service activity",
                 ));
             }
             self.state = LarmConnectionManagerState::WaitingReady;
             self.client.wait_until_ready(connection)?
         } else {
+            self.client
+                .discover_configured_profile(&activity.config_revision)?;
             self.state = LarmConnectionManagerState::Creating;
             let key = match self.pending_create_key.clone() {
                 Some(key) => key,
@@ -276,11 +273,11 @@ impl LarmConnectionManager {
                 }
             };
             self.connection = Some(created.clone());
-            if created.boot_epoch != availability.boot_epoch
-                || created.catalog_revision != availability.catalog_revision
+            if created.boot_epoch != activity.boot_epoch
+                || created.catalog_revision != activity.config_revision
             {
                 return Err(LarmControlError::protocol(
-                    "LARM control-plane identity changed between availability and create",
+                    "LARM control-plane identity changed between activity and create",
                 ));
             }
             self.state = LarmConnectionManagerState::WaitingReady;
@@ -305,7 +302,7 @@ impl LarmConnectionManager {
             let _ = self.client.release(&connection_id);
         }
         self.connection = None;
-        self.state = LarmConnectionManagerState::WaitingAvailability;
+        self.state = LarmConnectionManagerState::WaitingActivity;
     }
 
     fn fail_closed(&mut self, error: &LarmControlError) {
@@ -398,19 +395,16 @@ mod tests {
     use zeroize::Zeroizing;
 
     #[test]
-    fn queue_idle_does_not_poll_availability() {
+    fn queue_idle_does_not_poll_service_activity() {
         let mut manager = LarmConnectionManager::new(config("http://127.0.0.1:9")).unwrap();
         let result = manager.reconcile(false).unwrap();
         assert!(!result.ready);
         assert_eq!(result.reason_code.as_deref(), Some("queue_idle"));
-        assert_eq!(
-            manager.state(),
-            LarmConnectionManagerState::WaitingAvailability
-        );
+        assert_eq!(manager.state(), LarmConnectionManagerState::WaitingActivity);
     }
 
     #[test]
-    fn busy_availability_enters_backoff_without_creating_connection() {
+    fn active_service_activity_enters_backoff_without_creating_connection() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let (request_tx, request_rx) = mpsc::channel();
@@ -418,17 +412,15 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             request_tx.send(read_request(&mut stream)).unwrap();
             let response = json_response(serde_json::json!({
-                "contractVersion": "agent-profile-availability.v1",
-                "agentProfile": "contextstill-background",
-                "audience": "saaa-desktop",
-                "state": "busy",
-                "reasonCode": "protected_runtime_busy",
+                "contractVersion": "larm-service-activity.v1",
+                "state": "active",
+                "activeWorkloads": 1,
                 "observedAt": super::super::service::current_rfc3339_for_test(),
-                "validForMs": 60_000,
-                "retryAfterMs": 9000,
+                "validForMs": 1_000,
+                "retryAfterMs": 1_000,
                 "reservationGuaranteed": false,
-                "catalogRevision": "catalog-1",
-                "bootEpoch": "epoch-1"
+                "bootEpoch": "epoch-1",
+                "configRevision": "catalog-1"
             }));
             stream.write_all(response.as_bytes()).unwrap();
         });
@@ -436,17 +428,146 @@ mod tests {
         let mut manager = LarmConnectionManager::new(config(&format!("http://{address}"))).unwrap();
         let result = manager.reconcile(true).unwrap();
         assert!(!result.ready);
-        assert_eq!(
-            result.reason_code.as_deref(),
-            Some("protected_runtime_busy")
-        );
-        assert!(result.retry_after_ms >= 9_000);
+        assert_eq!(result.reason_code.as_deref(), Some("service_active"));
+        assert!(result.retry_after_ms >= 1_000);
         assert_eq!(manager.state(), LarmConnectionManagerState::Backoff);
         assert!(manager.target().is_none());
         assert!(request_rx
             .recv()
             .unwrap()
-            .starts_with("GET /v2/agent-profiles/"));
+            .starts_with("GET /v1/activity HTTP/1.1"));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn draining_service_activity_does_not_create_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            request_tx.send(read_request(&mut stream)).unwrap();
+            stream
+                .write_all(
+                    json_response(service_activity_json(
+                        "draining",
+                        0,
+                        1_000,
+                        "epoch-1",
+                        "catalog-1",
+                    ))
+                    .as_bytes(),
+                )
+                .unwrap();
+        });
+
+        let mut manager = LarmConnectionManager::new(config(&format!("http://{address}"))).unwrap();
+        let result = manager.reconcile(true).unwrap();
+
+        assert!(!result.ready);
+        assert_eq!(result.reason_code.as_deref(), Some("service_draining"));
+        assert!(manager.target().is_none());
+        assert_eq!(request_rx.try_iter().count(), 1);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn invalid_http_stale_and_timeout_activity_never_create_connection() {
+        let mut unknown = service_activity_json("idle", 0, 0, "epoch-1", "catalog-1");
+        unknown["unexpected"] = serde_json::Value::Bool(true);
+        assert_activity_failure_does_not_create(Some(json_response(unknown)));
+        assert_activity_failure_does_not_create(Some(
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        ));
+        let mut stale = service_activity_json("idle", 0, 0, "epoch-1", "catalog-1");
+        stale["observedAt"] = serde_json::Value::String("2020-01-01T00:00:00.000Z".to_string());
+        assert_activity_failure_does_not_create(Some(json_response(stale)));
+        assert_activity_failure_does_not_create(None);
+    }
+
+    #[test]
+    fn missing_configured_profile_does_not_create_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut catalog = profile_catalog_json("catalog-1");
+            catalog["profiles"] = serde_json::json!([]);
+            for response in [
+                json_response(service_activity_json("idle", 0, 0, "epoch-1", "catalog-1")),
+                json_response(catalog),
+            ] {
+                let (mut stream, _) = listener.accept().unwrap();
+                request_tx.send(read_request(&mut stream)).unwrap();
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let mut manager = LarmConnectionManager::new(config(&format!("http://{address}"))).unwrap();
+
+        assert!(manager.reconcile(true).is_err());
+        server.join().unwrap();
+
+        let requests = request_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /v1/activity HTTP/1.1"));
+        assert!(requests[1].starts_with("GET /v2/agent-profiles HTTP/1.1"));
+    }
+
+    #[test]
+    fn next_job_boundary_rechecks_activity_and_yields_to_another_service() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = format!("http://{address}");
+        let response_origin = origin.clone();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let responses = [
+                json_response(service_activity_json("idle", 0, 0, "epoch-2", "catalog-2")),
+                json_response(profile_catalog_json("catalog-2")),
+                json_response_with_status(201, "Created", connection_json("epoch-2")),
+                json_response(claim_json(&response_origin)),
+                json_response(service_activity_json(
+                    "active",
+                    1,
+                    1_000,
+                    "epoch-2",
+                    "catalog-2",
+                )),
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    .to_string(),
+            ];
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                request_tx.send(read_request(&mut stream)).unwrap();
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let mut manager = LarmConnectionManager::new(config(&origin)).unwrap();
+
+        assert!(manager.reconcile(true).unwrap().ready);
+        let next_job = manager.reconcile(true).unwrap();
+        assert!(!next_job.ready);
+        assert_eq!(next_job.reason_code.as_deref(), Some("service_active"));
+        assert!(manager.target().is_none());
+
+        let requests = request_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("GET /v1/activity HTTP/1.1"))
+                .count(),
+            2
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.starts_with("POST /v1/agent-connections HTTP/1.1"))
+                .count(),
+            1
+        );
+        assert!(requests[4].starts_with("GET /v1/activity HTTP/1.1"));
+        assert!(requests[5].starts_with("DELETE /v1/agent-connections/aconn_epoch_1"));
         server.join().unwrap();
     }
 
@@ -456,21 +577,28 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let (request_tx, request_rx) = mpsc::channel();
         let server = thread::spawn(move || {
-            for _ in 0..2 {
+            for request_index in 0..4 {
                 let (mut stream, _) = listener.accept().unwrap();
                 request_tx.send(read_request(&mut stream)).unwrap();
+                if request_index % 2 == 0 {
+                    stream
+                        .write_all(json_response(profile_catalog_json("catalog-1")).as_bytes())
+                        .unwrap();
+                }
             }
         });
         let mut manager = LarmConnectionManager::new(config(&format!("http://{address}"))).unwrap();
 
-        let availability = available();
-        assert!(manager.acquire_target(&availability).is_err());
-        assert!(manager.acquire_target(&availability).is_err());
+        let activity = idle_activity();
+        assert!(manager.acquire_target(&activity).is_err());
+        assert!(manager.acquire_target(&activity).is_err());
         server.join().unwrap();
 
         let requests = request_rx.try_iter().collect::<Vec<_>>();
-        let first_key = header_value(&requests[0], "idempotency-key").unwrap();
-        let second_key = header_value(&requests[1], "idempotency-key").unwrap();
+        assert!(requests[0].starts_with("GET /v2/agent-profiles HTTP/1.1"));
+        assert!(requests[2].starts_with("GET /v2/agent-profiles HTTP/1.1"));
+        let first_key = header_value(&requests[1], "idempotency-key").unwrap();
+        let second_key = header_value(&requests[3], "idempotency-key").unwrap();
         assert_eq!(first_key, second_key);
     }
 
@@ -478,10 +606,10 @@ mod tests {
     fn existing_connection_is_not_reused_after_catalog_revision_changes() {
         let mut manager = LarmConnectionManager::new(config("http://127.0.0.1:9")).unwrap();
         manager.connection = Some(public_connection("epoch-1"));
-        let mut availability = available();
-        availability.catalog_revision = "catalog-2".to_string();
+        let mut activity = idle_activity();
+        activity.config_revision = "catalog-2".to_string();
 
-        let error = manager.acquire_target(&availability).unwrap_err();
+        let error = manager.acquire_target(&activity).unwrap_err();
 
         assert_eq!(error.kind, "protocol");
         assert!(error.message.contains("control-plane identity"));
@@ -521,6 +649,84 @@ mod tests {
     }
 
     #[test]
+    fn release_failure_discards_the_local_connection_and_credential() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let request = read_request(&mut stream);
+            assert!(request.starts_with("DELETE /v1/agent-connections/aconn_epoch_1"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let mut manager = LarmConnectionManager::new(config(&format!("http://{address}"))).unwrap();
+        manager.connection = Some(public_connection("epoch-1"));
+        manager.target = Some(ClaimedLarmTarget {
+            connection_id: "aconn_epoch_1".to_string(),
+            allocation_id: "alloc_epoch_1".to_string(),
+            api_base_url: format!("http://{address}/v1"),
+            model: "contextstill-background".to_string(),
+            bearer_token: Zeroizing::new("old-secret".to_string()),
+            expires_at: "2099-09-06T12:15:00.000Z".to_string(),
+        });
+
+        let error = manager.release().unwrap_err();
+
+        assert_eq!(error.http_status, Some(503));
+        assert!(manager.connection.is_none());
+        assert!(manager.target().is_none());
+        assert_eq!(manager.state(), LarmConnectionManagerState::Backoff);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn renew_discards_the_old_token_and_reclaims() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let origin = format!("http://{address}");
+        let response_origin = origin.clone();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let mut renewed = connection_json("epoch-1");
+            renewed["catalogRevision"] = serde_json::Value::String("catalog-1".to_string());
+            let responses = [
+                json_response(renewed),
+                json_response(claim_json(&response_origin)),
+            ];
+            for response in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                request_tx.send(read_request(&mut stream)).unwrap();
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let mut manager = LarmConnectionManager::new(config(&origin)).unwrap();
+        manager.connection = Some(public_connection("epoch-1"));
+        manager.target = Some(ClaimedLarmTarget {
+            connection_id: "aconn_epoch_1".to_string(),
+            allocation_id: "alloc_epoch_1".to_string(),
+            api_base_url: format!("{origin}/v1"),
+            model: "contextstill-background".to_string(),
+            bearer_token: Zeroizing::new("old-secret".to_string()),
+            expires_at: "2099-09-06T12:15:00.000Z".to_string(),
+        });
+
+        manager.renew_and_reclaim().unwrap();
+
+        assert_eq!(
+            manager.target().unwrap().bearer_token.as_str(),
+            "new-secret"
+        );
+        let requests = request_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains("/renew HTTP/1.1"));
+        assert!(requests[1].contains("/claim HTTP/1.1"));
+        server.join().unwrap();
+    }
+
+    #[test]
     fn boot_epoch_change_discards_the_old_claim_before_reacquiring() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -529,21 +735,10 @@ mod tests {
         let response_origin = origin.clone();
         let server = thread::spawn(move || {
             let responses = [
-                json_response(serde_json::json!({
-                    "contractVersion": "agent-profile-availability.v1",
-                    "agentProfile": "contextstill-background",
-                    "audience": "saaa-desktop",
-                    "state": "available",
-                    "reasonCode": "available",
-                    "observedAt": super::super::service::current_rfc3339_for_test(),
-                    "validForMs": 60_000,
-                    "retryAfterMs": 0,
-                    "reservationGuaranteed": false,
-                    "catalogRevision": "catalog-2",
-                    "bootEpoch": "epoch-2"
-                })),
+                json_response(service_activity_json("idle", 0, 0, "epoch-2", "catalog-2")),
                 "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     .to_string(),
+                json_response(profile_catalog_json("catalog-2")),
                 json_response_with_status(201, "Created", connection_json("epoch-2")),
                 json_response(claim_json(&response_origin)),
             ];
@@ -573,10 +768,12 @@ mod tests {
             "new-secret"
         );
         let requests = request_rx.try_iter().collect::<Vec<_>>();
-        assert!(requests[0].contains("currentConnectionId=aconn_epoch_1"));
+        assert!(requests[0].starts_with("GET /v1/activity HTTP/1.1"));
+        assert!(!requests[0].contains('?'));
         assert!(requests[1].starts_with("DELETE /v1/agent-connections/aconn_epoch_1"));
-        assert!(requests[2].starts_with("POST /v1/agent-connections"));
-        assert!(requests[3].contains("/claim HTTP/1.1"));
+        assert!(requests[2].starts_with("GET /v2/agent-profiles HTTP/1.1"));
+        assert!(requests[3].starts_with("POST /v1/agent-connections"));
+        assert!(requests[4].contains("/claim HTTP/1.1"));
         server.join().unwrap();
     }
 
@@ -592,27 +789,69 @@ mod tests {
             ready_timeout_ms: 180_000,
             ttl_seconds: 900,
             request_timeout_ms: 300_000,
+            control_bearer_token: None,
         }
     }
 
-    fn available() -> super::super::service::LarmAvailability {
-        super::super::service::LarmAvailability {
-            contract_version: "agent-profile-availability.v1".to_string(),
-            agent_profile: "contextstill-background".to_string(),
-            audience: "saaa-desktop".to_string(),
-            state: AvailabilityState::Available,
-            reason_code: "available".to_string(),
+    fn idle_activity() -> super::super::service::LarmServiceActivity {
+        super::super::service::LarmServiceActivity {
+            contract_version: "larm-service-activity.v1".to_string(),
+            state: ServiceActivityState::Idle,
+            active_workloads: 0,
             observed_at: "2099-09-06T12:34:56.789Z".to_string(),
             valid_for_ms: 1_000,
             retry_after_ms: 0,
             reservation_guaranteed: false,
-            catalog_revision: "catalog-1".to_string(),
             boot_epoch: "epoch-1".to_string(),
+            config_revision: "catalog-1".to_string(),
         }
     }
 
     fn json_response(body: serde_json::Value) -> String {
         json_response_with_status(200, "OK", body)
+    }
+
+    fn service_activity_json(
+        state: &str,
+        active_workloads: u64,
+        retry_after_ms: u64,
+        boot_epoch: &str,
+        config_revision: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "contractVersion": "larm-service-activity.v1",
+            "state": state,
+            "activeWorkloads": active_workloads,
+            "observedAt": super::super::service::current_rfc3339_for_test(),
+            "validForMs": 1_000,
+            "retryAfterMs": retry_after_ms,
+            "reservationGuaranteed": false,
+            "bootEpoch": boot_epoch,
+            "configRevision": config_revision
+        })
+    }
+
+    fn profile_catalog_json(revision: &str) -> serde_json::Value {
+        serde_json::json!({
+            "contractVersion": "agent-connection.v2",
+            "catalogRevision": revision,
+            "defaultAgentProfile": "contextstill-background",
+            "profiles": [{
+                "id": "contextstill-background",
+                "canonicalProfile": "contextstill-background",
+                "description": "ContextStill background provider",
+                "selectionPolicy": "explicit-only",
+                "deprecated": false,
+                "providers": [{
+                    "name": "llm",
+                    "capability": "llm.coding",
+                    "supportedCapabilities": ["llm.coding"],
+                    "protocol": "openai.chat-completions.v1",
+                    "model": "contextstill-background"
+                }]
+            }],
+            "audiences": ["saaa-desktop"]
+        })
     }
 
     fn json_response_with_status(status: u16, reason: &str, body: serde_json::Value) -> String {
@@ -748,5 +987,30 @@ mod tests {
                 .eq_ignore_ascii_case(name)
                 .then_some(value.trim())
         })
+    }
+
+    fn assert_activity_failure_does_not_create(response: Option<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            request_tx.send(read_request(&mut stream)).unwrap();
+            if let Some(response) = response {
+                stream.write_all(response.as_bytes()).unwrap();
+            } else {
+                thread::sleep(Duration::from_millis(350));
+            }
+        });
+        let mut test_config = config(&format!("http://{address}"));
+        test_config.availability_timeout_ms = 250;
+        let mut manager = LarmConnectionManager::new(test_config).unwrap();
+
+        assert!(manager.reconcile(true).is_err());
+        server.join().unwrap();
+
+        let requests = request_rx.try_iter().collect::<Vec<_>>();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /v1/activity HTTP/1.1"));
     }
 }

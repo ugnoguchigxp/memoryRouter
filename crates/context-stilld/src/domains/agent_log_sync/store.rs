@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -68,16 +67,10 @@ pub(crate) fn store_source_result(
             if sanitized_chunk.is_empty() {
                 continue;
             }
-            let readable = build_readable_transcript(&sanitized_chunk);
-            if readable.trim().len() <= min_distillable_chars {
+            let content = build_readable_transcript(&sanitized_chunk);
+            if content.trim().len() <= min_distillable_chars {
                 continue;
             }
-            let raw = build_transcript(&sanitized_chunk);
-            let content = if readable.trim().is_empty() {
-                raw
-            } else {
-                readable
-            };
             if has_targeted_nightworkers_runtime_contract(&content) {
                 continue;
             }
@@ -797,14 +790,6 @@ fn chunk_messages(
     chunks
 }
 
-fn build_transcript(messages: &[ChatMessage]) -> String {
-    messages
-        .iter()
-        .map(|message| format!("{}: {}", message.role.to_uppercase(), message.content))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
 fn build_readable_transcript(messages: &[ChatMessage]) -> String {
     messages
         .iter()
@@ -1079,9 +1064,4 @@ fn next_id(prefix: &str) -> String {
 
 fn sql_error(error: rusqlite::Error) -> CliError {
     CliError::runtime(format!("sqlite agent-log-sync failed: {error}"))
-}
-
-#[allow(dead_code)]
-fn _path_text(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
 }

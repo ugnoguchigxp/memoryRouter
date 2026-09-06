@@ -6,6 +6,11 @@ import type {
 } from "../llm-provider.js";
 import { LlmProviderHttpError, parseRetryAfterSeconds } from "../provider-http-error.js";
 import { normalizeLlmUsage } from "../usage-normalizer.js";
+import {
+  checkAgentSessionModel,
+  isAgentSessionApiPath,
+  runAgentSessionChat,
+} from "./agent-session-client.js";
 import { buildLocalLlmChatCompletionsUrl, resolveLocalLlmModelConfig } from "./local-llm-config.js";
 
 type LocalLlmResponse = {
@@ -105,6 +110,9 @@ export function createLocalLlmProvider(options: LocalLlmProviderOptions = {}): L
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
         const config = resolveProviderConfig(options, request.model);
+        if (isAgentSessionApiPath(config.apiPath)) {
+          return await runAgentSessionChat(config, request, controller.signal);
+        }
         const response = await fetch(
           buildLocalLlmChatCompletionsUrl(config.apiBaseUrl, config.apiPath),
           {
@@ -158,6 +166,14 @@ export function createLocalLlmProvider(options: LocalLlmProviderOptions = {}): L
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
+        if (isAgentSessionApiPath(config.apiPath)) {
+          const health = await checkAgentSessionModel(config, controller.signal);
+          return {
+            ...result,
+            reachable: health.reachable,
+            ...(health.error ? { error: health.error } : {}),
+          };
+        }
         const health = await fetch(healthUrl(options, requestedModel), {
           method: "GET",
           headers: headers(config.apiKey),

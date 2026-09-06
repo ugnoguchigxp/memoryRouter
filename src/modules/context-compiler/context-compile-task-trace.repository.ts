@@ -1,9 +1,7 @@
 import { and, desc, eq, ne } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { contextCompileTaskTraces } from "../../db/schema.js";
-import { getDefaultDbSession } from "../../db/session.js";
-
-const db = getDefaultDbSession().db;
+import { db } from "../../db/index.js";
 
 function isSqliteBackend(): boolean {
   return resolveDatabaseBackendConfig().kind === "sqlite";

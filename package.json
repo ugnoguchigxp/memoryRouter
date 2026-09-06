@@ -185,7 +185,7 @@
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "@hono/vite-dev-server": "0.26.1",
-    "@playwright/test": "1.60.0",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "4.3.0",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",

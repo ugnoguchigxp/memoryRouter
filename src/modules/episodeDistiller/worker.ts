@@ -152,12 +152,6 @@ function numberFromUnknown(value: unknown): number | null {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
-function stringArrayFromUnknown(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim())
-    : [];
-}
-
 function overlapCount(left: string[] | undefined, right: string[] | undefined): number {
   const rightSet = new Set((right ?? []).map((item) => item.toLowerCase()));
   return (left ?? []).filter((item) => rightSet.has(item.toLowerCase())).length;

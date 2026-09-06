@@ -1,8 +1,6 @@
 import { Hono } from "hono";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { z } from "zod";
-import app from "../api/app.js";
-import { adminApiKeyAuth } from "../api/middleware/admin-auth.js";
 import { listAuditLogsForApi } from "../api/modules/audit/audit.repository.js";
 import { auditLogsRouter } from "../api/modules/audit/audit.routes.js";
 import { listCandidateItems } from "../api/modules/candidates/candidates.repository.js";
@@ -46,45 +44,24 @@ import {
   updateSettingsForApi,
 } from "../api/modules/settings/settings.service.js";
 import { vibeMemoryRouter } from "../api/modules/vibe-memory/vibe-memory.routes.js";
-import { groupedConfig } from "../src/config.js";
-import { requestCoverEvidenceReprocess } from "../src/modules/coverEvidence/reprocess-candidate.service.js";
 import { cloneDefaultSettings } from "../src/modules/settings/settings.defaults.js";
 import { recordVibeMemoryWithDiffEntries } from "../src/modules/vibe-memory/vibe-memory.service.js";
-import { compileRunDetailSchema } from "../src/shared/schemas/compile-run.schema.js";
-import { type ContextPack, contextPackSchema } from "../src/shared/schemas/context-pack.schema.js";
 import {
-  type DoctorAiServiceToolsDomain,
-  type DoctorCoreInfrastructureDomain,
-  type DoctorPipelineAutomationDomain,
-  type DoctorReport,
   doctorAiServiceToolsDomainSchema,
   doctorCoreInfrastructureDomainSchema,
   doctorPipelineAutomationDomainSchema,
   doctorReportSchema,
 } from "../src/shared/schemas/doctor.schema.js";
 import {
-  type OverviewDashboard,
   overviewDashboardSchema,
   overviewKnowledgeAssetsDomainSchema,
-  overviewLandscapeHealthDomainSchema,
-  overviewLlmResourcesDomainSchema,
-  overviewSystemQualityDomainSchema,
 } from "../src/shared/schemas/overview.schema.js";
 
 vi.mock("../api/modules/context-compiler/context-compiler.service.js", () => ({
   compilePackForApi: vi.fn(),
   getRunDetailForApi: vi.fn(),
   getRunRankingTraceForApi: vi.fn(),
-  getRunDetailParamSchema: z.object({
-    id: z.string().uuid(),
-  }),
-  getRunRankingTraceParamSchema: z.object({
-    id: z.string().uuid(),
-  }),
-  runKnowledgeFeedbackParamSchema: z.object({
-    id: z.string().uuid(),
-  }),
-  runEpisodeFeedbackParamSchema: z.object({
+  runIdParamSchema: z.object({
     id: z.string().uuid(),
   }),
   runEpisodeDeprecateParamSchema: z.object({
@@ -158,21 +135,6 @@ vi.mock("../api/modules/audit/audit.repository.js", () => ({
 
 vi.mock("../src/modules/vibe-memory/vibe-memory.service.js", () => ({
   recordVibeMemoryWithDiffEntries: vi.fn(),
-}));
-
-vi.mock("../src/modules/coverEvidence/reprocess-candidate.service.js", () => ({
-  CoverEvidenceReprocessError: class CoverEvidenceReprocessError extends Error {
-    statusCode: 404 | 409;
-    reason: string;
-
-    constructor(statusCode: 404 | 409, reason: string) {
-      super(reason);
-      this.name = "CoverEvidenceReprocessError";
-      this.statusCode = statusCode;
-      this.reason = reason;
-    }
-  },
-  requestCoverEvidenceReprocess: vi.fn(),
 }));
 
 const buildApp = () => {
@@ -343,15 +305,6 @@ describe("API route contract tests", () => {
         createdAt: "2026-05-15T00:00:00.000Z",
       } as never,
       diffEntries: [],
-    });
-    vi.mocked(requestCoverEvidenceReprocess).mockResolvedValue({
-      findCandidateResultId: "candidate-1",
-      coverEvidenceResultId: "candidate-1",
-      targetStateId: "target-1",
-      status: "queued",
-      mode: "cloud_api",
-      previousStatus: "insufficient",
-      previousReason: "rule_body_not_actionable",
     });
   });
 

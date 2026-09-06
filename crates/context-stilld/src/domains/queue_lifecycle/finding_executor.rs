@@ -5,6 +5,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::shared::agent_session::{
+    is_agent_session_api_path, run_agent_session_chat, AgentSessionRequest,
+};
 use crate::shared::errors::CliError;
 
 use super::episode_executor::LocalLlmTargetConfig;
@@ -669,13 +672,36 @@ fn request_candidates(
         .timeout(Duration::from_secs(timeout_seconds.max(30)))
         .build()
         .map_err(|error| CliError::io(format!("failed to build local-llm client: {error}")))?;
+    let messages = json!([
+        {"role":"system","content":system},
+        {"role":"user","content":format!("Source:\n{source}")}
+    ]);
+    if is_agent_session_api_path(&target.api_path) {
+        let content = run_agent_session_chat(
+            &client,
+            AgentSessionRequest {
+                api_base_url: &target.api_base_url,
+                api_path: &target.api_path,
+                api_key,
+                model: &target.model,
+                messages: &messages,
+                max_tokens: 4_000,
+                json_response: true,
+            },
+        )
+        .map_err(CliError::io)?;
+        return parse_candidates(&content);
+    }
     let url = chat_url(&target.api_base_url, &target.api_path);
-    let request_body = json!({
+    let mut request_body = json!({
         "model": target.model,
-        "messages": [{"role":"system","content":system},{"role":"user","content":format!("Source:\n{source}")}],
+        "messages": messages,
         "max_tokens": 4000,
         "temperature": 0
     });
+    if target.target_id.starts_with("larm-agent-connection:") {
+        request_body["stream"] = Value::Bool(false);
+    }
     let mut request = client.post(&url).json(&request_body);
     if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
         request = request.bearer_auth(key);
@@ -997,41 +1023,7 @@ mod tests {
     use std::thread;
     use std::time::Instant;
 
-    #[test]
-    fn parses_candidate_array_and_rejects_invalid_enum() {
-        let candidates = parse_candidates(r#"[{"type":"rule","polarity":" POSITIVE ","title":" Keep leases ","content":" Release every lease "},{"type":"note","polarity":"positive","title":"x","content":"y"},{"type":"rule","title":"missing polarity","content":"ignored"},{"type":"procedure","polarity":"negative","title":"bad procedure","content":"Use when: x\nWorkflow:\n1. a\n2. b\nVerification: v\nAvoid: z"},{"type":"procedure","polarity":"positive","title":"shapeless","content":"do something"}]"#).unwrap();
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].title, "Keep leases");
-    }
-
-    #[test]
-    fn accepts_skill_like_positive_procedure() {
-        let candidates = parse_candidates(r#"[{"type":"procedure","polarity":"positive","title":"Recover a queue","content":"Use when: queue processing stalls\nWorkflow:\n1. Inspect the lease\n2. Restart the worker\nVerification: confirm a job completes\nAvoid: deleting queued jobs"}]"#).unwrap();
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].kind, "procedure");
-    }
-
-    #[test]
-    fn caps_candidates_and_filters_sensitive_boilerplate() {
-        let items = (0..25)
-            .map(|index| json!({
-                "type":"rule", "polarity":"positive", "title":format!("rule-{index}"), "content":"body"
-            }))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            parse_candidates(&json!(items).to_string()).unwrap().len(),
-            20
-        );
-
-        let filtered = filter_source_text(
-            "before\n<environment_context>\nSECRET ENV\n</environment_context>\nAPI_KEY: abcdef\nauthorization: bearer token-value\nafter",
-        );
-        assert!(filtered.contains("before"));
-        assert!(filtered.contains("after"));
-        assert!(!filtered.contains("SECRET ENV"));
-        assert!(!filtered.contains("abcdef"));
-        assert!(!filtered.contains("token-value"));
-    }
+    mod parsing_tests;
 
     #[test]
     fn treats_transport_and_server_failures_as_retryable() {

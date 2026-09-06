@@ -63,29 +63,11 @@ import {
   recordVibeMemoryWithDiffEntries,
   retrieveVibeMemoryContext,
 } from "../src/modules/vibe-memory/vibe-memory.service.js";
+import { compileRunDetailSchema } from "../src/shared/schemas/compile-run.schema.js";
+import { contextPackSchema } from "../src/shared/schemas/context-pack.schema.js";
 
 const TEST_ADMIN_API_KEY = "test-admin-key-0123456789abcdef0123456789abcdef";
 const ROTATED_ADMIN_API_KEY = "rotated-admin-key-0123456789abcdef0123456789abcdef";
-import { compileRunDetailSchema } from "../src/shared/schemas/compile-run.schema.js";
-import { type ContextPack, contextPackSchema } from "../src/shared/schemas/context-pack.schema.js";
-import {
-  type DoctorAiServiceToolsDomain,
-  type DoctorCoreInfrastructureDomain,
-  type DoctorPipelineAutomationDomain,
-  type DoctorReport,
-  doctorAiServiceToolsDomainSchema,
-  doctorCoreInfrastructureDomainSchema,
-  doctorPipelineAutomationDomainSchema,
-  doctorReportSchema,
-} from "../src/shared/schemas/doctor.schema.js";
-import {
-  type OverviewDashboard,
-  overviewDashboardSchema,
-  overviewKnowledgeAssetsDomainSchema,
-  overviewLandscapeHealthDomainSchema,
-  overviewLlmResourcesDomainSchema,
-  overviewSystemQualityDomainSchema,
-} from "../src/shared/schemas/overview.schema.js";
 
 vi.mock("../api/modules/health/readiness.service.js", () => ({
   checkReadiness: vi.fn(async () => ({ database: "ok", writer: "ok" })),
@@ -95,16 +77,7 @@ vi.mock("../api/modules/context-compiler/context-compiler.service.js", () => ({
   compilePackForApi: vi.fn(),
   getRunDetailForApi: vi.fn(),
   getRunRankingTraceForApi: vi.fn(),
-  getRunDetailParamSchema: z.object({
-    id: z.string().uuid(),
-  }),
-  getRunRankingTraceParamSchema: z.object({
-    id: z.string().uuid(),
-  }),
-  runKnowledgeFeedbackParamSchema: z.object({
-    id: z.string().uuid(),
-  }),
-  runEpisodeFeedbackParamSchema: z.object({
+  runIdParamSchema: z.object({
     id: z.string().uuid(),
   }),
   runEpisodeDeprecateParamSchema: z.object({

@@ -57,13 +57,9 @@ function toCandidatePolarity(
   return undefined;
 }
 
-function toCandidateRecord(value: unknown): CandidateRecord | null {
-  return candidateRecordFromValue(value, undefined);
-}
-
 function candidateRecordFromValue(
   value: unknown,
-  diagnostics: StorageCandidateParseDiagnostics | undefined,
+  diagnostics: StorageCandidateParseDiagnostics,
 ): CandidateRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as {
@@ -79,14 +75,14 @@ function candidateRecordFromValue(
   const type = toCandidateType(record.type ?? record.candidateType);
   const polarity = toCandidatePolarity(record.polarity);
   if (!type) {
-    if (diagnostics) diagnostics.droppedMissingType += 1;
+    diagnostics.droppedMissingType += 1;
     return null;
   }
   if (!polarity) {
     if (hasCandidatePolarityValue(record.polarity)) {
-      if (diagnostics) diagnostics.droppedNeutral += 1;
+      diagnostics.droppedNeutral += 1;
     } else {
-      if (diagnostics) diagnostics.droppedMissingPolarity += 1;
+      diagnostics.droppedMissingPolarity += 1;
     }
     return null;
   }
@@ -108,11 +104,11 @@ function candidateRecordFromValue(
   const normalizedContent = content || title;
   if (!normalizedTitle || !normalizedContent) return null;
   if (polarity === "negative" && type === "procedure") {
-    if (diagnostics) diagnostics.droppedNegativeProcedure += 1;
+    diagnostics.droppedNegativeProcedure += 1;
     return null;
   }
   if (type === "procedure" && !hasSkillLikeProcedureBody(normalizedContent)) {
-    if (diagnostics) diagnostics.droppedInvalidProcedureShape += 1;
+    diagnostics.droppedInvalidProcedureShape += 1;
     return null;
   }
   return {

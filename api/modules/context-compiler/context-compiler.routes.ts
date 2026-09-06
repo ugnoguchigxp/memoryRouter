@@ -9,14 +9,11 @@ import {
   compilePackForApi,
   deprecateRunEpisodeForApi,
   getRunDetailForApi,
-  getRunDetailParamSchema,
   getRunRankingTraceForApi,
-  getRunRankingTraceParamSchema,
   listRunsForApi,
   listRunsQuerySchema,
   runEpisodeDeprecateParamSchema,
-  runEpisodeFeedbackParamSchema,
-  runKnowledgeFeedbackParamSchema,
+  runIdParamSchema,
   saveRunEpisodeFeedbackForApi,
   saveRunKnowledgeFeedbackForApi,
 } from "./context-compiler.service.js";
@@ -32,7 +29,7 @@ export const contextCompilerRouter = new Hono()
     const runs = await listRunsForApi(query);
     return c.json({ runs });
   })
-  .get("/runs/:id", zValidator("param", getRunDetailParamSchema), async (c) => {
+  .get("/runs/:id", zValidator("param", runIdParamSchema), async (c) => {
     const params = c.req.valid("param");
     const detail = await getRunDetailForApi(params);
     if (!detail) {
@@ -40,7 +37,7 @@ export const contextCompilerRouter = new Hono()
     }
     return c.json({ detail });
   })
-  .get("/runs/:id/ranking-trace", zValidator("param", getRunRankingTraceParamSchema), async (c) => {
+  .get("/runs/:id/ranking-trace", zValidator("param", runIdParamSchema), async (c) => {
     const params = c.req.valid("param");
     const trace = await getRunRankingTraceForApi(params);
     if (!trace) {
@@ -50,7 +47,7 @@ export const contextCompilerRouter = new Hono()
   })
   .post(
     "/runs/:id/knowledge-feedback",
-    zValidator("param", runKnowledgeFeedbackParamSchema),
+    zValidator("param", runIdParamSchema),
     zValidator("json", compileRunKnowledgeFeedbackWriteSchema),
     async (c) => {
       try {
@@ -77,7 +74,7 @@ export const contextCompilerRouter = new Hono()
   )
   .post(
     "/runs/:id/episode-feedback",
-    zValidator("param", runEpisodeFeedbackParamSchema),
+    zValidator("param", runIdParamSchema),
     zValidator("json", compileRunEpisodeFeedbackWriteSchema),
     async (c) => {
       try {

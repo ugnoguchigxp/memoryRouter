@@ -92,42 +92,25 @@ async function loadMetadata(provider: string, model: string): Promise<ProviderPr
 async function saveMetadata(metadata: ProviderPressureMetadata): Promise<void> {
   const now = new Date();
   const id = providerPressureStateId(metadata.provider, metadata.model);
+  const values = {
+    lastSyncedAt: now,
+    cursor: {},
+    metadata: {
+      cooldownUntil: metadata.cooldownUntil,
+      reason: metadata.reason,
+      updatedAt: metadata.updatedAt,
+      lastRateLimitedAt: metadata.lastRateLimitedAt,
+      lastInteractiveAt: metadata.lastInteractiveAt,
+      lastBackgroundAt: metadata.lastBackgroundAt,
+      consecutiveFailures: metadata.consecutiveFailures,
+      source: metadata.source,
+    },
+    updatedAt: now,
+  };
   await db
     .insert(syncStates)
-    .values({
-      id,
-      lastSyncedAt: now,
-      cursor: {},
-      metadata: {
-        cooldownUntil: metadata.cooldownUntil,
-        reason: metadata.reason,
-        updatedAt: metadata.updatedAt,
-        lastRateLimitedAt: metadata.lastRateLimitedAt,
-        lastInteractiveAt: metadata.lastInteractiveAt,
-        lastBackgroundAt: metadata.lastBackgroundAt,
-        consecutiveFailures: metadata.consecutiveFailures,
-        source: metadata.source,
-      },
-      updatedAt: now,
-    })
-    .onConflictDoUpdate({
-      target: syncStates.id,
-      set: {
-        lastSyncedAt: now,
-        cursor: {},
-        metadata: {
-          cooldownUntil: metadata.cooldownUntil,
-          reason: metadata.reason,
-          updatedAt: metadata.updatedAt,
-          lastRateLimitedAt: metadata.lastRateLimitedAt,
-          lastInteractiveAt: metadata.lastInteractiveAt,
-          lastBackgroundAt: metadata.lastBackgroundAt,
-          consecutiveFailures: metadata.consecutiveFailures,
-          source: metadata.source,
-        },
-        updatedAt: now,
-      },
-    });
+    .values({ id, ...values })
+    .onConflictDoUpdate({ target: syncStates.id, set: values });
 }
 
 export function isRateLimitError(error: unknown): boolean {
@@ -200,26 +183,4 @@ export async function recordProviderRateLimit(params: {
     source: params.source,
   };
   await saveMetadata(next);
-}
-
-export function resolveFindCandidateThrottleSeconds(params: {
-  compileCount: number;
-  interactiveLlmCount: number;
-}): number {
-  if (params.compileCount >= 6 || params.interactiveLlmCount >= 6) {
-    return groupedConfig.distillation.findCandidateMaxIntervalSeconds;
-  }
-  if (params.compileCount >= 3 || params.interactiveLlmCount >= 3) {
-    return groupedConfig.distillation.findCandidateBusyIntervalSeconds;
-  }
-  if (params.compileCount >= 1 || params.interactiveLlmCount >= 1) {
-    return groupedConfig.distillation.findCandidateMediumIntervalSeconds;
-  }
-  return groupedConfig.distillation.findCandidateMinIntervalSeconds;
-}
-
-export function jitterMs(): number {
-  const jitterSeconds = Math.max(0, groupedConfig.distillation.findCandidateJitterSeconds);
-  if (jitterSeconds === 0) return 0;
-  return Math.floor(Math.random() * (jitterSeconds * 1000 + 1));
 }

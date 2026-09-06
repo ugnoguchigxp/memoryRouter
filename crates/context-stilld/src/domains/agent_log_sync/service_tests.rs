@@ -39,13 +39,23 @@ fn rust_agent_log_sync_imports_codex_jsonl_into_sqlite() {
     let assistant_line = format!(
         r#"{{"type":"response_item","timestamp":"2026-06-22T00:00:02.000Z","payload":{{"type":"message","role":"assistant","content":[{{"type":"output_text","text":"{long_text}"}}]}}}}"#
     );
+    let tool_line = r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"tool-only-payload"}}"#;
     std::fs::write(
         &session_path,
         format!(
-            "{}\n{}\n{}\n",
+            "{}\n{}\n{}\n{}\n",
             r#"{"type":"session_meta","payload":{"id":"session-1","cwd":"/tmp/project","timestamp":"2026-06-22T00:00:00.000Z"}}"#,
             r#"{"type":"response_item","timestamp":"2026-06-22T00:00:01.000Z","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Please look at this code."}]}}"#,
-            assistant_line
+            assistant_line,
+            tool_line
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        codex_dir.join("tool-only.jsonl"),
+        format!(
+            "{}\n{tool_line}\n",
+            r#"{"type":"session_meta","payload":{"id":"tool-only","cwd":"/tmp/project"}}"#,
         ),
     )
     .unwrap();
@@ -55,7 +65,7 @@ fn rust_agent_log_sync_imports_codex_jsonl_into_sqlite() {
             "CONTEXT_STILL_SQLITE_CORE_PATH",
             sqlite_path.to_str().unwrap(),
         ),
-        ("AGENT_LOG_MIN_DISTILLABLE_CHARS", "120"),
+        ("AGENT_LOG_MIN_DISTILLABLE_CHARS", "0"),
         ("CODEX_SESSION_DIR", codex_dir.to_str().unwrap()),
         (
             "CODEX_ARCHIVED_SESSION_DIR",
@@ -76,6 +86,15 @@ fn rust_agent_log_sync_imports_codex_jsonl_into_sqlite() {
         .query_row("select count(*) from vibe_memories", [], |row| row.get(0))
         .unwrap();
     assert_eq!(count, 1);
+    let content: String = connection
+        .query_row("select content from vibe_memories limit 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        content,
+        format!("USER: Please look at this code.\n\nASSISTANT: {long_text}")
+    );
     let metadata: String = connection
         .query_row("select metadata from vibe_memories limit 1", [], |row| {
             row.get(0)

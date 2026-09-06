@@ -1,7 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 /** @vitest-environment jsdom */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LandscapePage } from "../../../web/src/modules/admin/components/landscape.page";
 import {
@@ -140,7 +139,6 @@ vi.mock("../../../web/src/modules/admin/repositories/admin.repository", () => ({
   fetchUnresolvedLandscapeCurationJobs: vi.fn(),
   applyDeadZoneKnowledgeReviewAction: vi.fn(),
   requestDeadZoneMergeReviewJob: vi.fn(),
-  applyDeadZoneMergeReviewJob: vi.fn(),
 }));
 
 function renderLandscapePage() {

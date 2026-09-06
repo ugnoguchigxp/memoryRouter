@@ -658,7 +658,7 @@ fn run_split_provider_executor_tick_for_path(
         retried,
         unsupported,
         message: if claimed == 0 && dynamic_routes_configured {
-            "dynamic LARM route is waiting for availability or runnable routed work".to_string()
+            "dynamic LARM route is waiting for service activity or runnable routed work".to_string()
         } else {
             format!(
                 "queue split executor tick completed; claimed={claimed} completed={completed} failed={failed} retried={retried} unsupported={unsupported}"
@@ -2335,6 +2335,8 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    mod dynamic_larm_canary_tests;
 
     fn serve_covering_response(content: Value) -> (String, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();

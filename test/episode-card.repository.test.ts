@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveDatabaseBackendConfig } from "../src/db/backend.js";
-import { getDefaultDbSession } from "../src/db/session.js";
+import { db } from "../src/db/index.js";
 import {
   createEpisodeCard,
   getEpisodeCard,
@@ -8,17 +8,13 @@ import {
   searchEpisodeCards,
 } from "../src/modules/episodic-memory/episode-card.repository.js";
 
-vi.mock("../src/db/session.js", () => {
+vi.mock("../src/db/index.js", () => {
   const mockDb = {
     select: vi.fn(),
     insert: vi.fn(),
     transaction: vi.fn(),
   };
-  return {
-    getDefaultDbSession: vi.fn(() => ({
-      db: mockDb,
-    })),
-  };
+  return { db: mockDb };
 });
 
 vi.mock("../src/db/backend.js", () => ({
@@ -30,7 +26,7 @@ describe("episode-card.repository (PostgreSQL)", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    mockDb = getDefaultDbSession().db;
+    mockDb = db;
     vi.mocked(resolveDatabaseBackendConfig).mockReturnValue({ kind: "postgres" } as any);
   });
 

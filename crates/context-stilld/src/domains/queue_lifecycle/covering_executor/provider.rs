@@ -4,6 +4,9 @@ use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 use serde_json::{json, Value};
 
+use crate::shared::agent_session::{
+    is_agent_session_api_path, run_agent_session_chat, AgentSessionRequest,
+};
 use crate::shared::errors::CliError;
 
 use super::external_fetch::read_bounded_body;
@@ -41,13 +44,29 @@ pub(super) fn request_covering_completion(
         .redirect(Policy::none())
         .build()
         .map_err(|error| CliError::io(format!("failed to build covering LLM client: {error}")))?;
+    let messages = json!([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]);
+    if is_agent_session_api_path(&execution.target.api_path) {
+        return run_agent_session_chat(
+            &client,
+            AgentSessionRequest {
+                api_base_url: &execution.target.api_base_url,
+                api_path: &execution.target.api_path,
+                api_key: execution.api_key.as_deref(),
+                model: &execution.target.model,
+                messages: &messages,
+                max_tokens: max_tokens as i64,
+                json_response: true,
+            },
+        )
+        .map_err(CliError::io);
+    }
     let url = chat_url(&execution.target.api_base_url, &execution.target.api_path);
     let request_body = json!({
         "model": execution.target.model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0
     });

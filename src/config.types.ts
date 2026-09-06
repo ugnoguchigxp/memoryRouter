@@ -154,7 +154,6 @@ export type GroupedConfig = {
     continuousErrorSleepMs: number;
     inventoryRefreshIntervalMs: number;
     findCandidateBackgroundEnabled: boolean;
-    findCandidateNoWait: boolean;
     findCandidateInteractiveWindowSeconds: number;
     findCandidateRecentBlockSeconds: number;
     findCandidateMinIntervalSeconds: number;

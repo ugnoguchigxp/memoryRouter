@@ -6,6 +6,10 @@ use reqwest::blocking::Client;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
+use crate::shared::agent_session::{
+    is_agent_session_api_path, run_agent_session_chat, AgentSessionRequest,
+};
+
 use super::super::native_common::{single_line, table_exists};
 
 use super::call_metrics::{ChatCompletion, ProviderCall};
@@ -307,6 +311,30 @@ pub(super) fn chat_local(
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or(&local.model);
+    let messages = json!([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt}
+    ]);
+    if is_agent_session_api_path(&local.api_path) {
+        let content = run_agent_session_chat(
+            client,
+            AgentSessionRequest {
+                api_base_url: &local.api_base_url,
+                api_path: &local.api_path,
+                api_key: Some(&local.api_key),
+                model,
+                messages: &messages,
+                max_tokens,
+                json_response: true,
+            },
+        )?;
+        return Ok(ChatCompletion {
+            content,
+            input_tokens: None,
+            output_tokens: None,
+            reported_model: Some(model.to_string()),
+        });
+    }
     let mut request = client.post(url).header("content-type", "application/json");
     if !local.api_key.trim().is_empty() {
         request = request.header("authorization", format!("Bearer {}", local.api_key.trim()));
@@ -314,10 +342,7 @@ pub(super) fn chat_local(
     let response = request
         .json(&json!({
             "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
+            "messages": messages,
             "stream": false,
             "temperature": 0,
             "max_tokens": max_tokens,

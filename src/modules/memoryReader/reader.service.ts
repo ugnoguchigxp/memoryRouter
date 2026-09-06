@@ -26,30 +26,6 @@ export type MemoryReaderReadResult = {
   returnedTokens: number;
 };
 
-export type VibeMemoryDescriptor = {
-  id: string;
-  sessionId: string;
-  metadata: Record<string, unknown>;
-  subject?: string | null;
-  intent?: string | null;
-};
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value) return {};
-  if (typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : {};
-    } catch {
-      return {};
-    }
-  }
-  return {};
-}
-
 function dedupeSegments(segments: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -61,64 +37,6 @@ function dedupeSegments(segments: string[]): string[] {
     result.push(segment);
   }
   return result;
-}
-
-export async function getVibeMemoryDescriptor(
-  vibeMemoryId: string,
-): Promise<VibeMemoryDescriptor | null> {
-  const id = vibeMemoryId.trim();
-  if (!id) return null;
-
-  if (resolveDatabaseBackendConfig().kind === "sqlite") {
-    const sqlite = await getSqliteCoreDatabase();
-    const row = sqlite.db
-      .query<
-        {
-          id: string;
-          session_id: string;
-          metadata: string | null;
-          subject: string | null;
-          intent: string | null;
-        },
-        [string]
-      >(
-        `
-        select id, session_id, metadata, subject, intent
-        from vibe_memories
-        where id = ?
-        limit 1
-      `,
-      )
-      .get(id);
-    if (!row) return null;
-    return {
-      id: row.id,
-      sessionId: row.session_id,
-      metadata: asRecord(row.metadata),
-      subject: row.subject,
-      intent: row.intent,
-    };
-  }
-
-  const [memory] = await db
-    .select({
-      id: vibeMemories.id,
-      sessionId: vibeMemories.sessionId,
-      metadata: vibeMemories.metadata,
-      subject: vibeMemories.subject,
-      intent: vibeMemories.intent,
-    })
-    .from(vibeMemories)
-    .where(eq(vibeMemories.id, id))
-    .limit(1);
-  if (!memory) return null;
-  return {
-    id: memory.id,
-    sessionId: memory.sessionId,
-    metadata: asRecord(memory.metadata),
-    subject: memory.subject,
-    intent: memory.intent,
-  };
 }
 
 export async function readVibeMemoryByTokenWindow(

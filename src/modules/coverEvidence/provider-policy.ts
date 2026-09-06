@@ -72,9 +72,6 @@ export function resolveCloudApiRuntimeRoute(
 ): StaticRuntimeSettingsRoute {
   const staticRoute = requireStaticRuntimeSettingsRoute(route);
   const providers = cloudApiRouteProviders(staticRoute);
-  if (providers.length === 0) {
-    throw new CoverEvidenceProviderPolicyError({ routeName: options.routeName });
-  }
   const [provider, ...fallback] = providers;
   if (!provider) {
     throw new CoverEvidenceProviderPolicyError({ routeName: options.routeName });
@@ -109,14 +106,4 @@ export function resolveCoverEvidenceRouteByPolicy(params: {
     return resolveCloudApiRuntimeRoute(params.route, { routeName: params.routeName });
   }
   return requireStaticRuntimeSettingsRoute(params.route);
-}
-
-export function ensureCloudApiCoverEvidenceRoutesAvailable(routes: {
-  sourceSupport: RuntimeSettingsRoute;
-  externalEvidence: RuntimeSettingsRoute;
-  mcpEvidence: RuntimeSettingsRoute;
-}): void {
-  resolveCloudApiRuntimeRoute(routes.sourceSupport, { routeName: "sourceSupport" });
-  resolveCloudApiRuntimeRoute(routes.externalEvidence, { routeName: "externalEvidence" });
-  resolveCloudApiRuntimeRoute(routes.mcpEvidence, { routeName: "mcpEvidence" });
 }

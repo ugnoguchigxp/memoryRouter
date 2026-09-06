@@ -1,0 +1,321 @@
+<article lang="ja">
+  <h1>local-LLM-harness ContextStill Provider live配備・受入確認依頼書</h1>
+
+  <p>
+    ContextStillのQueueが動的LLM Providerを取得できるよう、local-LLM-harness（LARM）の
+    対応済みreleaseをlive環境へ配備し、汎用Agent Connection契約の受入確認を行ってください。
+    本依頼は配備・設定・受入確認だけを対象とし、LARMのソースコード変更や
+    ContextStill専用endpointの追加を依頼するものではありません。
+  </p>
+
+  <dl>
+    <dt>依頼先</dt>
+    <dd>local-LLM-harness担当者／live環境運用者</dd>
+    <dt>依頼種別</dt>
+    <dd>既存実装のlive配備、local-node設定反映、疎通・canary確認</dd>
+    <dt>配備対象</dt>
+    <dd><code>b8f74b28ed530410ad50995b0811de40dbaca591</code>または同契約を含む後続commit</dd>
+    <dt>ContextStill接続先</dt>
+    <dd><code>http://192.168.0.130:9810</code></dd>
+    <dt>Agent Profile</dt>
+    <dd><code>contextstill-background</code></dd>
+    <dt>Audience</dt>
+    <dd><code>saaa-desktop</code></dd>
+    <dt>作成日</dt>
+    <dd><time>2026-09-06</time></dd>
+  </dl>
+
+  <aside>
+    <p>
+      <strong>重要:</strong> LARMはNightWorkers、SAAA、ContextStillなどが共有する汎用Providerです。
+      アプリ別API、SAAAへの通知、ContextStill専用の互換APIは追加しないでください。 Activity、Agent
+      Connection、OpenAI互換chat completionsの公開契約をそのまま使用します。
+    </p>
+  </aside>
+
+  <section id="reason">
+    <h2>1. 依頼理由と現在の阻害要因</h2>
+    <p>
+      ContextStill側は動的routeへ切替済みですが、live LARMが対応前releaseのため Agent
+      Connectionを取得できません。ContextStillはfail closedでjobをclaimせず、
+      <code>waiting_for_dynamic_provider</code>として待機しています。
+    </p>
+    <table>
+      <caption>
+        2026-09-06のread-only確認結果
+      </caption>
+      <thead>
+        <tr>
+          <th scope="col">確認対象</th>
+          <th scope="col">確認結果</th>
+          <th scope="col">必要状態</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row">LARM source HEAD</th>
+          <td><code>b8f74b28ed530410ad50995b0811de40dbaca591</code></td>
+          <td>対応済み</td>
+        </tr>
+        <tr>
+          <th scope="row">live <code>/health</code></th>
+          <td><code>releaseCommit: 01667fe1a4f9acc18794ae9fd4264487c1063647</code></td>
+          <td>配備対象commitまたは後続commit</td>
+        </tr>
+        <tr>
+          <th scope="row"><code>GET /v1/activity</code></th>
+          <td>HTTP 401</td>
+          <td>local-nodeのAgent API方針に従いContextStillからHTTP 200</td>
+        </tr>
+        <tr>
+          <th scope="row"><code>GET /v2/agent-profiles</code></th>
+          <td><code>contextstill-background</code>なし</td>
+          <td>同Profileが1件だけ存在し、deprecatedでない</td>
+        </tr>
+        <tr>
+          <th scope="row">ContextStill Provider lease</th>
+          <td>active 0件</td>
+          <td>canary実行中だけactiveになり、完了後に解放される</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>
+      したがって原因はLARMの契約設計不足ではなく、対応済みsourceとlive releaseの不一致です。
+      healthが200であることだけではContextStill向けProvider成立とは判定しません。
+    </p>
+  </section>
+
+  <section id="scope">
+    <h2>2. 依頼する作業</h2>
+    <ol>
+      <li>
+        LARM worktreeが配備対象commitでcleanであることを確認し、既存release scriptの
+        <code>plan</code>を実行する。
+      </li>
+      <li>plan結果とcleanup対象を確認後、対応済みreleaseをliveへ配備する。</li>
+      <li>
+        local-node設定へ既存の<code>contextstill-background</code> Profileと
+        <code>saaa-desktop</code> Audienceが反映されていることを確認する。
+      </li>
+      <li>Service Activity、Profile discovery、Agent Connectionを公開契約どおり確認する。</li>
+      <li>
+        claimされたProviderで非streaming JSON completionとHTTP SSE completionを各1回実行し、
+        Connectionを解放する。
+      </li>
+      <li>secretを含まない受入結果をContextStill担当者へ返す。</li>
+    </ol>
+  </section>
+
+  <section id="deployment">
+    <h2>3. 配備手順</h2>
+    <p>最初にread-onlyのplanを確認してください。</p>
+    <pre><code class="language-bash">cd /srv/ai/apps/local-LLM-harness
+git status --short
+git rev-parse HEAD
+sudo bash deploy/local-node/scripts/release-larm.sh plan</code></pre>
+    <p>
+      worktreeがcleanで、HEADとplanが本依頼の対象に一致する場合だけ、次の既存手順を実行してください。
+    </p>
+    <pre><code class="language-bash">cd /srv/ai/apps/local-LLM-harness
+sudo env LARM_RELEASE_CLEANUP_CONFIRM=fbac1c432f65c213769f95f361a0faccbabd5e1ee4f56b4b090c89d3b7dd5890 \
+  bash deploy/local-node/scripts/release-larm.sh apply</code></pre>
+    <p>
+      planが別のcleanup confirmation値を要求した場合は値を推測・再計算して続行せず、
+      plan全文と対象releaseを確認してから判断してください。
+    </p>
+  </section>
+
+  <section id="activity">
+    <h2>4. Service Activity受入条件</h2>
+    <pre><code class="language-http">GET /v1/activity HTTP/1.1
+Accept: application/json
+Cache-Control: no-cache</code></pre>
+    <ul>
+      <li>query parameterとrequest bodyを送らない。</li>
+      <li>ContextStillが動作するMacからHTTP 200になる。</li>
+      <li>
+        local-nodeで匿名Agent Connectionを許可する既存方針の場合、長期Bearer tokenを要求しない。
+      </li>
+      <li>
+        live環境のセキュリティ方針としてBearerを必須にする場合は、コードを変更せず、
+        ContextStillのresident環境へ安全に設定できるcredential受渡方法を提示する。
+      </li>
+    </ul>
+    <pre><code class="language-json">{
+  "contractVersion": "larm-service-activity.v1",
+  "state": "idle",
+  "activeWorkloads": 0,
+  "observedAt": "2026-09-06T12:34:56.789Z",
+  "validForMs": 1000,
+  "retryAfterMs": 0,
+  "reservationGuaranteed": false,
+  "bootEpoch": "epoch-value",
+  "configRevision": "revision-value"
+}</code></pre>
+    <p>
+      <code>idle</code>ではworkload 0かつretry
+      0、<code>active</code>ではworkload 1以上かつretry
+      1,000ms、<code>draining</code>ではretry
+      1,000msとします。未知field、空の世代値、期限切れsnapshotは 受入不可です。
+    </p>
+  </section>
+
+  <section id="profile">
+    <h2>5. Profile discovery受入条件</h2>
+    <pre><code class="language-http">GET /v2/agent-profiles HTTP/1.1
+Accept: application/json</code></pre>
+    <ul>
+      <li>
+        <code>contractVersion</code
+        >が<code>agent-connection.v2</code>である。
+      </li>
+      <li>
+        <code>catalogRevision</code
+        >が直前のActivityの<code>configRevision</code>と一致する。
+      </li>
+      <li><code>contextstill-background</code>が一意に存在する。</li>
+      <li>
+        <code>selectionPolicy</code
+        >が<code>explicit-only</code>で、deprecatedがfalseである。
+      </li>
+      <li>Provider protocolが<code>openai.chat-completions.v1</code>である。</li>
+      <li><code>saaa-desktop</code> Audienceが利用可能である。</li>
+      <li>
+        HTTP SSE対応の有無をNative
+        WebSocket用<code>streamingProtocol</code>の有無で判定しない。
+      </li>
+    </ul>
+  </section>
+
+  <section id="connection-canary">
+    <h2>6. Agent Connection・推論canary</h2>
+    <p>Activityがfreshなidleの場合だけ、次のConnectionを作成してください。</p>
+    <pre><code class="language-http">POST /v1/agent-connections HTTP/1.1
+Idempotency-Key: contextstill:deployment-canary:&lt;random&gt;
+Content-Type: application/json</code></pre>
+    <pre><code class="language-json">{
+  "agentProfile": "contextstill-background",
+  "explicitAgentProfile": true,
+  "audience": "saaa-desktop",
+  "client": "contextstill",
+  "ttlSeconds": 900,
+  "allowFallback": false,
+  "deploymentPolicy": "existing-only"
+}</code></pre>
+    <h3>6.1 Connection作成とclaim</h3>
+    <ol>
+      <li>201または202を受理し、202では同じConnection IDをreadyまでpollする。</li>
+      <li><code>{"format":"openai-provider-v1"}</code>でclaimする。</li>
+      <li>
+        claimの<code>provider.baseUrl</code>、<code>provider.model</code>、短期tokenだけを使用する。
+      </li>
+      <li>
+        <code>POST {claimedBaseUrl}/chat/completions</code>へclaimされたmodel、Bearer、
+        <code>stream: false</code>を送り、OpenAI互換JSON responseを確認する。
+      </li>
+      <li>Profile名をmodelへ代入せず、claimされたmodelを変更しない。</li>
+    </ol>
+    <h3>6.2 HTTP SSE canary</h3>
+    <p>
+      JSON canaryと同じclaimのbase URL、model、短期tokenを使い、同じChat Completions endpointへ
+      次のrequestを送ってください。
+    </p>
+    <pre><code class="language-http">POST {claimedBaseUrl}/chat/completions HTTP/1.1
+Authorization: Bearer {claimedShortLivedToken}
+Accept: text/event-stream
+Content-Type: application/json</code></pre>
+    <pre><code class="language-json">{
+  "model": "{claimedModel}",
+  "messages": [{ "role": "user", "content": "Reply with OK only." }],
+  "stream": true
+}</code></pre>
+    <ul>
+      <li>HTTP statusが200である。</li>
+      <li>
+        <code>Content-Type</code
+        >が<code>text/event-stream</code>で始まる。
+      </li>
+      <li>各eventが空行で区切られた<code>data: {OpenAI chat.completion.chunk JSON}</code>として読める。</li>
+      <li>少なくとも1件の有効なdeltaを受信する。</li>
+      <li>終端の<code>data: [DONE]</code>を受信する。</li>
+      <li>成功した非SSE responseをSSE成功として扱わない。</li>
+      <li>
+        Native WebSocket用<code>streamingProtocol</code>をHTTP SSEの前提条件にしない。
+      </li>
+    </ul>
+    <p>JSONとSSEのcanary完了後にConnectionをDELETEし、active Connectionを残さないでください。</p>
+  </section>
+
+  <section id="prohibited">
+    <h2>7. 禁止事項</h2>
+    <ul>
+      <li>LARMへContextStill専用endpointを追加しない。</li>
+      <li>SAAAへの通知、callback、webhookを追加しない。</li>
+      <li>
+        <code>/v1/activity</code>へProfile、Audience、Connection
+        IDのqueryを追加しない。
+      </li>
+      <li>claim外のProvider URL、model、credentialをContextStillへ渡さない。</li>
+      <li><code>127.0.0.1:44448</code>を動的Providerのfallbackとして案内しない。</li>
+      <li>claim tokenや長期Bearer tokenをlog、報告書、settings、SQLiteへ記録しない。</li>
+      <li>
+        配備後のcontract不一致を、その場の未承認コード修正で解消しない。不一致内容を証跡付きで返す。
+      </li>
+    </ul>
+  </section>
+
+  <section id="evidence">
+    <h2>8. 返却してほしい証跡</h2>
+    <ul>
+      <li>配備した完全なGit commit ID</li>
+      <li><code>/health</code>のreleaseCommit、configRevision、bootEpoch</li>
+      <li>ActivityのHTTP status、state、activeWorkloads、validForMs、retryAfterMs</li>
+      <li>ProfileのID、selectionPolicy、deprecated、protocol、model</li>
+      <li>Connection createのstatus、ready到達、claim成功、JSON completion成功、DELETE成功</li>
+      <li>
+        SSE completionのHTTP
+        status、Content-Type、有効なdeltaの受信、<code>[DONE]</code>終端
+      </li>
+      <li>canary中に<code>127.0.0.1:44448</code>を使用していないこと</li>
+      <li>secretを除去した時刻付き結果</li>
+    </ul>
+  </section>
+
+  <section id="rollback">
+    <h2>9. 失敗時の扱い</h2>
+    <p>
+      release identity、readiness、Activity、Profile、Agent
+      Connection、推論canaryのいずれかが失敗した場合、 ContextStillはdynamic routeのままfail
+      closedで待機します。LARM担当者はrelease scriptの既存rollbackを使用し、 失敗したcontractとHTTP
+      statusを返してください。
+    </p>
+    <pre><code class="language-bash">cd /srv/ai/apps/local-LLM-harness
+sudo bash deploy/local-node/scripts/release-larm.sh rollback</code></pre>
+  </section>
+
+  <section id="completion">
+    <h2>10. 完了条件</h2>
+    <ul>
+      <li>live releaseCommitが配備対象commitまたは承認済み後続commitである。</li>
+      <li>ActivityとProfile discoveryがContextStillホストから受入条件を満たす。</li>
+      <li>汎用Agent ConnectionからclaimされたProviderでJSON completionが成功する。</li>
+      <li>
+        同じOpenAI互換Chat Completions endpointでHTTP SSE
+        completionが<code>[DONE]</code>まで成功する。
+      </li>
+      <li>canary Connectionが解放され、credentialが残存しない。</li>
+      <li>ContextStillのLLM必須jobが少なくとも1件完了し、Queue件数が減少する。</li>
+      <li>ContextStillの次job境界でActivityが再確認される。</li>
+      <li>既存のNightWorkers、SAAA、static Provider契約に回帰がない。</li>
+    </ul>
+    <p>
+      ContextStill側の詳細契約は
+      <a href="larm-dynamic-provider-contextstill-implementation-plan.html"
+        >ContextStill動的LARM Provider実装計画</a
+      >、Service Activity契約は
+      <a href="local-llm-harness-background-availability-change-request.html"
+        >local-LLM-harness Service Activity連携契約</a
+      >を参照してください。
+    </p>
+  </section>
+</article>

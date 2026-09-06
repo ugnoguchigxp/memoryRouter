@@ -428,6 +428,20 @@ function isAllowedLarmControlHost(hostname: string): boolean {
   );
 }
 
+function isLoopbackLarmHost(hostname: string): boolean {
+  const host = hostname
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "")
+    .toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
+  const octets = host.split(".").map(Number);
+  return (
+    octets.length === 4 &&
+    octets.every((value) => Number.isInteger(value) && value >= 0 && value <= 255) &&
+    octets[0] === 127
+  );
+}
+
 const larmAgentConnectionSchema = z
   .object({
     id: larmIdentifierSchema,
@@ -468,6 +482,14 @@ const larmAgentConnectionSchema = z
         code: z.ZodIssueCode.custom,
         path: ["controlBaseUrl"],
         message: "controlBaseUrl host must be loopback, private, link-local, localhost, or .local",
+      });
+    }
+    const effectivePort = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+    if (effectivePort === 44_448 && isLoopbackLarmHost(url.hostname)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["controlBaseUrl"],
+        message: "dynamic LARM controlBaseUrl must not use legacy static Provider port 44448",
       });
     }
     if (connection.ttlSeconds * 1_000 < connection.requestTimeoutMs + 30_000) {

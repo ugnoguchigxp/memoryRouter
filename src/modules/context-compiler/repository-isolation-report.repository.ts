@@ -9,7 +9,7 @@ import {
   projectIdentityAliases,
   sources,
 } from "../../db/schema.js";
-import { getDefaultDbSession } from "../../db/session.js";
+import { db } from "../../db/index.js";
 import { asRecord } from "../../shared/utils/normalize.js";
 import {
   type CompileProjectIdentityAlias,
@@ -600,7 +600,6 @@ async function collectPostgresData(now: Date): Promise<{
   producerEvents: RepositoryIdentityProducerEvent[];
   newUnresolvedByEntity: Record<RepositoryEntityKind, number>;
 }> {
-  const db = getDefaultDbSession().db;
   const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
   const producerCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const [knowledgeRows, sourceRows, episodeRows, aliasRows, runRows, producerRows] =

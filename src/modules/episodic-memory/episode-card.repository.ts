@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import { episodeCards, episodeRefs } from "../../db/schema.js";
-import { getDefaultDbSession } from "../../db/session.js";
+import { db } from "../../db/index.js";
 import {
   type EpisodeCard,
   type EpisodeCardCreateInput,
@@ -18,8 +18,6 @@ import {
 } from "../context-compiler/project-scoped-write.js";
 import { resolveCompileProjectIdentity } from "../context-compiler/compile-project-identity.js";
 import { evaluateRepositoryScope } from "../context-compiler/repository-scope.js";
-
-const db = getDefaultDbSession().db;
 
 type EpisodeCardRow = typeof episodeCards.$inferSelect;
 type EpisodeRefRow = typeof episodeRefs.$inferSelect;

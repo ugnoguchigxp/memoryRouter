@@ -151,6 +151,8 @@ pub fn run<E: EnvProvider, S: ProcessSupervisor>(
 ) -> Result<ResidentRunReport, CliError> {
     write_resident_state(env, "running")?;
     let mut runtime_state = ResidentRuntimeState::new(env)?;
+    let paths = resolve_paths(env);
+    queue_lifecycle::service::log_provider_startup_selection_for_path(&paths.sqlite_core_path);
     let mut surfaces = ensure_surfaces(env, supervisor, &mut runtime_state)?;
     let pid = std::process::id();
 

@@ -919,8 +919,8 @@ export function ProviderEndpointsPanel({
               </label>
               {(
                 [
-                  ["Availability Poll (ms)", "availabilityPollMs", 1_000],
-                  ["Availability Timeout (ms)", "availabilityTimeoutMs", 250],
+                  ["Service Activity Poll (ms)", "availabilityPollMs", 1_000],
+                  ["Service Activity Timeout (ms)", "availabilityTimeoutMs", 250],
                   ["Control Timeout (ms)", "controlTimeoutMs", 250],
                   ["Ready Timeout (ms)", "readyTimeoutMs", 1_000],
                   ["TTL (seconds)", "ttlSeconds", 60],
@@ -948,8 +948,8 @@ export function ProviderEndpointsPanel({
             <div className="settings-route-chain">
               <span className="settings-route-chain-item">
                 <strong>Integration status</strong>
-                The Rust resident polls availability and claims this connection only while routed
-                queue work is due.
+                The Rust resident checks LARM-wide service activity and claims this connection only
+                while routed queue work is due and no service workload is active.
               </span>
             </div>
           </div>

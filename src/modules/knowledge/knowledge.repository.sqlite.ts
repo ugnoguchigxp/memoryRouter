@@ -69,10 +69,6 @@ function stringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
-function lowerIncludes(value: string, query: string): boolean {
-  return value.toLowerCase().includes(query.toLowerCase());
-}
-
 function tokenize(query: string): string[] {
   return [
     ...new Set(
@@ -107,22 +103,6 @@ function matchesIntentTags(
   if (!tags || tags.length === 0) return true;
   const rowTags = new Set(stringArray(row.intentTags));
   return tags.some((tag) => rowTags.has(tag));
-}
-
-function matchesRepoScope(
-  row: typeof sqliteKnowledgeItems.$inferSelect,
-  options: KnowledgeSearchOptions,
-): boolean {
-  const identity = resolveKnowledgeSearchIdentity(options);
-  if (row.classificationStatus !== "classified") return false;
-  if (row.scope === "global") {
-    return !row.projectRef && !row.repoKey && !row.repoPath;
-  }
-  if (row.scope !== "repo" || identity.matchValue === null) return false;
-  if (identity.matchBasis === "project_ref") return row.projectRef === identity.matchValue;
-  if (identity.matchBasis === "repo_key") return row.repoKey === identity.matchValue;
-  if (identity.matchBasis === "repo_path") return row.repoPath === identity.matchValue;
-  return false;
 }
 
 function matchesApplicability(

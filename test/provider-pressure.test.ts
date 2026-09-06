@@ -1,14 +1,10 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
-import { db } from "../src/db/client.js";
-import { syncStates } from "../src/db/schema.js";
 import { LlmProviderHttpError } from "../src/modules/llm/provider-http-error.js";
 import {
   isRateLimitError,
-  jitterMs,
   readProviderPressureState,
   recordProviderRateLimit,
   recordProviderUsage,
-  resolveFindCandidateThrottleSeconds,
 } from "../src/modules/llm/provider-pressure.service.js";
 
 const dbMocks = vi.hoisted(() => ({
@@ -30,11 +26,6 @@ vi.mock("../src/config.js", () => ({
     },
     distillation: {
       findCandidateRateLimitCooldownSeconds: 60,
-      findCandidateMinIntervalSeconds: 5,
-      findCandidateMediumIntervalSeconds: 10,
-      findCandidateBusyIntervalSeconds: 20,
-      findCandidateMaxIntervalSeconds: 30,
-      findCandidateJitterSeconds: 2,
     },
   },
 }));
@@ -241,48 +232,6 @@ describe("provider-pressure service", () => {
       // Config fallback is 60 seconds
       expect(cooldownMs).toBeGreaterThan(59000);
       expect(cooldownMs).toBeLessThan(61000);
-    });
-  });
-
-  describe("resolveFindCandidateThrottleSeconds", () => {
-    test("returns correct intervals based on counts", () => {
-      // compileCount >= 6 or interactiveLlmCount >= 6 -> max (30)
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 6, interactiveLlmCount: 0 })).toBe(
-        30,
-      );
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 0, interactiveLlmCount: 6 })).toBe(
-        30,
-      );
-
-      // compileCount >= 3 or interactiveLlmCount >= 3 -> busy (20)
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 3, interactiveLlmCount: 0 })).toBe(
-        20,
-      );
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 0, interactiveLlmCount: 3 })).toBe(
-        20,
-      );
-
-      // compileCount >= 1 or interactiveLlmCount >= 1 -> medium (10)
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 1, interactiveLlmCount: 0 })).toBe(
-        10,
-      );
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 0, interactiveLlmCount: 1 })).toBe(
-        10,
-      );
-
-      // 0 -> min (5)
-      expect(resolveFindCandidateThrottleSeconds({ compileCount: 0, interactiveLlmCount: 0 })).toBe(
-        5,
-      );
-    });
-  });
-
-  describe("jitterMs", () => {
-    test("returns integer within range [0, jitterSeconds * 1000]", () => {
-      const val = jitterMs();
-      expect(val).toBeGreaterThanOrEqual(0);
-      expect(val).toBeLessThanOrEqual(2000);
-      expect(Number.isInteger(val)).toBe(true);
     });
   });
 });

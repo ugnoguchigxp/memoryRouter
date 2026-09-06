@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { resolveDatabaseBackendConfig } from "../../db/backend.js";
 import {
   contextCompileCandidateTraces,
@@ -8,9 +8,8 @@ import {
   episodeRetrievalFeedback,
   knowledgeItems,
   knowledgeUsageEvents,
-  sources,
 } from "../../db/schema.js";
-import { getDefaultDbSession } from "../../db/session.js";
+import { db } from "../../db/index.js";
 import {
   type CompileRunDetail,
   type CompileRunEpisodeFeedbackResult,
@@ -40,8 +39,6 @@ import {
   normalizeRunStatus,
   normalizeStringArray,
 } from "./context-compiler.repository.utils.js";
-
-const db = getDefaultDbSession().db;
 
 function isSqliteBackend(): boolean {
   return resolveDatabaseBackendConfig().kind === "sqlite";
@@ -234,12 +231,6 @@ export type CompileRunSummary = {
   createdAt: Date;
 };
 
-export type CompileFreshnessMarkers = {
-  knowledgeActiveUpdatedAt: string | null;
-  knowledgeDraftUpdatedAt: string | null;
-  sourceCorpusUpdatedAt: string | null;
-};
-
 export type CompileRunSnapshot = {
   run: CompileRunSummary;
   items: CompileRunSelectedItem[];
@@ -373,105 +364,6 @@ export async function getCompileRunSnapshot(runId: string): Promise<CompileRunSn
       sourceRefs: normalizeStringArray(row.sourceRefs),
     })),
   };
-}
-
-export async function getLatestCompileRunForSession(params: {
-  sessionId: string;
-  createdBefore?: Date;
-}): Promise<{ id: string; createdAt: Date } | null> {
-  if (isSqliteBackend()) {
-    const sqlite = await sqliteRepository();
-    return sqlite.getLatestCompileRunForSessionSqlite(params);
-  }
-  const [row] = await db
-    .select({
-      id: contextCompileRuns.id,
-      createdAt: contextCompileRuns.createdAt,
-    })
-    .from(contextCompileRuns)
-    .where(
-      and(
-        eq(contextCompileRuns.sessionId, params.sessionId),
-        params.createdBefore ? lte(contextCompileRuns.createdAt, params.createdBefore) : undefined,
-      ),
-    )
-    .orderBy(desc(contextCompileRuns.createdAt))
-    .limit(1);
-  if (!row) return null;
-  return { id: row.id, createdAt: normalizeDate(row.createdAt) };
-}
-
-function resolveOutputMarkdownFromPackSnapshot(packSnapshot: unknown): string | null {
-  const parsed = contextPackSchema.safeParse(packSnapshot);
-  if (!parsed.success) return null;
-  return extractOutputMarkdown(parsed.data);
-}
-
-export async function getCompileRunById(runId: string): Promise<{
-  id: string;
-  sessionId: string | null;
-  createdAt: Date;
-  outputMarkdown: string | null;
-} | null> {
-  if (isSqliteBackend()) {
-    const sqlite = await sqliteRepository();
-    return sqlite.getCompileRunByIdSqlite(runId);
-  }
-  const [row] = await db
-    .select({
-      id: contextCompileRuns.id,
-      sessionId: contextCompileRuns.sessionId,
-      createdAt: contextCompileRuns.createdAt,
-      packSnapshot: contextCompileRuns.packSnapshot,
-    })
-    .from(contextCompileRuns)
-    .where(eq(contextCompileRuns.id, runId))
-    .limit(1);
-  if (!row) return null;
-  return {
-    id: row.id,
-    sessionId: normalizeNullableString(row.sessionId),
-    createdAt: normalizeDate(row.createdAt),
-    outputMarkdown: resolveOutputMarkdownFromPackSnapshot(row.packSnapshot),
-  };
-}
-
-export async function listCompileRunOutputsByIds(runIds: string[]): Promise<
-  Map<
-    string,
-    {
-      createdAt: Date;
-      goal: string;
-      outputMarkdown: string | null;
-    }
-  >
-> {
-  if (isSqliteBackend()) {
-    const sqlite = await sqliteRepository();
-    return sqlite.listCompileRunOutputsByIdsSqlite(runIds);
-  }
-  const normalizedIds = [...new Set(runIds.map((item) => item.trim()).filter(Boolean))];
-  if (normalizedIds.length === 0) return new Map();
-  const rows = await db
-    .select({
-      id: contextCompileRuns.id,
-      createdAt: contextCompileRuns.createdAt,
-      goal: contextCompileRuns.goal,
-      packSnapshot: contextCompileRuns.packSnapshot,
-    })
-    .from(contextCompileRuns)
-    .where(inArray(contextCompileRuns.id, normalizedIds));
-
-  return new Map(
-    rows.map((row) => [
-      row.id,
-      {
-        createdAt: normalizeDate(row.createdAt),
-        goal: row.goal,
-        outputMarkdown: resolveOutputMarkdownFromPackSnapshot(row.packSnapshot),
-      },
-    ]),
-  );
 }
 
 export async function getCompileRunDetail(runId: string): Promise<CompileRunDetail | null> {
@@ -1147,61 +1039,4 @@ export async function getLatestCompileRunSnapshot(): Promise<CompileRunSnapshot 
   const latest = rows[0];
   if (!latest) return null;
   return getCompileRunSnapshot(latest.id);
-}
-
-function toIsoTimestamp(value: unknown): string | null {
-  if (value instanceof Date) return value.toISOString();
-  if (typeof value === "string") {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-  }
-  return null;
-}
-
-export async function getCompileFreshnessMarkers(params?: {
-  repoPath?: string;
-  repoKey?: string;
-}): Promise<CompileFreshnessMarkers> {
-  if (isSqliteBackend()) {
-    const sqlite = await sqliteRepository();
-    return sqlite.getCompileFreshnessMarkersSqlite();
-  }
-  const repoPath = params?.repoPath?.trim() ? params.repoPath.trim() : undefined;
-  const repoKey = params?.repoKey?.trim() ? params.repoKey.trim().toLowerCase() : undefined;
-
-  const knowledgeResult =
-    repoPath || repoKey
-      ? await db.execute(sql`
-          select
-            max(case when ${knowledgeItems.status} = 'active' then ${knowledgeItems.updatedAt} end) as active_updated_at,
-            max(case when ${knowledgeItems.status} = 'draft' then ${knowledgeItems.updatedAt} end) as draft_updated_at
-          from ${knowledgeItems}
-          where ${knowledgeItems.status} in ('active', 'draft')
-            and (
-              ${knowledgeItems.scope} = 'global'
-              ${repoKey ? sql`or ${knowledgeItems.appliesTo} ->> 'repoKey' = ${repoKey}` : sql``}
-              ${repoPath ? sql`or ${knowledgeItems.appliesTo} ->> 'repoPath' = ${repoPath}` : sql``}
-            )
-        `)
-      : await db.execute(sql`
-          select
-            max(case when ${knowledgeItems.status} = 'active' then ${knowledgeItems.updatedAt} end) as active_updated_at,
-            max(case when ${knowledgeItems.status} = 'draft' then ${knowledgeItems.updatedAt} end) as draft_updated_at
-          from ${knowledgeItems}
-          where ${knowledgeItems.status} in ('active', 'draft')
-        `);
-
-  const sourceResult = await db.execute(sql`
-    select max(${sources.updatedAt}) as source_updated_at
-    from ${sources}
-  `);
-
-  const knowledgeRow = (knowledgeResult.rows as Array<Record<string, unknown>>)[0] ?? {};
-  const sourceRow = (sourceResult.rows as Array<Record<string, unknown>>)[0] ?? {};
-
-  return {
-    knowledgeActiveUpdatedAt: toIsoTimestamp(knowledgeRow.active_updated_at),
-    knowledgeDraftUpdatedAt: toIsoTimestamp(knowledgeRow.draft_updated_at),
-    sourceCorpusUpdatedAt: toIsoTimestamp(sourceRow.source_updated_at),
-  };
 }

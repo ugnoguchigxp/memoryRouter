@@ -7,7 +7,9 @@ use crate::domains::{
 use crate::shared::{config::EnvProvider, errors::CliError, process::ProcessSupervisor};
 
 pub use super::claim::claim_next_queue_job_for_connection;
-pub(crate) use super::dynamic_provider::release_dynamic_provider_connections;
+pub(crate) use super::dynamic_provider::{
+    log_provider_startup_selection_for_path, release_dynamic_provider_connections,
+};
 pub use super::events::append_queue_event_for_connection;
 pub use super::executor::{run_executor_tick_report, QueueExecutorTickReport};
 pub use super::inspect::inspect_report;

@@ -9,8 +9,6 @@ import type {
 } from "./graph-contracts";
 import { getJson, requestJson } from "./http";
 import type {
-  DeadZoneKnowledgeMaintenanceAction,
-  DeadZoneKnowledgeMaintenanceResult,
   DeadZoneKnowledgeReviewActionResult,
   DeadZoneKnowledgeReviewBadge,
   DeadZoneKnowledgeReviewReason,
@@ -30,8 +28,6 @@ import type {
   LandscapeCurationJobListResponse,
   LandscapeReviewCandidateCreateInput,
   LandscapeReviewCandidateCreateResult,
-  LandscapeReviewCandidateLinkUpdateInput,
-  LandscapeReviewCandidateLinkUpdateResult,
   LandscapeReviewItem,
   LandscapeReviewItemsListQuery,
   LandscapeReviewItemsListResponse,
@@ -157,18 +153,6 @@ export async function fetchDeadZoneKnowledgeReview(input?: {
   );
 }
 
-export async function maintainDeadZoneKnowledge(input: {
-  action: DeadZoneKnowledgeMaintenanceAction;
-  deadZoneKnowledgeId: string;
-  similarKnowledgeId?: string;
-}): Promise<DeadZoneKnowledgeMaintenanceResult> {
-  return requestJson<DeadZoneKnowledgeMaintenanceResult>(
-    "/api/graph/landscape/dead-zone-knowledge/maintenance",
-    "POST",
-    input,
-  );
-}
-
 export async function applyDeadZoneKnowledgeReviewAction(input: {
   action: DeadZoneRecommendationAction;
   deadZoneKnowledgeId: string;
@@ -193,19 +177,6 @@ export async function requestDeadZoneMergeReviewJob(input: {
     "/api/graph/landscape/dead-zone-knowledge/merge-review-jobs",
     "POST",
     input,
-  );
-}
-
-export async function applyDeadZoneMergeReviewJob(jobId: string): Promise<{
-  status: "applied";
-  jobId: string;
-  keptKnowledgeId: string;
-  deprecatedKnowledgeId: string;
-  reviewItemId: string | null;
-}> {
-  return requestJson(
-    `/api/graph/landscape/dead-zone-knowledge/merge-review-jobs/${jobId}/apply`,
-    "POST",
   );
 }
 
@@ -365,18 +336,6 @@ export async function createLandscapeReviewCandidates(
     input,
   );
   return json.result;
-}
-
-export async function updateLandscapeReviewCandidateLink(
-  reviewItemId: string,
-  linkId: string,
-  input: LandscapeReviewCandidateLinkUpdateInput,
-): Promise<LandscapeReviewCandidateLinkUpdateResult> {
-  return requestJson<LandscapeReviewCandidateLinkUpdateResult>(
-    `/api/graph/landscape/review-items/${encodeURIComponent(reviewItemId)}/candidate-links/${encodeURIComponent(linkId)}`,
-    "PATCH",
-    input,
-  );
 }
 
 export async function fetchGraphCommunityLabels(input?: {

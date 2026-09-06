@@ -342,10 +342,6 @@ export const groupedConfig: GroupedConfig = {
     continuousErrorSleepMs: APP_CONSTANTS.distillationContinuousErrorSleepMs,
     inventoryRefreshIntervalMs: APP_CONSTANTS.distillationInventoryRefreshIntervalMs,
     findCandidateBackgroundEnabled: APP_CONSTANTS.findCandidateBackgroundEnabled,
-    findCandidateNoWait: resolveBoolean(
-      readProjectEnv("FIND_CANDIDATE_NO_WAIT"),
-      APP_CONSTANTS.findCandidateNoWait,
-    ),
     findCandidateInteractiveWindowSeconds: APP_CONSTANTS.findCandidateInteractiveWindowSeconds,
     findCandidateRecentBlockSeconds: APP_CONSTANTS.findCandidateRecentBlockSeconds,
     findCandidateMinIntervalSeconds: APP_CONSTANTS.findCandidateMinIntervalSeconds,

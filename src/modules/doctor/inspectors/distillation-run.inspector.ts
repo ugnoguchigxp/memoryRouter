@@ -491,21 +491,6 @@ async function loadDomainDistillationJobs(targetKind: SourceKind): Promise<Disti
   };
 }
 
-function emptyQueueBlockers(): DistillationQueueBlockers {
-  return {
-    pendingKnowledgeCandidates: 0,
-    runningKnowledgeCandidates: 0,
-    staleRunningKnowledgeCandidates: 0,
-    retryableKnowledgeCandidates: 0,
-    manualPausedKnowledgeCandidates: 0,
-    pendingWiki: 0,
-    runningWiki: 0,
-    staleRunningWiki: 0,
-    retryableWiki: 0,
-    manualPausedWiki: 0,
-  };
-}
-
 async function loadDomainQueueHealth(
   targetKind: SourceKind,
 ): Promise<Omit<DistillationQueueHealth, "lock">> {

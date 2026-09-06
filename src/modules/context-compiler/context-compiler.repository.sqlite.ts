@@ -14,11 +14,7 @@ import {
   listCompileEvalsByRunId,
 } from "./context-compile-eval.repository.js";
 import type { ContextCompileTaskTrace } from "./context-compile-task-trace.repository.js";
-import type {
-  CompileFreshnessMarkers,
-  CompileRunSnapshot,
-  CompileRunSummary,
-} from "./context-compiler.repository.js";
+import type { CompileRunSnapshot, CompileRunSummary } from "./context-compiler.repository.js";
 import {
   extractCompileRunSignals,
   extractOutputMarkdown,
@@ -511,106 +507,6 @@ export async function getCompileRunSnapshotSqlite(
   return {
     run: await mapRunSummary(run),
     items: itemRows.map(mapPackItem),
-  };
-}
-
-export async function getLatestCompileRunForSessionSqlite(params: {
-  sessionId: string;
-  createdBefore?: Date;
-}): Promise<{ id: string; createdAt: Date } | null> {
-  const sqlite = await getSqliteCoreDatabase();
-  const row = params.createdBefore
-    ? sqlite.db
-        .query<{ id: string; created_at: string }, [string, string]>(
-          `SELECT id, created_at FROM context_compile_runs
-           WHERE session_id = ? AND created_at <= ?
-           ORDER BY created_at DESC, id DESC LIMIT 1`,
-        )
-        .get(params.sessionId, params.createdBefore.toISOString())
-    : sqlite.db
-        .query<{ id: string; created_at: string }, [string]>(
-          `SELECT id, created_at FROM context_compile_runs
-           WHERE session_id = ?
-           ORDER BY created_at DESC, id DESC LIMIT 1`,
-        )
-        .get(params.sessionId);
-  return row ? { id: row.id, createdAt: normalizeDate(row.created_at) } : null;
-}
-
-export async function getCompileRunByIdSqlite(runId: string): Promise<{
-  id: string;
-  sessionId: string | null;
-  createdAt: Date;
-  outputMarkdown: string | null;
-} | null> {
-  const sqlite = await getSqliteCoreDatabase();
-  const row = sqlite.db
-    .query<SqliteRunRow, [string]>("SELECT * FROM context_compile_runs WHERE id = ? LIMIT 1")
-    .get(runId);
-  if (!row) return null;
-  return {
-    id: row.id,
-    sessionId: row.session_id,
-    createdAt: normalizeDate(row.created_at),
-    outputMarkdown: extractOutputMarkdown(parsePackSnapshot(row.pack_snapshot, row)),
-  };
-}
-
-export async function listCompileRunOutputsByIdsSqlite(
-  runIds: string[],
-): Promise<Map<string, { createdAt: Date; goal: string; outputMarkdown: string | null }>> {
-  const normalizedIds = [...new Set(runIds.map((item) => item.trim()).filter(Boolean))];
-  if (normalizedIds.length === 0) return new Map();
-  const sqlite = await getSqliteCoreDatabase();
-  const placeholders = normalizedIds.map(() => "?").join(", ");
-  const rows = sqlite.db
-    .query<SqliteRunRow, string[]>(
-      `SELECT * FROM context_compile_runs WHERE id IN (${placeholders})`,
-    )
-    .all(...normalizedIds);
-  return new Map(
-    rows.map((row) => [
-      row.id,
-      {
-        createdAt: normalizeDate(row.created_at),
-        goal: row.goal,
-        outputMarkdown: extractOutputMarkdown(parsePackSnapshot(row.pack_snapshot, row)),
-      },
-    ]),
-  );
-}
-
-export async function getCompileFreshnessMarkersSqlite(): Promise<CompileFreshnessMarkers> {
-  const sqlite = await getSqliteCoreDatabase();
-  const knowledgeRow: {
-    active_updated_at?: string | null;
-    draft_updated_at?: string | null;
-  } =
-    sqlite.db
-      .query<
-        {
-          active_updated_at: string | null;
-          draft_updated_at: string | null;
-        },
-        []
-      >(
-        `SELECT
-          max(CASE WHEN status = 'active' THEN updated_at END) AS active_updated_at,
-          max(CASE WHEN status = 'draft' THEN updated_at END) AS draft_updated_at
-         FROM knowledge_items
-         WHERE status IN ('active', 'draft')`,
-      )
-      .get() ?? {};
-  const sourceRow: { source_updated_at?: string | null } =
-    sqlite.db
-      .query<{ source_updated_at: string | null }, []>(
-        "SELECT max(updated_at) AS source_updated_at FROM sources",
-      )
-      .get() ?? {};
-  return {
-    knowledgeActiveUpdatedAt: normalizeIsoString(knowledgeRow.active_updated_at),
-    knowledgeDraftUpdatedAt: normalizeIsoString(knowledgeRow.draft_updated_at),
-    sourceCorpusUpdatedAt: normalizeIsoString(sourceRow.source_updated_at),
   };
 }
 

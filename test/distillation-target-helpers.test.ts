@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  leaseFromTargetState,
   nowMinusSeconds,
   rowHeartbeatMs,
   staleThresholdMs,
@@ -52,72 +51,6 @@ describe("selectDistillationTarget repository helpers", () => {
         lockedAt: null,
       };
       expect(rowHeartbeatMs(row)).toBe(Number.NEGATIVE_INFINITY);
-    });
-  });
-
-  describe("leaseFromTargetState", () => {
-    it("extracts correct lease properties", () => {
-      const row = {
-        id: "target-123",
-        targetKind: "wiki_file" as const,
-        targetKey: "key.md",
-        sourceUri: "uri",
-        distillationVersion: "v1",
-        status: "running" as const,
-        phase: "selected" as const,
-        priorityGroup: "wiki" as const,
-        sortKey: "key",
-        lockedBy: "worker-xyz",
-        lockedAt: new Date(),
-        heartbeatAt: new Date(),
-        nextRetryAt: null,
-        attemptCount: 3,
-        lastOutcomeKind: null,
-        lastError: null,
-        candidateCount: 0,
-        knowledgeIds: null,
-        metadata: {},
-        completedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      const lease = leaseFromTargetState(row);
-      expect(lease).toEqual({
-        targetStateId: "target-123",
-        lockedBy: "worker-xyz",
-        attemptCount: 3,
-      });
-    });
-
-    it("handles null lockedBy gracefully", () => {
-      const row = {
-        id: "target-123",
-        targetKind: "wiki_file" as const,
-        targetKey: "key.md",
-        sourceUri: "uri",
-        distillationVersion: "v1",
-        status: "running" as const,
-        phase: "selected" as const,
-        priorityGroup: "wiki" as const,
-        sortKey: "key",
-        lockedBy: null,
-        lockedAt: null,
-        heartbeatAt: null,
-        nextRetryAt: null,
-        attemptCount: 1,
-        lastOutcomeKind: null,
-        lastError: null,
-        candidateCount: 0,
-        knowledgeIds: null,
-        metadata: {},
-        completedAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
-
-      const lease = leaseFromTargetState(row);
-      expect(lease.lockedBy).toBe("");
     });
   });
 });

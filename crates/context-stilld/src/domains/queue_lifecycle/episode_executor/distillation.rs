@@ -5,6 +5,9 @@ use reqwest::blocking::Client;
 use reqwest::header::RETRY_AFTER;
 use serde_json::{json, Value};
 
+use crate::shared::agent_session::{
+    is_agent_session_api_path, run_agent_session_chat, AgentSessionRequest,
+};
 use crate::shared::errors::CliError;
 
 use super::helpers::{
@@ -52,13 +55,34 @@ pub(super) fn distill_segment(
         .timeout(Duration::from_secs(timeout_seconds.max(30)))
         .build()
         .map_err(|error| CliError::io(format!("failed to build local-llm client: {error}")))?;
+    let messages = build_messages(segment, document);
+    if is_agent_session_api_path(&target.api_path) {
+        let content = run_agent_session_chat(
+            &client,
+            AgentSessionRequest {
+                api_base_url: &target.api_base_url,
+                api_path: &target.api_path,
+                api_key,
+                model: &target.model,
+                messages: &messages,
+                max_tokens: 4_000,
+                json_response: true,
+            },
+        )
+        .map_err(CliError::io)?;
+        return parse_canonical_array(&content);
+    }
     let url = build_local_llm_chat_completions_url(&target.api_base_url, &target.api_path);
-    let mut request = client.post(url).json(&json!({
+    let mut request_body = json!({
         "model": target.model,
-        "messages": build_messages(segment, document),
+        "messages": messages,
         "max_tokens": 4000,
         "temperature": 0
-    }));
+    });
+    if target.target_id.starts_with("larm-agent-connection:") {
+        request_body["stream"] = Value::Bool(false);
+    }
+    let mut request = client.post(url).json(&request_body);
     if let Some(api_key) = api_key.map(str::trim).filter(|value| !value.is_empty()) {
         request = request.bearer_auth(api_key);
     }

@@ -5,6 +5,9 @@ use reqwest::header::RETRY_AFTER;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 
+use crate::shared::agent_session::{
+    is_agent_session_api_path, run_agent_session_chat, AgentSessionRequest,
+};
 use crate::shared::errors::CliError;
 
 use super::distillation::{
@@ -256,10 +259,27 @@ pub(super) fn review_near_duplicate_episode(
         .timeout(Duration::from_secs(timeout_seconds.max(30)))
         .build()
         .map_err(|error| CliError::io(format!("failed to build local-llm client: {error}")))?;
+    let messages = near_duplicate_review_messages(item, candidates);
+    if is_agent_session_api_path(&target.api_path) {
+        let content = run_agent_session_chat(
+            &client,
+            AgentSessionRequest {
+                api_base_url: &target.api_base_url,
+                api_path: &target.api_path,
+                api_key,
+                model: &target.model,
+                messages: &messages,
+                max_tokens: 800,
+                json_response: true,
+            },
+        )
+        .map_err(CliError::io)?;
+        return parse_near_duplicate_review(&content);
+    }
     let url = build_local_llm_chat_completions_url(&target.api_base_url, &target.api_path);
     let mut request = client.post(url).json(&json!({
         "model": target.model,
-        "messages": near_duplicate_review_messages(item, candidates),
+        "messages": messages,
         "max_tokens": 800,
         "temperature": 0
     }));

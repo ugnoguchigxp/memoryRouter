@@ -25,6 +25,31 @@ use super::types::{
     ProviderQueueClaimSpec,
 };
 
+const STARTUP_LLM_ROUTES: [(&str, &str); 10] = [
+    ("findCandidate.source", "/taskRouting/findCandidate/source"),
+    ("findCandidate.vibe", "/taskRouting/findCandidate/vibe"),
+    ("webSourceResearch", "/taskRouting/webSourceResearch"),
+    ("episodeDistiller", "/taskRouting/episodeDistiller"),
+    (
+        "coverEvidence.sourceSupport",
+        "/taskRouting/coverEvidence/sourceSupport",
+    ),
+    (
+        "coverEvidence.externalEvidence",
+        "/taskRouting/coverEvidence/externalEvidence",
+    ),
+    (
+        "coverEvidence.mcpEvidence",
+        "/taskRouting/coverEvidence/mcpEvidence",
+    ),
+    ("deadZoneMergeReview", "/taskRouting/deadZoneMergeReview"),
+    (
+        "mergeActivationFinalize",
+        "/taskRouting/mergeActivationFinalize",
+    ),
+    ("finalizeDistille", "/taskRouting/finalizeDistille"),
+];
+
 #[derive(Debug, Clone)]
 struct DynamicProviderPlan {
     connection: LarmConnectionConfig,
@@ -118,6 +143,104 @@ fn release_unreferenced_larm_managers(active_connection_ids: &BTreeSet<String>) 
 
 pub(crate) fn release_dynamic_provider_connections() {
     release_unreferenced_larm_managers(&BTreeSet::new());
+}
+
+pub(crate) fn log_provider_startup_selection_for_path(sqlite_path: &std::path::Path) {
+    let result = open_query_only_connection(sqlite_path).and_then(|reader| {
+        load_settings_document(&reader).and_then(|settings| match settings {
+            Some(settings) => provider_startup_selection_lines(&settings),
+            None => Ok(vec![
+                "resident LLM provider selection: providerKind=unconfigured".to_string(),
+            ]),
+        })
+    });
+    match result {
+        Ok(lines) if lines.is_empty() => {
+            eprintln!("resident LLM provider selection: providerKind=unconfigured");
+        }
+        Ok(lines) => {
+            for line in lines {
+                eprintln!("{line}");
+            }
+        }
+        Err(error) => {
+            eprintln!("resident LLM provider selection unavailable: {error}");
+        }
+    }
+}
+
+fn provider_startup_selection_lines(settings: &Value) -> Result<Vec<String>, CliError> {
+    type SelectionKey = (String, String, String, String, String);
+    let mut grouped = BTreeMap::<SelectionKey, Vec<&str>>::new();
+    for (route_name, pointer) in STARTUP_LLM_ROUTES {
+        let Some(route) = settings.pointer(pointer) else {
+            continue;
+        };
+        let key = if is_larm_route(route) {
+            let connection_id = string_field(route, "connectionId").ok_or_else(|| {
+                CliError::invalid_arguments(format!(
+                    "dynamic route {route_name} has no LARM connectionId"
+                ))
+            })?;
+            let connection = LarmConnectionConfig::from_settings(settings, &connection_id)
+                .map_err(|error| {
+                    CliError::invalid_arguments(format!(
+                        "invalid LARM connection {connection_id}: {error}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    CliError::invalid_arguments(format!(
+                        "dynamic route {route_name} selected a disabled LARM Provider"
+                    ))
+                })?;
+            (
+                "larm-agent-connection".to_string(),
+                connection_id,
+                control_host_label(&connection.control_base_url)?,
+                connection.agent_profile,
+                connection.audience,
+            )
+        } else {
+            (
+                "static".to_string(),
+                string_field(route, "provider").unwrap_or_else(|| "unconfigured".to_string()),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+            )
+        };
+        grouped.entry(key).or_default().push(route_name);
+    }
+
+    Ok(grouped
+        .into_iter()
+        .map(
+            |((provider_kind, provider, control_host, agent_profile, audience), routes)| {
+                format!(
+                    "resident LLM provider selection: routes={} providerKind={provider_kind} provider={provider} controlHost={control_host} agentProfile={agent_profile} audience={audience}",
+                    routes.join(",")
+                )
+            },
+        )
+        .collect())
+}
+
+fn control_host_label(control_base_url: &str) -> Result<String, CliError> {
+    let url = reqwest::Url::parse(control_base_url).map_err(|error| {
+        CliError::invalid_arguments(format!("invalid LARM controlBaseUrl: {error}"))
+    })?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| CliError::invalid_arguments("LARM controlBaseUrl host is missing"))?;
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    Ok(match url.port_or_known_default() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
 }
 
 pub(crate) fn dynamic_provider_routes_configured(
@@ -617,6 +740,36 @@ mod tests {
             ])
         );
         assert_eq!(plans[0].priority_queues[1].queue_name, "episodeDistiller");
+
+        let startup_lines = provider_startup_selection_lines(&settings).unwrap();
+        assert_eq!(startup_lines.len(), 1);
+        assert!(startup_lines[0].contains("providerKind=larm-agent-connection"));
+        assert!(startup_lines[0].contains("provider=contextstill-background"));
+        assert!(startup_lines[0].contains("controlHost=127.0.0.1:9810"));
+        assert!(startup_lines[0].contains("agentProfile=contextstill-background"));
+        assert!(startup_lines[0].contains("audience=saaa-desktop"));
+        assert!(startup_lines[0]
+            .contains("routes=findCandidate.source,findCandidate.vibe,episodeDistiller"));
+        assert!(!startup_lines[0].to_ascii_lowercase().contains("token"));
+    }
+
+    #[test]
+    fn startup_log_identifies_explicit_legacy_static_routes() {
+        let settings = json!({
+            "taskRouting": {
+                "findCandidate": {
+                    "source": {"kind": "static", "provider": "local-llm", "fallback": []},
+                    "vibe": {"provider": "local-llm", "fallback": []}
+                },
+                "episodeDistiller": {"kind": "static", "provider": "local-llm", "fallback": []}
+            }
+        });
+
+        let startup_lines = provider_startup_selection_lines(&settings).unwrap();
+
+        assert_eq!(startup_lines.len(), 1);
+        assert!(startup_lines[0].contains("providerKind=static provider=local-llm"));
+        assert!(startup_lines[0].contains("controlHost=- agentProfile=- audience=-"));
     }
 
     #[test]

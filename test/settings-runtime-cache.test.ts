@@ -253,6 +253,34 @@ describe("settings runtime cache", () => {
     }
   });
 
+  test("rejects the legacy static loopback port as a LARM control endpoint", () => {
+    const input = cloneDefaultSettings();
+    input.providers["larm-agent-connection"] = {
+      enabled: true,
+      connections: [
+        {
+          id: "contextstill-background",
+          controlBaseUrl: "http://127.0.0.1:44448",
+          agentProfile: "contextstill-background",
+          audience: "saaa-desktop",
+          availabilityPollMs: 5_000,
+          availabilityTimeoutMs: 2_000,
+          controlTimeoutMs: 5_000,
+          readyTimeoutMs: 180_000,
+          ttlSeconds: 900,
+          requestTimeoutMs: 300_000,
+        },
+      ],
+    };
+
+    const parsed = runtimeSettingsEditableSchema.safeParse(input);
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((issue) => issue.message.includes("port 44448"))).toBe(true);
+    }
+  });
+
   test("rejects a LARM provider-pool target that has no configured connection", () => {
     const input = cloneDefaultSettings();
     input.providers["larm-agent-connection"].enabled = true;

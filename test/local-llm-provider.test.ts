@@ -186,6 +186,111 @@ describe("local-llm provider", () => {
     });
   });
 
+  test("healthCheck discovers an agent-session model through the runtime model list", async () => {
+    const spy = vi.spyOn(global, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          object: "list",
+          data: [
+            {
+              id: "muse/muse-spark-1.3-contributor",
+              runtime: "muse",
+            },
+          ],
+          runtime: { id: "muse", status: "ready", detail: null },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const status = await createLocalLlmProvider({
+      timeoutMs: 1000,
+      modelConfig: {
+        apiBaseUrl: "http://127.0.0.1:44449",
+        apiPath: "/v1/agents/sessions",
+        model: "muse/muse-spark-1.3-contributor",
+      },
+    }).healthCheck();
+
+    expect(status).toMatchObject({
+      provider: "local-llm",
+      configured: true,
+      reachable: true,
+      model: "muse/muse-spark-1.3-contributor",
+      endpoint: "http://127.0.0.1:44449",
+    });
+    expect(spy.mock.calls[0]?.[0]).toBe("http://127.0.0.1:44449/v1/agents/models?runtime=muse");
+  });
+
+  test("chat runs an agent session turn, reads SSE output, and releases the session", async () => {
+    const events = [
+      'event: message.delta\ndata: {"data":{"text":"po"}}',
+      'event: message.delta\ndata: {"data":{"text":"ng"}}',
+      'event: message.completed\ndata: {"data":{"text":"pong"}}',
+      'event: turn.completed\ndata: {"data":{"terminal":"completed"}}',
+      "",
+    ].join("\n\n");
+    const spy = vi
+      .spyOn(global, "fetch")
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            id: "ags_test",
+            events_url: "/v1/agents/sessions/ags_test/events",
+          }),
+          { status: 201, headers: { "content-type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ id: "agt_test", status: "accepted" }), {
+          status: 202,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(events, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      )
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+
+    const response = await createLocalLlmProvider({
+      timeoutMs: 1000,
+      modelConfig: {
+        apiBaseUrl: "http://127.0.0.1:44449",
+        apiPath: "/v1/agents/sessions",
+        model: "muse/muse-spark-1.3-contributor",
+      },
+    }).chat({
+      messages: [
+        { role: "system", content: "Answer briefly." },
+        { role: "user", content: "ping" },
+      ],
+      maxTokens: 8,
+      temperature: 0,
+    });
+
+    expect(response).toMatchObject({ content: "pong", finishReason: "stop" });
+    expect(spy.mock.calls.map((call) => call[0])).toEqual([
+      "http://127.0.0.1:44449/v1/agents/sessions",
+      "http://127.0.0.1:44449/v1/agents/sessions/ags_test/turns",
+      "http://127.0.0.1:44449/v1/agents/sessions/ags_test/events",
+      "http://127.0.0.1:44449/v1/agents/sessions/ags_test/release",
+    ]);
+    for (const callIndex of [0, 1, 3]) {
+      expect(spy.mock.calls[callIndex]?.[1]?.headers).toMatchObject({
+        "Idempotency-Key": expect.stringMatching(/^contextstill:/),
+      });
+    }
+    const createBody = JSON.parse(spy.mock.calls[0]?.[1]?.body as string);
+    expect(createBody).toEqual({
+      runtime: "muse",
+      model: "muse/muse-spark-1.3-contributor",
+      approval_policy: "strict",
+    });
+    const turnBody = JSON.parse(spy.mock.calls[1]?.[1]?.body as string);
+    expect(turnBody.input[0].text).toContain("<system>\nAnswer briefly.\n</system>");
+    expect(turnBody.input[0].text).toContain("<user>\nping\n</user>");
+  });
+
   test("chat preserves 503 Retry-After as LlmProviderHttpError", async () => {
     vi.spyOn(global, "fetch").mockResolvedValue({
       ok: false,

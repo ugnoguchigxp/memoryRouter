@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import { db } from "../src/db/index.js";
 import { contextCompileRuns, contextPackItems } from "../src/db/schema.js";
 import {
-  getCompileFreshnessMarkers,
   getCompileRunDetail,
   getCompileRunSnapshot,
   insertCompileRun,
@@ -525,39 +524,6 @@ describe("context-compiler repository", () => {
         },
       ]);
       expect(result?.knowledgeSignals).toEqual([]);
-    });
-  });
-
-  describe("getCompileFreshnessMarkers", () => {
-    test("returns timestamps as ISO strings", async () => {
-      const now = new Date();
-      (db.execute as any).mockResolvedValueOnce({
-        rows: [{ active_updated_at: now, draft_updated_at: now.toISOString() }],
-      });
-      (db.execute as any).mockResolvedValueOnce({
-        rows: [{ source_updated_at: "2026-05-15T00:00:00Z" }],
-      });
-
-      const result = await getCompileFreshnessMarkers();
-
-      expect(result.knowledgeActiveUpdatedAt).toBe(now.toISOString());
-      expect(result.knowledgeDraftUpdatedAt).toBe(now.toISOString());
-      expect(result.sourceCorpusUpdatedAt).toBe("2026-05-15T00:00:00.000Z");
-    });
-
-    test("handles null or invalid timestamps", async () => {
-      (db.execute as any).mockResolvedValueOnce({
-        rows: [{ active_updated_at: null, draft_updated_at: "invalid" }],
-      });
-      (db.execute as any).mockResolvedValueOnce({
-        rows: [{ source_updated_at: undefined }],
-      });
-
-      const result = await getCompileFreshnessMarkers();
-
-      expect(result.knowledgeActiveUpdatedAt).toBeNull();
-      expect(result.knowledgeDraftUpdatedAt).toBeNull();
-      expect(result.sourceCorpusUpdatedAt).toBeNull();
     });
   });
 });
